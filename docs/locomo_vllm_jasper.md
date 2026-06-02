@@ -24,6 +24,7 @@ export VLLM_TP=1
 export VLLM_GPU_MEMORY_UTILIZATION=0.80
 export VLLM_MAX_MODEL_LEN=32768
 export VLLM_DTYPE=auto
+export VLLM_USE_FLASHINFER_SAMPLER=0
 export VLLM_API_KEY=token-abc123
 bash scripts/serve_vllm.sh
 ```
@@ -40,7 +41,7 @@ vllm serve meta-llama/Llama-3.1-8B-Instruct \
   --api-key ${VLLM_API_KEY:-token-abc123}
 ```
 
-The script keeps Hugging Face, vLLM, Torch, Triton, TorchInductor, PyTorch extension builds, CUDA JIT, FlashInfer, and temp files under `.cache/` and `tmp/` in the repository by default. It also disables vLLM usage stats by default to avoid writing `~/.config/vllm/usage_stats.json` on quota-limited home directories. FlashInfer 0.6.x reads `FLASHINFER_WORKSPACE_BASE`, so the script sets that to the repository root and FlashInfer writes under `.cache/flashinfer/`. Use a larger `VLLM_TP` only if the allocation needs multiple GPUs or latency improves. Increase `VLLM_MAX_MODEL_LEN` if full conversation prompts are rejected as too long. Official Meta Llama models may require Hugging Face access approval and login or `HF_TOKEN`. If you override `VLLM_MODEL` with a quantized model, set `VLLM_QUANTIZATION` to the matching vLLM quantization mode, such as `gptq`. Keep `CUDA_MODULE=cuda/12.8` for the pinned setup unless you rebuild both Jasper and the vLLM/PyTorch stack for another CUDA version.
+The script keeps Hugging Face, vLLM, Torch, Triton, TorchInductor, PyTorch extension builds, CUDA JIT, FlashInfer, and temp files under `.cache/` and `tmp/` in the repository by default. It also disables vLLM usage stats by default to avoid writing `~/.config/vllm/usage_stats.json` on quota-limited home directories. FlashInfer 0.6.x reads `FLASHINFER_WORKSPACE_BASE`, so the script sets that to the repository root and FlashInfer writes under `.cache/flashinfer/`. The script defaults `VLLM_USE_FLASHINFER_SAMPLER=0` because the vLLM 0.10.2 FlashInfer sampler can reject RTX Blackwell/SM 12.x under the CUDA 12.8 pin; vLLM falls back to the PyTorch-native sampler. Use a larger `VLLM_TP` only if the allocation needs multiple GPUs or latency improves. Increase `VLLM_MAX_MODEL_LEN` if full conversation prompts are rejected as too long. Official Meta Llama models may require Hugging Face access approval and login or `HF_TOKEN`. If you override `VLLM_MODEL` with a quantized model, set `VLLM_QUANTIZATION` to the matching vLLM quantization mode, such as `gptq`. Keep `CUDA_MODULE=cuda/12.8` for the pinned setup unless you rebuild both Jasper and the vLLM/PyTorch stack for another CUDA version.
 
 Smoke check:
 

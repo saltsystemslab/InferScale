@@ -58,7 +58,7 @@ class JasperVectorStore:
         self._vectors_path = self.root / "vectors.npy"
         self._graph_path = self.root / "jasper.graph"
         self._db_path = self.root / "payloads.sqlite"
-        self._conn = sqlite3.connect(self._db_path)
+        self._conn = sqlite3.connect(self._db_path, timeout=30.0)
         self._init_db()
         self._vectors: np.ndarray | None = self._load_vectors()
         self._graph: Any = None
@@ -104,12 +104,20 @@ class JasperVectorStore:
             start_ord = int(self._vectors.shape[0])
             self._vectors = np.vstack([self._vectors, matrix]).astype(np.float32, copy=False)
 
-        with self._conn:
-            for offset, (item_id, payload) in enumerate(zip(id_list, payload_list)):
-                self._conn.execute(
-                    "INSERT OR REPLACE INTO payloads (id, ord, payload_json) VALUES (?, ?, ?)",
-                    (item_id, start_ord + offset, json.dumps(payload, ensure_ascii=False)),
-                )
+        try:
+            with self._conn:
+                for offset, (item_id, payload) in enumerate(zip(id_list, payload_list)):
+                    self._conn.execute(
+                        "INSERT OR REPLACE INTO payloads (id, ord, payload_json) VALUES (?, ?, ?)",
+                        (item_id, start_ord + offset, json.dumps(payload, ensure_ascii=False)),
+                    )
+        except sqlite3.OperationalError as exc:
+            raise RuntimeError(
+                f"Could not write Jasper payload database at {self._db_path}. "
+                "On shared clusters this is usually caused by project quota, permissions, or SQLite journal/locking "
+                "support on the target filesystem. Check free space and quota for the results directory, and rerun "
+                "with --results-dir and BENCHMARK_CACHE_ROOT pointing at a writable project filesystem."
+            ) from exc
         self._graph = None
         return id_list
 
@@ -182,10 +190,18 @@ class JasperVectorStore:
         self._conn.close()
 
     def _init_db(self) -> None:
+        self._configure_db()
         with self._conn:
             self._conn.execute(
                 "CREATE TABLE IF NOT EXISTS payloads (id TEXT PRIMARY KEY, ord INTEGER UNIQUE NOT NULL, payload_json TEXT NOT NULL)"
             )
+
+    def _configure_db(self) -> None:
+        # Avoid sidecar journal/temp files; they are fragile on some shared HPC filesystems.
+        self._conn.execute("PRAGMA journal_mode=MEMORY")
+        self._conn.execute("PRAGMA synchronous=OFF")
+        self._conn.execute("PRAGMA temp_store=MEMORY")
+        self._conn.execute("PRAGMA busy_timeout=30000")
 
     def _load_vectors(self) -> np.ndarray | None:
         if self._vectors_path.exists():

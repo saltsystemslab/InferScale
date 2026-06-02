@@ -89,6 +89,8 @@ locomo-jasper-bench \
 
 The benchmark logs progress with Loguru. By default it logs every 5 questions, plus sample updates. Use `--log-every 1` for a small smoke run, increase it for full runs, or set `LOCOMO_LOG_EVERY`. Set `LOCOMO_LOG_LEVEL=DEBUG` or `LOCOMO_LOG_LEVEL=WARNING` to adjust verbosity. `locomo-jasper-bench` defaults `MEM0_DIR` to `${BENCHMARK_CACHE_ROOT:-<repo>/.cache}/mem0` so Mem0 does not write `~/.mem0` on quota-limited home directories.
 
+Jasper stores vectors and payload metadata under `results/<run_id>/mem0/<sample_id>/`. If SQLite reports `disk I/O error`, verify that `--results-dir` and `BENCHMARK_CACHE_ROOT` are on a writable project filesystem with quota available, not a quota-limited home directory.
+
 Outputs are written under `results/<run_id>/`:
 
 - `config.json`
@@ -98,7 +100,7 @@ Outputs are written under `results/<run_id>/`:
 
 The default `--context-mode mem0` creates one Mem0 instance per LoCoMo sample under `results/<run_id>/mem0/<sample_id>/`. It adds each formatted turn with `infer=False`, preserving sample, session, turn, speaker, and timestamp metadata, then finalizes the Jasper graph before questions are answered. `latency_ms.memory_search_ms` measures Mem0 search wall time, while `latency_ms.answer_generation_ms` remains the baseline-vs-plugin latency metric. Mem0 index build and add time are recorded in index metadata, not answer API latency.
 
-Mem0 embeddings use the OpenAI embedder by default, so `OPENAI_API_KEY` must be set for `--context-mode mem0`. Use `--context-mode full` for a no-memory full-transcript baseline that does not build embeddings or Jasper indexes. `--context-mode retrieval` is accepted as a deprecated alias for `mem0`.
+Mem0 embeddings use the OpenAI embedder by default, so `OPENAI_API_KEY` must be set for `--context-mode mem0`. The project installs `mem0ai[nlp]` because Mem0's local memory processing can require spaCy NLP dependencies. Use `--context-mode full` for a no-memory full-transcript baseline that does not build embeddings or Jasper indexes. `--context-mode retrieval` is accepted as a deprecated alias for `mem0`.
 
 If `--context-mode mem0` fails `python scripts/smoke_jasper.py` with `cudaErrorUnsupportedPtxVersion`, rebuild Jasper for the GPU's native architecture instead of relying on PTX JIT fallback:
 

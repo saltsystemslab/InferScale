@@ -38,7 +38,7 @@ vllm serve shuyuej/Llama-3.3-70B-Instruct-GPTQ \
   --api-key ${VLLM_API_KEY:-token-abc123}
 ```
 
-The script keeps Hugging Face, Torch, FlashInfer, and temp files under `.cache/` and `tmp/` in the repository by default. Use a larger `VLLM_TP` only if the allocation needs multiple GPUs or latency improves.
+The script keeps Hugging Face, vLLM, Torch, FlashInfer, and temp files under `.cache/` and `tmp/` in the repository by default. FlashInfer 0.6.x reads `FLASHINFER_WORKSPACE_BASE`, so the script sets that to the repository root and FlashInfer writes under `.cache/flashinfer/`. Use a larger `VLLM_TP` only if the allocation needs multiple GPUs or latency improves.
 
 Smoke check:
 

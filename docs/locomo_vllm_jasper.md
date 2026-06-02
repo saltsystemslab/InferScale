@@ -73,6 +73,8 @@ curl -L \
 export VLLM_BASE_URL=http://127.0.0.1:8000/v1
 export JUDGE_BASE_URL=http://127.0.0.1:8000/v1
 export OPENAI_API_KEY=<your-openai-key>
+export BENCHMARK_CACHE_ROOT=/projects/SaltSystemsLab/peter/benchmark-jasper/.cache
+export MEM0_DIR="${BENCHMARK_CACHE_ROOT}/mem0"
 export NO_PROXY=localhost,127.0.0.1,::1
 export no_proxy="${NO_PROXY}"
 locomo-jasper-bench \
@@ -85,7 +87,7 @@ locomo-jasper-bench \
   --vllm-command "bash scripts/serve_vllm.sh"
 ```
 
-The benchmark logs progress with Loguru. By default it logs every 5 questions, plus sample updates. Use `--log-every 1` for a small smoke run, increase it for full runs, or set `LOCOMO_LOG_EVERY`. Set `LOCOMO_LOG_LEVEL=DEBUG` or `LOCOMO_LOG_LEVEL=WARNING` to adjust verbosity.
+The benchmark logs progress with Loguru. By default it logs every 5 questions, plus sample updates. Use `--log-every 1` for a small smoke run, increase it for full runs, or set `LOCOMO_LOG_EVERY`. Set `LOCOMO_LOG_LEVEL=DEBUG` or `LOCOMO_LOG_LEVEL=WARNING` to adjust verbosity. `locomo-jasper-bench` defaults `MEM0_DIR` to `${BENCHMARK_CACHE_ROOT:-<repo>/.cache}/mem0` so Mem0 does not write `~/.mem0` on quota-limited home directories.
 
 Outputs are written under `results/<run_id>/`:
 

@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 from loguru import logger
+
+_DEFAULT_CACHE_ROOT = Path(__file__).resolve().parents[2] / ".cache"
+os.environ.setdefault("BENCHMARK_CACHE_ROOT", str(_DEFAULT_CACHE_ROOT))
+os.environ.setdefault("MEM0_DIR", str(Path(os.environ["BENCHMARK_CACHE_ROOT"]) / "mem0"))
 
 from .config import parse_args
 from .runner import run_benchmark

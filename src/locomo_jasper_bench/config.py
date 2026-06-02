@@ -77,6 +77,7 @@ class BenchmarkConfig:
     max_samples: int | None = None
     max_questions: int | None = None
     vllm_command: str | None = None
+    log_every: int = 5
 
     def to_jsonable(self) -> dict[str, Any]:
         data = asdict(self)
@@ -137,6 +138,7 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     parser.add_argument("--max-samples", type=int)
     parser.add_argument("--max-questions", type=int)
     parser.add_argument("--vllm-command")
+    parser.add_argument("--log-every", type=int, default=int(os.environ.get("LOCOMO_LOG_EVERY", "5")))
 
     ns = parser.parse_args(argv)
     if ns.mode == "evaluate-only" and ns.predictions_path is None:

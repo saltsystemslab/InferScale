@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
 from .clients import (
     ChatClient,
     EmbeddingClient,
@@ -29,6 +31,13 @@ class RuntimeClients:
 
 
 def run_benchmark(config: BenchmarkConfig, clients: RuntimeClients | None = None) -> dict[str, Any]:
+    logger.info(
+        "Starting benchmark run_id={} mode={} dataset={} results_dir={}",
+        config.run_id,
+        config.mode,
+        config.dataset_path,
+        config.run_dir,
+    )
     config.run_dir.mkdir(parents=True, exist_ok=True)
     write_json(config.run_dir / "config.json", config.to_jsonable())
 
@@ -49,10 +58,25 @@ def run_benchmark(config: BenchmarkConfig, clients: RuntimeClients | None = None
         system_metadata=system_metadata,
     )
     write_json(config.run_dir / "summary.json", summary)
+    logger.info(
+        "Finished benchmark run_id={} questions={} judged={} accuracy={}",
+        config.run_id,
+        summary["question_count"],
+        summary["judged_count"],
+        _format_accuracy(summary.get("accuracy")),
+    )
+    logger.info("Wrote results to {}", config.run_dir)
     return summary
 
 
 def build_clients(config: BenchmarkConfig) -> RuntimeClients:
+    logger.info(
+        "Configuring clients llm={} judge={} embedding_provider={} vector_backend={}",
+        config.llm_base_url,
+        config.judge_base_url,
+        config.embedding_provider,
+        config.vector_backend,
+    )
     answer_client = OpenAICompatibleChatClient(
         base_url=config.llm_base_url,
         api_key=config.llm_api_key,
@@ -80,27 +104,71 @@ def build_clients(config: BenchmarkConfig) -> RuntimeClients:
 
 
 def _run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> list[dict[str, Any]]:
+    logger.info("Loading LoCoMo dataset from {}", config.dataset_path)
     samples = load_locomo(config.dataset_path, max_samples=config.max_samples)
+    planned_questions = _planned_question_count(samples, config.max_questions)
+    logger.info(
+        "Loaded {} samples; planned_questions={} max_samples={} max_questions={}",
+        len(samples),
+        planned_questions,
+        config.max_samples,
+        config.max_questions,
+    )
     output_path = config.run_dir / "predictions.jsonl"
     all_records: list[dict[str, Any]] = []
     question_budget = config.max_questions
+    completed_questions = 0
     with JsonlWriter(output_path) as writer:
-        for sample in samples:
+        for sample_index, sample in enumerate(samples, start=1):
             if question_budget is not None and question_budget <= 0:
                 break
+            sample_question_count = len(sample.qa)
+            if question_budget is not None:
+                sample_question_count = min(sample_question_count, question_budget)
+            logger.info(
+                "Sample {}/{} sample_id={} turns={} questions={} starting",
+                sample_index,
+                len(samples),
+                sample.sample_id,
+                len(sample.turns),
+                sample_question_count,
+            )
             memory, build_metrics = _build_memory_for_sample(config, clients.embedding_client, sample)
             sample_questions = sample.qa
             if question_budget is not None:
                 sample_questions = sample_questions[:question_budget]
             for qa in sample_questions:
+                next_question = completed_questions + 1
+                if _should_log_progress(next_question, planned_questions, config.log_every):
+                    logger.info(
+                        "Question {}/{} starting sample_id={} question_id={} category={}",
+                        next_question,
+                        planned_questions,
+                        sample.sample_id,
+                        qa.question_id,
+                        qa.category,
+                    )
                 record = _answer_question(config, clients, sample, qa, memory, build_metrics)
                 writer.write(record)
                 all_records.append(record)
+                completed_questions += 1
+                if _should_log_progress(completed_questions, planned_questions, config.log_every):
+                    logger.info(
+                        "Question {}/{} finished sample_id={} question_id={} judge={} end_to_end_ms={:.1f}",
+                        completed_questions,
+                        planned_questions,
+                        sample.sample_id,
+                        qa.question_id,
+                        _judge_label(record.get("judge", {}).get("correct")),
+                        record["latency_ms"]["end_to_end_ms"],
+                    )
                 if question_budget is not None:
                     question_budget -= 1
                     if question_budget <= 0:
                         break
             memory.store.close()
+            logger.info("Sample {}/{} sample_id={} finished", sample_index, len(samples), sample.sample_id)
+    logger.info("Wrote {} prediction records to {}", len(all_records), output_path)
     return all_records
 
 
@@ -132,8 +200,18 @@ def _build_memory_for_sample(
     ]
     ids = [turn.id for turn in sample.turns]
     if texts:
+        logger.info("Embedding {} memory turns for sample_id={}", len(texts), sample.sample_id)
         memory.add_texts(texts, payloads, ids)
+    logger.info("Building {} index for sample_id={}", config.vector_backend, sample.sample_id)
     build_metrics = store.finalize()
+    logger.info(
+        "Index ready sample_id={} backend={} vectors={} dim={} build_ms={:.1f}",
+        sample.sample_id,
+        build_metrics.backend,
+        build_metrics.indexed_vector_count,
+        build_metrics.embedding_dim,
+        build_metrics.graph_build_time_ms,
+    )
     return memory, build_metrics
 
 
@@ -225,11 +303,21 @@ def _answer_question(
 def _run_evaluate_only(config: BenchmarkConfig, clients: RuntimeClients) -> list[dict[str, Any]]:
     assert config.predictions_path is not None
     predictions_path = _resolve_predictions_path(config.predictions_path)
+    logger.info("Loading saved predictions from {}", predictions_path)
     predictions = read_jsonl(predictions_path)
+    logger.info("Loaded {} predictions for re-judging", len(predictions))
     output_path = config.run_dir / "evaluations.jsonl"
     rows: list[dict[str, Any]] = []
     with JsonlWriter(output_path) as writer:
-        for row in predictions:
+        for index, row in enumerate(predictions, start=1):
+            if _should_log_progress(index, len(predictions), config.log_every):
+                logger.info(
+                    "Evaluation {}/{} starting sample_id={} question_id={}",
+                    index,
+                    len(predictions),
+                    row.get("sample_id"),
+                    row.get("question_id"),
+                )
             qa = QuestionAnswer(
                 sample_id=str(row.get("sample_id") or ""),
                 question_id=str(row.get("question_id") or ""),
@@ -255,6 +343,17 @@ def _run_evaluate_only(config: BenchmarkConfig, clients: RuntimeClients) -> list
             updated["latency_ms"]["judge_ms"] = judge.latency_ms
             writer.write(updated)
             rows.append(updated)
+            if _should_log_progress(index, len(predictions), config.log_every):
+                logger.info(
+                    "Evaluation {}/{} finished sample_id={} question_id={} judge={} judge_ms={:.1f}",
+                    index,
+                    len(predictions),
+                    updated.get("sample_id"),
+                    updated.get("question_id"),
+                    _judge_label(correct),
+                    judge.latency_ms,
+                )
+    logger.info("Wrote {} evaluation records to {}", len(rows), output_path)
     return rows
 
 
@@ -274,3 +373,30 @@ def _resolve_predictions_path(path: Path) -> Path:
     if path.is_dir():
         return path / "predictions.jsonl"
     return path
+
+
+def _planned_question_count(samples: list[ConversationSample], max_questions: int | None) -> int:
+    total = sum(len(sample.qa) for sample in samples)
+    if max_questions is None:
+        return total
+    return min(total, max_questions)
+
+
+def _should_log_progress(index: int, total: int, interval: int) -> bool:
+    if interval <= 0 or total <= 0:
+        return False
+    return index == 1 or index == total or index % interval == 0
+
+
+def _judge_label(value: Any) -> str:
+    if value is True:
+        return "correct"
+    if value is False:
+        return "incorrect"
+    return "skipped"
+
+
+def _format_accuracy(value: Any) -> str:
+    if value is None:
+        return "n/a"
+    return f"{float(value):.4f}"

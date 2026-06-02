@@ -9,6 +9,7 @@ description = "LoCoMo benchmark harness for vLLM, Mem0-style memory, and Jasper 
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "loguru>=0.7",
     "numpy>=1.24",
     "openai>=1.30",
 ]

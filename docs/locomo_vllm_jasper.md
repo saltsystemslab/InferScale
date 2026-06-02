@@ -79,8 +79,11 @@ locomo-jasper-bench \
   --results-dir results \
   --max-samples 1 \
   --max-questions 3 \
+  --log-every 1 \
   --vllm-command "bash scripts/serve_vllm.sh"
 ```
+
+The benchmark logs progress with Loguru. By default it logs every 5 questions, plus sample/indexing updates. Use `--log-every 1` for a small smoke run, increase it for full runs, or set `LOCOMO_LOG_EVERY`. Set `LOCOMO_LOG_LEVEL=DEBUG` or `LOCOMO_LOG_LEVEL=WARNING` to adjust verbosity.
 
 Outputs are written under `results/<run_id>/`:
 

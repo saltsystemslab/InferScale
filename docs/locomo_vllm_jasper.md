@@ -43,18 +43,36 @@ The script keeps Hugging Face, vLLM, Torch, Triton, TorchInductor, PyTorch exten
 Smoke check:
 
 ```bash
-curl -H "Authorization: Bearer ${VLLM_API_KEY:-token-abc123}" http://localhost:8000/v1/models
+curl --noproxy '*' \
+  -H "Authorization: Bearer ${VLLM_API_KEY:-token-abc123}" \
+  http://127.0.0.1:8000/v1/models
 python scripts/smoke_jasper.py
 ```
+
+If the smoke check returns a Squid proxy page with `ERR_ACCESS_DENIED`, the request was sent through the cluster proxy instead of directly to the local vLLM server. Use `--noproxy '*'` with `curl`, set `NO_PROXY`/`no_proxy` for Python clients, and prefer `127.0.0.1` for local vLLM URLs. If the no-proxy request says `connection refused`, verify the benchmark shell and vLLM shell are on the same compute node with `hostname`.
 
 ## 3. Get LoCoMo Data
 
 Place `locomo10.json` at `data/locomo10.json`. The loader expects the public LoCoMo shape: each sample has session turns under `conversation.session_N` and question records under `qa`.
 
+Download the dataset on the data transfer node, then run the benchmark from the GPU node:
+
+```bash
+cd /path/to/benchmark-jasper
+mkdir -p data
+curl -L \
+  https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json \
+  -o data/locomo10.json
+```
+
 ## 4. Run a Small Baseline
 
 ```bash
 export OPENAI_API_KEY=...
+export VLLM_BASE_URL=http://127.0.0.1:8000/v1
+export JUDGE_BASE_URL=http://127.0.0.1:8000/v1
+export NO_PROXY=localhost,127.0.0.1,::1
+export no_proxy="${NO_PROXY}"
 locomo-jasper-bench \
   --mode baseline \
   --dataset data/locomo10.json \

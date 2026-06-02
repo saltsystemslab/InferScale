@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "locomo-jasper-bench"
+version = "0.1.0"
+description = "LoCoMo benchmark harness for vLLM, Mem0-style memory, and Jasper vector search"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "openai>=1.30",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+]
+jasper = [
+    "torch",
+    "apache-tvm-ffi",
+]
+
+[project.scripts]
+locomo-jasper-bench = "locomo_jasper_bench.run:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

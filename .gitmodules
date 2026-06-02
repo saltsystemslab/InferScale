@@ -1,0 +1,3 @@
+[submodule "jasperpy"]
+	path = jasperpy
+	url = git@github.com:saltsystemslab/jasperpy.git

@@ -15,6 +15,7 @@ DEFAULT_VLLM_API_KEY = "token-abc123"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 
 Mode = Literal["baseline", "plugin", "evaluate-only"]
+ContextMode = Literal["full", "retrieval"]
 VectorBackend = Literal["jasper", "numpy"]
 DistanceMetric = Literal["ip", "l2"]
 EmbeddingProvider = Literal["openai", "hash"]
@@ -58,6 +59,7 @@ class BenchmarkConfig:
     embedding_batch_size: int = 64
     hash_embedding_dim: int = 1536
 
+    context_mode: ContextMode = "full"
     vector_backend: VectorBackend = "jasper"
     vector_distance: DistanceMetric = "ip"
     normalize_embeddings: bool = True
@@ -94,7 +96,7 @@ class BenchmarkConfig:
 def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     parser = argparse.ArgumentParser(
         prog="locomo-jasper-bench",
-        description="Run LoCoMo through vLLM and a Jasper-backed Mem0-style memory.",
+        description="Run LoCoMo through baseline and plugin vLLM servers for accuracy and latency comparisons.",
     )
     parser.add_argument("--mode", choices=["baseline", "plugin", "evaluate-only"], default="baseline")
     parser.add_argument("--dataset", dest="dataset_path", type=Path, default=Path("data/locomo10.json"))
@@ -119,6 +121,7 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     parser.add_argument("--embedding-batch-size", type=int, default=64)
     parser.add_argument("--hash-embedding-dim", type=int, default=1536)
 
+    parser.add_argument("--context-mode", choices=["full", "retrieval"], default="full")
     parser.add_argument("--vector-backend", choices=["jasper", "numpy"], default="jasper")
     parser.add_argument("--vector-distance", choices=["ip", "l2"], default="ip")
     parser.add_argument("--no-normalize-embeddings", action="store_false", dest="normalize_embeddings")

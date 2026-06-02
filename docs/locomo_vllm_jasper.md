@@ -1,6 +1,6 @@
-# LoCoMo vLLM + Jasper Benchmark
+# LoCoMo vLLM Plugin Benchmark
 
-This harness runs LoCoMo question answering with a Mem0-style memory layer backed by Jasper. The LLM and judge use OpenAI-compatible vLLM endpoints. The default embedding provider is OpenAI `text-embedding-3-small`.
+This harness runs LoCoMo question answering against OpenAI-compatible vLLM endpoints to compare a plain baseline server with a plugin-enabled server. By default, both baseline and plugin runs receive the same full conversation transcript plus the question; accuracy is judged by the plain baseline vLLM server, and answer API latency is the primary latency metric.
 
 ## 1. Create the Remote Environment
 
@@ -11,7 +11,7 @@ bash scripts/setup_remote.sh
 source .venv/bin/activate
 ```
 
-If the Jasper build succeeds, the `jasper` Python package will be installed from `jasperpy/python`.
+The setup script also builds optional Jasper retrieval support. The default full-context plugin benchmark does not use Jasper, embeddings, or retrieval indexes. If you later use `--context-mode retrieval`, the `jasper` Python package is installed from `jasperpy/python`, and `CMAKE_CUDA_ARCHITECTURES=${JASPER_CUDA_ARCHITECTURES:-native}` controls the Jasper CUDA architecture. If native detection is unavailable in your build environment, set `JASPER_CUDA_ARCHITECTURES` before running the script, for example `90`, `100`, or `120` depending on the target GPU.
 
 ## 2. Serve the Baseline vLLM Model
 
@@ -21,6 +21,7 @@ In a separate shell:
 export CUDA_MODULE=cuda/12.9
 export VLLM_TP=1
 export VLLM_GPU_MEMORY_UTILIZATION=0.80
+export VLLM_MAX_MODEL_LEN=32768
 export VLLM_API_KEY=token-abc123
 bash scripts/serve_vllm.sh
 ```
@@ -32,13 +33,13 @@ vllm serve shuyuej/Llama-3.3-70B-Instruct-GPTQ \
   --quantization gptq \
   --trust-remote-code \
   --dtype float16 \
-  --max-model-len 4096 \
+  --max-model-len ${VLLM_MAX_MODEL_LEN:-32768} \
   --tensor-parallel-size ${VLLM_TP:-1} \
   --gpu-memory-utilization ${VLLM_GPU_MEMORY_UTILIZATION:-0.80} \
   --api-key ${VLLM_API_KEY:-token-abc123}
 ```
 
-The script keeps Hugging Face, vLLM, Torch, Triton, TorchInductor, PyTorch extension builds, CUDA JIT, FlashInfer, and temp files under `.cache/` and `tmp/` in the repository by default. It also disables vLLM usage stats by default to avoid writing `~/.config/vllm/usage_stats.json` on quota-limited home directories. FlashInfer 0.6.x reads `FLASHINFER_WORKSPACE_BASE`, so the script sets that to the repository root and FlashInfer writes under `.cache/flashinfer/`. Use a larger `VLLM_TP` only if the allocation needs multiple GPUs or latency improves.
+The script keeps Hugging Face, vLLM, Torch, Triton, TorchInductor, PyTorch extension builds, CUDA JIT, FlashInfer, and temp files under `.cache/` and `tmp/` in the repository by default. It also disables vLLM usage stats by default to avoid writing `~/.config/vllm/usage_stats.json` on quota-limited home directories. FlashInfer 0.6.x reads `FLASHINFER_WORKSPACE_BASE`, so the script sets that to the repository root and FlashInfer writes under `.cache/flashinfer/`. Use a larger `VLLM_TP` only if the allocation needs multiple GPUs or latency improves. Increase `VLLM_MAX_MODEL_LEN` if full conversation prompts are rejected as too long.
 
 Smoke check:
 
@@ -46,7 +47,6 @@ Smoke check:
 curl --noproxy '*' \
   -H "Authorization: Bearer ${VLLM_API_KEY:-token-abc123}" \
   http://127.0.0.1:8000/v1/models
-python scripts/smoke_jasper.py
 ```
 
 If the smoke check returns a Squid proxy page with `ERR_ACCESS_DENIED`, the request was sent through the cluster proxy instead of directly to the local vLLM server. Use `--noproxy '*'` with `curl`, set `NO_PROXY`/`no_proxy` for Python clients, and prefer `127.0.0.1` for local vLLM URLs. If the no-proxy request says `connection refused`, verify the benchmark shell and vLLM shell are on the same compute node with `hostname`.
@@ -68,13 +68,13 @@ curl -L \
 ## 4. Run a Small Baseline
 
 ```bash
-export OPENAI_API_KEY=...
 export VLLM_BASE_URL=http://127.0.0.1:8000/v1
 export JUDGE_BASE_URL=http://127.0.0.1:8000/v1
 export NO_PROXY=localhost,127.0.0.1,::1
 export no_proxy="${NO_PROXY}"
 locomo-jasper-bench \
   --mode baseline \
+  --context-mode full \
   --dataset data/locomo10.json \
   --results-dir results \
   --max-samples 1 \
@@ -83,7 +83,7 @@ locomo-jasper-bench \
   --vllm-command "bash scripts/serve_vllm.sh"
 ```
 
-The benchmark logs progress with Loguru. By default it logs every 5 questions, plus sample/indexing updates. Use `--log-every 1` for a small smoke run, increase it for full runs, or set `LOCOMO_LOG_EVERY`. Set `LOCOMO_LOG_LEVEL=DEBUG` or `LOCOMO_LOG_LEVEL=WARNING` to adjust verbosity.
+The benchmark logs progress with Loguru. By default it logs every 5 questions, plus sample updates. Use `--log-every 1` for a small smoke run, increase it for full runs, or set `LOCOMO_LOG_EVERY`. Set `LOCOMO_LOG_LEVEL=DEBUG` or `LOCOMO_LOG_LEVEL=WARNING` to adjust verbosity.
 
 Outputs are written under `results/<run_id>/`:
 
@@ -91,13 +91,29 @@ Outputs are written under `results/<run_id>/`:
 - `system.json`
 - `predictions.jsonl`
 - `summary.json`
-- `indexes/<sample_id>/vectors.npy`, `payloads.sqlite`, and `jasper.graph`
+
+The default `--context-mode full` does not build embeddings or Jasper indexes. Use `--context-mode retrieval` only for the old Jasper-backed retrieval path.
+
+If `--context-mode retrieval` fails `python scripts/smoke_jasper.py` with `cudaErrorUnsupportedPtxVersion`, rebuild Jasper for the GPU's native architecture instead of relying on PTX JIT fallback:
+
+```bash
+source .venv/bin/activate
+export JASPER_CUDA_ARCHITECTURES=native
+cmake -S jasperpy -B jasperpy/build \
+  -DJASPER_BUILD_FFI=ON \
+  -DJASPER_BUILD_CMD=ON \
+  -DCMAKE_CUDA_ARCHITECTURES="${JASPER_CUDA_ARCHITECTURES}"
+cmake --build jasperpy/build --parallel
+cmake --install jasperpy/build
+python scripts/smoke_jasper.py
+```
 
 ## 5. Full Baseline
 
 ```bash
 locomo-jasper-bench \
   --mode baseline \
+  --context-mode full \
   --dataset data/locomo10.json \
   --results-dir results \
   --run-id baseline-vllm-$(date -u +%Y%m%dT%H%M%SZ) \
@@ -118,15 +134,16 @@ locomo-jasper-bench \
   --run-id judge-$(date -u +%Y%m%dT%H%M%SZ)
 ```
 
-## 7. Plugin Variant Later
+## 7. Plugin Variant
 
-Start the plugin-enabled vLLM server separately, then keep embeddings, prompts, LoCoMo data, Jasper settings, and judge settings unchanged:
+Start the plugin-enabled vLLM server separately, then run the same benchmark against that server. Keep the LoCoMo data, prompt mode, judge settings, generation settings, and max token settings unchanged so baseline and plugin runs are comparable:
 
 ```bash
 locomo-jasper-bench \
   --mode plugin \
+  --context-mode full \
   --dataset data/locomo10.json \
-  --llm-base-url http://localhost:8000/v1 \
+  --llm-base-url http://plugin-host:8000/v1 \
   --judge-base-url http://baseline-host:8000/v1 \
   --results-dir results \
   --run-id plugin-$(date -u +%Y%m%dT%H%M%SZ)
@@ -138,9 +155,11 @@ If the plugin requires request-body options, pass them to answer generation only
 --llm-extra-body-json '{"your_plugin_option": true}'
 ```
 
+Compare `summary.json` files from the baseline and plugin run directories. Primary latency is `latency_avg_ms.answer_generation_ms` and accuracy is `accuracy`.
+
 ## 8. CPU-Only Dry Run
 
-For local harness checks without CUDA, vLLM, or OpenAI embeddings, use the NumPy vector backend and hash embeddings with mocked tests:
+For local harness checks without CUDA, vLLM, or OpenAI embeddings:
 
 ```bash
 python -m pip install -e ".[dev]"

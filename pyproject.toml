@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "locomo-jasper-bench"
 version = "0.1.0"
-description = "LoCoMo benchmark harness for vLLM, Mem0-style memory, and Jasper vector search"
+description = "LoCoMo benchmark harness for vLLM plugin accuracy and latency comparisons"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

@@ -8,6 +8,7 @@ MODEL="${VLLM_MODEL:-shuyuej/Llama-3.3-70B-Instruct-GPTQ}"
 API_KEY="${VLLM_API_KEY:-token-abc123}"
 TP="${VLLM_TP:-1}"
 GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-0.80}"
+MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-32768}"
 
 export BENCHMARK_CACHE_ROOT="${BENCHMARK_CACHE_ROOT:-${PROJECT_ROOT}/.cache}"
 export HF_HOME="${HF_HOME:-${BENCHMARK_CACHE_ROOT}/huggingface}"
@@ -73,13 +74,13 @@ if [[ "${CUDA_VERSION}" != 12.9* ]]; then
   echo "warning: CUDA 12.9 runtime was not detected; SM 12.x/Blackwell GPUs may fail." >&2
 fi
 
-unset VLLM_MODEL VLLM_API_KEY VLLM_TP VLLM_GPU_MEMORY_UTILIZATION
+unset VLLM_MODEL VLLM_API_KEY VLLM_TP VLLM_GPU_MEMORY_UTILIZATION VLLM_MAX_MODEL_LEN
 
 exec vllm serve "${MODEL}" \
   --quantization gptq \
   --trust-remote-code \
   --dtype float16 \
-  --max-model-len 4096 \
+  --max-model-len "${MAX_MODEL_LEN}" \
   --tensor-parallel-size "${TP}" \
   --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
   --api-key "${API_KEY}"

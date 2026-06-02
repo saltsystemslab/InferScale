@@ -1,4 +1,4 @@
-"""LoCoMo benchmark harness for vLLM, Mem0-style memory, and Jasper."""
+"""LoCoMo benchmark harness for vLLM plugin accuracy and latency comparisons."""
 
 __all__ = ["__version__"]
 

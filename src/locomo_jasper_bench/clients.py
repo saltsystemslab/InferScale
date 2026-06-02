@@ -89,7 +89,11 @@ class OpenAICompatibleChatClient:
         }
         if self._extra_body:
             request["extra_body"] = self._extra_body
-        response = self._client.chat.completions.create(**request)
+        try:
+            response = self._client.chat.completions.create(**request)
+        except Exception as exc:
+            _raise_context_limit_error(exc)
+            raise
         latency_ms = (time.perf_counter() - started) * 1000
         content = response.choices[0].message.content or ""
         usage = getattr(response, "usage", None)
@@ -123,24 +127,32 @@ class OpenAICompatibleChatClient:
         }
         if self._extra_body:
             request["extra_body"] = self._extra_body
-        chunks = self._client.chat.completions.create(**request)
+        try:
+            chunks = self._client.chat.completions.create(**request)
+        except Exception as exc:
+            _raise_context_limit_error(exc)
+            raise
         content_parts: list[str] = []
         ttft_ms: float | None = None
         usage = None
         model = self._model
-        for chunk in chunks:
-            model = getattr(chunk, "model", model)
-            chunk_usage = getattr(chunk, "usage", None)
-            if chunk_usage is not None:
-                usage = chunk_usage
-            if not chunk.choices:
-                continue
-            delta = getattr(chunk.choices[0], "delta", None)
-            token = getattr(delta, "content", None)
-            if token:
-                if ttft_ms is None:
-                    ttft_ms = (time.perf_counter() - started) * 1000
-                content_parts.append(token)
+        try:
+            for chunk in chunks:
+                model = getattr(chunk, "model", model)
+                chunk_usage = getattr(chunk, "usage", None)
+                if chunk_usage is not None:
+                    usage = chunk_usage
+                if not chunk.choices:
+                    continue
+                delta = getattr(chunk.choices[0], "delta", None)
+                token = getattr(delta, "content", None)
+                if token:
+                    if ttft_ms is None:
+                        ttft_ms = (time.perf_counter() - started) * 1000
+                    content_parts.append(token)
+        except Exception as exc:
+            _raise_context_limit_error(exc)
+            raise
 
         latency_ms = (time.perf_counter() - started) * 1000
         completion_tokens = getattr(usage, "completion_tokens", None)
@@ -212,3 +224,14 @@ def _tokens_per_second(tokens: int | None, latency_ms: float) -> float | None:
     if tokens is None or latency_ms <= 0:
         return None
     return tokens / (latency_ms / 1000)
+
+
+def _raise_context_limit_error(exc: Exception) -> None:
+    text = str(exc).lower()
+    context_terms = ("context", "prompt", "token", "sequence")
+    limit_terms = ("too long", "maximum", "max", "limit", "length")
+    if any(term in text for term in context_terms) and any(term in text for term in limit_terms):
+        raise RuntimeError(
+            "The vLLM server rejected the prompt as too long. Increase VLLM_MAX_MODEL_LEN before starting "
+            "scripts/serve_vllm.sh, or rerun with --context-mode retrieval for the old retrieved-context path."
+        ) from exc

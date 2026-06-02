@@ -18,7 +18,7 @@ from .config import BenchmarkConfig
 from .data import ConversationSample, QuestionAnswer, format_turn_for_memory, load_locomo
 from .jasper_store import BuildMetrics, JasperVectorStore, VectorStoreConfig
 from .mem0_jasper import JasperMemory
-from .prompts import build_answer_messages, build_judge_messages, parse_judge_response
+from .prompts import build_full_context_answer_messages, build_judge_messages, build_retrieval_answer_messages, parse_judge_response
 from .results import JsonlWriter, read_jsonl, summarize_records, write_json
 from .system import collect_system_metadata
 
@@ -27,7 +27,7 @@ from .system import collect_system_metadata
 class RuntimeClients:
     answer_client: ChatClient
     judge_client: ChatClient
-    embedding_client: EmbeddingClient
+    embedding_client: EmbeddingClient | None = None
 
 
 def run_benchmark(config: BenchmarkConfig, clients: RuntimeClients | None = None) -> dict[str, Any]:
@@ -71,9 +71,10 @@ def run_benchmark(config: BenchmarkConfig, clients: RuntimeClients | None = None
 
 def build_clients(config: BenchmarkConfig) -> RuntimeClients:
     logger.info(
-        "Configuring clients llm={} judge={} embedding_provider={} vector_backend={}",
+        "Configuring clients llm={} judge={} context_mode={} embedding_provider={} vector_backend={}",
         config.llm_base_url,
         config.judge_base_url,
+        config.context_mode,
         config.embedding_provider,
         config.vector_backend,
     )
@@ -91,15 +92,17 @@ def build_clients(config: BenchmarkConfig) -> RuntimeClients:
         stream=config.stream,
         extra_body=config.judge_extra_body,
     )
-    if config.embedding_provider == "hash":
-        embedding_client: EmbeddingClient = HashEmbeddingClient(config.hash_embedding_dim)
-    else:
-        embedding_client = OpenAIEmbeddingClient(
-            api_key=config.embedding_api_key,
-            model=config.embedding_model,
-            base_url=config.embedding_base_url,
-            batch_size=config.embedding_batch_size,
-        )
+    embedding_client: EmbeddingClient | None = None
+    if config.mode != "evaluate-only" and config.context_mode == "retrieval":
+        if config.embedding_provider == "hash":
+            embedding_client = HashEmbeddingClient(config.hash_embedding_dim)
+        else:
+            embedding_client = OpenAIEmbeddingClient(
+                api_key=config.embedding_api_key,
+                model=config.embedding_model,
+                base_url=config.embedding_base_url,
+                batch_size=config.embedding_batch_size,
+            )
     return RuntimeClients(answer_client=answer_client, judge_client=judge_client, embedding_client=embedding_client)
 
 
@@ -133,7 +136,19 @@ def _run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> li
                 len(sample.turns),
                 sample_question_count,
             )
-            memory, build_metrics = _build_memory_for_sample(config, clients.embedding_client, sample)
+            memory: JasperMemory | None
+            if config.context_mode == "retrieval":
+                if clients.embedding_client is None:
+                    raise RuntimeError("Retrieval context mode requires an embedding client.")
+                memory, build_metrics = _build_memory_for_sample(config, clients.embedding_client, sample)
+            else:
+                logger.info(
+                    "Using full conversation context for sample_id={} turns={}",
+                    sample.sample_id,
+                    len(sample.turns),
+                )
+                memory = None
+                build_metrics = _empty_build_metrics()
             sample_questions = sample.qa
             if question_budget is not None:
                 sample_questions = sample_questions[:question_budget]
@@ -166,7 +181,8 @@ def _run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> li
                     question_budget -= 1
                     if question_budget <= 0:
                         break
-            memory.store.close()
+            if memory is not None:
+                memory.store.close()
             logger.info("Sample {}/{} sample_id={} finished", sample_index, len(samples), sample.sample_id)
     logger.info("Wrote {} prediction records to {}", len(all_records), output_path)
     return all_records
@@ -220,12 +236,31 @@ def _answer_question(
     clients: RuntimeClients,
     sample: ConversationSample,
     qa: QuestionAnswer,
-    memory: JasperMemory,
+    memory: JasperMemory | None,
     build_metrics: BuildMetrics,
 ) -> dict[str, Any]:
     started = time.perf_counter()
-    memory_search = memory.search_with_metrics(qa.question, top_k=config.top_k)
-    answer_messages = build_answer_messages(sample, qa, memory_search.hits)
+    if config.context_mode == "retrieval":
+        if memory is None:
+            raise RuntimeError("Retrieval context mode requires a memory store.")
+        memory_search = memory.search_with_metrics(qa.question, top_k=config.top_k)
+        hits = memory_search.hits
+        answer_messages = build_retrieval_answer_messages(sample, qa, hits)
+        memory_search_ms = memory_search.total_time_ms
+        memory_embedding_ms = memory_search.embedding_time_ms
+        vector_search_ms = memory_search.store_metrics.search_time_ms
+        memory_backend = memory_search.store_metrics.backend
+        indexed_vector_count = memory_search.store_metrics.indexed_vector_count
+        embedding_dim = memory_search.store_metrics.embedding_dim
+    else:
+        hits = []
+        answer_messages = build_full_context_answer_messages(sample, qa)
+        memory_search_ms = 0.0
+        memory_embedding_ms = None
+        vector_search_ms = 0.0
+        memory_backend = "none"
+        indexed_vector_count = 0
+        embedding_dim = None
     answer = clients.answer_client.chat(
         answer_messages,
         max_tokens=config.max_answer_tokens,
@@ -268,13 +303,13 @@ def _answer_question(
                 "memory": hit.payload.get("memory") or hit.payload.get("text") or "",
                 "metadata": hit.payload.get("metadata", {}),
             }
-            for hit in memory_search.hits
+            for hit in hits
         ],
         "judge": judge_payload,
         "latency_ms": {
-            "memory_search_ms": memory_search.total_time_ms,
-            "memory_embedding_ms": memory_search.embedding_time_ms,
-            "vector_search_ms": memory_search.store_metrics.search_time_ms,
+            "memory_search_ms": memory_search_ms,
+            "memory_embedding_ms": memory_embedding_ms,
+            "vector_search_ms": vector_search_ms,
             "answer_generation_ms": answer.latency_ms,
             "judge_ms": judge_latency_ms,
             "end_to_end_ms": end_to_end_ms,
@@ -284,11 +319,11 @@ def _answer_question(
             "judge": judge_metrics,
         },
         "memory": {
-            "backend": memory_search.store_metrics.backend,
-            "embedding_time_ms": memory_search.embedding_time_ms,
-            "vector_search_ms": memory_search.store_metrics.search_time_ms,
-            "indexed_vector_count": memory_search.store_metrics.indexed_vector_count,
-            "embedding_dim": memory_search.store_metrics.embedding_dim,
+            "backend": memory_backend,
+            "embedding_time_ms": memory_embedding_ms,
+            "vector_search_ms": vector_search_ms,
+            "indexed_vector_count": indexed_vector_count,
+            "embedding_dim": embedding_dim,
         },
         "index": {
             "backend": build_metrics.backend,
@@ -366,6 +401,16 @@ def _store_config(config: BenchmarkConfig) -> VectorStoreConfig:
         alpha=config.jasper_alpha,
         workspace_budget=config.jasper_workspace_budget,
         beam_width=config.jasper_beam_width,
+    )
+
+
+def _empty_build_metrics() -> BuildMetrics:
+    return BuildMetrics(
+        backend="none",
+        graph_build_time_ms=0.0,
+        indexed_vector_count=0,
+        embedding_dim=None,
+        graph_path=None,
     )
 
 

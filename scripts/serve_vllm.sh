@@ -4,11 +4,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
-MODEL="${VLLM_MODEL:-shuyuej/Llama-3.3-70B-Instruct-GPTQ}"
+MODEL="${VLLM_MODEL:-meta-llama/Llama-3.1-8B-Instruct}"
 API_KEY="${VLLM_API_KEY:-token-abc123}"
 TP="${VLLM_TP:-1}"
 GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-0.80}"
 MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-32768}"
+DTYPE="${VLLM_DTYPE:-auto}"
+QUANTIZATION="${VLLM_QUANTIZATION:-}"
 
 export BENCHMARK_CACHE_ROOT="${BENCHMARK_CACHE_ROOT:-${PROJECT_ROOT}/.cache}"
 export HF_HOME="${HF_HOME:-${BENCHMARK_CACHE_ROOT}/huggingface}"
@@ -74,12 +76,17 @@ if [[ "${CUDA_VERSION}" != 12.9* ]]; then
   echo "warning: CUDA 12.9 runtime was not detected; SM 12.x/Blackwell GPUs may fail." >&2
 fi
 
-unset VLLM_MODEL VLLM_API_KEY VLLM_TP VLLM_GPU_MEMORY_UTILIZATION VLLM_MAX_MODEL_LEN
+QUANTIZATION_ARGS=()
+if [[ -n "${QUANTIZATION}" ]]; then
+  QUANTIZATION_ARGS=(--quantization "${QUANTIZATION}")
+fi
+
+unset VLLM_MODEL VLLM_API_KEY VLLM_TP VLLM_GPU_MEMORY_UTILIZATION VLLM_MAX_MODEL_LEN VLLM_DTYPE VLLM_QUANTIZATION
 
 exec vllm serve "${MODEL}" \
-  --quantization gptq \
+  "${QUANTIZATION_ARGS[@]}" \
   --trust-remote-code \
-  --dtype float16 \
+  --dtype "${DTYPE}" \
   --max-model-len "${MAX_MODEL_LEN}" \
   --tensor-parallel-size "${TP}" \
   --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \

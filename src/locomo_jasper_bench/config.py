@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 
-DEFAULT_MODEL = "shuyuej/Llama-3.3-70B-Instruct-GPTQ"
+DEFAULT_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 DEFAULT_LLM_BASE_URL = "http://localhost:8000/v1"
 DEFAULT_VLLM_API_KEY = "token-abc123"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"

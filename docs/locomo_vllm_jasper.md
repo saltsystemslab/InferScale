@@ -12,7 +12,7 @@ source .venv/bin/activate
 ```
 
 The setup script also builds Jasper retrieval support. The default Mem0 path uses Mem0 embeddings and Jasper indexes. The `jasper` Python package is installed from `jasperpy/python`.
-By default, `scripts/setup_remote.sh` loads `cuda/12.8`, installs PyTorch 2.8.0 CUDA 12.8 wheels, pins vLLM 0.10.2, and builds Jasper with the same toolkit. Override `CUDA_MODULE`, `PYTORCH_INDEX`, `TORCH_VERSION`, or `VLLM_VERSION` only if you intentionally want a different compatible stack.
+By default, `scripts/setup_remote.sh` loads `cuda/12.8`, installs PyTorch CUDA 12.8 wheels from the versions pinned in `constraints-cu128.txt`, and builds Jasper with the same toolkit. Override `CUDA_MODULE`, `PYTORCH_INDEX`, or `CONSTRAINTS_FILE` only if you intentionally want a different compatible stack.
 
 ## 2. Serve the Baseline vLLM Model
 

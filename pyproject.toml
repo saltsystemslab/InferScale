@@ -23,6 +23,13 @@ jasper = [
     "torch",
     "apache-tvm-ffi",
 ]
+remote = [
+    "torch==2.8.0",
+    "torchvision==0.23.0",
+    "torchaudio==2.8.0",
+    "vllm==0.10.2",
+    "transformers==4.56.1",
+]
 
 [project.scripts]
 locomo-jasper-bench = "locomo_jasper_bench.run:main"

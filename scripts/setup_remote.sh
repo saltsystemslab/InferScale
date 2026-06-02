@@ -3,11 +3,8 @@ set -euo pipefail
 
 CUDA_MODULE="${CUDA_MODULE:-cuda/12.8}"
 PYTORCH_INDEX="${PYTORCH_INDEX:-https://download.pytorch.org/whl/cu128}"
-TORCH_VERSION="${TORCH_VERSION:-2.8.0}"
-TORCHVISION_VERSION="${TORCHVISION_VERSION:-0.23.0}"
-TORCHAUDIO_VERSION="${TORCHAUDIO_VERSION:-2.8.0}"
-VLLM_VERSION="${VLLM_VERSION:-0.10.2}"
 JASPER_CUDA_ARCHITECTURES="${JASPER_CUDA_ARCHITECTURES:-native}"
+CONSTRAINTS_FILE="${CONSTRAINTS_FILE:-constraints-cu128.txt}"
 
 if [[ -n "${CUDA_MODULE}" ]]; then
   if ! command -v module >/dev/null 2>&1 && [[ -r /etc/profile.d/modules.sh ]]; then
@@ -37,23 +34,14 @@ python3 -m venv .venv
 
 python -m pip install --upgrade pip wheel setuptools
 
-CONSTRAINTS_FILE="$(mktemp)"
-trap 'rm -f "${CONSTRAINTS_FILE}"' EXIT
-cat > "${CONSTRAINTS_FILE}" <<EOF
-torch==${TORCH_VERSION}
-torchvision==${TORCHVISION_VERSION}
-torchaudio==${TORCHAUDIO_VERSION}
-vllm==${VLLM_VERSION}
-EOF
+if [[ ! -f "${CONSTRAINTS_FILE}" ]]; then
+  echo "constraints file not found: ${CONSTRAINTS_FILE}" >&2
+  exit 1
+fi
 
-python -m pip install \
-  "torch==${TORCH_VERSION}" \
-  "torchvision==${TORCHVISION_VERSION}" \
-  "torchaudio==${TORCHAUDIO_VERSION}" \
-  --index-url "${PYTORCH_INDEX}"
-
+python -m pip install -c "${CONSTRAINTS_FILE}" torch torchvision torchaudio --index-url "${PYTORCH_INDEX}"
 python -m pip install -c "${CONSTRAINTS_FILE}" -e ".[dev,jasper]"
-python -m pip install -c "${CONSTRAINTS_FILE}" "vllm==${VLLM_VERSION}" --extra-index-url "${PYTORCH_INDEX}"
+python -m pip install -c "${CONSTRAINTS_FILE}" vllm --extra-index-url "${PYTORCH_INDEX}"
 
 cmake -S jasperpy -B jasperpy/build \
   -DJASPER_BUILD_FFI=ON \

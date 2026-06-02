@@ -233,5 +233,5 @@ def _raise_context_limit_error(exc: Exception) -> None:
     if any(term in text for term in context_terms) and any(term in text for term in limit_terms):
         raise RuntimeError(
             "The vLLM server rejected the prompt as too long. Increase VLLM_MAX_MODEL_LEN before starting "
-            "scripts/serve_vllm.sh, or rerun with --context-mode retrieval for the old retrieved-context path."
+            "scripts/serve_vllm.sh, or rerun with --context-mode mem0 for retrieved Mem0 context."
         ) from exc

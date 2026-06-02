@@ -15,7 +15,7 @@ DEFAULT_VLLM_API_KEY = "token-abc123"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 
 Mode = Literal["baseline", "plugin", "evaluate-only"]
-ContextMode = Literal["full", "retrieval"]
+ContextMode = Literal["mem0", "full", "retrieval"]
 VectorBackend = Literal["jasper", "numpy"]
 DistanceMetric = Literal["ip", "l2"]
 EmbeddingProvider = Literal["openai", "hash"]
@@ -59,7 +59,7 @@ class BenchmarkConfig:
     embedding_batch_size: int = 64
     hash_embedding_dim: int = 1536
 
-    context_mode: ContextMode = "full"
+    context_mode: ContextMode = "mem0"
     vector_backend: VectorBackend = "jasper"
     vector_distance: DistanceMetric = "ip"
     normalize_embeddings: bool = True
@@ -121,7 +121,7 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     parser.add_argument("--embedding-batch-size", type=int, default=64)
     parser.add_argument("--hash-embedding-dim", type=int, default=1536)
 
-    parser.add_argument("--context-mode", choices=["full", "retrieval"], default="full")
+    parser.add_argument("--context-mode", choices=["mem0", "full", "retrieval"], default="mem0")
     parser.add_argument("--vector-backend", choices=["jasper", "numpy"], default="jasper")
     parser.add_argument("--vector-distance", choices=["ip", "l2"], default="ip")
     parser.add_argument("--no-normalize-embeddings", action="store_false", dest="normalize_embeddings")
@@ -144,6 +144,8 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     parser.add_argument("--log-every", type=int, default=int(os.environ.get("LOCOMO_LOG_EVERY", "5")))
 
     ns = parser.parse_args(argv)
+    if ns.context_mode == "retrieval":
+        ns.context_mode = "mem0"
     if ns.mode == "evaluate-only" and ns.predictions_path is None:
         parser.error("--predictions is required with --mode evaluate-only")
     return BenchmarkConfig(**vars(ns))

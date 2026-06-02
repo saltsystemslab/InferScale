@@ -3,11 +3,13 @@
 This repository contains a self-contained LoCoMo benchmark harness for:
 
 - vLLM OpenAI-compatible chat completions for baseline and plugin servers.
-- Full-conversation LoCoMo prompts by default, shared across baseline and plugin runs.
+- Real Mem0 memory search by default, with Jasper as the vector store.
 - A plain baseline vLLM judge for both baseline and plugin outputs.
 - Accuracy and answer API latency summaries for comparing separate result directories.
 
-The default model target is `shuyuej/Llama-3.3-70B-Instruct-GPTQ`. Local development is CPU-only; remote GPU machines should run vLLM. The old Jasper-backed retrieval path remains available with `--context-mode retrieval`.
+The default model target is `shuyuej/Llama-3.3-70B-Instruct-GPTQ`. Local development is CPU-only for tests; remote GPU machines should run vLLM and Jasper. LoCoMo turns are imported into Mem0 with `infer=False` for deterministic raw storage, and Mem0 is configured to use Jasper instead of Qdrant for vector search. Use `--context-mode full` for no-memory full-transcript baseline runs. `--context-mode retrieval` is accepted as a deprecated alias for `mem0`.
+
+`OPENAI_API_KEY` is required for Mem0 embeddings unless you run `--context-mode full`.
 
 Quick local test:
 

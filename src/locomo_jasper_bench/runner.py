@@ -10,14 +10,12 @@ from loguru import logger
 from .clients import (
     ChatClient,
     EmbeddingClient,
-    HashEmbeddingClient,
     OpenAICompatibleChatClient,
-    OpenAIEmbeddingClient,
 )
 from .config import BenchmarkConfig
 from .data import ConversationSample, QuestionAnswer, format_turn_for_memory, load_locomo
-from .jasper_store import BuildMetrics, JasperVectorStore, VectorStoreConfig
-from .mem0_jasper import JasperMemory
+from .jasper_store import BuildMetrics, SearchMetrics, VectorStoreConfig
+from .mem0_jasper import create_mem0_memory, mem0_results_to_search_hits
 from .prompts import build_full_context_answer_messages, build_judge_messages, build_retrieval_answer_messages, parse_judge_response
 from .results import JsonlWriter, read_jsonl, summarize_records, write_json
 from .system import collect_system_metadata
@@ -92,18 +90,7 @@ def build_clients(config: BenchmarkConfig) -> RuntimeClients:
         stream=config.stream,
         extra_body=config.judge_extra_body,
     )
-    embedding_client: EmbeddingClient | None = None
-    if config.mode != "evaluate-only" and config.context_mode == "retrieval":
-        if config.embedding_provider == "hash":
-            embedding_client = HashEmbeddingClient(config.hash_embedding_dim)
-        else:
-            embedding_client = OpenAIEmbeddingClient(
-                api_key=config.embedding_api_key,
-                model=config.embedding_model,
-                base_url=config.embedding_base_url,
-                batch_size=config.embedding_batch_size,
-            )
-    return RuntimeClients(answer_client=answer_client, judge_client=judge_client, embedding_client=embedding_client)
+    return RuntimeClients(answer_client=answer_client, judge_client=judge_client)
 
 
 def _run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> list[dict[str, Any]]:
@@ -125,6 +112,7 @@ def _run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> li
         for sample_index, sample in enumerate(samples, start=1):
             if question_budget is not None and question_budget <= 0:
                 break
+            context_mode = _resolved_context_mode(config.context_mode)
             sample_question_count = len(sample.qa)
             if question_budget is not None:
                 sample_question_count = min(sample_question_count, question_budget)
@@ -136,11 +124,9 @@ def _run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> li
                 len(sample.turns),
                 sample_question_count,
             )
-            memory: JasperMemory | None
-            if config.context_mode == "retrieval":
-                if clients.embedding_client is None:
-                    raise RuntimeError("Retrieval context mode requires an embedding client.")
-                memory, build_metrics = _build_memory_for_sample(config, clients.embedding_client, sample)
+            memory: Any | None
+            if context_mode == "mem0":
+                memory, build_metrics, index_metadata = _build_memory_for_sample(config, sample)
             else:
                 logger.info(
                     "Using full conversation context for sample_id={} turns={}",
@@ -149,6 +135,7 @@ def _run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> li
                 )
                 memory = None
                 build_metrics = _empty_build_metrics()
+                index_metadata = {}
             sample_questions = sample.qa
             if question_budget is not None:
                 sample_questions = sample_questions[:question_budget]
@@ -163,7 +150,7 @@ def _run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> li
                         qa.question_id,
                         qa.category,
                     )
-                record = _answer_question(config, clients, sample, qa, memory, build_metrics)
+                record = _answer_question(config, clients, sample, qa, memory, build_metrics, index_metadata)
                 writer.write(record)
                 all_records.append(record)
                 completed_questions += 1
@@ -182,7 +169,7 @@ def _run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> li
                     if question_budget <= 0:
                         break
             if memory is not None:
-                memory.store.close()
+                _close_mem0_memory(memory)
             logger.info("Sample {}/{} sample_id={} finished", sample_index, len(samples), sample.sample_id)
     logger.info("Wrote {} prediction records to {}", len(all_records), output_path)
     return all_records
@@ -190,36 +177,47 @@ def _run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> li
 
 def _build_memory_for_sample(
     config: BenchmarkConfig,
-    embedder: EmbeddingClient,
     sample: ConversationSample,
-) -> tuple[JasperMemory, BuildMetrics]:
-    store_root = config.run_dir / "indexes" / sample.sample_id
-    store = JasperVectorStore(store_root, _store_config(config))
-    memory = JasperMemory(embedder=embedder, store=store)
-    texts = [format_turn_for_memory(turn) for turn in sample.turns]
-    payloads = [
-        {
-            "memory": text,
+) -> tuple[Any, BuildMetrics, dict[str, Any]]:
+    if config.embedding_provider != "openai":
+        raise RuntimeError("Mem0 context mode currently uses mem0ai's OpenAI embedder; set --embedding-provider openai.")
+
+    store_root = config.run_dir / "mem0" / sample.sample_id
+    memory = create_mem0_memory(
+        store_root=store_root,
+        vector_config=_store_config(config),
+        embedding_model=config.embedding_model,
+        embedding_api_key=config.embedding_api_key,
+        embedding_base_url=config.embedding_base_url,
+    )
+
+    add_started = time.perf_counter()
+    for turn in sample.turns:
+        text = format_turn_for_memory(turn)
+        metadata = {
             "sample_id": sample.sample_id,
             "turn_id": turn.id,
             "session_id": turn.session_id,
+            "turn_index": turn.turn_index,
             "speaker": turn.speaker,
             "timestamp": turn.timestamp,
-            "metadata": {
-                "sample_id": sample.sample_id,
-                "session_id": turn.session_id,
-                "turn_index": turn.turn_index,
-                "speaker": turn.speaker,
-            },
         }
-        for turn, text in zip(sample.turns, texts)
-    ]
-    ids = [turn.id for turn in sample.turns]
-    if texts:
-        logger.info("Embedding {} memory turns for sample_id={}", len(texts), sample.sample_id)
-        memory.add_texts(texts, payloads, ids)
+        memory.add(
+            [{"role": "user", "content": text}],
+            user_id=sample.sample_id,
+            infer=False,
+            metadata=metadata,
+        )
+    add_time_ms = (time.perf_counter() - add_started) * 1000
+    logger.info(
+        "Added {} LoCoMo turns to Mem0 for sample_id={} infer=false add_ms={:.1f}",
+        len(sample.turns),
+        sample.sample_id,
+        add_time_ms,
+    )
+
     logger.info("Building {} index for sample_id={}", config.vector_backend, sample.sample_id)
-    build_metrics = store.finalize()
+    build_metrics = _finalize_mem0_memory(memory)
     logger.info(
         "Index ready sample_id={} backend={} vectors={} dim={} build_ms={:.1f}",
         sample.sample_id,
@@ -228,7 +226,12 @@ def _build_memory_for_sample(
         build_metrics.embedding_dim,
         build_metrics.graph_build_time_ms,
     )
-    return memory, build_metrics
+    return memory, build_metrics, {
+        "mem0_path": str(store_root),
+        "memory_add_time_ms": add_time_ms,
+        "memory_add_count": len(sample.turns),
+        "infer": False,
+    }
 
 
 def _answer_question(
@@ -236,22 +239,25 @@ def _answer_question(
     clients: RuntimeClients,
     sample: ConversationSample,
     qa: QuestionAnswer,
-    memory: JasperMemory | None,
+    memory: Any | None,
     build_metrics: BuildMetrics,
+    index_metadata: dict[str, Any],
 ) -> dict[str, Any]:
     started = time.perf_counter()
-    if config.context_mode == "retrieval":
+    if _resolved_context_mode(config.context_mode) == "mem0":
         if memory is None:
-            raise RuntimeError("Retrieval context mode requires a memory store.")
-        memory_search = memory.search_with_metrics(qa.question, top_k=config.top_k)
-        hits = memory_search.hits
+            raise RuntimeError("Mem0 context mode requires a memory store.")
+        memory_search_started = time.perf_counter()
+        raw_results = _search_mem0_memory(memory, qa.question, sample.sample_id, config.top_k)
+        memory_search_ms = (time.perf_counter() - memory_search_started) * 1000
+        hits = mem0_results_to_search_hits(raw_results)
         answer_messages = build_retrieval_answer_messages(sample, qa, hits)
-        memory_search_ms = memory_search.total_time_ms
-        memory_embedding_ms = memory_search.embedding_time_ms
-        vector_search_ms = memory_search.store_metrics.search_time_ms
-        memory_backend = memory_search.store_metrics.backend
-        indexed_vector_count = memory_search.store_metrics.indexed_vector_count
-        embedding_dim = memory_search.store_metrics.embedding_dim
+        memory_embedding_ms = None
+        store_metrics = _mem0_store_search_metrics(memory)
+        vector_search_ms = store_metrics.search_time_ms
+        memory_backend = "mem0-jasper"
+        indexed_vector_count = store_metrics.indexed_vector_count
+        embedding_dim = store_metrics.embedding_dim
     else:
         hits = []
         answer_messages = build_full_context_answer_messages(sample, qa)
@@ -331,6 +337,7 @@ def _answer_question(
             "indexed_vector_count": build_metrics.indexed_vector_count,
             "embedding_dim": build_metrics.embedding_dim,
             "graph_path": build_metrics.graph_path,
+            **index_metadata,
         },
     }
 
@@ -390,6 +397,66 @@ def _run_evaluate_only(config: BenchmarkConfig, clients: RuntimeClients) -> list
                 )
     logger.info("Wrote {} evaluation records to {}", len(rows), output_path)
     return rows
+
+
+def _resolved_context_mode(context_mode: str) -> str:
+    if context_mode == "retrieval":
+        return "mem0"
+    return context_mode
+
+
+def _finalize_mem0_memory(memory: Any) -> BuildMetrics:
+    vector_store = getattr(memory, "vector_store", None)
+    finalize = getattr(vector_store, "finalize", None)
+    if callable(finalize):
+        metrics = finalize()
+        if isinstance(metrics, BuildMetrics):
+            return metrics
+        if isinstance(metrics, dict):
+            return BuildMetrics(
+                backend=str(metrics.get("backend") or "jasper"),
+                graph_build_time_ms=float(metrics.get("graph_build_time_ms") or 0.0),
+                indexed_vector_count=int(metrics.get("indexed_vector_count") or 0),
+                embedding_dim=metrics.get("embedding_dim"),
+                graph_path=metrics.get("graph_path"),
+            )
+    return BuildMetrics(
+        backend="jasper",
+        graph_build_time_ms=0.0,
+        indexed_vector_count=0,
+        embedding_dim=None,
+        graph_path=None,
+    )
+
+
+def _mem0_store_search_metrics(memory: Any) -> SearchMetrics:
+    vector_store = getattr(memory, "vector_store", None)
+    metrics = getattr(vector_store, "last_search_metrics", None)
+    if isinstance(metrics, SearchMetrics):
+        return metrics
+    store = getattr(vector_store, "store", None)
+    return SearchMetrics(
+        backend=getattr(getattr(store, "config", None), "backend", "jasper"),
+        search_time_ms=float(getattr(metrics, "search_time_ms", 0.0) or 0.0),
+        indexed_vector_count=int(getattr(store, "vector_count", 0) or 0),
+        embedding_dim=getattr(store, "dim", None),
+    )
+
+
+def _search_mem0_memory(memory: Any, query: str, sample_id: str, top_k: int) -> Any:
+    try:
+        return memory.search(query=query, filters={"user_id": sample_id}, top_k=top_k)
+    except TypeError as exc:
+        if "top_k" not in str(exc):
+            raise
+    return memory.search(query=query, filters={"user_id": sample_id}, limit=top_k)
+
+
+def _close_mem0_memory(memory: Any) -> None:
+    vector_store = getattr(memory, "vector_store", None)
+    close = getattr(vector_store, "close", None)
+    if callable(close):
+        close()
 
 
 def _store_config(config: BenchmarkConfig) -> VectorStoreConfig:

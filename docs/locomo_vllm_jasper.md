@@ -1,6 +1,6 @@
 # LoCoMo vLLM Plugin Benchmark
 
-This harness runs LoCoMo question answering against OpenAI-compatible vLLM endpoints to compare a plain baseline server with a plugin-enabled server. By default, both baseline and plugin runs receive the same full conversation transcript plus the question; accuracy is judged by the plain baseline vLLM server, and answer API latency is the primary latency metric.
+This harness runs LoCoMo question answering against OpenAI-compatible vLLM endpoints to compare a plain baseline server with a plugin-enabled server. By default, LoCoMo turns are imported into real Mem0 with `infer=False` and Mem0 uses Jasper as its vector store; answers receive Mem0-retrieved context plus the question. Accuracy is judged by the plain baseline vLLM server, and answer API latency remains the primary latency metric.
 
 ## 1. Create the Remote Environment
 
@@ -11,7 +11,7 @@ bash scripts/setup_remote.sh
 source .venv/bin/activate
 ```
 
-The setup script also builds optional Jasper retrieval support. The default full-context plugin benchmark does not use Jasper, embeddings, or retrieval indexes. If you later use `--context-mode retrieval`, the `jasper` Python package is installed from `jasperpy/python`, and `CMAKE_CUDA_ARCHITECTURES=${JASPER_CUDA_ARCHITECTURES:-native}` controls the Jasper CUDA architecture. If native detection is unavailable in your build environment, set `JASPER_CUDA_ARCHITECTURES` before running the script, for example `90`, `100`, or `120` depending on the target GPU.
+The setup script also builds Jasper retrieval support. The default Mem0 path uses Mem0 embeddings and Jasper indexes. The `jasper` Python package is installed from `jasperpy/python`, and `CMAKE_CUDA_ARCHITECTURES=${JASPER_CUDA_ARCHITECTURES:-native}` controls the Jasper CUDA architecture. If native detection is unavailable in your build environment, set `JASPER_CUDA_ARCHITECTURES` before running the script, for example `90`, `100`, or `120` depending on the target GPU.
 
 ## 2. Serve the Baseline vLLM Model
 
@@ -70,11 +70,11 @@ curl -L \
 ```bash
 export VLLM_BASE_URL=http://127.0.0.1:8000/v1
 export JUDGE_BASE_URL=http://127.0.0.1:8000/v1
+export OPENAI_API_KEY=<your-openai-key>
 export NO_PROXY=localhost,127.0.0.1,::1
 export no_proxy="${NO_PROXY}"
 locomo-jasper-bench \
   --mode baseline \
-  --context-mode full \
   --dataset data/locomo10.json \
   --results-dir results \
   --max-samples 1 \
@@ -92,9 +92,11 @@ Outputs are written under `results/<run_id>/`:
 - `predictions.jsonl`
 - `summary.json`
 
-The default `--context-mode full` does not build embeddings or Jasper indexes. Use `--context-mode retrieval` only for the old Jasper-backed retrieval path.
+The default `--context-mode mem0` creates one Mem0 instance per LoCoMo sample under `results/<run_id>/mem0/<sample_id>/`. It adds each formatted turn with `infer=False`, preserving sample, session, turn, speaker, and timestamp metadata, then finalizes the Jasper graph before questions are answered. `latency_ms.memory_search_ms` measures Mem0 search wall time, while `latency_ms.answer_generation_ms` remains the baseline-vs-plugin latency metric. Mem0 index build and add time are recorded in index metadata, not answer API latency.
 
-If `--context-mode retrieval` fails `python scripts/smoke_jasper.py` with `cudaErrorUnsupportedPtxVersion`, rebuild Jasper for the GPU's native architecture instead of relying on PTX JIT fallback:
+Mem0 embeddings use the OpenAI embedder by default, so `OPENAI_API_KEY` must be set for `--context-mode mem0`. Use `--context-mode full` for a no-memory full-transcript baseline that does not build embeddings or Jasper indexes. `--context-mode retrieval` is accepted as a deprecated alias for `mem0`.
+
+If `--context-mode mem0` fails `python scripts/smoke_jasper.py` with `cudaErrorUnsupportedPtxVersion`, rebuild Jasper for the GPU's native architecture instead of relying on PTX JIT fallback:
 
 ```bash
 source .venv/bin/activate
@@ -113,7 +115,6 @@ python scripts/smoke_jasper.py
 ```bash
 locomo-jasper-bench \
   --mode baseline \
-  --context-mode full \
   --dataset data/locomo10.json \
   --results-dir results \
   --run-id baseline-vllm-$(date -u +%Y%m%dT%H%M%SZ) \
@@ -141,7 +142,6 @@ Start the plugin-enabled vLLM server separately, then run the same benchmark aga
 ```bash
 locomo-jasper-bench \
   --mode plugin \
-  --context-mode full \
   --dataset data/locomo10.json \
   --llm-base-url http://plugin-host:8000/v1 \
   --judge-base-url http://baseline-host:8000/v1 \

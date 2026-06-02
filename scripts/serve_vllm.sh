@@ -72,8 +72,17 @@ else
   CUDA_VERSION=""
 fi
 
-if [[ "${CUDA_VERSION}" != 12.9* ]]; then
-  echo "warning: CUDA 12.9 runtime was not detected; SM 12.x/Blackwell GPUs may fail." >&2
+if [[ -n "${CUDA_VERSION}" ]]; then
+  CUDA_MAJOR="${CUDA_VERSION%%.*}"
+  CUDA_MINOR="${CUDA_VERSION#*.}"
+  CUDA_MINOR="${CUDA_MINOR%%.*}"
+else
+  CUDA_MAJOR=0
+  CUDA_MINOR=0
+fi
+
+if (( CUDA_MAJOR < 12 || (CUDA_MAJOR == 12 && CUDA_MINOR < 8) )); then
+  echo "warning: CUDA >=12.8 runtime was not detected; RTX/B200 Blackwell GPUs may fail." >&2
 fi
 
 QUANTIZATION_ARGS=()

@@ -18,7 +18,9 @@ If the Jasper build succeeds, the `jasper` Python package will be installed from
 In a separate shell:
 
 ```bash
+export CUDA_MODULE=cuda/12.9
 export VLLM_TP=1
+export VLLM_GPU_MEMORY_UTILIZATION=0.80
 export VLLM_API_KEY=token-abc123
 bash scripts/serve_vllm.sh
 ```
@@ -32,11 +34,11 @@ vllm serve shuyuej/Llama-3.3-70B-Instruct-GPTQ \
   --dtype float16 \
   --max-model-len 4096 \
   --tensor-parallel-size ${VLLM_TP:-1} \
-  --gpu-memory-utilization 0.95 \
+  --gpu-memory-utilization ${VLLM_GPU_MEMORY_UTILIZATION:-0.80} \
   --api-key ${VLLM_API_KEY:-token-abc123}
 ```
 
-Use a larger `VLLM_TP` only if the allocation needs multiple GPUs or latency improves.
+The script keeps Hugging Face, Torch, FlashInfer, and temp files under `.cache/` and `tmp/` in the repository by default. Use a larger `VLLM_TP` only if the allocation needs multiple GPUs or latency improves.
 
 Smoke check:
 

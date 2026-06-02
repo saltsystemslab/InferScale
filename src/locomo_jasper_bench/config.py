@@ -25,6 +25,10 @@ def default_run_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
+def default_results_dir() -> Path:
+    return Path(os.environ.get("BENCHMARK_RESULTS_ROOT", "results"))
+
+
 def _json_object(value: str | None) -> dict[str, Any]:
     if not value:
         return {}
@@ -39,7 +43,7 @@ class BenchmarkConfig:
     mode: Mode = "baseline"
     dataset_path: Path = Path("data/locomo10.json")
     predictions_path: Path | None = None
-    results_dir: Path = Path("results")
+    results_dir: Path = field(default_factory=default_results_dir)
     run_id: str = field(default_factory=default_run_id)
 
     model: str = DEFAULT_MODEL
@@ -101,7 +105,7 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     parser.add_argument("--mode", choices=["baseline", "plugin", "evaluate-only"], default="baseline")
     parser.add_argument("--dataset", dest="dataset_path", type=Path, default=Path("data/locomo10.json"))
     parser.add_argument("--predictions", dest="predictions_path", type=Path)
-    parser.add_argument("--results-dir", type=Path, default=Path("results"))
+    parser.add_argument("--results-dir", type=Path, default=default_results_dir())
     parser.add_argument("--run-id", default=default_run_id())
 
     parser.add_argument("--model", default=os.environ.get("VLLM_MODEL", DEFAULT_MODEL))

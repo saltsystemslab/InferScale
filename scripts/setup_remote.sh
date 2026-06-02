@@ -1,10 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+cd "${PROJECT_ROOT}"
+
+if [[ "${FRESH_REMOTE_BUILD:-0}" == "1" ]]; then
+  rm -rf .venv .cache tmp jasperpy/build jasperpy/python/jasper/lib/*.so
+fi
+
+# shellcheck source=scripts/scratch_env.sh
+source "${SCRIPT_DIR}/scratch_env.sh"
+
 CUDA_MODULE="${CUDA_MODULE:-cuda/12.8}"
 PYTORCH_INDEX="${PYTORCH_INDEX:-https://download.pytorch.org/whl/cu128}"
 JASPER_CUDA_ARCHITECTURES="${JASPER_CUDA_ARCHITECTURES:-native}"
 CONSTRAINTS_FILE="${CONSTRAINTS_FILE:-constraints-cu128.txt}"
+VENV_DIR="${VENV_DIR:-.venv}"
+
+echo "Using scratch root: ${SCRATCH_ROOT}"
+echo "Using benchmark cache root: ${BENCHMARK_CACHE_ROOT}"
+echo "Using benchmark results root: ${BENCHMARK_RESULTS_ROOT}"
 
 if [[ -n "${CUDA_MODULE}" ]]; then
   if ! command -v module >/dev/null 2>&1 && [[ -r /etc/profile.d/modules.sh ]]; then
@@ -29,8 +45,8 @@ if [[ "${CUDA_VERSION}" != 12.8* ]]; then
   echo "warning: CUDA 12.8 was not detected; RTX/B200 Blackwell needs CUDA >=12.8 and this script pins cu128 wheels." >&2
 fi
 
-python3 -m venv .venv
-. .venv/bin/activate
+python3 -m venv "${VENV_DIR}"
+. "${VENV_DIR}/bin/activate"
 
 python -m pip install --upgrade pip wheel setuptools
 

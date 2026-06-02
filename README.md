@@ -18,4 +18,4 @@ python -m pip install -e ".[dev]"
 pytest
 ```
 
-Remote setup, serving, and full benchmark commands are in [docs/locomo_vllm_jasper.md](docs/locomo_vllm_jasper.md).
+Remote setup, serving, and full benchmark commands are in [docs/locomo_vllm_jasper.md](docs/locomo_vllm_jasper.md). The remote flow uses `/scratch/$USER/benchmark-jasper` for caches, temp files, and results, with `.cache` in the repo as a symlink.

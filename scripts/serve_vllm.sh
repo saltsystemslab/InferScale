@@ -4,6 +4,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
+# Remote runs default to scratch-backed caches. Set BENCHMARK_USE_SCRATCH=0
+# before launching if you intentionally want project-local cache defaults.
+if [[ "${BENCHMARK_USE_SCRATCH:-1}" != "0" ]]; then
+  # shellcheck source=scripts/scratch_env.sh
+  source "${SCRIPT_DIR}/scratch_env.sh"
+fi
+
 MODEL="${VLLM_MODEL:-meta-llama/Llama-3.1-8B-Instruct}"
 API_KEY="${VLLM_API_KEY:-token-abc123}"
 TP="${VLLM_TP:-1}"

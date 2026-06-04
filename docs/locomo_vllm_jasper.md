@@ -216,8 +216,8 @@ cat "${SCRATCH_ROOT}/results/jasper-20samples-${RUN_STAMP}/summary.json"
 Important fields:
 
 - `accuracy` and `by_category`: judged answer quality.
-- `latency_ms.memory_search_ms`: embedding plus vector-store retrieval wall time.
-- `vector_store.search_time_ms`: backend vector search time only.
+- `latency_ms.memory_search_ms`: full retrieval wall time, including query embedding, backend search, and result materialization.
+- `vector_store.search_time_ms`: raw backend vector search time only; payload lookup and result formatting are excluded.
 - `vllm.answer.ttft_ms`: time to first answer token, only populated with `--stream`.
 - `vllm.answer.output_tokens_per_sec`: answer generation throughput.
 - `retrieval.questions_with_duplicate_ids`: raw duplicate retrieval IDs in final prompts.

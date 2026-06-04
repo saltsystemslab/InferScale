@@ -47,7 +47,7 @@ class FakeGraph:
         return FakeTensor([self.indices[:k]]), FakeTensor([self.distances[:k]])
 
 
-def test_jasper_search_preserves_backend_order_and_duplicates(tmp_path, monkeypatch):
+def test_jasper_search_preserves_backend_order_duplicates_and_uses_payload_cache(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", FakeTorch())
     store = JasperVectorStore(
         tmp_path,
@@ -60,9 +60,9 @@ def test_jasper_search_preserves_backend_order_and_duplicates(tmp_path, monkeypa
     )
     fake_graph = FakeGraph(indices=[2, 0, 2], distances=[-0.9, -0.8, -0.7])
     store._graph = fake_graph
+    store._conn.close()
 
     hits, metrics = store.search(np.array([1, 0, 0], dtype=np.float32), top_k=3)
-    store.close()
 
     assert fake_graph.calls == [{"k": 3, "beam_width": 64}]
     assert metrics.backend == "jasper"

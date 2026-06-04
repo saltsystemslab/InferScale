@@ -105,7 +105,7 @@ class Mem0JasperVectorStore(VectorStoreBase):
         hits, metrics = self.store.search(query_vector, top_k=requested_top_k)
         self.last_search_metrics = metrics
         scope_satisfies_filter = _scope_satisfies_broad_sample_filter(self.root, filters)
-        candidates = [_normalize_search_hit_payload(hit) for hit in hits]
+        candidates = hits
         if filters and not scope_satisfies_filter:
             candidates = [hit for hit in candidates if _matches_filters(hit.payload, filters)]
         return [
@@ -380,16 +380,6 @@ def _normalize_memory_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
 
     normalized["metadata"] = metadata
     return normalized
-
-
-def _normalize_search_hit_payload(hit: SearchHit) -> SearchHit:
-    return SearchHit(
-        id=hit.id,
-        payload=_normalize_memory_payload(hit.payload),
-        score=hit.score,
-        distance=hit.distance,
-        rank=hit.rank,
-    )
 
 
 def _matches_filters(payload: dict[str, Any], filters: dict[str, Any]) -> bool:

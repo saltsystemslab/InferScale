@@ -448,7 +448,7 @@ def _mem0_store_search_metrics(memory: Any) -> SearchMetrics:
 
 
 def _search_mem0_memory(memory: Any, query: str, sample_id: str, top_k: int) -> Any:
-    direct_results = _search_mem0_vector_store_direct(memory, query, sample_id, top_k)
+    direct_results = _search_mem0_vector_store_direct(memory, query, top_k)
     if direct_results is not None:
         return direct_results
     try:
@@ -459,7 +459,7 @@ def _search_mem0_memory(memory: Any, query: str, sample_id: str, top_k: int) -> 
     return memory.search(query=query, filters={"user_id": sample_id}, limit=top_k)
 
 
-def _search_mem0_vector_store_direct(memory: Any, query: str, sample_id: str, top_k: int) -> Any:
+def _search_mem0_vector_store_direct(memory: Any, query: str, top_k: int) -> Any:
     vector_store = getattr(memory, "vector_store", None)
     search = getattr(vector_store, "search", None)
     if not callable(search):
@@ -470,11 +470,11 @@ def _search_mem0_vector_store_direct(memory: Any, query: str, sample_id: str, to
         return None
 
     try:
-        return search(query=query, vectors=query_embedding, top_k=top_k, filters={"user_id": sample_id})
+        return search(query=query, vectors=query_embedding, top_k=top_k)
     except TypeError as exc:
         if "top_k" not in str(exc):
             raise
-    return search(query=query, vectors=query_embedding, limit=top_k, filters={"user_id": sample_id})
+    return search(query=query, vectors=query_embedding, limit=top_k)
 
 
 def _embed_mem0_query(memory: Any, query: str) -> Any:

@@ -113,7 +113,7 @@ class FakeMem0VectorStore:
     def close(self):
         self.closed = True
 
-    def search(self, *, query, vectors, top_k, filters):
+    def search(self, *, query, vectors, top_k, filters=None):
         self.search_calls.append({"query": query, "vectors": vectors, "top_k": top_k, "filters": filters})
         return [
             SearchHit(
@@ -217,7 +217,7 @@ def test_runner_mem0_context_mode_with_mocked_mem0(tmp_path, monkeypatch):
     search_call = memory.vector_store.search_calls[0]
     assert search_call["query"] == "Who adopted Pixel?"
     assert search_call["vectors"] == pytest.approx([0.1, 0.2, 0.3])
-    assert search_call["filters"] == {"user_id": "conv-1"}
+    assert search_call["filters"] is None
     assert search_call["top_k"] == 5
 
     rows = read_jsonl(tmp_path / "results" / "test-run" / "predictions.jsonl")

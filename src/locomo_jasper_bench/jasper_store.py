@@ -61,6 +61,9 @@ class JasperVectorStore:
         self._db_path = self.root / "payloads.sqlite"
         self._conn = sqlite3.connect(self._db_path, timeout=30.0)
         self._init_db()
+        self._payloads_by_ordinal: dict[int, tuple[str, dict[str, Any]]] = {}
+        self._ordinals_by_id: dict[str, int] = {}
+        self._load_payload_cache()
         self._vectors: np.ndarray | None = self._load_vectors()
         self._graph: Any = None
 
@@ -105,13 +108,16 @@ class JasperVectorStore:
             start_ord = int(self._vectors.shape[0])
             self._vectors = np.vstack([self._vectors, matrix]).astype(np.float32, copy=False)
 
+        cache_updates: list[tuple[str, int, dict[str, Any]]] = []
         try:
             with self._conn:
                 for offset, (item_id, payload) in enumerate(zip(id_list, payload_list)):
+                    payload_json = json.dumps(payload, ensure_ascii=False)
                     self._conn.execute(
                         "INSERT OR REPLACE INTO payloads (id, ord, payload_json) VALUES (?, ?, ?)",
-                        (item_id, start_ord + offset, json.dumps(payload, ensure_ascii=False)),
+                        (item_id, start_ord + offset, payload_json),
                     )
+                    cache_updates.append((str(item_id), start_ord + offset, json.loads(payload_json)))
         except sqlite3.OperationalError as exc:
             raise RuntimeError(
                 f"Could not write Jasper payload database at {self._db_path}. "
@@ -119,6 +125,12 @@ class JasperVectorStore:
                 "support on the target filesystem. Check free space and quota for the results directory, and rerun "
                 "with --results-dir and BENCHMARK_CACHE_ROOT pointing at a writable project filesystem."
             ) from exc
+        for item_id, ordinal, payload in cache_updates:
+            old_ordinal = self._ordinals_by_id.get(item_id)
+            if old_ordinal is not None:
+                self._payloads_by_ordinal.pop(old_ordinal, None)
+            self._ordinals_by_id[item_id] = ordinal
+            self._payloads_by_ordinal[ordinal] = (item_id, payload)
         self._graph = None
         return id_list
 
@@ -160,15 +172,13 @@ class JasperVectorStore:
             query = _normalize_vector(query)
         top_k = max(1, min(top_k, self.vector_count))
 
-        started = time.perf_counter()
         if self.config.backend == "jasper":
-            hits = self._search_jasper(query, top_k)
+            hits, search_time_ms = self._search_jasper(query, top_k)
         else:
             raise ValueError(f"Unsupported vector backend: {self.config.backend}")
-        elapsed_ms = (time.perf_counter() - started) * 1000
         return hits, SearchMetrics(
             backend=self.config.backend,
-            search_time_ms=elapsed_ms,
+            search_time_ms=search_time_ms,
             indexed_vector_count=self.vector_count,
             embedding_dim=self.dim,
         )
@@ -182,8 +192,12 @@ class JasperVectorStore:
         self._conn.close()
 
     def delete(self, vector_id: str) -> None:
+        vector_id = str(vector_id)
         with self._conn:
-            self._conn.execute("DELETE FROM payloads WHERE id = ?", (str(vector_id),))
+            self._conn.execute("DELETE FROM payloads WHERE id = ?", (vector_id,))
+        ordinal = self._ordinals_by_id.pop(vector_id, None)
+        if ordinal is not None:
+            self._payloads_by_ordinal.pop(ordinal, None)
         self._graph = None
 
     def update(
@@ -211,10 +225,13 @@ class JasperVectorStore:
                 next_vector = _normalize_vector(next_vector)
             self._vectors[ordinal] = next_vector
         with self._conn:
+            payload_json = json.dumps(next_payload, ensure_ascii=False)
             self._conn.execute(
                 "UPDATE payloads SET payload_json = ? WHERE id = ?",
-                (json.dumps(next_payload, ensure_ascii=False), str(vector_id)),
+                (payload_json, str(vector_id)),
             )
+        self._ordinals_by_id[str(vector_id)] = ordinal
+        self._payloads_by_ordinal[ordinal] = (str(vector_id), json.loads(payload_json))
         self._graph = None
 
     def get(self, vector_id: str) -> dict[str, Any] | None:
@@ -239,6 +256,8 @@ class JasperVectorStore:
         self.root.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self._db_path, timeout=30.0)
         self._init_db()
+        self._payloads_by_ordinal = {}
+        self._ordinals_by_id = {}
         self._vectors = None
         self._graph = None
 
@@ -260,6 +279,17 @@ class JasperVectorStore:
         if self._vectors_path.exists():
             return np.load(self._vectors_path).astype(np.float32, copy=False)
         return None
+
+    def _load_payload_cache(self) -> None:
+        rows = self._conn.execute("SELECT id, ord, payload_json FROM payloads").fetchall()
+        self._payloads_by_ordinal = {}
+        self._ordinals_by_id = {}
+        for item_id, ordinal, payload_json in rows:
+            item_id = str(item_id)
+            ordinal = int(ordinal)
+            payload = json.loads(payload_json)
+            self._payloads_by_ordinal[ordinal] = (item_id, payload)
+            self._ordinals_by_id[item_id] = ordinal
 
     def _build_jasper_graph(self) -> Any:
         try:
@@ -284,7 +314,7 @@ class JasperVectorStore:
             workspace_budget=self.config.workspace_budget,
         )
 
-    def _search_jasper(self, query: np.ndarray, top_k: int) -> list[SearchHit]:
+    def _search_jasper(self, query: np.ndarray, top_k: int) -> tuple[list[SearchHit], float]:
         if self._graph is None:
             if self._graph_path.exists():
                 self._graph = self._load_jasper_graph()
@@ -293,7 +323,14 @@ class JasperVectorStore:
         import torch
 
         query_tensor = torch.from_numpy(query.reshape(1, -1)).to(device="cuda", dtype=torch.float32)
+        synchronize = getattr(getattr(torch, "cuda", None), "synchronize", None)
+        if callable(synchronize):
+            synchronize()
+        started = time.perf_counter()
         indices, distances = self._graph.search(query_tensor, k=top_k, beam_width=self.config.beam_width)
+        if callable(synchronize):
+            synchronize()
+        search_time_ms = (time.perf_counter() - started) * 1000
 
         index_values = indices[0].detach().cpu().numpy().astype(np.int64)
         distance_values = distances[0].detach().cpu().numpy().astype(np.float32)
@@ -313,7 +350,7 @@ class JasperVectorStore:
                     rank=len(hits) + 1,
                 )
             )
-        return hits
+        return hits, search_time_ms
 
     def _load_jasper_graph(self) -> Any:
         try:
@@ -328,13 +365,7 @@ class JasperVectorStore:
         )
 
     def _payload_by_ordinal(self, ordinal: int) -> tuple[str, dict[str, Any]] | None:
-        row = self._conn.execute(
-            "SELECT id, payload_json FROM payloads WHERE ord = ?",
-            (ordinal,),
-        ).fetchone()
-        if row is None:
-            return None
-        return str(row[0]), json.loads(row[1])
+        return self._payloads_by_ordinal.get(ordinal)
 
 
 def _normalize_rows(matrix: np.ndarray) -> np.ndarray:
@@ -433,17 +464,22 @@ class QdrantVectorStore:
         if self.config.normalize:
             query = _normalize_vector(query)
         top_k = max(1, min(top_k, self.vector_count))
+        query_list = query.tolist()
 
         started = time.perf_counter()
         result = self._client.query_points(
             collection_name=self._collection_name,
-            query=query.tolist(),
+            query=query_list,
             limit=top_k,
-            with_payload=True,
+            with_payload=False,
         )
         elapsed_ms = (time.perf_counter() - started) * 1000
         points = getattr(result, "points", result)
-        hits = [self._hit_from_point(point, rank) for rank, point in enumerate(points, start=1)]
+        payloads_by_point_id = self._payloads_for_points(points)
+        hits = [
+            self._hit_from_point(point, rank, payloads_by_point_id.get(str(getattr(point, "id", None))))
+            for rank, point in enumerate(points, start=1)
+        ]
         return hits, SearchMetrics(
             backend="qdrant",
             search_time_ms=elapsed_ms,
@@ -526,6 +562,22 @@ class QdrantVectorStore:
             results.append((item_id, payload))
         return results
 
+    def _payloads_for_points(self, points: list[Any]) -> dict[str, Any]:
+        point_ids = [getattr(point, "id", None) for point in points]
+        point_ids = [point_id for point_id in point_ids if point_id is not None]
+        if not point_ids:
+            return {}
+        try:
+            retrieved = self._client.retrieve(
+                collection_name=self._collection_name,
+                ids=point_ids,
+                with_payload=True,
+                with_vectors=False,
+            )
+        except Exception:
+            return {}
+        return {str(getattr(point, "id", None)): getattr(point, "payload", None) for point in retrieved}
+
     def reset(self) -> None:
         self.close()
         shutil.rmtree(self.root, ignore_errors=True)
@@ -581,9 +633,10 @@ class QdrantVectorStore:
             return False
         return True
 
-    def _hit_from_point(self, point: Any, rank: int) -> SearchHit:
+    def _hit_from_point(self, point: Any, rank: int, raw_payload: Any | None = None) -> SearchHit:
         raw_score = float(getattr(point, "score", 0.0) or 0.0)
-        raw_payload = getattr(point, "payload", None)
+        if raw_payload is None:
+            raw_payload = getattr(point, "payload", None)
         item_id = self._original_id(getattr(point, "id", None), raw_payload)
         payload = self._payload_from_qdrant(raw_payload)
         if self.config.distance == "ip":

@@ -179,6 +179,56 @@ def test_mem0_jasper_search_expands_when_filter_is_restrictive(tmp_path):
     assert store.last_search_metrics.search_time_ms == 2.0
 
 
+def test_mem0_jasper_broad_user_filter_uses_requested_top_k(tmp_path):
+    store = Mem0JasperVectorStore(path=str(tmp_path), backend="jasper", beam_width=64)
+    fake_store = FakeSearchStore(
+        vector_count=419,
+        hits_by_k={
+            "default": [
+                _hit(f"mem-{index}", 1.0 - index * 0.01, user_id="conv-26", turn_id=f"t{index}")
+                for index in range(20)
+            ]
+        },
+    )
+    store.store = fake_store
+
+    hits = store.search("query", [1, 0, 0], top_k=20, filters={"user_id": "conv-26"})
+
+    assert len(hits) == 20
+    assert fake_store.calls == [20]
+
+
+def test_mem0_jasper_restrictive_filter_never_exceeds_beam_width(tmp_path):
+    store = Mem0JasperVectorStore(path=str(tmp_path), backend="jasper", beam_width=64)
+    fake_store = FakeSearchStore(
+        vector_count=419,
+        hits_by_k={
+            20: [
+                _hit("a", 1.0, user_id="u1", turn_id="t1"),
+                _hit("b", 0.9, user_id="u2", turn_id="t2"),
+            ],
+            40: [
+                _hit("a", 1.0, user_id="u1", turn_id="t1"),
+                _hit("b", 0.9, user_id="u2", turn_id="t2"),
+                _hit("c", 0.8, user_id="u2", turn_id="t3"),
+            ],
+            64: [
+                _hit("a", 1.0, user_id="u1", turn_id="t1"),
+                _hit("b", 0.9, user_id="u2", turn_id="t2"),
+                _hit("c", 0.8, user_id="u2", turn_id="t3"),
+                _hit("d", 0.7, user_id="u2", turn_id="t4"),
+            ],
+        },
+    )
+    store.store = fake_store
+
+    hits = store.search("query", [1, 0, 0], top_k=5, filters={"metadata.turn_id": ["t2", "t3", "t4"]})
+
+    assert [hit.id for hit in hits] == ["b", "c", "d"]
+    assert fake_store.calls == [20, 40, 64]
+    assert max(fake_store.calls) == 64
+
+
 def test_build_mem0_config_uses_jasper_provider_without_qdrant(tmp_path):
     config = build_mem0_config(
         store_root=tmp_path,

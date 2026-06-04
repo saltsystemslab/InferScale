@@ -298,8 +298,11 @@ class JasperVectorStore:
                 self._graph = self._build_jasper_graph()
         import torch
 
+        # Jasper beam search only maintains beam_width candidates; requesting
+        # k > beam_width can return duplicate or unusable ordinals.
+        safe_k = max(1, min(top_k, self.vector_count, max(1, self.config.beam_width)))
         query_tensor = torch.from_numpy(query.reshape(1, -1)).to(device="cuda", dtype=torch.float32)
-        indices, distances = self._graph.search(query_tensor, k=top_k, beam_width=self.config.beam_width)
+        indices, distances = self._graph.search(query_tensor, k=safe_k, beam_width=self.config.beam_width)
         index_values = indices[0].detach().cpu().numpy().astype(np.int64)
         distance_values = distances[0].detach().cpu().numpy().astype(np.float32)
         return self._hits_from_ordinals(index_values, distance_values)

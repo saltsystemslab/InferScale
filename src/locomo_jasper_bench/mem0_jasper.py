@@ -179,7 +179,16 @@ class Mem0JasperVectorStore(VectorStoreBase):
         if vector_count <= 0:
             return [], SearchMetrics(self.config.backend, 0.0, 0, None)
 
-        search_k = _initial_search_k(requested_top_k, vector_count, filters is not None)
+        max_search_k = _max_search_k(self.config.backend, self.config.beam_width, vector_count)
+        has_broad_filter = self.config.backend == "jasper" and _is_broad_sample_filter(filters)
+        if has_broad_filter:
+            search_k = max(1, min(max_search_k, requested_top_k))
+        else:
+            search_k = _initial_search_k(
+                requested_top_k,
+                max_search_k,
+                filters is not None,
+            )
         total_search_ms = 0.0
         last_metrics: SearchMetrics | None = None
         unique_hits: list[SearchHit] = []
@@ -192,9 +201,9 @@ class Mem0JasperVectorStore(VectorStoreBase):
             if filters:
                 candidates = [hit for hit in candidates if _matches_filters(hit.payload, filters)]
             unique_hits = _dedupe_hits(candidates)
-            if len(unique_hits) >= requested_top_k or search_k >= vector_count:
+            if len(unique_hits) >= requested_top_k or search_k >= max_search_k:
                 break
-            next_search_k = min(vector_count, max(search_k + 1, search_k * 2))
+            next_search_k = min(max_search_k, max(search_k + 1, search_k * 2))
             if next_search_k == search_k:
                 break
             search_k = next_search_k
@@ -480,6 +489,18 @@ def _initial_search_k(requested_top_k: int, vector_count: int, has_filters: bool
     else:
         candidate_count = max(requested_top_k * 2, requested_top_k + 5)
     return max(1, min(vector_count, candidate_count))
+
+
+def _max_search_k(backend: str, beam_width: int, vector_count: int) -> int:
+    if backend == "jasper":
+        return max(1, min(vector_count, max(1, beam_width)))
+    return max(1, vector_count)
+
+
+def _is_broad_sample_filter(filters: dict[str, Any] | None) -> bool:
+    if not filters:
+        return False
+    return set(filters) == {"user_id"} and filters.get("user_id") not in (None, "")
 
 
 def _dedupe_hits(hits: list[SearchHit]) -> list[SearchHit]:

@@ -26,6 +26,8 @@ def test_numpy_store_persists_and_searches(tmp_path):
     assert search_metrics.embedding_dim == 3
     assert hits[0].id == "a"
     assert hits[0].payload["memory"] == "alpha"
+    assert hits[0].score == 1.0
+    assert hits[0].distance == -1.0
 
     reopened = JasperVectorStore(
         tmp_path,
@@ -76,6 +78,18 @@ class FakeGraph:
         )
 
 
+class FakeUnderfilledGraph:
+    def __init__(self):
+        self.calls = []
+
+    def search(self, query_tensor, *, k, beam_width):
+        self.calls.append({"k": k, "beam_width": beam_width})
+        return (
+            FakeTensor([[0] + [2147483647] * (k - 1)]),
+            FakeTensor([[-0.25] + [float("inf")] * (k - 1)]),
+        )
+
+
 def test_jasper_search_caps_k_to_beam_width(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", FakeTorch())
     store = JasperVectorStore(
@@ -94,4 +108,33 @@ def test_jasper_search_caps_k_to_beam_width(tmp_path, monkeypatch):
     store.close()
 
     assert fake_graph.calls == [{"k": 64, "beam_width": 64}]
-    assert len(hits) == 64
+    assert len(hits) == 80
+
+
+def test_jasper_search_fills_underfilled_results_with_exact_search(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "torch", FakeTorch())
+    store = JasperVectorStore(
+        tmp_path,
+        VectorStoreConfig(backend="jasper", distance="ip", normalize=True, beam_width=64),
+    )
+    store.add_many(
+        [
+            np.array([1.0, 0.0, 0.0], dtype=np.float32),
+            np.array([0.9, 0.0, 0.0], dtype=np.float32),
+            np.array([0.8, 0.0, 0.0], dtype=np.float32),
+            np.array([0.0, 1.0, 0.0], dtype=np.float32),
+        ],
+        [{"memory": f"item-{index}"} for index in range(4)],
+        [str(index) for index in range(4)],
+    )
+    fake_graph = FakeUnderfilledGraph()
+    store._graph = fake_graph
+
+    hits = store._search_jasper(np.array([1, 0, 0], dtype=np.float32), top_k=3)
+    store.close()
+
+    assert fake_graph.calls == [{"k": 3, "beam_width": 64}]
+    assert [hit.id for hit in hits] == ["0", "1", "2"]
+    assert [hit.rank for hit in hits] == [1, 2, 3]
+    assert hits[0].score == 1.0
+    assert hits[0].distance == -1.0

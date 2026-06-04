@@ -305,7 +305,10 @@ class JasperVectorStore:
         indices, distances = self._graph.search(query_tensor, k=safe_k, beam_width=self.config.beam_width)
         index_values = indices[0].detach().cpu().numpy().astype(np.int64)
         distance_values = distances[0].detach().cpu().numpy().astype(np.float32)
-        return self._hits_from_ordinals(index_values, distance_values)
+        hits = self._rerank_hits(self._hits_from_ordinals(index_values, distance_values))
+        if len(hits) < top_k:
+            hits = self._merge_and_rerank_hits([hits, self._search_numpy(query, top_k)])
+        return hits[:top_k]
 
     def _load_jasper_graph(self) -> Any:
         try:
@@ -324,7 +327,7 @@ class JasperVectorStore:
         if self.config.distance == "ip":
             raw_scores = self._vectors @ query
             ordinals = np.argsort(-raw_scores)[:top_k]
-            distances = raw_scores[ordinals]
+            distances = -raw_scores[ordinals]
         elif self.config.distance == "l2":
             raw_distances = np.sum((self._vectors - query) ** 2, axis=1)
             ordinals = np.argsort(raw_distances)[:top_k]
@@ -340,9 +343,25 @@ class JasperVectorStore:
             if row is None:
                 continue
             item_id, payload = row
-            score = float(distance if self.config.distance == "ip" else -distance)
+            score = float(-distance if self.config.distance == "ip" else -distance)
             hits.append(SearchHit(id=item_id, payload=payload, score=score, distance=float(distance), rank=rank))
         return hits
+
+    def _merge_and_rerank_hits(self, hit_groups: list[list[SearchHit]]) -> list[SearchHit]:
+        by_id: dict[str, SearchHit] = {}
+        for hits in hit_groups:
+            for hit in hits:
+                current = by_id.get(hit.id)
+                if current is None or hit.score > current.score:
+                    by_id[hit.id] = hit
+        return self._rerank_hits(list(by_id.values()))
+
+    def _rerank_hits(self, hits: list[SearchHit]) -> list[SearchHit]:
+        sorted_hits = sorted(hits, key=lambda hit: hit.score, reverse=True)
+        return [
+            SearchHit(id=hit.id, payload=hit.payload, score=hit.score, distance=hit.distance, rank=rank)
+            for rank, hit in enumerate(sorted_hits, start=1)
+        ]
 
     def _payload_by_ordinal(self, ordinal: int) -> tuple[str, dict[str, Any]] | None:
         row = self._conn.execute(

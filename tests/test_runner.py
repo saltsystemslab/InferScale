@@ -178,6 +178,7 @@ def test_runner_mem0_context_mode_with_mocked_mem0(tmp_path, monkeypatch):
     assert memory.add_calls[0]["infer"] is False
     assert memory.add_calls[0]["user_id"] == "conv-1"
     assert memory.add_calls[0]["messages"] == [{"role": "user", "content": "Alice: I adopted a cat named Pixel."}]
+    assert memory.add_calls[0]["metadata"]["user_id"] == "conv-1"
     assert memory.add_calls[0]["metadata"]["sample_id"] == "conv-1"
     assert memory.add_calls[0]["metadata"]["turn_id"] == "conv-1:session_1:0"
     assert memory.add_calls[0]["metadata"]["speaker"] == "Alice"

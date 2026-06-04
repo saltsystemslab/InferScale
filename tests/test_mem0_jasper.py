@@ -43,6 +43,34 @@ def test_mem0_jasper_vector_store_insert_search_filter_and_finalize(tmp_path):
     assert {hit.id for hit in metadata_filtered} == {"a", "c"}
 
 
+def test_mem0_jasper_insert_normalizes_payload_metadata_without_mutating_input(tmp_path):
+    store = Mem0JasperVectorStore(path=str(tmp_path), backend="numpy")
+    payloads = [
+        {"data": "alpha", "metadata": {"user_id": "u1", "turn_id": "t1"}},
+        {"data": "beta", "user_id": "u2", "turn_id": "t2", "metadata": {}},
+    ]
+
+    store.insert(
+        vectors=[
+            np.array([1, 0, 0], dtype=np.float32),
+            np.array([0, 1, 0], dtype=np.float32),
+        ],
+        payloads=payloads,
+        ids=["a", "b"],
+    )
+    listed = {hit.id: hit.payload for hit in store.list(limit=10)}
+    store.close()
+
+    assert listed["a"]["user_id"] == "u1"
+    assert listed["a"]["metadata"]["user_id"] == "u1"
+    assert listed["a"]["turn_id"] == "t1"
+    assert listed["b"]["user_id"] == "u2"
+    assert listed["b"]["metadata"]["user_id"] == "u2"
+    assert listed["b"]["metadata"]["turn_id"] == "t2"
+    assert "user_id" not in payloads[0]
+    assert "user_id" not in payloads[1]["metadata"]
+
+
 def test_mem0_results_to_search_hits_normalizes_wrapped_results():
     hits = mem0_results_to_search_hits(
         {
@@ -101,9 +129,12 @@ def _hit(item_id, score, *, user_id="u1", turn_id=None):
     metadata = {}
     if turn_id is not None:
         metadata["turn_id"] = turn_id
+    payload = {"data": item_id, "metadata": metadata}
+    if user_id is not None:
+        payload["user_id"] = user_id
     return SearchHit(
         id=item_id,
-        payload={"data": item_id, "user_id": user_id, "metadata": metadata},
+        payload=payload,
         score=score,
         distance=score,
         rank=0,
@@ -180,7 +211,7 @@ def test_mem0_jasper_search_expands_when_filter_is_restrictive(tmp_path):
 
 
 def test_mem0_jasper_broad_user_filter_uses_requested_top_k(tmp_path):
-    store = Mem0JasperVectorStore(path=str(tmp_path), backend="jasper", beam_width=64)
+    store = Mem0JasperVectorStore(path=str(tmp_path / "conv-26"), backend="jasper", beam_width=64)
     fake_store = FakeSearchStore(
         vector_count=419,
         hits_by_k={
@@ -196,6 +227,44 @@ def test_mem0_jasper_broad_user_filter_uses_requested_top_k(tmp_path):
 
     assert len(hits) == 20
     assert fake_store.calls == [20]
+
+
+def test_mem0_jasper_scoped_broad_user_filter_does_not_drop_payloads_without_user_id(tmp_path):
+    store = Mem0JasperVectorStore(path=str(tmp_path / "conv-26"), backend="jasper", beam_width=64)
+    fake_store = FakeSearchStore(
+        vector_count=419,
+        hits_by_k={
+            "default": [
+                _hit(f"mem-{index}", 1.0 - index * 0.01, user_id=None, turn_id=f"t{index}")
+                for index in range(3)
+            ]
+        },
+    )
+    store.store = fake_store
+
+    hits = store.search("query", [1, 0, 0], top_k=3, filters={"user_id": "conv-26"})
+
+    assert [hit.id for hit in hits] == ["mem-0", "mem-1", "mem-2"]
+    assert fake_store.calls == [3]
+
+
+def test_mem0_jasper_mismatched_broad_user_filter_stays_strict(tmp_path):
+    store = Mem0JasperVectorStore(path=str(tmp_path / "conv-25"), backend="jasper", beam_width=64)
+    fake_store = FakeSearchStore(
+        vector_count=64,
+        hits_by_k={
+            "default": [
+                _hit(f"mem-{index}", 1.0 - index * 0.01, user_id=None, turn_id=f"t{index}")
+                for index in range(3)
+            ]
+        },
+    )
+    store.store = fake_store
+
+    hits = store.search("query", [1, 0, 0], top_k=2, filters={"user_id": "conv-26"})
+
+    assert hits == []
+    assert fake_store.calls == [12, 24, 48, 64]
 
 
 def test_mem0_jasper_restrictive_filter_never_exceeds_beam_width(tmp_path):

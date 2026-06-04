@@ -10,6 +10,8 @@ import numpy as np
 
 from .jasper_store import BuildMetrics, JasperVectorStore, QdrantVectorStore, SearchHit, SearchMetrics, VectorStoreConfig
 
+_MIRRORED_METADATA_KEYS = ("user_id", "sample_id", "turn_id", "session_id", "turn_index", "speaker", "timestamp", "role")
+
 try:
     from mem0.vector_stores.base import VectorStoreBase
 except Exception:  # pragma: no cover - mem0 is optional for local unit tests
@@ -85,7 +87,7 @@ class Mem0JasperVectorStore(VectorStoreBase):
             self.config.distance = _normalize_distance(distance)
 
     def insert(self, vectors: list[Any], payloads: list[dict[str, Any]] | None = None, ids: list[str] | None = None) -> list[str]:
-        payload_list = payloads or [{} for _ in vectors]
+        payload_list = [_normalize_memory_payload(payload) for payload in (payloads or [{} for _ in vectors])]
         self.last_insert_ids = self.store.add_many(vectors, payload_list, ids)
         return self.last_insert_ids
 
@@ -116,7 +118,8 @@ class Mem0JasperVectorStore(VectorStoreBase):
         vector: list[float] | None = None,
         payload: dict[str, Any] | None = None,
     ) -> None:
-        self.store.update(str(vector_id), vector=vector, payload=payload)
+        next_payload = _normalize_memory_payload(payload) if payload is not None else None
+        self.store.update(str(vector_id), vector=vector, payload=next_payload)
 
     def get(self, vector_id: str) -> Mem0JasperSearchResult | None:
         payload = self.store.get(str(vector_id))
@@ -148,10 +151,12 @@ class Mem0JasperVectorStore(VectorStoreBase):
     ) -> list[Mem0JasperSearchResult]:
         limit = limit or top_k or 100
         results: list[Mem0JasperSearchResult] = []
+        active_filters = None if _scope_satisfies_broad_sample_filter(self.root, filters) else filters
         for item_id, payload in self.store.list_payloads(limit=limit):
-            if filters and not _matches_filters(payload, filters):
+            normalized_payload = _normalize_memory_payload(payload)
+            if active_filters and not _matches_filters(normalized_payload, active_filters):
                 continue
-            results.append(Mem0JasperSearchResult(id=str(item_id), score=0.0, payload=payload))
+            results.append(Mem0JasperSearchResult(id=str(item_id), score=0.0, payload=normalized_payload))
         return results
 
     def reset(self) -> None:
@@ -180,8 +185,8 @@ class Mem0JasperVectorStore(VectorStoreBase):
             return [], SearchMetrics(self.config.backend, 0.0, 0, None)
 
         max_search_k = _max_search_k(self.config.backend, self.config.beam_width, vector_count)
-        has_broad_filter = self.config.backend == "jasper" and _is_broad_sample_filter(filters)
-        if has_broad_filter:
+        scope_satisfies_filter = _scope_satisfies_broad_sample_filter(self.root, filters)
+        if scope_satisfies_filter:
             search_k = max(1, min(max_search_k, requested_top_k))
         else:
             search_k = _initial_search_k(
@@ -197,8 +202,8 @@ class Mem0JasperVectorStore(VectorStoreBase):
             raw_hits, metrics = self.store.search(query_vector, top_k=search_k)
             total_search_ms += metrics.search_time_ms
             last_metrics = metrics
-            candidates = raw_hits
-            if filters:
+            candidates = [_normalize_search_hit_payload(hit) for hit in raw_hits]
+            if filters and not scope_satisfies_filter:
                 candidates = [hit for hit in candidates if _matches_filters(hit.payload, filters)]
             unique_hits = _dedupe_hits(candidates)
             if len(unique_hits) >= requested_top_k or search_k >= max_search_k:
@@ -383,7 +388,7 @@ def _mem0_item_payload(item: Any) -> dict[str, Any]:
                 payload.setdefault(key, value)
                 metadata.setdefault(key, value)
     payload["metadata"] = metadata
-    return payload
+    return _normalize_memory_payload(payload)
 
 
 def _item_get(item: Any, key: str) -> Any:
@@ -399,6 +404,36 @@ def _first_vector(vectors: list[float] | list[list[float]]) -> np.ndarray:
     if array.ndim == 2 and array.shape[0] > 0:
         return array[0]
     raise ValueError("vectors must be a one-dimensional vector or a non-empty list of vectors")
+
+
+def _normalize_memory_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+    normalized = dict(payload or {})
+    metadata = normalized.get("metadata")
+    if isinstance(metadata, dict):
+        metadata = dict(metadata)
+    else:
+        metadata = {}
+
+    for key in _MIRRORED_METADATA_KEYS:
+        top_value = normalized.get(key)
+        metadata_value = metadata.get(key)
+        if top_value is None and metadata_value is not None:
+            normalized[key] = metadata_value
+        elif metadata_value is None and top_value is not None:
+            metadata[key] = top_value
+
+    normalized["metadata"] = metadata
+    return normalized
+
+
+def _normalize_search_hit_payload(hit: SearchHit) -> SearchHit:
+    return SearchHit(
+        id=hit.id,
+        payload=_normalize_memory_payload(hit.payload),
+        score=hit.score,
+        distance=hit.distance,
+        rank=hit.rank,
+    )
 
 
 def _matches_filters(payload: dict[str, Any], filters: dict[str, Any]) -> bool:
@@ -501,6 +536,12 @@ def _is_broad_sample_filter(filters: dict[str, Any] | None) -> bool:
     if not filters:
         return False
     return set(filters) == {"user_id"} and filters.get("user_id") not in (None, "")
+
+
+def _scope_satisfies_broad_sample_filter(root: Path, filters: dict[str, Any] | None) -> bool:
+    if not _is_broad_sample_filter(filters):
+        return False
+    return str(filters["user_id"]) == root.parent.name
 
 
 def _dedupe_hits(hits: list[SearchHit]) -> list[SearchHit]:

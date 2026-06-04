@@ -195,6 +195,7 @@ def _build_memory_for_sample(
     for turn in sample.turns:
         text = format_turn_for_memory(turn)
         metadata = {
+            "user_id": sample.sample_id,
             "sample_id": sample.sample_id,
             "turn_id": turn.id,
             "session_id": turn.session_id,

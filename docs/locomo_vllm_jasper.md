@@ -122,6 +122,7 @@ locomo-jasper-bench \
   --mode baseline \
   --dataset data/locomo10.json \
   --results-dir "${SCRATCH_ROOT}/results" \
+  --vector-backend jasper \
   --max-samples 1 \
   --max-questions 3 \
   --stream \
@@ -133,7 +134,7 @@ After `source scripts/scratch_env.sh`, `locomo-jasper-bench` also defaults `--re
 
 The benchmark logs progress with Loguru. By default it logs every 5 questions, plus sample updates. Use `--log-every 1` for a small smoke run, increase it for full runs, or set `LOCOMO_LOG_EVERY`. Set `LOCOMO_LOG_LEVEL=DEBUG` or `LOCOMO_LOG_LEVEL=WARNING` to adjust verbosity. Use `--stream` when you want TTFT metrics; without streaming, `vllm.answer.ttft_ms` is `null`.
 
-Jasper stores vectors and payload metadata under `${SCRATCH_ROOT}/results/<run_id>/mem0/<sample_id>/`. If SQLite reports `disk I/O error`, verify that `--results-dir` and `BENCHMARK_CACHE_ROOT` are on writable scratch storage with quota available.
+Jasper stores vectors and payload metadata under `${SCRATCH_ROOT}/results/<run_id>/mem0/<sample_id>/`. The Jasper search path caps the graph search `k` to the available vector count and configured beam width, so filtered Mem0 searches do not request an invalid overfetch size. This prevents the repeated top-hit behavior where a question returned the same memory UUID multiple times. The Mem0 adapter also normalizes `user_id` metadata and treats the per-sample store path as satisfying `filters={"user_id": <sample_id>}`, so broad sample filters do not drop every retrieved hit when Mem0 nests metadata differently. These are Python adapter fixes; they do not require rebuilding Jasper CUDA/C++ artifacts. If SQLite reports `disk I/O error`, verify that `--results-dir` and `BENCHMARK_CACHE_ROOT` are on writable scratch storage with quota available.
 
 Outputs are written under `${SCRATCH_ROOT}/results/<run_id>/`:
 
@@ -177,13 +178,23 @@ python scripts/smoke_jasper.py
 ## 6. Full Baseline
 
 ```bash
+cd /projects/SaltSystemsLab/peter/benchmark-jasper
 source .venv/bin/activate
 source scripts/scratch_env.sh
+
+export VLLM_BASE_URL=http://127.0.0.1:8000/v1
+export JUDGE_BASE_URL=http://127.0.0.1:8000/v1
+export VLLM_API_KEY=token-abc123
+export JUDGE_API_KEY=token-abc123
+export OPENAI_API_KEY=<your-openai-key>
+export NO_PROXY=localhost,127.0.0.1,::1
+export no_proxy="${NO_PROXY}"
 
 locomo-jasper-bench \
   --mode baseline \
   --dataset data/locomo10.json \
   --results-dir "${SCRATCH_ROOT}/results" \
+  --vector-backend jasper \
   --stream \
   --run-id baseline-vllm-$(date -u +%Y%m%dT%H%M%SZ) \
   --vllm-command "bash scripts/serve_vllm.sh"
@@ -216,7 +227,7 @@ locomo-jasper-bench \
   --max-questions 3 \
   --stream \
   --log-every 1 \
-  --run-id jasper-fixed-$(date -u +%Y%m%dT%H%M%SZ)
+  --run-id jasper-k-cap-$(date -u +%Y%m%dT%H%M%SZ)
 
 locomo-jasper-bench \
   --mode baseline \
@@ -230,7 +241,7 @@ locomo-jasper-bench \
   --run-id qdrant-local-$(date -u +%Y%m%dT%H%M%SZ)
 ```
 
-Compare each run's `summary.json`. Key fields are `accuracy`, `by_category`, `latency_ms`, `vllm.answer.ttft_ms`, `vllm.answer.output_tokens_per_sec`, `vector_store.search_time_ms`, and `retrieval.questions_with_duplicate_ids`.
+Compare each run's `summary.json`. Key fields are `accuracy`, `by_category`, `latency_ms`, `vllm.answer.ttft_ms`, `vllm.answer.output_tokens_per_sec`, `vector_store.search_time_ms`, and `retrieval.questions_with_duplicate_ids`. In `predictions.jsonl`, answerable questions should have non-empty `retrieved_memories`; `retrieval.questions_with_duplicate_ids` should stay at `0` unless there are genuinely duplicated memory IDs in the source data.
 
 ## 8. Re-Judge Saved Predictions
 

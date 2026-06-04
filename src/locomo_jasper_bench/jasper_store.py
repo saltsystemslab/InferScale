@@ -16,7 +16,6 @@ import numpy as np
 class VectorStoreConfig:
     backend: str = "jasper"
     distance: str = "ip"
-    normalize: bool = True
     n_neighbors: int = 64
     alpha: float = 1.0
     workspace_budget: str = "10GB"
@@ -97,8 +96,6 @@ class JasperVectorStore:
             raise ValueError("ids and vectors must have the same length")
 
         matrix = np.vstack(vector_list).astype(np.float32, copy=False)
-        if self.config.normalize:
-            matrix = _normalize_rows(matrix)
         if self._vectors is None:
             self._vectors = matrix
             start_ord = 0
@@ -168,8 +165,6 @@ class JasperVectorStore:
             raise ValueError("query_vector must be one-dimensional")
         if query.shape[0] != self._vectors.shape[1]:
             raise ValueError(f"query dim {query.shape[0]} does not match store dim {self._vectors.shape[1]}")
-        if self.config.normalize:
-            query = _normalize_vector(query)
         top_k = max(1, min(top_k, self.vector_count))
 
         if self.config.backend == "jasper":
@@ -221,8 +216,6 @@ class JasperVectorStore:
         next_payload = current_payload if payload is None else payload
         if vector is not None and self._vectors is not None:
             next_vector = np.asarray(vector, dtype=np.float32)
-            if self.config.normalize:
-                next_vector = _normalize_vector(next_vector)
             self._vectors[ordinal] = next_vector
         with self._conn:
             payload_json = json.dumps(next_payload, ensure_ascii=False)
@@ -368,19 +361,6 @@ class JasperVectorStore:
         return self._payloads_by_ordinal.get(ordinal)
 
 
-def _normalize_rows(matrix: np.ndarray) -> np.ndarray:
-    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
-    norms[norms == 0] = 1.0
-    return matrix / norms
-
-
-def _normalize_vector(vector: np.ndarray) -> np.ndarray:
-    norm = float(np.linalg.norm(vector))
-    if norm == 0.0:
-        return vector
-    return vector / norm
-
-
 class QdrantVectorStore:
     """Local qdrant-client backend with the same interface as JasperVectorStore."""
 
@@ -425,8 +405,6 @@ class QdrantVectorStore:
             raise ValueError("ids and vectors must have the same length")
 
         matrix = np.vstack(vector_list).astype(np.float32, copy=False)
-        if self.config.normalize:
-            matrix = _normalize_rows(matrix)
         self._ensure_collection(int(matrix.shape[1]))
 
         models = self._models()
@@ -461,8 +439,6 @@ class QdrantVectorStore:
             raise ValueError("query_vector must be one-dimensional")
         if self.dim is not None and query.shape[0] != self.dim:
             raise ValueError(f"query dim {query.shape[0]} does not match store dim {self.dim}")
-        if self.config.normalize:
-            query = _normalize_vector(query)
         top_k = max(1, min(top_k, self.vector_count))
         query_list = query.tolist()
 

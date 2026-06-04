@@ -19,13 +19,17 @@ class FakeAnswerClient:
     def chat(self, messages, *, max_tokens, temperature, top_p):
         assert messages
         self.calls.append(messages)
-        return ChatResult(content="Alice adopted Pixel.", latency_ms=12.0, prompt_tokens=10, completion_tokens=4)
+        return ChatResult(
+            content="Alice adopted Pixel.",
+            ttft_ms=3.0,
+            output_tokens_per_sec=40.0,
+        )
 
 
 class FakeJudgeClient:
     def chat(self, messages, *, max_tokens, temperature, top_p):
         assert temperature == 0.0
-        return ChatResult(content='{"correct": true, "reason": "matches"}', latency_ms=5.0)
+        return ChatResult(content='{"correct": true, "reason": "matches"}')
 
 
 def _write_dataset(path):
@@ -73,15 +77,16 @@ def test_runner_full_context_mode_with_mocks(tmp_path):
 
     summary = run_benchmark(config, clients)
 
-    assert summary["accuracy"] == 1.0
+    assert summary["metrics"]["accuracy"] == 1.0
     rows = read_jsonl(tmp_path / "results" / "test-run" / "predictions.jsonl")
     assert len(rows) == 1
     assert rows[0]["judge"]["correct"] is True
     assert rows[0]["retrieved_memories"] == []
-    assert rows[0]["memory"]["backend"] == "none"
-    assert rows[0]["index"]["backend"] == "none"
-    assert rows[0]["latency_ms"]["answer_generation_ms"] == 12.0
-    assert rows[0]["vllm"]["answer"]["latency_ms"] == 12.0
+    assert rows[0]["metrics"] == {
+        "time_to_first_token_ms": 3.0,
+        "vector_db_query_time_ms": 0.0,
+        "throughput_tokens_per_sec": 40.0,
+    }
     prompt = answer_client.calls[0][1]["content"]
     assert "Full conversation transcript:" in prompt
     assert "Alice: I adopted a cat named Pixel." in prompt
@@ -196,7 +201,7 @@ def test_runner_mem0_context_mode_with_mocked_mem0(tmp_path, monkeypatch):
 
     summary = run_benchmark(config, clients)
 
-    assert summary["accuracy"] == 1.0
+    assert summary["metrics"]["accuracy"] == 1.0
     assert len(fake_memories) == 1
     memory = fake_memories[0]
     assert memory.vector_store.finalized is True
@@ -225,13 +230,11 @@ def test_runner_mem0_context_mode_with_mocked_mem0(tmp_path, monkeypatch):
     assert rows[0]["judge"]["correct"] is True
     assert rows[0]["retrieved_memories"]
     assert rows[0]["retrieved_memories"][0]["memory"] == "Alice: I adopted a cat named Pixel."
-    assert rows[0]["memory"]["backend"] == "mem0-jasper"
-    assert rows[0]["memory"]["vector_search_ms"] == 2.5
-    assert rows[0]["index"]["backend"] == "jasper"
-    assert rows[0]["index"]["memory_add_count"] == 2
-    assert rows[0]["index"]["infer"] is False
-    assert rows[0]["latency_ms"]["answer_generation_ms"] == 12.0
-    assert rows[0]["latency_ms"]["memory_search_ms"] >= 0.0
+    assert rows[0]["metrics"] == {
+        "time_to_first_token_ms": 3.0,
+        "vector_db_query_time_ms": 2.5,
+        "throughput_tokens_per_sec": 40.0,
+    }
     prompt = answer_client.calls[0][1]["content"]
     assert "Retrieved memory context:" in prompt
     assert "Alice: I adopted a cat named Pixel." in prompt

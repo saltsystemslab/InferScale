@@ -72,7 +72,6 @@ class BenchmarkConfig:
     context_mode: ContextMode = "mem0"
     vector_backend: VectorBackend = "jasper"
     vector_distance: DistanceMetric = "ip"
-    normalize_embeddings: bool = True
     top_k: int = 20
     jasper_n_neighbors: int = 64
     jasper_alpha: float = 1.0
@@ -109,7 +108,7 @@ class BenchmarkConfig:
 def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     parser = argparse.ArgumentParser(
         prog="locomo-jasper-bench",
-        description="Run LoCoMo through baseline and plugin vLLM servers for accuracy and latency comparisons.",
+        description="Run LoCoMo through baseline and plugin vLLM servers for accuracy, TTFT, vector DB query time, and throughput comparisons.",
     )
     parser.add_argument("--mode", choices=["baseline", "plugin", "evaluate-only"], default="baseline")
     parser.add_argument("--dataset", dest="dataset_path", type=Path, default=Path("data/locomo10.json"))
@@ -139,7 +138,6 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     parser.add_argument("--context-mode", choices=["mem0", "full", "retrieval"], default="mem0")
     parser.add_argument("--vector-backend", choices=["jasper", "qdrant"], default="jasper")
     parser.add_argument("--vector-distance", choices=["ip", "l2"], default="ip")
-    parser.add_argument("--no-normalize-embeddings", action="store_false", dest="normalize_embeddings")
     parser.add_argument("--top-k", type=int, default=20)
     parser.add_argument("--jasper-n-neighbors", type=int, default=64)
     parser.add_argument("--jasper-alpha", type=float, default=1.0)

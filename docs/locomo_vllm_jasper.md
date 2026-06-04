@@ -124,6 +124,8 @@ export no_proxy="${NO_PROXY}"
 
 Mem0 uses OpenAI embeddings by default. The benchmark caches embeddings under `${BENCHMARK_CACHE_ROOT}/embeddings`, keyed by model, purpose, and exact text. Use `--no-embedding-cache` only when you intentionally want to re-embed everything.
 
+Embeddings are passed to Jasper and Qdrant as raw vectors.
+
 ## 5. Small Jasper Check
 
 Use this for a quick end-to-end run:
@@ -142,7 +144,7 @@ locomo-jasper-bench \
   --run-id jasper-small-$(date -u +%Y%m%dT%H%M%SZ)
 ```
 
-With `--stream`, summaries include TTFT. Without it, `vllm.answer.ttft_ms` is `null`.
+Use `--stream` for TTFT. Without it, `metrics.time_to_first_token_ms` is `null`.
 
 ## 6. Full Jasper Baseline
 
@@ -215,15 +217,12 @@ cat "${SCRATCH_ROOT}/results/jasper-20samples-${RUN_STAMP}/summary.json"
 
 Important fields:
 
-- `accuracy` and `by_category`: judged answer quality.
-- `latency_ms.memory_search_ms`: full retrieval wall time, including query embedding, backend search, and result materialization.
-- `vector_store.search_time_ms`: raw backend vector search time only; payload lookup and result formatting are excluded.
-- `vllm.answer.ttft_ms`: time to first answer token, only populated with `--stream`.
-- `vllm.answer.output_tokens_per_sec`: answer generation throughput.
-- `retrieval.questions_with_duplicate_ids`: raw duplicate retrieval IDs in final prompts.
-- `retrieval.questions_with_duplicate_turn_ids`: raw duplicate source turns in final prompts.
+- `metrics.accuracy`: judged answer quality.
+- `metrics.time_to_first_token_ms`: time to first answer token, only populated with `--stream`.
+- `metrics.vector_db_query_time_ms`: raw backend vector DB query time; payload lookup and result formatting are excluded.
+- `metrics.throughput_tokens_per_sec`: answer generation throughput.
 
-Jasper and Qdrant both return backend-ordered results. The benchmark does not dedupe or rerank retrieved memories.
+Jasper and Qdrant both return backend-ordered results over raw embeddings.
 
 ## 9. Re-Judge Saved Predictions
 

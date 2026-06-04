@@ -1,4 +1,4 @@
-"""LoCoMo benchmark harness for vLLM plugin accuracy and latency comparisons."""
+"""LoCoMo benchmark harness for vLLM plugin comparison metrics."""
 
 __all__ = ["__version__"]
 

@@ -39,7 +39,6 @@ class Mem0JasperVectorStore(VectorStoreBase):
         path: str = "/tmp/jasper",
         backend: str = "jasper",
         distance: str = "ip",
-        normalize: bool = True,
         n_neighbors: int = 64,
         alpha: float = 1.0,
         workspace_budget: str = "10GB",
@@ -51,7 +50,6 @@ class Mem0JasperVectorStore(VectorStoreBase):
         self.config = VectorStoreConfig(
             backend=backend,
             distance=distance,
-            normalize=normalize,
             n_neighbors=n_neighbors,
             alpha=alpha,
             workspace_budget=workspace_budget,
@@ -233,7 +231,6 @@ def build_mem0_config(
                 "path": str(store_root),
                 "backend": vector_config.backend,
                 "distance": vector_config.distance,
-                "normalize": vector_config.normalize,
                 "n_neighbors": vector_config.n_neighbors,
                 "alpha": vector_config.alpha,
                 "workspace_budget": vector_config.workspace_budget,
@@ -287,7 +284,6 @@ def _install_jasper_config_module() -> None:
         path: str = Field("/tmp/jasper", description="Path for the Jasper vector store")
         backend: str = Field("jasper", description="JasperVectorStore backend")
         distance: str = Field("ip", description="Distance metric")
-        normalize: bool = Field(True, description="Normalize vectors before storage and search")
         n_neighbors: int = Field(64, description="Jasper graph neighbor count")
         alpha: float = Field(1.0, description="Jasper graph alpha")
         workspace_budget: str = Field("10GB", description="Jasper graph build workspace budget")

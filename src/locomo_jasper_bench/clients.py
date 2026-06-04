@@ -11,24 +11,8 @@ import numpy as np
 @dataclass(slots=True)
 class ChatResult:
     content: str
-    latency_ms: float
     ttft_ms: float | None = None
-    prompt_tokens: int | None = None
-    completion_tokens: int | None = None
-    total_tokens: int | None = None
     output_tokens_per_sec: float | None = None
-    model: str | None = None
-
-    def metrics(self) -> dict[str, Any]:
-        return {
-            "latency_ms": self.latency_ms,
-            "ttft_ms": self.ttft_ms,
-            "prompt_tokens": self.prompt_tokens,
-            "completion_tokens": self.completion_tokens,
-            "total_tokens": self.total_tokens,
-            "output_tokens_per_sec": self.output_tokens_per_sec,
-            "model": self.model,
-        }
 
 
 class ChatClient(Protocol):
@@ -94,18 +78,13 @@ class OpenAICompatibleChatClient:
         except Exception as exc:
             _raise_context_limit_error(exc)
             raise
-        latency_ms = (time.perf_counter() - started) * 1000
+        elapsed_ms = (time.perf_counter() - started) * 1000
         content = response.choices[0].message.content or ""
         usage = getattr(response, "usage", None)
-        completion_tokens = getattr(usage, "completion_tokens", None)
+        output_token_count = getattr(usage, "completion_tokens", None)
         return ChatResult(
             content=content,
-            latency_ms=latency_ms,
-            prompt_tokens=getattr(usage, "prompt_tokens", None),
-            completion_tokens=completion_tokens,
-            total_tokens=getattr(usage, "total_tokens", None),
-            output_tokens_per_sec=_tokens_per_second(completion_tokens, latency_ms),
-            model=getattr(response, "model", self._model),
+            output_tokens_per_sec=_tokens_per_second(output_token_count, elapsed_ms),
         )
 
     def _chat_streaming(
@@ -135,10 +114,8 @@ class OpenAICompatibleChatClient:
         content_parts: list[str] = []
         ttft_ms: float | None = None
         usage = None
-        model = self._model
         try:
             for chunk in chunks:
-                model = getattr(chunk, "model", model)
                 chunk_usage = getattr(chunk, "usage", None)
                 if chunk_usage is not None:
                     usage = chunk_usage
@@ -154,17 +131,12 @@ class OpenAICompatibleChatClient:
             _raise_context_limit_error(exc)
             raise
 
-        latency_ms = (time.perf_counter() - started) * 1000
-        completion_tokens = getattr(usage, "completion_tokens", None)
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        output_token_count = getattr(usage, "completion_tokens", None)
         return ChatResult(
             content="".join(content_parts),
-            latency_ms=latency_ms,
             ttft_ms=ttft_ms,
-            prompt_tokens=getattr(usage, "prompt_tokens", None),
-            completion_tokens=completion_tokens,
-            total_tokens=getattr(usage, "total_tokens", None),
-            output_tokens_per_sec=_tokens_per_second(completion_tokens, latency_ms),
-            model=model,
+            output_tokens_per_sec=_tokens_per_second(output_token_count, elapsed_ms),
         )
 
 
@@ -220,10 +192,10 @@ class HashEmbeddingClient:
         return vector
 
 
-def _tokens_per_second(tokens: int | None, latency_ms: float) -> float | None:
-    if tokens is None or latency_ms <= 0:
+def _tokens_per_second(tokens: int | None, elapsed_ms: float) -> float | None:
+    if tokens is None or elapsed_ms <= 0:
         return None
-    return tokens / (latency_ms / 1000)
+    return tokens / (elapsed_ms / 1000)
 
 
 def _raise_context_limit_error(exc: Exception) -> None:

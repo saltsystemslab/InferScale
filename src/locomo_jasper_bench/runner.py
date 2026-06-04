@@ -62,7 +62,7 @@ def run_benchmark(config: BenchmarkConfig, clients: RuntimeClients | None = None
         config.run_id,
         summary["question_count"],
         summary["judged_count"],
-        _format_accuracy(summary.get("accuracy")),
+        _format_accuracy(summary.get("metrics", {}).get("accuracy")),
     )
     logger.info("Wrote results to {}", config.run_dir)
     return summary
@@ -127,7 +127,7 @@ def _run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> li
             )
             memory: Any | None
             if context_mode == "mem0":
-                memory, build_metrics, index_metadata = _build_memory_for_sample(config, sample)
+                memory = _build_memory_for_sample(config, sample)
             else:
                 logger.info(
                     "Using full conversation context for sample_id={} turns={}",
@@ -135,8 +135,6 @@ def _run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> li
                     len(sample.turns),
                 )
                 memory = None
-                build_metrics = _empty_build_metrics()
-                index_metadata = {}
             sample_questions = sample.qa
             if question_budget is not None:
                 sample_questions = sample_questions[:question_budget]
@@ -151,19 +149,18 @@ def _run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> li
                         qa.question_id,
                         qa.category,
                     )
-                record = _answer_question(config, clients, sample, qa, memory, build_metrics, index_metadata)
+                record = _answer_question(config, clients, sample, qa, memory)
                 writer.write(record)
                 all_records.append(record)
                 completed_questions += 1
                 if _should_log_progress(completed_questions, planned_questions, config.log_every):
                     logger.info(
-                        "Question {}/{} finished sample_id={} question_id={} judge={} end_to_end_ms={:.1f}",
+                        "Question {}/{} finished sample_id={} question_id={} judge={}",
                         completed_questions,
                         planned_questions,
                         sample.sample_id,
                         qa.question_id,
                         _judge_label(record.get("judge", {}).get("correct")),
-                        record["latency_ms"]["end_to_end_ms"],
                     )
                 if question_budget is not None:
                     question_budget -= 1
@@ -180,7 +177,7 @@ def _run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> li
 def _build_memory_for_sample(
     config: BenchmarkConfig,
     sample: ConversationSample,
-) -> tuple[Any, BuildMetrics, dict[str, Any]]:
+) -> Any:
     if config.embedding_provider != "openai":
         raise RuntimeError("Mem0 context mode currently uses mem0ai's OpenAI embedder; set --embedding-provider openai.")
 
@@ -230,12 +227,7 @@ def _build_memory_for_sample(
         build_metrics.embedding_dim,
         build_metrics.graph_build_time_ms,
     )
-    return memory, build_metrics, {
-        "mem0_path": str(store_root),
-        "memory_add_time_ms": add_time_ms,
-        "memory_add_count": len(sample.turns),
-        "infer": False,
-    }
+    return memory
 
 
 def _answer_question(
@@ -244,33 +236,19 @@ def _answer_question(
     sample: ConversationSample,
     qa: QuestionAnswer,
     memory: Any | None,
-    build_metrics: BuildMetrics,
-    index_metadata: dict[str, Any],
 ) -> dict[str, Any]:
-    started = time.perf_counter()
     if _resolved_context_mode(config.context_mode) == "mem0":
         if memory is None:
             raise RuntimeError("Mem0 context mode requires a memory store.")
-        memory_search_started = time.perf_counter()
         raw_results = _search_mem0_memory(memory, qa.question, sample.sample_id, config.top_k)
-        memory_search_ms = (time.perf_counter() - memory_search_started) * 1000
         hits = mem0_results_to_search_hits(raw_results)
         answer_messages = build_retrieval_answer_messages(sample, qa, hits)
-        memory_embedding_ms = None
         store_metrics = _mem0_store_search_metrics(memory)
         vector_search_ms = store_metrics.search_time_ms
-        memory_backend = f"mem0-{store_metrics.backend}"
-        indexed_vector_count = store_metrics.indexed_vector_count
-        embedding_dim = store_metrics.embedding_dim
     else:
         hits = []
         answer_messages = build_full_context_answer_messages(sample, qa)
-        memory_search_ms = 0.0
-        memory_embedding_ms = None
         vector_search_ms = 0.0
-        memory_backend = "none"
-        indexed_vector_count = 0
-        embedding_dim = None
     answer = clients.answer_client.chat(
         answer_messages,
         max_tokens=config.max_answer_tokens,
@@ -278,8 +256,6 @@ def _answer_question(
         top_p=config.top_p,
     )
     judge_payload: dict[str, Any] = {"correct": None, "reason": None, "raw": None}
-    judge_metrics: dict[str, Any] | None = None
-    judge_latency_ms = None
     if not config.skip_judge:
         judge_messages = build_judge_messages(qa, answer.content)
         judge = clients.judge_client.chat(
@@ -290,9 +266,6 @@ def _answer_question(
         )
         correct, reason = parse_judge_response(judge.content)
         judge_payload = {"correct": correct, "reason": reason, "raw": judge.content}
-        judge_metrics = judge.metrics()
-        judge_latency_ms = judge.latency_ms
-    end_to_end_ms = (time.perf_counter() - started) * 1000
 
     return {
         "run_id": config.run_id,
@@ -316,32 +289,10 @@ def _answer_question(
             for hit in hits
         ],
         "judge": judge_payload,
-        "latency_ms": {
-            "memory_search_ms": memory_search_ms,
-            "memory_embedding_ms": memory_embedding_ms,
-            "vector_search_ms": vector_search_ms,
-            "answer_generation_ms": answer.latency_ms,
-            "judge_ms": judge_latency_ms,
-            "end_to_end_ms": end_to_end_ms,
-        },
-        "vllm": {
-            "answer": answer.metrics(),
-            "judge": judge_metrics,
-        },
-        "memory": {
-            "backend": memory_backend,
-            "embedding_time_ms": memory_embedding_ms,
-            "vector_search_ms": vector_search_ms,
-            "indexed_vector_count": indexed_vector_count,
-            "embedding_dim": embedding_dim,
-        },
-        "index": {
-            "backend": build_metrics.backend,
-            "graph_build_time_ms": build_metrics.graph_build_time_ms,
-            "indexed_vector_count": build_metrics.indexed_vector_count,
-            "embedding_dim": build_metrics.embedding_dim,
-            "graph_path": build_metrics.graph_path,
-            **index_metadata,
+        "metrics": {
+            "time_to_first_token_ms": answer.ttft_ms,
+            "vector_db_query_time_ms": vector_search_ms,
+            "throughput_tokens_per_sec": answer.output_tokens_per_sec,
         },
     }
 
@@ -383,21 +334,16 @@ def _run_evaluate_only(config: BenchmarkConfig, clients: RuntimeClients) -> list
             updated["run_id"] = config.run_id
             updated["mode"] = "evaluate-only"
             updated["judge"] = {"correct": correct, "reason": reason, "raw": judge.content}
-            updated.setdefault("vllm", {})
-            updated["vllm"]["judge"] = judge.metrics()
-            updated.setdefault("latency_ms", {})
-            updated["latency_ms"]["judge_ms"] = judge.latency_ms
             writer.write(updated)
             rows.append(updated)
             if _should_log_progress(index, len(predictions), config.log_every):
                 logger.info(
-                    "Evaluation {}/{} finished sample_id={} question_id={} judge={} judge_ms={:.1f}",
+                    "Evaluation {}/{} finished sample_id={} question_id={} judge={}",
                     index,
                     len(predictions),
                     updated.get("sample_id"),
                     updated.get("question_id"),
                     _judge_label(correct),
-                    judge.latency_ms,
                 )
     logger.info("Wrote {} evaluation records to {}", len(rows), output_path)
     return rows
@@ -532,24 +478,11 @@ def _store_config(config: BenchmarkConfig) -> VectorStoreConfig:
     return VectorStoreConfig(
         backend=config.vector_backend,
         distance=config.vector_distance,
-        normalize=config.normalize_embeddings,
         n_neighbors=config.jasper_n_neighbors,
         alpha=config.jasper_alpha,
         workspace_budget=config.jasper_workspace_budget,
         beam_width=config.jasper_beam_width,
     )
-
-
-def _empty_build_metrics() -> BuildMetrics:
-    return BuildMetrics(
-        backend="none",
-        graph_build_time_ms=0.0,
-        indexed_vector_count=0,
-        embedding_dim=None,
-        graph_path=None,
-    )
-
-
 def _resolve_predictions_path(path: Path) -> Path:
     if path.is_dir():
         return path / "predictions.jsonl"

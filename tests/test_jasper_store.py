@@ -51,7 +51,7 @@ def test_jasper_search_preserves_backend_order_duplicates_and_uses_payload_cache
     monkeypatch.setitem(sys.modules, "torch", FakeTorch())
     store = JasperVectorStore(
         tmp_path,
-        VectorStoreConfig(backend="jasper", distance="ip", normalize=True),
+        VectorStoreConfig(backend="jasper", distance="ip"),
     )
     store.add_many(
         [np.array([1, 0, 0], dtype=np.float32) for _ in range(3)],
@@ -75,7 +75,7 @@ def test_jasper_search_uses_requested_top_k_without_beam_cap(tmp_path, monkeypat
     monkeypatch.setitem(sys.modules, "torch", FakeTorch())
     store = JasperVectorStore(
         tmp_path,
-        VectorStoreConfig(backend="jasper", distance="ip", normalize=True, beam_width=64),
+        VectorStoreConfig(backend="jasper", distance="ip", beam_width=64),
     )
     store.add_many(
         [np.array([1, 0, 0], dtype=np.float32) for _ in range(100)],
@@ -99,7 +99,7 @@ def test_jasper_search_skips_missing_ordinals_without_exact_fill(tmp_path, monke
     monkeypatch.setitem(sys.modules, "torch", FakeTorch())
     store = JasperVectorStore(
         tmp_path,
-        VectorStoreConfig(backend="jasper", distance="ip", normalize=True),
+        VectorStoreConfig(backend="jasper", distance="ip"),
     )
     store.add_many(
         [np.array([1, 0, 0], dtype=np.float32) for _ in range(3)],

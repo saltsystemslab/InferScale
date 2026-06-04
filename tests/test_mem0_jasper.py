@@ -177,7 +177,7 @@ def test_mem0_jasper_mismatched_broad_user_filter_stays_strict(tmp_path):
 def test_build_mem0_config_uses_jasper_provider_without_qdrant(tmp_path):
     config = build_mem0_config(
         store_root=tmp_path,
-        vector_config=VectorStoreConfig(backend="jasper", distance="ip", normalize=True),
+        vector_config=VectorStoreConfig(backend="jasper", distance="ip"),
         embedding_model="text-embedding-3-small",
         embedding_api_key="key",
         embedding_base_url="http://embeddings.test/v1",
@@ -197,7 +197,6 @@ def test_mem0_qdrant_vector_store_insert_search_filter_and_mutate(tmp_path):
         path=str(tmp_path),
         backend="qdrant",
         distance="ip",
-        normalize=True,
     )
     ids = store.insert(
         vectors=[

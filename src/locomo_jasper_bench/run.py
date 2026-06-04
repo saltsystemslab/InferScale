@@ -22,8 +22,9 @@ def main(argv: list[str] | None = None) -> None:
     _configure_logging()
     summary = run_benchmark(config)
     print(f"wrote results to {config.run_dir}")
-    if summary.get("accuracy") is not None:
-        print(f"accuracy={summary['accuracy']:.4f} judged={summary['judged_count']}/{summary['question_count']}")
+    accuracy = summary.get("metrics", {}).get("accuracy")
+    if accuracy is not None:
+        print(f"accuracy={accuracy:.4f} judged={summary['judged_count']}/{summary['question_count']}")
     else:
         print(f"questions={summary['question_count']} judged={summary['judged_count']}")
 

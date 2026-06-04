@@ -29,11 +29,6 @@ def test_vector_backend_accepts_qdrant():
     assert config.vector_backend == "qdrant"
 
 
-def test_vector_backend_rejects_numpy():
-    with pytest.raises(SystemExit):
-        parse_args(["--vector-backend", "numpy"])
-
-
 def test_jasper_alpha_defaults_to_one():
     config = parse_args([])
 

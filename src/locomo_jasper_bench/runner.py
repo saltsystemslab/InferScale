@@ -255,7 +255,7 @@ def _answer_question(
         memory_embedding_ms = None
         store_metrics = _mem0_store_search_metrics(memory)
         vector_search_ms = store_metrics.search_time_ms
-        memory_backend = "mem0-jasper"
+        memory_backend = f"mem0-{store_metrics.backend}"
         indexed_vector_count = store_metrics.indexed_vector_count
         embedding_dim = store_metrics.embedding_dim
     else:

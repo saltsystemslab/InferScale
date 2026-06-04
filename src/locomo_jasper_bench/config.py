@@ -16,7 +16,7 @@ DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 
 Mode = Literal["baseline", "plugin", "evaluate-only"]
 ContextMode = Literal["mem0", "full", "retrieval"]
-VectorBackend = Literal["jasper", "numpy"]
+VectorBackend = Literal["jasper", "numpy", "qdrant"]
 DistanceMetric = Literal["ip", "l2"]
 EmbeddingProvider = Literal["openai", "hash"]
 
@@ -126,7 +126,7 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     parser.add_argument("--hash-embedding-dim", type=int, default=1536)
 
     parser.add_argument("--context-mode", choices=["mem0", "full", "retrieval"], default="mem0")
-    parser.add_argument("--vector-backend", choices=["jasper", "numpy"], default="jasper")
+    parser.add_argument("--vector-backend", choices=["jasper", "numpy", "qdrant"], default="jasper")
     parser.add_argument("--vector-distance", choices=["ip", "l2"], default="ip")
     parser.add_argument("--no-normalize-embeddings", action="store_false", dest="normalize_embeddings")
     parser.add_argument("--top-k", type=int, default=20)

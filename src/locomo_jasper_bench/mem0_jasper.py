@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-import shutil
 import sys
 import types
 from dataclasses import dataclass
@@ -10,7 +8,7 @@ from typing import Any
 
 import numpy as np
 
-from .jasper_store import BuildMetrics, JasperVectorStore, SearchHit, SearchMetrics, VectorStoreConfig
+from .jasper_store import BuildMetrics, JasperVectorStore, QdrantVectorStore, SearchHit, SearchMetrics, VectorStoreConfig
 
 try:
     from mem0.vector_stores.base import VectorStoreBase
@@ -57,7 +55,7 @@ class Mem0JasperVectorStore(VectorStoreBase):
             workspace_budget=workspace_budget,
             beam_width=beam_width,
         )
-        self.store = JasperVectorStore(self.root, self.config)
+        self.store = self._create_store()
         self.last_insert_ids: list[str] = []
         self.last_build_metrics = BuildMetrics(
             backend=backend,
@@ -74,8 +72,13 @@ class Mem0JasperVectorStore(VectorStoreBase):
         )
 
     def create_col(self, name: str | None = None, vector_size: int | None = None, distance: str | None = None) -> None:
-        if name:
+        if name and name != self.collection_name:
+            close = getattr(self.store, "close", None)
+            if callable(close):
+                close()
             self.collection_name = name
+            self.root = self.root.parent / name
+            self.store = self._create_store()
         if vector_size is not None:
             self.embedding_model_dims = vector_size
         if distance:
@@ -95,22 +98,17 @@ class Mem0JasperVectorStore(VectorStoreBase):
         filters: dict[str, Any] | None = None,
         **_: Any,
     ) -> list[Mem0JasperSearchResult]:
-        top_k = limit or top_k
+        requested_top_k = max(1, int(limit or top_k or 5))
         query_vector = _first_vector(vectors)
-        limit = self.store.vector_count if filters else top_k
-        hits, metrics = self.store.search(query_vector, top_k=max(1, limit))
+        hits, metrics = self._search_unique_hits(query_vector, requested_top_k, filters)
         self.last_search_metrics = metrics
-        if filters:
-            hits = [hit for hit in hits if _matches_filters(hit.payload, filters)]
         return [
             Mem0JasperSearchResult(id=hit.id, score=hit.score, payload=hit.payload)
-            for hit in _rerank_hits(hits[:top_k])
+            for hit in _rerank_hits(hits[:requested_top_k])
         ]
 
     def delete(self, vector_id: str) -> None:
-        with self.store._conn:
-            self.store._conn.execute("DELETE FROM payloads WHERE id = ?", (str(vector_id),))
-        self.store._graph = None
+        self.store.delete(str(vector_id))
 
     def update(
         self,
@@ -118,47 +116,19 @@ class Mem0JasperVectorStore(VectorStoreBase):
         vector: list[float] | None = None,
         payload: dict[str, Any] | None = None,
     ) -> None:
-        row = self.store._conn.execute(
-            "SELECT ord, payload_json FROM payloads WHERE id = ?",
-            (str(vector_id),),
-        ).fetchone()
-        if row is None:
-            if vector is None:
-                return
-            self.insert([vector], [payload or {}], [str(vector_id)])
-            return
-
-        ordinal = int(row[0])
-        current_payload = json.loads(row[1])
-        next_payload = current_payload if payload is None else payload
-        if vector is not None and self.store._vectors is not None:
-            next_vector = np.asarray(vector, dtype=np.float32)
-            if self.config.normalize:
-                next_vector = _normalize_vector(next_vector)
-            self.store._vectors[ordinal] = next_vector
-        with self.store._conn:
-            self.store._conn.execute(
-                "UPDATE payloads SET payload_json = ? WHERE id = ?",
-                (json.dumps(next_payload, ensure_ascii=False), str(vector_id)),
-            )
-        self.store._graph = None
+        self.store.update(str(vector_id), vector=vector, payload=payload)
 
     def get(self, vector_id: str) -> Mem0JasperSearchResult | None:
-        row = self.store._conn.execute(
-            "SELECT payload_json FROM payloads WHERE id = ?",
-            (str(vector_id),),
-        ).fetchone()
-        if row is None:
+        payload = self.store.get(str(vector_id))
+        if payload is None:
             return None
-        return Mem0JasperSearchResult(id=str(vector_id), score=0.0, payload=json.loads(row[0]))
+        return Mem0JasperSearchResult(id=str(vector_id), score=0.0, payload=payload)
 
     def list_cols(self) -> list[str]:
         return [self.collection_name]
 
     def delete_col(self) -> None:
-        self.close()
-        shutil.rmtree(self.root, ignore_errors=True)
-        self.store = JasperVectorStore(self.root, self.config)
+        self.store.reset()
 
     def col_info(self) -> dict[str, Any]:
         return {
@@ -177,13 +147,8 @@ class Mem0JasperVectorStore(VectorStoreBase):
         **_: Any,
     ) -> list[Mem0JasperSearchResult]:
         limit = limit or top_k or 100
-        rows = self.store._conn.execute(
-            "SELECT id, payload_json FROM payloads ORDER BY ord LIMIT ?",
-            (limit,),
-        ).fetchall()
         results: list[Mem0JasperSearchResult] = []
-        for item_id, payload_json in rows:
-            payload = json.loads(payload_json)
+        for item_id, payload in self.store.list_payloads(limit=limit):
             if filters and not _matches_filters(payload, filters):
                 continue
             results.append(Mem0JasperSearchResult(id=str(item_id), score=0.0, payload=payload))
@@ -198,6 +163,50 @@ class Mem0JasperVectorStore(VectorStoreBase):
 
     def close(self) -> None:
         self.store.close()
+
+    def _create_store(self) -> Any:
+        if self.config.backend == "qdrant":
+            return QdrantVectorStore(self.root, self.config)
+        return JasperVectorStore(self.root, self.config)
+
+    def _search_unique_hits(
+        self,
+        query_vector: np.ndarray,
+        requested_top_k: int,
+        filters: dict[str, Any] | None,
+    ) -> tuple[list[SearchHit], SearchMetrics]:
+        vector_count = int(getattr(self.store, "vector_count", 0) or 0)
+        if vector_count <= 0:
+            return [], SearchMetrics(self.config.backend, 0.0, 0, None)
+
+        search_k = _initial_search_k(requested_top_k, vector_count, filters is not None)
+        total_search_ms = 0.0
+        last_metrics: SearchMetrics | None = None
+        unique_hits: list[SearchHit] = []
+
+        while True:
+            raw_hits, metrics = self.store.search(query_vector, top_k=search_k)
+            total_search_ms += metrics.search_time_ms
+            last_metrics = metrics
+            candidates = raw_hits
+            if filters:
+                candidates = [hit for hit in candidates if _matches_filters(hit.payload, filters)]
+            unique_hits = _dedupe_hits(candidates)
+            if len(unique_hits) >= requested_top_k or search_k >= vector_count:
+                break
+            next_search_k = min(vector_count, max(search_k + 1, search_k * 2))
+            if next_search_k == search_k:
+                break
+            search_k = next_search_k
+
+        if last_metrics is None:
+            return unique_hits, SearchMetrics(self.config.backend, 0.0, vector_count, None)
+        return unique_hits, SearchMetrics(
+            backend=last_metrics.backend,
+            search_time_ms=total_search_ms,
+            indexed_vector_count=last_metrics.indexed_vector_count,
+            embedding_dim=last_metrics.embedding_dim,
+        )
 
 
 def create_mem0_memory(
@@ -293,7 +302,7 @@ def mem0_results_to_search_hits(results: Any) -> list[SearchHit]:
                 rank=rank,
             )
         )
-    return hits
+    return _rerank_hits(_dedupe_hits(hits))
 
 
 def _install_jasper_config_module() -> None:
@@ -465,11 +474,39 @@ def _rerank_hits(hits: list[SearchHit]) -> list[SearchHit]:
     ]
 
 
-def _normalize_vector(vector: np.ndarray) -> np.ndarray:
-    norm = float(np.linalg.norm(vector))
-    if norm == 0.0:
-        return vector
-    return vector / norm
+def _initial_search_k(requested_top_k: int, vector_count: int, has_filters: bool) -> int:
+    if has_filters:
+        candidate_count = max(requested_top_k * 4, requested_top_k + 10)
+    else:
+        candidate_count = max(requested_top_k * 2, requested_top_k + 5)
+    return max(1, min(vector_count, candidate_count))
+
+
+def _dedupe_hits(hits: list[SearchHit]) -> list[SearchHit]:
+    seen_ids: set[str] = set()
+    seen_turn_ids: set[str] = set()
+    unique: list[SearchHit] = []
+    for hit in hits:
+        if hit.id in seen_ids:
+            continue
+        turn_id = _hit_turn_id(hit)
+        if turn_id is not None and turn_id in seen_turn_ids:
+            continue
+        seen_ids.add(hit.id)
+        if turn_id is not None:
+            seen_turn_ids.add(turn_id)
+        unique.append(hit)
+    return unique
+
+
+def _hit_turn_id(hit: SearchHit) -> str | None:
+    value = hit.payload.get("turn_id")
+    if value is not None:
+        return str(value)
+    metadata = hit.payload.get("metadata")
+    if isinstance(metadata, dict) and metadata.get("turn_id") is not None:
+        return str(metadata["turn_id"])
+    return None
 
 
 def _normalize_distance(distance: str) -> str:

@@ -124,13 +124,14 @@ locomo-jasper-bench \
   --results-dir "${SCRATCH_ROOT}/results" \
   --max-samples 1 \
   --max-questions 3 \
+  --stream \
   --log-every 1 \
   --vllm-command "bash scripts/serve_vllm.sh"
 ```
 
 After `source scripts/scratch_env.sh`, `locomo-jasper-bench` also defaults `--results-dir` to `${BENCHMARK_RESULTS_ROOT}` and `MEM0_DIR` to `${BENCHMARK_CACHE_ROOT}/mem0`, so Mem0 does not write `~/.mem0` on quota-limited home directories. The explicit `--results-dir` above makes the scratch target visible in the command.
 
-The benchmark logs progress with Loguru. By default it logs every 5 questions, plus sample updates. Use `--log-every 1` for a small smoke run, increase it for full runs, or set `LOCOMO_LOG_EVERY`. Set `LOCOMO_LOG_LEVEL=DEBUG` or `LOCOMO_LOG_LEVEL=WARNING` to adjust verbosity.
+The benchmark logs progress with Loguru. By default it logs every 5 questions, plus sample updates. Use `--log-every 1` for a small smoke run, increase it for full runs, or set `LOCOMO_LOG_EVERY`. Set `LOCOMO_LOG_LEVEL=DEBUG` or `LOCOMO_LOG_LEVEL=WARNING` to adjust verbosity. Use `--stream` when you want TTFT metrics; without streaming, `vllm.answer.ttft_ms` is `null`.
 
 Jasper stores vectors and payload metadata under `${SCRATCH_ROOT}/results/<run_id>/mem0/<sample_id>/`. If SQLite reports `disk I/O error`, verify that `--results-dir` and `BENCHMARK_CACHE_ROOT` are on writable scratch storage with quota available.
 
@@ -141,7 +142,7 @@ Outputs are written under `${SCRATCH_ROOT}/results/<run_id>/`:
 - `predictions.jsonl`
 - `summary.json`
 
-The default `--context-mode mem0` creates one Mem0 instance per LoCoMo sample under the run directory. It adds each formatted turn with `infer=False`, preserving sample, session, turn, speaker, and timestamp metadata, then finalizes the Jasper graph before questions are answered. `latency_ms.memory_search_ms` measures Mem0 search wall time, while `latency_ms.answer_generation_ms` remains the baseline-vs-plugin latency metric. Mem0 index build and add time are recorded in index metadata, not answer API latency.
+The default `--context-mode mem0` creates one Mem0 instance per LoCoMo sample under the run directory. It adds each formatted turn with `infer=False`, preserving sample, session, turn, speaker, and timestamp metadata, then finalizes the vector index before questions are answered. `latency_ms.memory_search_ms` measures Mem0 search wall time, while `latency_ms.answer_generation_ms` remains the baseline-vs-plugin latency metric. Index build and add time are recorded in index metadata, not answer API latency.
 
 Mem0 embeddings use the OpenAI embedder by default, so `OPENAI_API_KEY` must be set for `--context-mode mem0`. The project installs `mem0ai[nlp]` because Mem0's local memory processing can require spaCy NLP dependencies. Use `--context-mode full` for a no-memory full-transcript baseline that does not build embeddings or Jasper indexes. `--context-mode retrieval` is accepted as a deprecated alias for `mem0`.
 
@@ -183,13 +184,55 @@ locomo-jasper-bench \
   --mode baseline \
   --dataset data/locomo10.json \
   --results-dir "${SCRATCH_ROOT}/results" \
+  --stream \
   --run-id baseline-vllm-$(date -u +%Y%m%dT%H%M%SZ) \
   --vllm-command "bash scripts/serve_vllm.sh"
 ```
 
 Add `--skip-judge` if you want to write predictions first and judge later.
 
-## 7. Re-Judge Saved Predictions
+## 7. Jasper vs Qdrant
+
+Run both commands from the benchmark tmux window while the baseline vLLM server is running. Keep the same `OPENAI_API_KEY`, model, dataset, `top_k`, question count, and `--stream` setting so TTFT, throughput, retrieval timing, and accuracy are comparable.
+
+```bash
+source .venv/bin/activate
+source scripts/scratch_env.sh
+
+export VLLM_BASE_URL=http://127.0.0.1:8000/v1
+export JUDGE_BASE_URL=http://127.0.0.1:8000/v1
+export VLLM_API_KEY=token-abc123
+export JUDGE_API_KEY=token-abc123
+export OPENAI_API_KEY=<your-openai-key>
+export NO_PROXY=localhost,127.0.0.1,::1
+export no_proxy="${NO_PROXY}"
+
+locomo-jasper-bench \
+  --mode baseline \
+  --dataset data/locomo10.json \
+  --results-dir "${SCRATCH_ROOT}/results" \
+  --vector-backend jasper \
+  --max-samples 1 \
+  --max-questions 3 \
+  --stream \
+  --log-every 1 \
+  --run-id jasper-fixed-$(date -u +%Y%m%dT%H%M%SZ)
+
+locomo-jasper-bench \
+  --mode baseline \
+  --dataset data/locomo10.json \
+  --results-dir "${SCRATCH_ROOT}/results" \
+  --vector-backend qdrant \
+  --max-samples 1 \
+  --max-questions 3 \
+  --stream \
+  --log-every 1 \
+  --run-id qdrant-local-$(date -u +%Y%m%dT%H%M%SZ)
+```
+
+Compare each run's `summary.json`. Key fields are `accuracy`, `by_category`, `latency_ms`, `vllm.answer.ttft_ms`, `vllm.answer.output_tokens_per_sec`, `vector_store.search_time_ms`, and `retrieval.questions_with_duplicate_ids`.
+
+## 8. Re-Judge Saved Predictions
 
 The judge should always be the plain baseline vLLM server, even when evaluating plugin outputs.
 
@@ -204,7 +247,7 @@ locomo-jasper-bench \
   --run-id judge-$(date -u +%Y%m%dT%H%M%SZ)
 ```
 
-## 8. Plugin Variant
+## 9. Plugin Variant
 
 Start the plugin-enabled vLLM server separately, then run the same benchmark against that server. Keep the LoCoMo data, prompt mode, judge settings, generation settings, and max token settings unchanged so baseline and plugin runs are comparable:
 
@@ -227,9 +270,9 @@ If the plugin requires request-body options, pass them to answer generation only
 --llm-extra-body-json '{"your_plugin_option": true}'
 ```
 
-Compare `summary.json` files from the baseline and plugin run directories. Primary latency is `latency_avg_ms.answer_generation_ms` and accuracy is `accuracy`.
+Compare `summary.json` files from the baseline and plugin run directories. Primary latency is `latency_avg_ms.answer_generation_ms`, TTFT is under `vllm.answer.ttft_ms`, throughput is under `vllm.answer.output_tokens_per_sec`, and accuracy is `accuracy`.
 
-## 9. CPU-Only Dry Run
+## 10. CPU-Only Dry Run
 
 For local harness checks without CUDA, vLLM, or OpenAI embeddings:
 

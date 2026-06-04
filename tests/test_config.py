@@ -21,6 +21,12 @@ def test_context_mode_accepts_retrieval_alias():
     assert config.context_mode == "mem0"
 
 
+def test_vector_backend_accepts_qdrant():
+    config = parse_args(["--vector-backend", "qdrant"])
+
+    assert config.vector_backend == "qdrant"
+
+
 def test_results_dir_default_uses_benchmark_results_root(monkeypatch):
     monkeypatch.setenv("BENCHMARK_RESULTS_ROOT", "/scratch/tester/benchmark-jasper/results")
 

@@ -4,7 +4,7 @@ import json
 
 from locomo_jasper_bench.clients import ChatResult
 from locomo_jasper_bench.config import BenchmarkConfig
-from locomo_jasper_bench.jasper_store import BuildMetrics, SearchMetrics
+from locomo_jasper_bench.jasper_store import BuildMetrics, SearchHit, SearchMetrics
 from locomo_jasper_bench.results import read_jsonl
 from locomo_jasper_bench.runner import RuntimeClients, run_benchmark
 
@@ -89,6 +89,7 @@ class FakeMem0VectorStore:
     def __init__(self) -> None:
         self.finalized = False
         self.closed = False
+        self.search_calls = []
         self.last_search_metrics = SearchMetrics(
             backend="jasper",
             search_time_ms=2.5,
@@ -109,12 +110,34 @@ class FakeMem0VectorStore:
     def close(self):
         self.closed = True
 
+    def search(self, *, query, vectors, top_k, filters):
+        self.search_calls.append({"query": query, "vectors": vectors, "top_k": top_k, "filters": filters})
+        return [
+            SearchHit(
+                id="mem-1",
+                payload={"data": "Alice: I adopted a cat named Pixel.", "metadata": {"turn_id": "conv-1:session_1:0"}},
+                score=0.91,
+                distance=0.91,
+                rank=1,
+            )
+        ]
+
+
+class FakeMem0Embedder:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def embed(self, query, purpose):
+        self.calls.append({"query": query, "purpose": purpose})
+        return [0.1, 0.2, 0.3]
+
 
 class FakeMem0Memory:
     def __init__(self) -> None:
         self.add_calls = []
         self.search_calls = []
         self.vector_store = FakeMem0VectorStore()
+        self.embedding_model = FakeMem0Embedder()
 
     def add(self, messages, *, user_id, infer, metadata):
         self.add_calls.append(
@@ -182,8 +205,10 @@ def test_runner_mem0_context_mode_with_mocked_mem0(tmp_path, monkeypatch):
     assert memory.add_calls[0]["metadata"]["sample_id"] == "conv-1"
     assert memory.add_calls[0]["metadata"]["turn_id"] == "conv-1:session_1:0"
     assert memory.add_calls[0]["metadata"]["speaker"] == "Alice"
-    assert memory.search_calls == [
-        {"query": "Who adopted Pixel?", "filters": {"user_id": "conv-1"}, "top_k": 5}
+    assert memory.search_calls == []
+    assert memory.embedding_model.calls == [{"query": "Who adopted Pixel?", "purpose": "search"}]
+    assert memory.vector_store.search_calls == [
+        {"query": "Who adopted Pixel?", "vectors": [0.1, 0.2, 0.3], "filters": {"user_id": "conv-1"}, "top_k": 5}
     ]
 
     rows = read_jsonl(tmp_path / "results" / "test-run" / "predictions.jsonl")

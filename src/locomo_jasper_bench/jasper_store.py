@@ -305,6 +305,9 @@ class JasperVectorStore:
 
         indices, distances = self._graph.search(query_tensor, k=safe_k, beam_width=self.config.beam_width)
 
+        print(f"indices: {indices}")
+        print(f"distances: {distances}")
+
         index_values = indices[0].detach().cpu().numpy().astype(np.int64)
         distance_values = distances[0].detach().cpu().numpy().astype(np.float32)
         hits = self._rerank_hits(self._hits_from_ordinals(index_values, distance_values))

@@ -282,6 +282,10 @@ class JasperVectorStore:
         if not torch.cuda.is_available():
             raise RuntimeError("Jasper backend requires a CUDA device. Use --vector-backend numpy for CPU-only dry runs.")
         vectors = torch.from_numpy(self._vectors).to(device="cuda", dtype=torch.float32)
+
+        # save the vectors to a file
+        np.save(str("/projects/SaltSystemsLab/locomo_jasper_vectors.npy"), vectors.cpu().numpy())
+
         return jasper.Graph.build(
             vectors,
             n_neighbors=self.config.n_neighbors,
@@ -302,6 +306,10 @@ class JasperVectorStore:
         # k > beam_width can return duplicate or unusable ordinals.
         safe_k = max(1, min(top_k, self.vector_count, max(1, self.config.beam_width)))
         query_tensor = torch.from_numpy(query.reshape(1, -1)).to(device="cuda", dtype=torch.float32)
+
+        # store the query to a file
+        np.save(str("/projects/SaltSystemsLab/locomo_jasper_query.npy"), query_tensor.cpu().numpy())
+        input("Stop here")
 
         indices, distances = self._graph.search(query_tensor, k=safe_k, beam_width=self.config.beam_width)
 

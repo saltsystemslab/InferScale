@@ -303,12 +303,7 @@ class JasperVectorStore:
         safe_k = max(1, min(top_k, self.vector_count, max(1, self.config.beam_width)))
         query_tensor = torch.from_numpy(query.reshape(1, -1)).to(device="cuda", dtype=torch.float32)
 
-        self._graph.save(str("/projects/SaltSystemsLab/locomo_jasper_index"))
-        print(f"query: {query}")
-
         indices, distances = self._graph.search(query_tensor, k=safe_k, beam_width=self.config.beam_width)
-
-        input("Stop here")
 
         index_values = indices[0].detach().cpu().numpy().astype(np.int64)
         distance_values = distances[0].detach().cpu().numpy().astype(np.float32)

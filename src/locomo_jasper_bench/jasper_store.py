@@ -50,7 +50,7 @@ class SearchHit:
 
 
 class JasperVectorStore:
-    """File-backed vector store with Jasper GPU search and NumPy exact-search fallback."""
+    """File-backed vector store with Jasper GPU search."""
 
     def __init__(self, root: str | Path, config: VectorStoreConfig) -> None:
         self.root = Path(root)
@@ -131,17 +131,10 @@ class JasperVectorStore:
                 embedding_dim=None,
             )
 
-        np.save(self._vectors_path, self._vectors)
-        if self.config.backend == "numpy":
-            return BuildMetrics(
-                backend="numpy",
-                graph_build_time_ms=0.0,
-                indexed_vector_count=self.vector_count,
-                embedding_dim=self.dim,
-            )
         if self.config.backend != "jasper":
             raise ValueError(f"Unsupported vector backend: {self.config.backend}")
 
+        np.save(self._vectors_path, self._vectors)
         started = time.perf_counter()
         self._graph = self._build_jasper_graph()
         build_time_ms = (time.perf_counter() - started) * 1000
@@ -170,8 +163,6 @@ class JasperVectorStore:
         started = time.perf_counter()
         if self.config.backend == "jasper":
             hits = self._search_jasper(query, top_k)
-        elif self.config.backend == "numpy":
-            hits = self._search_numpy(query, top_k)
         else:
             raise ValueError(f"Unsupported vector backend: {self.config.backend}")
         elapsed_ms = (time.perf_counter() - started) * 1000
@@ -277,14 +268,13 @@ class JasperVectorStore:
         except ImportError as exc:
             raise RuntimeError(
                 "Jasper backend requires torch, apache-tvm-ffi, and the built jasper Python package. "
-                "Use --vector-backend numpy for CPU-only dry runs."
+                "Use --vector-backend qdrant for CPU-only vector-search comparisons."
             ) from exc
         if not torch.cuda.is_available():
-            raise RuntimeError("Jasper backend requires a CUDA device. Use --vector-backend numpy for CPU-only dry runs.")
+            raise RuntimeError(
+                "Jasper backend requires a CUDA device. Use --vector-backend qdrant for CPU-only vector-search comparisons."
+            )
         vectors = torch.from_numpy(self._vectors).to(device="cuda", dtype=torch.float32)
-
-        # save the vectors to a file
-        np.save(str("/projects/SaltSystemsLab/locomo_jasper_vectors.npy"), vectors.cpu().numpy())
 
         return jasper.Graph.build(
             vectors,
@@ -302,26 +292,28 @@ class JasperVectorStore:
                 self._graph = self._build_jasper_graph()
         import torch
 
-        # Jasper beam search only maintains beam_width candidates; requesting
-        # k > beam_width can return duplicate or unusable ordinals.
-        safe_k = max(1, min(top_k, self.vector_count, max(1, self.config.beam_width)))
         query_tensor = torch.from_numpy(query.reshape(1, -1)).to(device="cuda", dtype=torch.float32)
-
-        # store the query to a file
-        np.save(str("/projects/SaltSystemsLab/locomo_jasper_query.npy"), query_tensor.cpu().numpy())
-        input("Stop here")
-
-        indices, distances = self._graph.search(query_tensor, k=safe_k, beam_width=self.config.beam_width)
-
-        print(f"indices: {indices}")
-        print(f"distances: {distances}")
+        indices, distances = self._graph.search(query_tensor, k=top_k, beam_width=self.config.beam_width)
 
         index_values = indices[0].detach().cpu().numpy().astype(np.int64)
         distance_values = distances[0].detach().cpu().numpy().astype(np.float32)
-        hits = self._rerank_hits(self._hits_from_ordinals(index_values, distance_values))
-        if len(hits) < top_k:
-            hits = self._merge_and_rerank_hits([hits, self._search_numpy(query, top_k)])
-        return hits[:top_k]
+        hits: list[SearchHit] = []
+        for ordinal, distance in zip(index_values.tolist(), distance_values.tolist()):
+            row = self._payload_by_ordinal(int(ordinal))
+            if row is None:
+                continue
+            item_id, payload = row
+            score = float(-distance)
+            hits.append(
+                SearchHit(
+                    id=item_id,
+                    payload=payload,
+                    score=score,
+                    distance=float(distance),
+                    rank=len(hits) + 1,
+                )
+            )
+        return hits
 
     def _load_jasper_graph(self) -> Any:
         try:
@@ -334,47 +326,6 @@ class JasperVectorStore:
             n_neighbors=self.config.n_neighbors,
             distance=self.config.distance,
         )
-
-    def _search_numpy(self, query: np.ndarray, top_k: int) -> list[SearchHit]:
-        assert self._vectors is not None
-        if self.config.distance == "ip":
-            raw_scores = self._vectors @ query
-            ordinals = np.argsort(-raw_scores)[:top_k]
-            distances = -raw_scores[ordinals]
-        elif self.config.distance == "l2":
-            raw_distances = np.sum((self._vectors - query) ** 2, axis=1)
-            ordinals = np.argsort(raw_distances)[:top_k]
-            distances = raw_distances[ordinals]
-        else:
-            raise ValueError(f"Unsupported distance metric: {self.config.distance}")
-        return self._hits_from_ordinals(ordinals.astype(np.int64), distances.astype(np.float32))
-
-    def _hits_from_ordinals(self, ordinals: np.ndarray, distances: np.ndarray) -> list[SearchHit]:
-        hits: list[SearchHit] = []
-        for rank, (ordinal, distance) in enumerate(zip(ordinals.tolist(), distances.tolist()), start=1):
-            row = self._payload_by_ordinal(int(ordinal))
-            if row is None:
-                continue
-            item_id, payload = row
-            score = float(-distance if self.config.distance == "ip" else -distance)
-            hits.append(SearchHit(id=item_id, payload=payload, score=score, distance=float(distance), rank=rank))
-        return hits
-
-    def _merge_and_rerank_hits(self, hit_groups: list[list[SearchHit]]) -> list[SearchHit]:
-        by_id: dict[str, SearchHit] = {}
-        for hits in hit_groups:
-            for hit in hits:
-                current = by_id.get(hit.id)
-                if current is None or hit.score > current.score:
-                    by_id[hit.id] = hit
-        return self._rerank_hits(list(by_id.values()))
-
-    def _rerank_hits(self, hits: list[SearchHit]) -> list[SearchHit]:
-        sorted_hits = sorted(hits, key=lambda hit: hit.score, reverse=True)
-        return [
-            SearchHit(id=hit.id, payload=hit.payload, score=hit.score, distance=hit.distance, rank=rank)
-            for rank, hit in enumerate(sorted_hits, start=1)
-        ]
 
     def _payload_by_ordinal(self, ordinal: int) -> tuple[str, dict[str, Any]] | None:
         row = self._conn.execute(

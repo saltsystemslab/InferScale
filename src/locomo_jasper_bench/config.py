@@ -16,7 +16,7 @@ DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 
 Mode = Literal["baseline", "plugin", "evaluate-only"]
 ContextMode = Literal["mem0", "full", "retrieval"]
-VectorBackend = Literal["jasper", "numpy", "qdrant"]
+VectorBackend = Literal["jasper", "qdrant"]
 DistanceMetric = Literal["ip", "l2"]
 EmbeddingProvider = Literal["openai", "hash"]
 
@@ -75,7 +75,7 @@ class BenchmarkConfig:
     normalize_embeddings: bool = True
     top_k: int = 20
     jasper_n_neighbors: int = 64
-    jasper_alpha: float = 1.2
+    jasper_alpha: float = 1.0
     jasper_workspace_budget: str = "10GB"
     jasper_beam_width: int = 64
 
@@ -137,12 +137,12 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     parser.add_argument("--no-embedding-cache", action="store_false", dest="embedding_cache_enabled")
 
     parser.add_argument("--context-mode", choices=["mem0", "full", "retrieval"], default="mem0")
-    parser.add_argument("--vector-backend", choices=["jasper", "numpy", "qdrant"], default="jasper")
+    parser.add_argument("--vector-backend", choices=["jasper", "qdrant"], default="jasper")
     parser.add_argument("--vector-distance", choices=["ip", "l2"], default="ip")
     parser.add_argument("--no-normalize-embeddings", action="store_false", dest="normalize_embeddings")
     parser.add_argument("--top-k", type=int, default=20)
     parser.add_argument("--jasper-n-neighbors", type=int, default=64)
-    parser.add_argument("--jasper-alpha", type=float, default=1.2)
+    parser.add_argument("--jasper-alpha", type=float, default=1.0)
     parser.add_argument("--jasper-workspace-budget", default="10GB")
     parser.add_argument("--jasper-beam-width", type=int, default=64)
 

@@ -41,7 +41,7 @@ class Mem0JasperVectorStore(VectorStoreBase):
         distance: str = "ip",
         normalize: bool = True,
         n_neighbors: int = 64,
-        alpha: float = 1.2,
+        alpha: float = 1.0,
         workspace_budget: str = "10GB",
         beam_width: int = 64,
     ) -> None:
@@ -102,11 +102,15 @@ class Mem0JasperVectorStore(VectorStoreBase):
     ) -> list[Mem0JasperSearchResult]:
         requested_top_k = max(1, int(limit or top_k or 5))
         query_vector = _first_vector(vectors)
-        hits, metrics = self._search_unique_hits(query_vector, requested_top_k, filters)
+        hits, metrics = self.store.search(query_vector, top_k=requested_top_k)
         self.last_search_metrics = metrics
+        scope_satisfies_filter = _scope_satisfies_broad_sample_filter(self.root, filters)
+        candidates = [_normalize_search_hit_payload(hit) for hit in hits]
+        if filters and not scope_satisfies_filter:
+            candidates = [hit for hit in candidates if _matches_filters(hit.payload, filters)]
         return [
             Mem0JasperSearchResult(id=hit.id, score=hit.score, payload=hit.payload)
-            for hit in _rerank_hits(hits[:requested_top_k])
+            for hit in candidates[:requested_top_k]
         ]
 
     def delete(self, vector_id: str) -> None:
@@ -173,58 +177,6 @@ class Mem0JasperVectorStore(VectorStoreBase):
         if self.config.backend == "qdrant":
             return QdrantVectorStore(self.root, self.config)
         return JasperVectorStore(self.root, self.config)
-
-    def _search_unique_hits(
-        self,
-        query_vector: np.ndarray,
-        requested_top_k: int,
-        filters: dict[str, Any] | None,
-    ) -> tuple[list[SearchHit], SearchMetrics]:
-        vector_count = int(getattr(self.store, "vector_count", 0) or 0)
-        if vector_count <= 0:
-            return [], SearchMetrics(self.config.backend, 0.0, 0, None)
-
-        max_search_k = _max_search_k(self.config.backend, self.config.beam_width, vector_count)
-        scope_satisfies_filter = _scope_satisfies_broad_sample_filter(self.root, filters)
-        if scope_satisfies_filter:
-            search_k = max(1, min(max_search_k, requested_top_k))
-        else:
-            search_k = _initial_search_k(
-                requested_top_k,
-                max_search_k,
-                filters is not None,
-            )
-        total_search_ms = 0.0
-        last_metrics: SearchMetrics | None = None
-        unique_hits: list[SearchHit] = []
-
-        while True:
-
-            # raw_hits, metrics = self.store.search(query_vector, top_k=search_k)
-            raw_hits, metrics = self.store.search(query_vector, top_k=search_k)
-            print(f"raw_hits: {raw_hits}")
-            print(f"metrics: {metrics}")
-            total_search_ms += metrics.search_time_ms
-            last_metrics = metrics
-            candidates = [_normalize_search_hit_payload(hit) for hit in raw_hits]
-            if filters and not scope_satisfies_filter:
-                candidates = [hit for hit in candidates if _matches_filters(hit.payload, filters)]
-            unique_hits = _dedupe_hits(candidates)
-            if len(unique_hits) >= requested_top_k or search_k >= max_search_k:
-                break
-            next_search_k = min(max_search_k, max(search_k + 1, search_k * 2))
-            if next_search_k == search_k:
-                break
-            search_k = next_search_k
-
-        if last_metrics is None:
-            return unique_hits, SearchMetrics(self.config.backend, 0.0, vector_count, None)
-        return unique_hits, SearchMetrics(
-            backend=last_metrics.backend,
-            search_time_ms=total_search_ms,
-            indexed_vector_count=last_metrics.indexed_vector_count,
-            embedding_dim=last_metrics.embedding_dim,
-        )
 
 
 def create_mem0_memory(
@@ -320,7 +272,7 @@ def mem0_results_to_search_hits(results: Any) -> list[SearchHit]:
                 rank=rank,
             )
         )
-    return _rerank_hits(_dedupe_hits(hits))
+    return hits
 
 
 def _install_jasper_config_module() -> None:
@@ -337,7 +289,7 @@ def _install_jasper_config_module() -> None:
         distance: str = Field("ip", description="Distance metric")
         normalize: bool = Field(True, description="Normalize vectors before storage and search")
         n_neighbors: int = Field(64, description="Jasper graph neighbor count")
-        alpha: float = Field(1.2, description="Jasper graph alpha")
+        alpha: float = Field(1.0, description="Jasper graph alpha")
         workspace_budget: str = Field("10GB", description="Jasper graph build workspace budget")
         beam_width: int = Field(64, description="Jasper search beam width")
 
@@ -515,27 +467,6 @@ def _compare(actual: Any, expected: Any, operator: str) -> bool:
     return False
 
 
-def _rerank_hits(hits: list[SearchHit]) -> list[SearchHit]:
-    return [
-        SearchHit(id=hit.id, payload=hit.payload, score=hit.score, distance=hit.distance, rank=rank)
-        for rank, hit in enumerate(hits, start=1)
-    ]
-
-
-def _initial_search_k(requested_top_k: int, vector_count: int, has_filters: bool) -> int:
-    if has_filters:
-        candidate_count = max(requested_top_k * 4, requested_top_k + 10)
-    else:
-        candidate_count = max(requested_top_k * 2, requested_top_k + 5)
-    return max(1, min(vector_count, candidate_count))
-
-
-def _max_search_k(backend: str, beam_width: int, vector_count: int) -> int:
-    if backend == "jasper":
-        return max(1, min(vector_count, max(1, beam_width)))
-    return max(1, vector_count)
-
-
 def _is_broad_sample_filter(filters: dict[str, Any] | None) -> bool:
     if not filters:
         return False
@@ -546,33 +477,6 @@ def _scope_satisfies_broad_sample_filter(root: Path, filters: dict[str, Any] | N
     if not _is_broad_sample_filter(filters):
         return False
     return str(filters["user_id"]) == root.parent.name
-
-
-def _dedupe_hits(hits: list[SearchHit]) -> list[SearchHit]:
-    seen_ids: set[str] = set()
-    seen_turn_ids: set[str] = set()
-    unique: list[SearchHit] = []
-    for hit in hits:
-        if hit.id in seen_ids:
-            continue
-        turn_id = _hit_turn_id(hit)
-        if turn_id is not None and turn_id in seen_turn_ids:
-            continue
-        seen_ids.add(hit.id)
-        if turn_id is not None:
-            seen_turn_ids.add(turn_id)
-        unique.append(hit)
-    return unique
-
-
-def _hit_turn_id(hit: SearchHit) -> str | None:
-    value = hit.payload.get("turn_id")
-    if value is not None:
-        return str(value)
-    metadata = hit.payload.get("metadata")
-    if isinstance(metadata, dict) and metadata.get("turn_id") is not None:
-        return str(metadata["turn_id"])
-    return None
 
 
 def _normalize_distance(distance: str) -> str:

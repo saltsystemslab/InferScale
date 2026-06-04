@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from locomo_jasper_bench.config import BenchmarkConfig, parse_args
 
 
@@ -25,6 +27,23 @@ def test_vector_backend_accepts_qdrant():
     config = parse_args(["--vector-backend", "qdrant"])
 
     assert config.vector_backend == "qdrant"
+
+
+def test_vector_backend_rejects_numpy():
+    with pytest.raises(SystemExit):
+        parse_args(["--vector-backend", "numpy"])
+
+
+def test_jasper_alpha_defaults_to_one():
+    config = parse_args([])
+
+    assert config.jasper_alpha == 1.0
+
+
+def test_jasper_alpha_can_be_overridden():
+    config = parse_args(["--jasper-alpha", "0.75"])
+
+    assert config.jasper_alpha == 0.75
 
 
 def test_results_dir_default_uses_benchmark_results_root(monkeypatch):

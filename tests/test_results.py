@@ -23,7 +23,7 @@ def test_summarize_records_accuracy_by_category():
                     {"id": "a", "metadata": {"turn_id": "t1"}},
                     {"id": "b", "metadata": {"turn_id": "t2"}},
                 ],
-                "index": {"backend": "numpy", "indexed_vector_count": 2, "embedding_dim": 3},
+                "index": {"backend": "jasper", "indexed_vector_count": 2, "embedding_dim": 3},
             },
             {
                 "category": "single-hop",
@@ -44,7 +44,7 @@ def test_summarize_records_accuracy_by_category():
                     {"id": "c", "metadata": {"turn_id": "t3"}},
                     {"id": "c", "metadata": {"turn_id": "t3"}},
                 ],
-                "index": {"backend": "numpy", "indexed_vector_count": 2, "embedding_dim": 3},
+                "index": {"backend": "jasper", "indexed_vector_count": 2, "embedding_dim": 3},
             },
         ],
         run_id="run",
@@ -59,7 +59,7 @@ def test_summarize_records_accuracy_by_category():
     assert summary["latency_ms"]["memory_search_ms"]["p50"] == 2.0
     assert summary["vllm"]["answer"]["ttft_ms"]["avg"] == 1.0
     assert summary["vllm"]["answer"]["output_tokens_per_sec"]["max"] == 30.0
-    assert summary["vector_store"]["backend"] == "numpy"
+    assert summary["vector_store"]["backend"] == "jasper"
     assert summary["vector_store"]["search_time_ms"]["avg"] == 1.0
     assert summary["jasper"]["search_time_ms_avg"] == 1.0
     assert summary["retrieval"]["questions_with_duplicate_ids"] == 1

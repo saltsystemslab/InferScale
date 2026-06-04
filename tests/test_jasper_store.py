@@ -3,39 +3,9 @@ from __future__ import annotations
 import sys
 
 import numpy as np
+import pytest
 
 from locomo_jasper_bench.jasper_store import JasperVectorStore, VectorStoreConfig
-
-
-def test_numpy_store_persists_and_searches(tmp_path):
-    store = JasperVectorStore(
-        tmp_path,
-        VectorStoreConfig(backend="numpy", distance="ip", normalize=True),
-    )
-    store.add_many(
-        [np.array([1, 0, 0], dtype=np.float32), np.array([0, 1, 0], dtype=np.float32)],
-        [{"memory": "alpha"}, {"memory": "beta"}],
-        ["a", "b"],
-    )
-    metrics = store.finalize()
-    hits, search_metrics = store.search(np.array([1, 0, 0], dtype=np.float32), top_k=2)
-    store.close()
-
-    assert metrics.backend == "numpy"
-    assert metrics.indexed_vector_count == 2
-    assert search_metrics.embedding_dim == 3
-    assert hits[0].id == "a"
-    assert hits[0].payload["memory"] == "alpha"
-    assert hits[0].score == 1.0
-    assert hits[0].distance == -1.0
-
-    reopened = JasperVectorStore(
-        tmp_path,
-        VectorStoreConfig(backend="numpy", distance="ip", normalize=True),
-    )
-    reopened_hits, _ = reopened.search(np.array([0, 1, 0], dtype=np.float32), top_k=1)
-    reopened.close()
-    assert reopened_hits[0].id == "b"
 
 
 class FakeTensor:
@@ -67,30 +37,41 @@ class FakeTorch:
 
 
 class FakeGraph:
-    def __init__(self):
+    def __init__(self, indices, distances):
+        self.indices = indices
+        self.distances = distances
         self.calls = []
 
     def search(self, query_tensor, *, k, beam_width):
         self.calls.append({"k": k, "beam_width": beam_width})
-        return (
-            FakeTensor([list(range(k))]),
-            FakeTensor([[1.0 - index * 0.01 for index in range(k)]]),
-        )
+        return FakeTensor([self.indices[:k]]), FakeTensor([self.distances[:k]])
 
 
-class FakeUnderfilledGraph:
-    def __init__(self):
-        self.calls = []
+def test_jasper_search_preserves_backend_order_and_duplicates(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "torch", FakeTorch())
+    store = JasperVectorStore(
+        tmp_path,
+        VectorStoreConfig(backend="jasper", distance="ip", normalize=True),
+    )
+    store.add_many(
+        [np.array([1, 0, 0], dtype=np.float32) for _ in range(3)],
+        [{"memory": f"item-{index}"} for index in range(3)],
+        [str(index) for index in range(3)],
+    )
+    fake_graph = FakeGraph(indices=[2, 0, 2], distances=[-0.9, -0.8, -0.7])
+    store._graph = fake_graph
 
-    def search(self, query_tensor, *, k, beam_width):
-        self.calls.append({"k": k, "beam_width": beam_width})
-        return (
-            FakeTensor([[0] + [2147483647] * (k - 1)]),
-            FakeTensor([[-0.25] + [float("inf")] * (k - 1)]),
-        )
+    hits, metrics = store.search(np.array([1, 0, 0], dtype=np.float32), top_k=3)
+    store.close()
+
+    assert fake_graph.calls == [{"k": 3, "beam_width": 64}]
+    assert metrics.backend == "jasper"
+    assert [hit.id for hit in hits] == ["2", "0", "2"]
+    assert [hit.rank for hit in hits] == [1, 2, 3]
+    assert [hit.score for hit in hits] == pytest.approx([0.9, 0.8, 0.7])
 
 
-def test_jasper_search_caps_k_to_beam_width(tmp_path, monkeypatch):
+def test_jasper_search_uses_requested_top_k_without_beam_cap(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", FakeTorch())
     store = JasperVectorStore(
         tmp_path,
@@ -101,40 +82,36 @@ def test_jasper_search_caps_k_to_beam_width(tmp_path, monkeypatch):
         [{"memory": f"item-{index}"} for index in range(100)],
         [str(index) for index in range(100)],
     )
-    fake_graph = FakeGraph()
+    fake_graph = FakeGraph(
+        indices=list(range(100)),
+        distances=[-(1.0 - index * 0.001) for index in range(100)],
+    )
     store._graph = fake_graph
 
-    hits = store._search_jasper(np.array([1, 0, 0], dtype=np.float32), top_k=80)
+    hits, _ = store.search(np.array([1, 0, 0], dtype=np.float32), top_k=80)
     store.close()
 
-    assert fake_graph.calls == [{"k": 64, "beam_width": 64}]
+    assert fake_graph.calls == [{"k": 80, "beam_width": 64}]
     assert len(hits) == 80
 
 
-def test_jasper_search_fills_underfilled_results_with_exact_search(tmp_path, monkeypatch):
+def test_jasper_search_skips_missing_ordinals_without_exact_fill(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", FakeTorch())
     store = JasperVectorStore(
         tmp_path,
-        VectorStoreConfig(backend="jasper", distance="ip", normalize=True, beam_width=64),
+        VectorStoreConfig(backend="jasper", distance="ip", normalize=True),
     )
     store.add_many(
-        [
-            np.array([1.0, 0.0, 0.0], dtype=np.float32),
-            np.array([0.9, 0.0, 0.0], dtype=np.float32),
-            np.array([0.8, 0.0, 0.0], dtype=np.float32),
-            np.array([0.0, 1.0, 0.0], dtype=np.float32),
-        ],
-        [{"memory": f"item-{index}"} for index in range(4)],
-        [str(index) for index in range(4)],
+        [np.array([1, 0, 0], dtype=np.float32) for _ in range(3)],
+        [{"memory": f"item-{index}"} for index in range(3)],
+        [str(index) for index in range(3)],
     )
-    fake_graph = FakeUnderfilledGraph()
+    fake_graph = FakeGraph(indices=[0, 2147483647, 1], distances=[-0.9, float("inf"), -0.8])
     store._graph = fake_graph
 
-    hits = store._search_jasper(np.array([1, 0, 0], dtype=np.float32), top_k=3)
+    hits, _ = store.search(np.array([1, 0, 0], dtype=np.float32), top_k=3)
     store.close()
 
     assert fake_graph.calls == [{"k": 3, "beam_width": 64}]
-    assert [hit.id for hit in hits] == ["0", "1", "2"]
-    assert [hit.rank for hit in hits] == [1, 2, 3]
-    assert hits[0].score == 1.0
-    assert hits[0].distance == -1.0
+    assert [hit.id for hit in hits] == ["0", "1"]
+    assert [hit.rank for hit in hits] == [1, 2]

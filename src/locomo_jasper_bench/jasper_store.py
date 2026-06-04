@@ -18,7 +18,7 @@ class VectorStoreConfig:
     distance: str = "ip"
     normalize: bool = True
     n_neighbors: int = 64
-    alpha: float = 1.2
+    alpha: float = 1.0
     workspace_budget: str = "10GB"
     beam_width: int = 64
 

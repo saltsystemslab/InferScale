@@ -5,6 +5,7 @@ import types
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+import torch
 
 import numpy as np
 
@@ -203,6 +204,8 @@ class Mem0JasperVectorStore(VectorStoreBase):
             # raw_hits, metrics = self.store.search(query_vector, top_k=search_k)
             query_vector = torch.from_numpy(query_vector).to(device='cuda')
             raw_hits, metrics = self.store.search(query_vector, top_k=search_k)
+            print(f"raw_hits: {raw_hits}")
+            print(f"metrics: {metrics}")
             total_search_ms += metrics.search_time_ms
             last_metrics = metrics
             candidates = [_normalize_search_hit_payload(hit) for hit in raw_hits]

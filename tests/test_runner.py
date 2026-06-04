@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from locomo_jasper_bench.clients import ChatResult
 from locomo_jasper_bench.config import BenchmarkConfig
+from locomo_jasper_bench.embedding_cache import CachedEmbedder
 from locomo_jasper_bench.jasper_store import BuildMetrics, SearchHit, SearchMetrics
 from locomo_jasper_bench.results import read_jsonl
 from locomo_jasper_bench.runner import RuntimeClients, run_benchmark
@@ -184,6 +187,7 @@ def test_runner_mem0_context_mode_with_mocked_mem0(tmp_path, monkeypatch):
         run_id="test-run",
         context_mode="mem0",
         top_k=5,
+        embedding_cache_dir=tmp_path / "embedding-cache",
     )
     clients = RuntimeClients(
         answer_client=answer_client,
@@ -206,10 +210,15 @@ def test_runner_mem0_context_mode_with_mocked_mem0(tmp_path, monkeypatch):
     assert memory.add_calls[0]["metadata"]["turn_id"] == "conv-1:session_1:0"
     assert memory.add_calls[0]["metadata"]["speaker"] == "Alice"
     assert memory.search_calls == []
+    assert isinstance(memory.embedding_model, CachedEmbedder)
     assert memory.embedding_model.calls == [{"query": "Who adopted Pixel?", "purpose": "search"}]
-    assert memory.vector_store.search_calls == [
-        {"query": "Who adopted Pixel?", "vectors": [0.1, 0.2, 0.3], "filters": {"user_id": "conv-1"}, "top_k": 5}
-    ]
+    assert memory.embedding_model.stats()["misses"] == 1
+    assert len(memory.vector_store.search_calls) == 1
+    search_call = memory.vector_store.search_calls[0]
+    assert search_call["query"] == "Who adopted Pixel?"
+    assert search_call["vectors"] == pytest.approx([0.1, 0.2, 0.3])
+    assert search_call["filters"] == {"user_id": "conv-1"}
+    assert search_call["top_k"] == 5
 
     rows = read_jsonl(tmp_path / "results" / "test-run" / "predictions.jsonl")
     assert len(rows) == 1

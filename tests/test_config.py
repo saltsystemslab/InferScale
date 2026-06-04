@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from locomo_jasper_bench.config import parse_args
+from locomo_jasper_bench.config import BenchmarkConfig, parse_args
 
 
 def test_context_mode_defaults_to_mem0():
@@ -33,3 +33,32 @@ def test_results_dir_default_uses_benchmark_results_root(monkeypatch):
     config = parse_args([])
 
     assert config.results_dir == Path("/scratch/tester/benchmark-jasper/results")
+
+
+def test_embedding_cache_dir_default_uses_benchmark_cache_root(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_CACHE_ROOT", "/scratch/tester/benchmark-jasper/cache")
+
+    config = parse_args([])
+
+    assert config.embedding_cache_enabled is True
+    assert config.embedding_cache_dir == Path("/scratch/tester/benchmark-jasper/cache/embeddings")
+
+
+def test_embedding_cache_can_be_disabled():
+    config = parse_args(["--no-embedding-cache"])
+
+    assert config.embedding_cache_enabled is False
+
+
+def test_config_to_jsonable_redacts_api_keys():
+    config = BenchmarkConfig(
+        llm_api_key="llm-secret",
+        judge_api_key="judge-secret",
+        embedding_api_key="embed-secret",
+    )
+
+    data = config.to_jsonable()
+
+    assert data["llm_api_key"] == "<redacted>"
+    assert data["judge_api_key"] == "<redacted>"
+    assert data["embedding_api_key"] == "<redacted>"

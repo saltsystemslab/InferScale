@@ -14,6 +14,7 @@ from .clients import (
 )
 from .config import BenchmarkConfig
 from .data import ConversationSample, QuestionAnswer, format_turn_for_memory, load_locomo
+from .embedding_cache import CachedEmbedder
 from .jasper_store import BuildMetrics, SearchMetrics, VectorStoreConfig
 from .mem0_jasper import create_mem0_memory, mem0_results_to_search_hits
 from .prompts import build_full_context_answer_messages, build_judge_messages, build_retrieval_answer_messages, parse_judge_response
@@ -169,6 +170,7 @@ def _run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> li
                     if question_budget <= 0:
                         break
             if memory is not None:
+                _log_embedding_cache_stats(memory, sample.sample_id)
                 _close_mem0_memory(memory)
             logger.info("Sample {}/{} sample_id={} finished", sample_index, len(samples), sample.sample_id)
     logger.info("Wrote {} prediction records to {}", len(all_records), output_path)
@@ -190,6 +192,7 @@ def _build_memory_for_sample(
         embedding_api_key=config.embedding_api_key,
         embedding_base_url=config.embedding_base_url,
     )
+    _install_embedding_cache(memory, config)
 
     add_started = time.perf_counter()
     for turn in sample.turns:
@@ -483,6 +486,39 @@ def _embed_mem0_query(memory: Any, query: str) -> Any:
         return embed(query, "search")
     except TypeError:
         return embed(query)
+
+
+def _install_embedding_cache(memory: Any, config: BenchmarkConfig) -> None:
+    if not config.embedding_cache_enabled:
+        logger.info("Embedding cache disabled")
+        return
+
+    embedder = getattr(memory, "embedding_model", None) or getattr(memory, "embedder", None)
+    if embedder is None:
+        logger.warning("Embedding cache requested but Mem0 memory has no embedder attribute")
+        return
+
+    cached = CachedEmbedder(embedder, cache_dir=config.embedding_cache_dir, model=config.embedding_model)
+    if hasattr(memory, "embedding_model"):
+        memory.embedding_model = cached
+    if hasattr(memory, "embedder"):
+        memory.embedder = cached
+    memory._locomo_embedding_cache = cached
+    logger.info("Embedding cache enabled dir={}", cached.cache_dir)
+
+
+def _log_embedding_cache_stats(memory: Any, sample_id: str) -> None:
+    cache = getattr(memory, "_locomo_embedding_cache", None)
+    if not isinstance(cache, CachedEmbedder):
+        return
+    stats = cache.stats()
+    logger.info(
+        "Embedding cache sample_id={} hits={} misses={} dir={}",
+        sample_id,
+        stats["hits"],
+        stats["misses"],
+        stats["cache_dir"],
+    )
 
 
 def _close_mem0_memory(memory: Any) -> None:

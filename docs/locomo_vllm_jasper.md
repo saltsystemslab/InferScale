@@ -130,7 +130,7 @@ locomo-jasper-bench \
   --vllm-command "bash scripts/serve_vllm.sh"
 ```
 
-After `source scripts/scratch_env.sh`, `locomo-jasper-bench` also defaults `--results-dir` to `${BENCHMARK_RESULTS_ROOT}` and `MEM0_DIR` to `${BENCHMARK_CACHE_ROOT}/mem0`, so Mem0 does not write `~/.mem0` on quota-limited home directories. The explicit `--results-dir` above makes the scratch target visible in the command.
+After `source scripts/scratch_env.sh`, `locomo-jasper-bench` also defaults `--results-dir` to `${BENCHMARK_RESULTS_ROOT}`, `MEM0_DIR` to `${BENCHMARK_CACHE_ROOT}/mem0`, and `--embedding-cache-dir` to `${BENCHMARK_CACHE_ROOT}/embeddings`, so Mem0 and cached OpenAI embeddings do not write to quota-limited home directories. The explicit `--results-dir` above makes the scratch target visible in the command.
 
 The benchmark logs progress with Loguru. By default it logs every 5 questions, plus sample updates. Use `--log-every 1` for a small smoke run, increase it for full runs, or set `LOCOMO_LOG_EVERY`. Set `LOCOMO_LOG_LEVEL=DEBUG` or `LOCOMO_LOG_LEVEL=WARNING` to adjust verbosity. Use `--stream` when you want TTFT metrics; without streaming, `vllm.answer.ttft_ms` is `null`.
 
@@ -145,7 +145,7 @@ Outputs are written under `${SCRATCH_ROOT}/results/<run_id>/`:
 
 The default `--context-mode mem0` creates one Mem0 instance per LoCoMo sample under the run directory. It adds each formatted turn with `infer=False`, preserving sample, session, turn, speaker, and timestamp metadata, then finalizes the vector index before questions are answered. `latency_ms.memory_search_ms` measures Mem0 search wall time, while `latency_ms.answer_generation_ms` remains the baseline-vs-plugin latency metric. Index build and add time are recorded in index metadata, not answer API latency.
 
-Mem0 embeddings use the OpenAI embedder by default, so `OPENAI_API_KEY` must be set for `--context-mode mem0`. The project installs `mem0ai[nlp]` because Mem0's local memory processing can require spaCy NLP dependencies. Use `--context-mode full` for a no-memory full-transcript baseline that does not build embeddings or Jasper indexes. `--context-mode retrieval` is accepted as a deprecated alias for `mem0`.
+Mem0 embeddings use the OpenAI embedder by default, so `OPENAI_API_KEY` must be set for `--context-mode mem0`. The benchmark wraps Mem0's embedder with a disk cache by default, keyed by embedding model, purpose, and exact text. Repeated Jasper/Qdrant runs over the same dataset should reuse cached turn and query embeddings from `${BENCHMARK_CACHE_ROOT}/embeddings`. Use `--embedding-cache-dir <path>` to override the location or `--no-embedding-cache` to disable it. The project installs `mem0ai[nlp]` because Mem0's local memory processing can require spaCy NLP dependencies. Use `--context-mode full` for a no-memory full-transcript baseline that does not build embeddings or Jasper indexes. `--context-mode retrieval` is accepted as a deprecated alias for `mem0`. API keys are redacted in `config.json` and `summary.json`.
 
 ## 5. Acceptance Checks
 

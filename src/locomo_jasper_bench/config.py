@@ -29,6 +29,10 @@ def default_results_dir() -> Path:
     return Path(os.environ.get("BENCHMARK_RESULTS_ROOT", "results"))
 
 
+def default_embedding_cache_dir() -> Path:
+    return Path(os.environ.get("BENCHMARK_CACHE_ROOT", ".cache")) / "embeddings"
+
+
 def _json_object(value: str | None) -> dict[str, Any]:
     if not value:
         return {}
@@ -62,6 +66,8 @@ class BenchmarkConfig:
     embedding_api_key: str | None = None
     embedding_batch_size: int = 64
     hash_embedding_dim: int = 1536
+    embedding_cache_enabled: bool = True
+    embedding_cache_dir: Path = field(default_factory=default_embedding_cache_dir)
 
     context_mode: ContextMode = "mem0"
     vector_backend: VectorBackend = "jasper"
@@ -87,9 +93,12 @@ class BenchmarkConfig:
 
     def to_jsonable(self) -> dict[str, Any]:
         data = asdict(self)
-        for key in ("dataset_path", "predictions_path", "results_dir"):
+        for key in ("dataset_path", "predictions_path", "results_dir", "embedding_cache_dir"):
             if data[key] is not None:
                 data[key] = str(data[key])
+        for key in ("llm_api_key", "judge_api_key", "embedding_api_key"):
+            if data.get(key):
+                data[key] = "<redacted>"
         return data
 
     @property
@@ -124,6 +133,8 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     parser.add_argument("--embedding-api-key", default=os.environ.get("OPENAI_API_KEY"))
     parser.add_argument("--embedding-batch-size", type=int, default=64)
     parser.add_argument("--hash-embedding-dim", type=int, default=1536)
+    parser.add_argument("--embedding-cache-dir", type=Path, default=default_embedding_cache_dir())
+    parser.add_argument("--no-embedding-cache", action="store_false", dest="embedding_cache_enabled")
 
     parser.add_argument("--context-mode", choices=["mem0", "full", "retrieval"], default="mem0")
     parser.add_argument("--vector-backend", choices=["jasper", "numpy", "qdrant"], default="jasper")

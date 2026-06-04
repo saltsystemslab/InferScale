@@ -199,6 +199,13 @@ class Mem0JasperVectorStore(VectorStoreBase):
         unique_hits: list[SearchHit] = []
 
         while True:
+
+            print(f"query_vector.device: {query_vector.device}")
+            print(f"query_vector.shape: {query_vector.shape}")
+            print(f"query_vector.dtype: {query_vector.dtype}")
+            print(f"top_k: {search_k}")
+
+            # raw_hits, metrics = self.store.search(query_vector, top_k=search_k)
             raw_hits, metrics = self.store.search(query_vector, top_k=search_k)
             total_search_ms += metrics.search_time_ms
             last_metrics = metrics

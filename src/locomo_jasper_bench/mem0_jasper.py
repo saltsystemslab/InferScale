@@ -202,8 +202,8 @@ class Mem0JasperVectorStore(VectorStoreBase):
         while True:
 
             # raw_hits, metrics = self.store.search(query_vector, top_k=search_k)
-            query_vector = torch.from_numpy(query_vector).to(device='cuda')
-            raw_hits, metrics = self.store.search(query_vector, top_k=search_k)
+            d_query_vector = torch.from_numpy(query_vector).to(device='cuda')
+            raw_hits, metrics = self.store.search(d_query_vector, top_k=search_k)
             print(f"raw_hits: {raw_hits}")
             print(f"metrics: {metrics}")
             total_search_ms += metrics.search_time_ms

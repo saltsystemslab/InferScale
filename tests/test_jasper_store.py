@@ -65,7 +65,7 @@ def test_jasper_search_preserves_backend_order_duplicates_and_uses_payload_cache
     hits, metrics = store.search(np.array([1, 0, 0], dtype=np.float32), top_k=3)
 
     assert fake_graph.calls == [{"k": 3, "beam_width": 64}]
-    assert metrics.backend == "jasper"
+    assert metrics.search_time_ms >= 0.0
     assert [hit.id for hit in hits] == ["2", "0", "2"]
     assert [hit.rank for hit in hits] == [1, 2, 3]
     assert [hit.score for hit in hits] == pytest.approx([0.9, 0.8, 0.7])

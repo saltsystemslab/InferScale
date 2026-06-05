@@ -8,7 +8,7 @@ from typing import Any
 
 import numpy as np
 
-from .jasper_store import BuildMetrics, JasperVectorStore, QdrantVectorStore, SearchHit, SearchMetrics, VectorStoreConfig
+from .jasper_store import JasperVectorStore, QdrantVectorStore, SearchHit, SearchMetrics, VectorStoreConfig
 
 _MIRRORED_METADATA_KEYS = ("user_id", "sample_id", "turn_id", "session_id", "turn_index", "speaker", "timestamp", "role")
 
@@ -57,19 +57,7 @@ class Mem0JasperVectorStore(VectorStoreBase):
         )
         self.store = self._create_store()
         self.last_insert_ids: list[str] = []
-        self.last_build_metrics = BuildMetrics(
-            backend=backend,
-            graph_build_time_ms=0.0,
-            indexed_vector_count=self.store.vector_count,
-            embedding_dim=self.store.dim,
-            graph_path=None,
-        )
-        self.last_search_metrics = SearchMetrics(
-            backend=backend,
-            search_time_ms=0.0,
-            indexed_vector_count=self.store.vector_count,
-            embedding_dim=self.store.dim,
-        )
+        self.last_search_metrics = SearchMetrics(search_time_ms=0.0)
 
     def create_col(self, name: str | None = None, vector_size: int | None = None, distance: str | None = None) -> None:
         if name and name != self.collection_name:
@@ -164,9 +152,8 @@ class Mem0JasperVectorStore(VectorStoreBase):
     def reset(self) -> None:
         self.delete_col()
 
-    def finalize(self) -> BuildMetrics:
-        self.last_build_metrics = self.store.finalize()
-        return self.last_build_metrics
+    def finalize(self) -> None:
+        self.store.finalize()
 
     def close(self) -> None:
         self.store.close()
@@ -189,7 +176,7 @@ def create_mem0_memory(
     try:
         from mem0 import Memory
     except ImportError as exc:
-        raise RuntimeError("Install the mem0ai package to use --context-mode mem0.") from exc
+        raise RuntimeError("Install the mem0ai package to run Mem0 retrieval.") from exc
 
     store_root = Path(store_root)
     store_root.mkdir(parents=True, exist_ok=True)

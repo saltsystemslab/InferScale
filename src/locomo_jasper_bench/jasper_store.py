@@ -23,20 +23,8 @@ class VectorStoreConfig:
 
 
 @dataclass(slots=True)
-class BuildMetrics:
-    backend: str
-    graph_build_time_ms: float
-    indexed_vector_count: int
-    embedding_dim: int | None
-    graph_path: str | None = None
-
-
-@dataclass(slots=True)
 class SearchMetrics:
-    backend: str
     search_time_ms: float
-    indexed_vector_count: int
-    embedding_dim: int | None
 
 
 @dataclass(slots=True)
@@ -131,35 +119,21 @@ class JasperVectorStore:
         self._graph = None
         return id_list
 
-    def finalize(self) -> BuildMetrics:
+    def finalize(self) -> None:
         if self._vectors is None or self._vectors.size == 0:
-            return BuildMetrics(
-                backend=self.config.backend,
-                graph_build_time_ms=0.0,
-                indexed_vector_count=0,
-                embedding_dim=None,
-            )
+            return
 
         if self.config.backend != "jasper":
             raise ValueError(f"Unsupported vector backend: {self.config.backend}")
 
         np.save(self._vectors_path, self._vectors)
-        started = time.perf_counter()
         self._graph = self._build_jasper_graph()
-        build_time_ms = (time.perf_counter() - started) * 1000
         if self._graph_path:
             self._graph.save(str(self._graph_path))
-        return BuildMetrics(
-            backend="jasper",
-            graph_build_time_ms=build_time_ms,
-            indexed_vector_count=self.vector_count,
-            embedding_dim=self.dim,
-            graph_path=str(self._graph_path),
-        )
 
     def search(self, query_vector: np.ndarray | list[float], top_k: int) -> tuple[list[SearchHit], SearchMetrics]:
         if self._vectors is None or self._vectors.size == 0:
-            return [], SearchMetrics(self.config.backend, 0.0, 0, None)
+            return [], SearchMetrics(0.0)
         query = np.asarray(query_vector, dtype=np.float32)
         if query.ndim != 1:
             raise ValueError("query_vector must be one-dimensional")
@@ -171,12 +145,7 @@ class JasperVectorStore:
             hits, search_time_ms = self._search_jasper(query, top_k)
         else:
             raise ValueError(f"Unsupported vector backend: {self.config.backend}")
-        return hits, SearchMetrics(
-            backend=self.config.backend,
-            search_time_ms=search_time_ms,
-            indexed_vector_count=self.vector_count,
-            embedding_dim=self.dim,
-        )
+        return hits, SearchMetrics(search_time_ms)
 
     def close(self) -> None:
         if self._graph is not None:
@@ -422,18 +391,12 @@ class QdrantVectorStore:
         self._client.upsert(collection_name=self._collection_name, points=points)
         return [str(item_id) for item_id in id_list]
 
-    def finalize(self) -> BuildMetrics:
-        return BuildMetrics(
-            backend="qdrant",
-            graph_build_time_ms=0.0,
-            indexed_vector_count=self.vector_count,
-            embedding_dim=self.dim,
-            graph_path=None,
-        )
+    def finalize(self) -> None:
+        return
 
     def search(self, query_vector: np.ndarray | list[float], top_k: int) -> tuple[list[SearchHit], SearchMetrics]:
         if self.vector_count == 0:
-            return [], SearchMetrics("qdrant", 0.0, 0, self.dim)
+            return [], SearchMetrics(0.0)
         query = np.asarray(query_vector, dtype=np.float32)
         if query.ndim != 1:
             raise ValueError("query_vector must be one-dimensional")
@@ -456,12 +419,7 @@ class QdrantVectorStore:
             self._hit_from_point(point, rank, payloads_by_point_id.get(str(getattr(point, "id", None))))
             for rank, point in enumerate(points, start=1)
         ]
-        return hits, SearchMetrics(
-            backend="qdrant",
-            search_time_ms=elapsed_ms,
-            indexed_vector_count=self.vector_count,
-            embedding_dim=self.dim,
-        )
+        return hits, SearchMetrics(elapsed_ms)
 
     def close(self) -> None:
         close = getattr(self._client, "close", None)

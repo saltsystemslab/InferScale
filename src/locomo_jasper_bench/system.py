@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 
-def collect_system_metadata(*, vllm_command: str | None = None) -> dict[str, Any]:
+def collect_system_metadata() -> dict[str, Any]:
     return {
         "platform": platform.platform(),
         "python": platform.python_version(),
@@ -20,7 +20,6 @@ def collect_system_metadata(*, vllm_command: str | None = None) -> dict[str, Any
         },
         "gpu": _gpu_metadata(),
         "jasper_commit": _jasper_commit(),
-        "vllm_command": vllm_command,
     }
 
 

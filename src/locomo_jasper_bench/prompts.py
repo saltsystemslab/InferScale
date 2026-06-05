@@ -3,18 +3,13 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .data import ConversationSample, QuestionAnswer, format_turn_for_memory
+from .data import ConversationSample, QuestionAnswer
 from .jasper_store import SearchHit
 
 
 RETRIEVAL_ANSWER_SYSTEM_PROMPT = (
     "You answer questions about a long conversation. Use the retrieved memory context when it is relevant. "
     "Be concise and do not invent details that are not supported by the context."
-)
-
-FULL_CONTEXT_ANSWER_SYSTEM_PROMPT = (
-    "You answer questions about a long conversation. Use the full conversation transcript when it is relevant. "
-    "Be concise and do not invent details that are not supported by the transcript."
 )
 
 JUDGE_SYSTEM_PROMPT = (
@@ -41,25 +36,6 @@ def build_retrieval_answer_messages(
     )
     return [
         {"role": "system", "content": RETRIEVAL_ANSWER_SYSTEM_PROMPT},
-        {"role": "user", "content": user},
-    ]
-
-
-def build_full_context_answer_messages(
-    sample: ConversationSample,
-    qa: QuestionAnswer,
-) -> list[dict[str, str]]:
-    transcript = "\n".join(format_turn_for_memory(turn) for turn in sample.turns)
-    if not transcript:
-        transcript = "No conversation transcript."
-    user = (
-        f"Conversation id: {sample.sample_id}\n\n"
-        f"Full conversation transcript:\n{transcript}\n\n"
-        f"Question: {qa.question}\n\n"
-        "Answer:"
-    )
-    return [
-        {"role": "system", "content": FULL_CONTEXT_ANSWER_SYSTEM_PROMPT},
         {"role": "user", "content": user},
     ]
 

@@ -132,7 +132,6 @@ Use this for a quick end-to-end run:
 
 ```bash
 locomo-jasper-bench \
-  --mode baseline \
   --dataset data/locomo10.json \
   --results-dir "${SCRATCH_ROOT}/results" \
   --vector-backend jasper \
@@ -150,7 +149,6 @@ Use `--stream` for TTFT. Without it, `metrics.time_to_first_token_ms` is `null`.
 
 ```bash
 locomo-jasper-bench \
-  --mode baseline \
   --dataset data/locomo10.json \
   --results-dir "${SCRATCH_ROOT}/results" \
   --vector-backend jasper \
@@ -159,8 +157,6 @@ locomo-jasper-bench \
   --log-every 10 \
   --run-id jasper-full-$(date -u +%Y%m%dT%H%M%SZ)
 ```
-
-Add `--skip-judge` if you want predictions first and judging later.
 
 ## 7. Jasper vs Qdrant
 
@@ -172,7 +168,6 @@ For 20 samples:
 RUN_STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 
 locomo-jasper-bench \
-  --mode baseline \
   --dataset data/locomo10.json \
   --results-dir "${SCRATCH_ROOT}/results" \
   --vector-backend qdrant \
@@ -182,7 +177,6 @@ locomo-jasper-bench \
   --run-id qdrant-20samples-${RUN_STAMP}
 
 locomo-jasper-bench \
-  --mode baseline \
   --dataset data/locomo10.json \
   --results-dir "${SCRATCH_ROOT}/results" \
   --vector-backend jasper \
@@ -224,19 +218,7 @@ Important fields:
 
 Jasper and Qdrant both return backend-ordered results over raw embeddings.
 
-## 9. Re-Judge Saved Predictions
-
-Use the plain baseline vLLM server as the judge:
-
-```bash
-locomo-jasper-bench \
-  --mode evaluate-only \
-  --predictions "${SCRATCH_ROOT}/results/<run_id>/predictions.jsonl" \
-  --results-dir "${SCRATCH_ROOT}/results" \
-  --run-id judge-$(date -u +%Y%m%dT%H%M%SZ)
-```
-
-## 10. Scratch Checks
+## 9. Scratch Checks
 
 Run after setup or a benchmark:
 

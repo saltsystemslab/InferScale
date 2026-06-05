@@ -16,12 +16,7 @@ class FakeSearchStore:
 
     def search(self, query_vector, top_k):
         self.calls.append(top_k)
-        return self.hits[:top_k], SearchMetrics(
-            backend="jasper",
-            search_time_ms=1.0,
-            indexed_vector_count=self.vector_count,
-            embedding_dim=self.dim,
-        )
+        return self.hits[:top_k], SearchMetrics(search_time_ms=1.0)
 
 
 def _hit(item_id, score, *, user_id="u1", turn_id=None):
@@ -211,7 +206,7 @@ def test_mem0_qdrant_vector_store_insert_search_filter_and_mutate(tmp_path):
         ],
         ids=["a", "b", "c"],
     )
-    build_metrics = store.finalize()
+    store.finalize()
     hits = store.search("alpha", [1, 0, 0], top_k=2)
     filtered = store.search("alpha", [1, 0, 0], top_k=2, filters={"user_id": "u2"})
     store.update("b", payload={"data": "beta updated", "user_id": "u2", "metadata": {"turn_id": "t2"}})
@@ -223,8 +218,6 @@ def test_mem0_qdrant_vector_store_insert_search_filter_and_mutate(tmp_path):
     store.close()
 
     assert ids == ["a", "b", "c"]
-    assert build_metrics.backend == "qdrant"
-    assert build_metrics.indexed_vector_count == 3
     assert {hit.id for hit in hits} == {"a", "c"}
     assert filtered[0].id == "c"
     assert updated is not None

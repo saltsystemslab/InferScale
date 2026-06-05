@@ -7,7 +7,7 @@ import pytest
 from locomo_jasper_bench.clients import ChatResult
 from locomo_jasper_bench.config import BenchmarkConfig
 from locomo_jasper_bench.embedding_cache import CachedEmbedder
-from locomo_jasper_bench.jasper_store import BuildMetrics, SearchHit, SearchMetrics
+from locomo_jasper_bench.jasper_store import SearchHit, SearchMetrics
 from locomo_jasper_bench.results import read_jsonl
 from locomo_jasper_bench.runner import RuntimeClients, run_benchmark
 
@@ -59,61 +59,15 @@ def _write_dataset(path):
     )
 
 
-def test_runner_full_context_mode_with_mocks(tmp_path):
-    dataset_path = tmp_path / "locomo.json"
-    _write_dataset(dataset_path)
-    answer_client = FakeAnswerClient()
-    config = BenchmarkConfig(
-        mode="baseline",
-        dataset_path=dataset_path,
-        results_dir=tmp_path / "results",
-        run_id="test-run",
-        context_mode="full",
-    )
-    clients = RuntimeClients(
-        answer_client=answer_client,
-        judge_client=FakeJudgeClient(),
-    )
-
-    summary = run_benchmark(config, clients)
-
-    assert summary["metrics"]["accuracy"] == 1.0
-    rows = read_jsonl(tmp_path / "results" / "test-run" / "predictions.jsonl")
-    assert len(rows) == 1
-    assert rows[0]["judge"]["correct"] is True
-    assert rows[0]["retrieved_memories"] == []
-    assert rows[0]["metrics"] == {
-        "time_to_first_token_ms": 3.0,
-        "vector_db_query_time_ms": 0.0,
-        "throughput_tokens_per_sec": 40.0,
-    }
-    prompt = answer_client.calls[0][1]["content"]
-    assert "Full conversation transcript:" in prompt
-    assert "Alice: I adopted a cat named Pixel." in prompt
-    assert "Retrieved memory context:" not in prompt
-
-
 class FakeMem0VectorStore:
     def __init__(self) -> None:
         self.finalized = False
         self.closed = False
         self.search_calls = []
-        self.last_search_metrics = SearchMetrics(
-            backend="jasper",
-            search_time_ms=2.5,
-            indexed_vector_count=2,
-            embedding_dim=3,
-        )
+        self.last_search_metrics = SearchMetrics(search_time_ms=2.5)
 
     def finalize(self):
         self.finalized = True
-        return BuildMetrics(
-            backend="jasper",
-            graph_build_time_ms=7.0,
-            indexed_vector_count=2,
-            embedding_dim=3,
-            graph_path="graph",
-        )
 
     def close(self):
         self.closed = True
@@ -172,7 +126,7 @@ class FakeMem0Memory:
         }
 
 
-def test_runner_mem0_context_mode_with_mocked_mem0(tmp_path, monkeypatch):
+def test_runner_mem0_baseline_with_mocked_mem0(tmp_path, monkeypatch):
     dataset_path = tmp_path / "locomo.json"
     _write_dataset(dataset_path)
     fake_memories: list[FakeMem0Memory] = []
@@ -186,11 +140,9 @@ def test_runner_mem0_context_mode_with_mocked_mem0(tmp_path, monkeypatch):
     monkeypatch.setattr("locomo_jasper_bench.runner.create_mem0_memory", fake_create_mem0_memory)
     answer_client = FakeAnswerClient()
     config = BenchmarkConfig(
-        mode="baseline",
         dataset_path=dataset_path,
         results_dir=tmp_path / "results",
         run_id="test-run",
-        context_mode="mem0",
         top_k=5,
         embedding_cache_dir=tmp_path / "embedding-cache",
     )

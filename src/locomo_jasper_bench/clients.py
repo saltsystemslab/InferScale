@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import hashlib
 import time
 from dataclasses import dataclass
 from typing import Any, Protocol
-
-import numpy as np
 
 
 @dataclass(slots=True)
@@ -27,11 +24,6 @@ class ChatClient(Protocol):
         ...
 
 
-class EmbeddingClient(Protocol):
-    def embed(self, texts: list[str]) -> list[np.ndarray]:
-        ...
-
-
 class OpenAICompatibleChatClient:
     def __init__(
         self,
@@ -40,7 +32,6 @@ class OpenAICompatibleChatClient:
         api_key: str,
         model: str,
         stream: bool = False,
-        extra_body: dict[str, Any] | None = None,
     ) -> None:
         try:
             from openai import OpenAI
@@ -50,7 +41,6 @@ class OpenAICompatibleChatClient:
         self._client = OpenAI(base_url=base_url, api_key=api_key)
         self._model = model
         self._stream = stream
-        self._extra_body = extra_body or {}
 
     def chat(
         self,
@@ -71,8 +61,6 @@ class OpenAICompatibleChatClient:
             "top_p": top_p,
             "max_tokens": max_tokens,
         }
-        if self._extra_body:
-            request["extra_body"] = self._extra_body
         try:
             response = self._client.chat.completions.create(**request)
         except Exception as exc:
@@ -104,8 +92,6 @@ class OpenAICompatibleChatClient:
             "stream": True,
             "stream_options": {"include_usage": True},
         }
-        if self._extra_body:
-            request["extra_body"] = self._extra_body
         try:
             chunks = self._client.chat.completions.create(**request)
         except Exception as exc:
@@ -140,58 +126,6 @@ class OpenAICompatibleChatClient:
         )
 
 
-class OpenAIEmbeddingClient:
-    def __init__(
-        self,
-        *,
-        api_key: str | None,
-        model: str,
-        base_url: str | None = None,
-        batch_size: int = 64,
-    ) -> None:
-        try:
-            from openai import OpenAI
-        except ImportError as exc:
-            raise RuntimeError("Install the openai package to use OpenAI embeddings.") from exc
-
-        kwargs: dict[str, Any] = {"api_key": api_key}
-        if base_url:
-            kwargs["base_url"] = base_url
-        self._client = OpenAI(**kwargs)
-        self._model = model
-        self._batch_size = batch_size
-
-    def embed(self, texts: list[str]) -> list[np.ndarray]:
-        vectors: list[np.ndarray] = []
-        for start in range(0, len(texts), self._batch_size):
-            batch = texts[start : start + self._batch_size]
-            response = self._client.embeddings.create(model=self._model, input=batch)
-            vectors.extend(np.asarray(item.embedding, dtype=np.float32) for item in response.data)
-        return vectors
-
-
-class HashEmbeddingClient:
-    """Deterministic local embeddings for tests and dry runs."""
-
-    def __init__(self, dim: int = 1536) -> None:
-        self._dim = dim
-
-    def embed(self, texts: list[str]) -> list[np.ndarray]:
-        return [self._embed_one(text) for text in texts]
-
-    def _embed_one(self, text: str) -> np.ndarray:
-        vector = np.zeros(self._dim, dtype=np.float32)
-        tokens = text.lower().split()
-        if not tokens:
-            return vector
-        for token in tokens:
-            digest = hashlib.sha256(token.encode("utf-8")).digest()
-            index = int.from_bytes(digest[:4], "little") % self._dim
-            sign = 1.0 if digest[4] % 2 else -1.0
-            vector[index] += sign
-        return vector
-
-
 def _tokens_per_second(tokens: int | None, elapsed_ms: float) -> float | None:
     if tokens is None or elapsed_ms <= 0:
         return None
@@ -205,5 +139,5 @@ def _raise_context_limit_error(exc: Exception) -> None:
     if any(term in text for term in context_terms) and any(term in text for term in limit_terms):
         raise RuntimeError(
             "The vLLM server rejected the prompt as too long. Increase VLLM_MAX_MODEL_LEN before starting "
-            "scripts/serve_vllm.sh, or rerun with --context-mode mem0 for retrieved Mem0 context."
+            "scripts/serve_vllm.sh."
         ) from exc

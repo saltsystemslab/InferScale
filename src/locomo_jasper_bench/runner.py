@@ -1,24 +1,21 @@
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
 from .clients import (
     ChatClient,
-    EmbeddingClient,
     OpenAICompatibleChatClient,
 )
 from .config import BenchmarkConfig
 from .data import ConversationSample, QuestionAnswer, format_turn_for_memory, load_locomo
 from .embedding_cache import CachedEmbedder
-from .jasper_store import BuildMetrics, SearchMetrics, VectorStoreConfig
+from .jasper_store import SearchMetrics, VectorStoreConfig
 from .mem0_jasper import create_mem0_memory, mem0_results_to_search_hits
-from .prompts import build_full_context_answer_messages, build_judge_messages, build_retrieval_answer_messages, parse_judge_response
-from .results import JsonlWriter, read_jsonl, summarize_records, write_json
+from .prompts import build_judge_messages, build_retrieval_answer_messages, parse_judge_response
+from .results import JsonlWriter, summarize_records, write_json
 from .system import collect_system_metadata
 
 
@@ -26,14 +23,12 @@ from .system import collect_system_metadata
 class RuntimeClients:
     answer_client: ChatClient
     judge_client: ChatClient
-    embedding_client: EmbeddingClient | None = None
 
 
 def run_benchmark(config: BenchmarkConfig, clients: RuntimeClients | None = None) -> dict[str, Any]:
     logger.info(
-        "Starting benchmark run_id={} mode={} dataset={} results_dir={}",
+        "Starting benchmark run_id={} dataset={} results_dir={}",
         config.run_id,
-        config.mode,
         config.dataset_path,
         config.run_dir,
     )
@@ -41,18 +36,15 @@ def run_benchmark(config: BenchmarkConfig, clients: RuntimeClients | None = None
     write_json(config.run_dir / "config.json", config.to_jsonable())
 
     runtime_clients = clients or build_clients(config)
-    system_metadata = collect_system_metadata(vllm_command=config.vllm_command)
+    system_metadata = collect_system_metadata()
     write_json(config.run_dir / "system.json", system_metadata)
 
-    if config.mode == "evaluate-only":
-        records = _run_evaluate_only(config, runtime_clients)
-    else:
-        records = _run_prediction_mode(config, runtime_clients)
+    records = _run_prediction_mode(config, runtime_clients)
 
     summary = summarize_records(
         records,
         run_id=config.run_id,
-        mode=config.mode,
+        mode="baseline",
         config=config.to_jsonable(),
         system_metadata=system_metadata,
     )
@@ -70,11 +62,9 @@ def run_benchmark(config: BenchmarkConfig, clients: RuntimeClients | None = None
 
 def build_clients(config: BenchmarkConfig) -> RuntimeClients:
     logger.info(
-        "Configuring clients llm={} judge={} context_mode={} embedding_provider={} vector_backend={}",
+        "Configuring clients llm={} judge={} vector_backend={}",
         config.llm_base_url,
         config.judge_base_url,
-        config.context_mode,
-        config.embedding_provider,
         config.vector_backend,
     )
     answer_client = OpenAICompatibleChatClient(
@@ -82,14 +72,12 @@ def build_clients(config: BenchmarkConfig) -> RuntimeClients:
         api_key=config.llm_api_key,
         model=config.model,
         stream=config.stream,
-        extra_body=config.llm_extra_body,
     )
     judge_client = OpenAICompatibleChatClient(
         base_url=config.judge_base_url,
         api_key=config.judge_api_key,
         model=config.judge_model,
         stream=config.stream,
-        extra_body=config.judge_extra_body,
     )
     return RuntimeClients(answer_client=answer_client, judge_client=judge_client)
 
@@ -113,7 +101,6 @@ def _run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> li
         for sample_index, sample in enumerate(samples, start=1):
             if question_budget is not None and question_budget <= 0:
                 break
-            context_mode = _resolved_context_mode(config.context_mode)
             sample_question_count = len(sample.qa)
             if question_budget is not None:
                 sample_question_count = min(sample_question_count, question_budget)
@@ -125,16 +112,7 @@ def _run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> li
                 len(sample.turns),
                 sample_question_count,
             )
-            memory: Any | None
-            if context_mode == "mem0":
-                memory = _build_memory_for_sample(config, sample)
-            else:
-                logger.info(
-                    "Using full conversation context for sample_id={} turns={}",
-                    sample.sample_id,
-                    len(sample.turns),
-                )
-                memory = None
+            memory = _build_memory_for_sample(config, sample)
             sample_questions = sample.qa
             if question_budget is not None:
                 sample_questions = sample_questions[:question_budget]
@@ -178,9 +156,6 @@ def _build_memory_for_sample(
     config: BenchmarkConfig,
     sample: ConversationSample,
 ) -> Any:
-    if config.embedding_provider != "openai":
-        raise RuntimeError("Mem0 context mode currently uses mem0ai's OpenAI embedder; set --embedding-provider openai.")
-
     store_root = config.run_dir / "mem0" / sample.sample_id
     memory = create_mem0_memory(
         store_root=store_root,
@@ -191,7 +166,6 @@ def _build_memory_for_sample(
     )
     _install_embedding_cache(memory, config)
 
-    add_started = time.perf_counter()
     for turn in sample.turns:
         text = format_turn_for_memory(turn)
         metadata = {
@@ -209,24 +183,15 @@ def _build_memory_for_sample(
             infer=False,
             metadata=metadata,
         )
-    add_time_ms = (time.perf_counter() - add_started) * 1000
     logger.info(
-        "Added {} LoCoMo turns to Mem0 for sample_id={} infer=false add_ms={:.1f}",
+        "Added {} LoCoMo turns to Mem0 for sample_id={} infer=false",
         len(sample.turns),
         sample.sample_id,
-        add_time_ms,
     )
 
     logger.info("Building {} index for sample_id={}", config.vector_backend, sample.sample_id)
-    build_metrics = _finalize_mem0_memory(memory)
-    logger.info(
-        "Index ready sample_id={} backend={} vectors={} dim={} build_ms={:.1f}",
-        sample.sample_id,
-        build_metrics.backend,
-        build_metrics.indexed_vector_count,
-        build_metrics.embedding_dim,
-        build_metrics.graph_build_time_ms,
-    )
+    _finalize_mem0_memory(memory)
+    logger.info("Index ready sample_id={} backend={}", sample.sample_id, config.vector_backend)
     return memory
 
 
@@ -237,39 +202,32 @@ def _answer_question(
     qa: QuestionAnswer,
     memory: Any | None,
 ) -> dict[str, Any]:
-    if _resolved_context_mode(config.context_mode) == "mem0":
-        if memory is None:
-            raise RuntimeError("Mem0 context mode requires a memory store.")
-        raw_results = _search_mem0_memory(memory, qa.question, sample.sample_id, config.top_k)
-        hits = mem0_results_to_search_hits(raw_results)
-        answer_messages = build_retrieval_answer_messages(sample, qa, hits)
-        store_metrics = _mem0_store_search_metrics(memory)
-        vector_search_ms = store_metrics.search_time_ms
-    else:
-        hits = []
-        answer_messages = build_full_context_answer_messages(sample, qa)
-        vector_search_ms = 0.0
+    if memory is None:
+        raise RuntimeError("Mem0 context requires a memory store.")
+    raw_results = _search_mem0_memory(memory, qa.question, sample.sample_id, config.top_k)
+    hits = mem0_results_to_search_hits(raw_results)
+    answer_messages = build_retrieval_answer_messages(sample, qa, hits)
+    store_metrics = _mem0_store_search_metrics(memory)
+    vector_search_ms = store_metrics.search_time_ms
     answer = clients.answer_client.chat(
         answer_messages,
         max_tokens=config.max_answer_tokens,
         temperature=config.temperature,
         top_p=config.top_p,
     )
-    judge_payload: dict[str, Any] = {"correct": None, "reason": None, "raw": None}
-    if not config.skip_judge:
-        judge_messages = build_judge_messages(qa, answer.content)
-        judge = clients.judge_client.chat(
-            judge_messages,
-            max_tokens=config.max_judge_tokens,
-            temperature=0.0,
-            top_p=1.0,
-        )
-        correct, reason = parse_judge_response(judge.content)
-        judge_payload = {"correct": correct, "reason": reason, "raw": judge.content}
+    judge_messages = build_judge_messages(qa, answer.content)
+    judge = clients.judge_client.chat(
+        judge_messages,
+        max_tokens=config.max_judge_tokens,
+        temperature=0.0,
+        top_p=1.0,
+    )
+    correct, reason = parse_judge_response(judge.content)
+    judge_payload = {"correct": correct, "reason": reason, "raw": judge.content}
 
     return {
         "run_id": config.run_id,
-        "mode": config.mode,
+        "mode": "baseline",
         "sample_id": sample.sample_id,
         "question_id": qa.question_id,
         "category": qa.category,
@@ -297,86 +255,11 @@ def _answer_question(
     }
 
 
-def _run_evaluate_only(config: BenchmarkConfig, clients: RuntimeClients) -> list[dict[str, Any]]:
-    assert config.predictions_path is not None
-    predictions_path = _resolve_predictions_path(config.predictions_path)
-    logger.info("Loading saved predictions from {}", predictions_path)
-    predictions = read_jsonl(predictions_path)
-    logger.info("Loaded {} predictions for re-judging", len(predictions))
-    output_path = config.run_dir / "evaluations.jsonl"
-    rows: list[dict[str, Any]] = []
-    with JsonlWriter(output_path) as writer:
-        for index, row in enumerate(predictions, start=1):
-            if _should_log_progress(index, len(predictions), config.log_every):
-                logger.info(
-                    "Evaluation {}/{} starting sample_id={} question_id={}",
-                    index,
-                    len(predictions),
-                    row.get("sample_id"),
-                    row.get("question_id"),
-                )
-            qa = QuestionAnswer(
-                sample_id=str(row.get("sample_id") or ""),
-                question_id=str(row.get("question_id") or ""),
-                question=str(row.get("question") or ""),
-                answer=str(row.get("gold_answer") or row.get("answer") or ""),
-                category=str(row.get("category") or "unknown"),
-                evidence=row.get("evidence"),
-            )
-            judge = clients.judge_client.chat(
-                build_judge_messages(qa, str(row.get("predicted_answer") or "")),
-                max_tokens=config.max_judge_tokens,
-                temperature=0.0,
-                top_p=1.0,
-            )
-            correct, reason = parse_judge_response(judge.content)
-            updated = dict(row)
-            updated["run_id"] = config.run_id
-            updated["mode"] = "evaluate-only"
-            updated["judge"] = {"correct": correct, "reason": reason, "raw": judge.content}
-            writer.write(updated)
-            rows.append(updated)
-            if _should_log_progress(index, len(predictions), config.log_every):
-                logger.info(
-                    "Evaluation {}/{} finished sample_id={} question_id={} judge={}",
-                    index,
-                    len(predictions),
-                    updated.get("sample_id"),
-                    updated.get("question_id"),
-                    _judge_label(correct),
-                )
-    logger.info("Wrote {} evaluation records to {}", len(rows), output_path)
-    return rows
-
-
-def _resolved_context_mode(context_mode: str) -> str:
-    if context_mode == "retrieval":
-        return "mem0"
-    return context_mode
-
-
-def _finalize_mem0_memory(memory: Any) -> BuildMetrics:
+def _finalize_mem0_memory(memory: Any) -> None:
     vector_store = getattr(memory, "vector_store", None)
     finalize = getattr(vector_store, "finalize", None)
     if callable(finalize):
-        metrics = finalize()
-        if isinstance(metrics, BuildMetrics):
-            return metrics
-        if isinstance(metrics, dict):
-            return BuildMetrics(
-                backend=str(metrics.get("backend") or "jasper"),
-                graph_build_time_ms=float(metrics.get("graph_build_time_ms") or 0.0),
-                indexed_vector_count=int(metrics.get("indexed_vector_count") or 0),
-                embedding_dim=metrics.get("embedding_dim"),
-                graph_path=metrics.get("graph_path"),
-            )
-    return BuildMetrics(
-        backend="jasper",
-        graph_build_time_ms=0.0,
-        indexed_vector_count=0,
-        embedding_dim=None,
-        graph_path=None,
-    )
+        finalize()
 
 
 def _mem0_store_search_metrics(memory: Any) -> SearchMetrics:
@@ -384,12 +267,8 @@ def _mem0_store_search_metrics(memory: Any) -> SearchMetrics:
     metrics = getattr(vector_store, "last_search_metrics", None)
     if isinstance(metrics, SearchMetrics):
         return metrics
-    store = getattr(vector_store, "store", None)
     return SearchMetrics(
-        backend=getattr(getattr(store, "config", None), "backend", "jasper"),
         search_time_ms=float(getattr(metrics, "search_time_ms", 0.0) or 0.0),
-        indexed_vector_count=int(getattr(store, "vector_count", 0) or 0),
-        embedding_dim=getattr(store, "dim", None),
     )
 
 
@@ -483,10 +362,6 @@ def _store_config(config: BenchmarkConfig) -> VectorStoreConfig:
         workspace_budget=config.jasper_workspace_budget,
         beam_width=config.jasper_beam_width,
     )
-def _resolve_predictions_path(path: Path) -> Path:
-    if path.is_dir():
-        return path / "predictions.jsonl"
-    return path
 
 
 def _planned_question_count(samples: list[ConversationSample], max_questions: int | None) -> int:

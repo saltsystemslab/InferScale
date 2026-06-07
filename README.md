@@ -7,7 +7,7 @@ This repository contains code to run LoCoMo against a local vLLM server with Mem
 Run from the repo root after allocating GPU, you may need to load `cmake/4.2.3`, `python/3.13.5`, and `cuda/12.8.0`.
 
 ```bash
-cd /projects/SaltSystemsLab/$USER/benchmark-jasper
+cd /projects/SaltSystemsLab/<PATH_TO_REPO>/benchmark-jasper
 
 export SCRATCH_ROOT=/scratch/$USER/benchmark-jasper
 FRESH_REMOTE_BUILD=1 bash scripts/setup_remote.sh
@@ -42,7 +42,7 @@ tmux new -s locomo
 In tmux window 1:
 
 ```bash
-cd /projects/SaltSystemsLab/$USER/benchmark-jasper
+cd /projects/SaltSystemsLab/<PATH_TO_REPO>/benchmark-jasper
 
 export CUDA_MODULE=cuda/12.8
 export VLLM_TP=1
@@ -75,7 +75,7 @@ curl --noproxy '*' \
 Place LoCoMo at `data/locomo10.json`:
 
 ```bash
-cd /projects/SaltSystemsLab/$USER/benchmark-jasper
+cd /projects/SaltSystemsLab/<PATH_TO_REPO>/benchmark-jasper
 mkdir -p data
 curl -L \
   https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json \

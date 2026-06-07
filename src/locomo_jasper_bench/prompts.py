@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from .data import ConversationSample, QuestionAnswer
-from .jasper_store import SearchHit
+from .vector_types import SearchHit
 
 
 RETRIEVAL_ANSWER_SYSTEM_PROMPT = (

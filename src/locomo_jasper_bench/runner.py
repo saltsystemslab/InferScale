@@ -12,11 +12,12 @@ from .clients import (
 from .config import BenchmarkConfig
 from .data import ConversationSample, QuestionAnswer, format_turn_for_memory, load_locomo
 from .embedding_cache import CachedEmbedder
-from .jasper_store import SearchMetrics, VectorStoreConfig
-from .mem0_jasper import create_mem0_memory, mem0_results_to_search_hits
+from .mem0_provider import create_mem0_memory
 from .prompts import build_judge_messages, build_retrieval_answer_messages, parse_judge_response
 from .results import JsonlWriter, summarize_records, write_json
+from .search_results import mem0_results_to_search_hits
 from .system import collect_system_metadata
+from .vector_types import SearchMetrics, VectorStoreConfig
 
 
 @dataclass(slots=True)
@@ -82,6 +83,177 @@ def build_clients(config: BenchmarkConfig) -> RuntimeClients:
     return RuntimeClients(answer_client=answer_client, judge_client=judge_client)
 
 
+class SampleMemoryBuilder:
+    def __init__(self, config: BenchmarkConfig) -> None:
+        self.config = config
+
+    def build(self, sample: ConversationSample) -> Any:
+        store_root = self.config.run_dir / "mem0" / sample.sample_id
+        memory = create_mem0_memory(
+            store_root=store_root,
+            vector_config=_store_config(self.config),
+            embedding_model=self.config.embedding_model,
+            embedding_api_key=self.config.embedding_api_key,
+            embedding_base_url=self.config.embedding_base_url,
+        )
+        self._install_embedding_cache(memory)
+
+        for turn in sample.turns:
+            text = format_turn_for_memory(turn)
+            metadata = {
+                "user_id": sample.sample_id,
+                "sample_id": sample.sample_id,
+                "turn_id": turn.id,
+                "session_id": turn.session_id,
+                "turn_index": turn.turn_index,
+                "speaker": turn.speaker,
+                "timestamp": turn.timestamp,
+            }
+            memory.add(
+                [{"role": "user", "content": text}],
+                user_id=sample.sample_id,
+                infer=False,
+                metadata=metadata,
+            )
+        logger.info(
+            "Added {} LoCoMo turns to Mem0 for sample_id={} infer=false",
+            len(sample.turns),
+            sample.sample_id,
+        )
+
+        logger.info("Building {} index for sample_id={}", self.config.vector_backend, sample.sample_id)
+        self._finalize(memory)
+        logger.info("Index ready sample_id={} backend={}", sample.sample_id, self.config.vector_backend)
+        return memory
+
+    def log_embedding_cache_stats(self, memory: Any, sample_id: str) -> None:
+        cache = getattr(memory, "_locomo_embedding_cache", None)
+        if not isinstance(cache, CachedEmbedder):
+            return
+        stats = cache.stats()
+        logger.info(
+            "Embedding cache sample_id={} hits={} misses={} dir={}",
+            sample_id,
+            stats["hits"],
+            stats["misses"],
+            stats["cache_dir"],
+        )
+
+    def close(self, memory: Any) -> None:
+        vector_store = getattr(memory, "vector_store", None)
+        close = getattr(vector_store, "close", None)
+        if callable(close):
+            close()
+
+    def _install_embedding_cache(self, memory: Any) -> None:
+        if not self.config.embedding_cache_enabled:
+            logger.info("Embedding cache disabled")
+            return
+
+        embedder = getattr(memory, "embedding_model", None) or getattr(memory, "embedder", None)
+        if embedder is None:
+            logger.warning("Embedding cache requested but Mem0 memory has no embedder attribute")
+            return
+
+        cached = CachedEmbedder(embedder, cache_dir=self.config.embedding_cache_dir, model=self.config.embedding_model)
+        if hasattr(memory, "embedding_model"):
+            memory.embedding_model = cached
+        if hasattr(memory, "embedder"):
+            memory.embedder = cached
+        memory._locomo_embedding_cache = cached
+        logger.info("Embedding cache enabled dir={}", cached.cache_dir)
+
+    def _finalize(self, memory: Any) -> None:
+        vector_store = getattr(memory, "vector_store", None)
+        finalize = getattr(vector_store, "finalize", None)
+        if callable(finalize):
+            finalize()
+
+
+class QuestionEvaluator:
+    def __init__(self, config: BenchmarkConfig, clients: RuntimeClients) -> None:
+        self.config = config
+        self.clients = clients
+
+    def answer(self, sample: ConversationSample, qa: QuestionAnswer, memory: Any | None) -> dict[str, Any]:
+        if memory is None:
+            raise RuntimeError("Mem0 context requires a memory store.")
+        raw_results = self._search_mem0_memory(memory, qa.question)
+        hits = mem0_results_to_search_hits(raw_results)
+        answer_messages = build_retrieval_answer_messages(sample, qa, hits)
+        store_metrics = self._mem0_store_search_metrics(memory)
+        vector_search_ms = store_metrics.search_time_ms
+        answer = self.clients.answer_client.chat(
+            answer_messages,
+            max_tokens=self.config.max_answer_tokens,
+            temperature=self.config.temperature,
+            top_p=self.config.top_p,
+        )
+        judge_messages = build_judge_messages(qa, answer.content)
+        judge = self.clients.judge_client.chat(
+            judge_messages,
+            max_tokens=self.config.max_judge_tokens,
+            temperature=0.0,
+            top_p=1.0,
+        )
+        correct, reason = parse_judge_response(judge.content)
+        judge_payload = {"correct": correct, "reason": reason, "raw": judge.content}
+
+        return {
+            "run_id": self.config.run_id,
+            "mode": "baseline",
+            "sample_id": sample.sample_id,
+            "question_id": qa.question_id,
+            "category": qa.category,
+            "question": qa.question,
+            "gold_answer": qa.answer,
+            "predicted_answer": answer.content,
+            "evidence": qa.evidence,
+            "retrieved_memories": [
+                {
+                    "id": hit.id,
+                    "rank": hit.rank,
+                    "score": hit.score,
+                    "distance": hit.distance,
+                    "memory": hit.payload.get("memory") or hit.payload.get("text") or "",
+                    "metadata": hit.payload.get("metadata", {}),
+                }
+                for hit in hits
+            ],
+            "judge": judge_payload,
+            "metrics": {
+                "time_to_first_token_ms": answer.ttft_ms,
+                "vector_db_query_time_ms": vector_search_ms,
+                "throughput_tokens_per_sec": answer.output_tokens_per_sec,
+            },
+        }
+
+    def _mem0_store_search_metrics(self, memory: Any) -> SearchMetrics:
+        vector_store = getattr(memory, "vector_store", None)
+        metrics = getattr(vector_store, "last_search_metrics", None)
+        if isinstance(metrics, SearchMetrics):
+            return metrics
+        return SearchMetrics(
+            search_time_ms=float(getattr(metrics, "search_time_ms", 0.0) or 0.0),
+        )
+
+    def _search_mem0_memory(self, memory: Any, query: str) -> Any:
+        vector_store = getattr(memory, "vector_store", None)
+        search = getattr(vector_store, "search", None)
+        if not callable(search):
+            raise RuntimeError("Mem0 memory has no searchable vector_store.")
+
+        query_embedding = self._embed_mem0_query(memory, query)
+        return search(query=query, vectors=query_embedding, top_k=self.config.top_k)
+
+    def _embed_mem0_query(self, memory: Any, query: str) -> Any:
+        embedder = getattr(memory, "embedding_model", None) or getattr(memory, "embedder", None)
+        embed = getattr(embedder, "embed", None)
+        if not callable(embed):
+            raise RuntimeError("Mem0 memory has no callable embedder.")
+        return embed(query, "search")
+
+
 def _run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> list[dict[str, Any]]:
     logger.info("Loading LoCoMo dataset from {}", config.dataset_path)
     samples = load_locomo(config.dataset_path, max_samples=config.max_samples)
@@ -97,6 +269,8 @@ def _run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> li
     all_records: list[dict[str, Any]] = []
     question_budget = config.max_questions
     completed_questions = 0
+    memory_builder = SampleMemoryBuilder(config)
+    question_evaluator = QuestionEvaluator(config, clients)
     with JsonlWriter(output_path) as writer:
         for sample_index, sample in enumerate(samples, start=1):
             if question_budget is not None and question_budget <= 0:
@@ -112,7 +286,7 @@ def _run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> li
                 len(sample.turns),
                 sample_question_count,
             )
-            memory = _build_memory_for_sample(config, sample)
+            memory = memory_builder.build(sample)
             sample_questions = sample.qa
             if question_budget is not None:
                 sample_questions = sample_questions[:question_budget]
@@ -127,7 +301,7 @@ def _run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> li
                         qa.question_id,
                         qa.category,
                     )
-                record = _answer_question(config, clients, sample, qa, memory)
+                record = question_evaluator.answer(sample, qa, memory)
                 writer.write(record)
                 all_records.append(record)
                 completed_questions += 1
@@ -145,189 +319,11 @@ def _run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> li
                     if question_budget <= 0:
                         break
             if memory is not None:
-                _log_embedding_cache_stats(memory, sample.sample_id)
-                _close_mem0_memory(memory)
+                memory_builder.log_embedding_cache_stats(memory, sample.sample_id)
+                memory_builder.close(memory)
             logger.info("Sample {}/{} sample_id={} finished", sample_index, len(samples), sample.sample_id)
     logger.info("Wrote {} prediction records to {}", len(all_records), output_path)
     return all_records
-
-
-def _build_memory_for_sample(
-    config: BenchmarkConfig,
-    sample: ConversationSample,
-) -> Any:
-    store_root = config.run_dir / "mem0" / sample.sample_id
-    memory = create_mem0_memory(
-        store_root=store_root,
-        vector_config=_store_config(config),
-        embedding_model=config.embedding_model,
-        embedding_api_key=config.embedding_api_key,
-        embedding_base_url=config.embedding_base_url,
-    )
-    _install_embedding_cache(memory, config)
-
-    for turn in sample.turns:
-        text = format_turn_for_memory(turn)
-        metadata = {
-            "user_id": sample.sample_id,
-            "sample_id": sample.sample_id,
-            "turn_id": turn.id,
-            "session_id": turn.session_id,
-            "turn_index": turn.turn_index,
-            "speaker": turn.speaker,
-            "timestamp": turn.timestamp,
-        }
-        memory.add(
-            [{"role": "user", "content": text}],
-            user_id=sample.sample_id,
-            infer=False,
-            metadata=metadata,
-        )
-    logger.info(
-        "Added {} LoCoMo turns to Mem0 for sample_id={} infer=false",
-        len(sample.turns),
-        sample.sample_id,
-    )
-
-    logger.info("Building {} index for sample_id={}", config.vector_backend, sample.sample_id)
-    _finalize_mem0_memory(memory)
-    logger.info("Index ready sample_id={} backend={}", sample.sample_id, config.vector_backend)
-    return memory
-
-
-def _answer_question(
-    config: BenchmarkConfig,
-    clients: RuntimeClients,
-    sample: ConversationSample,
-    qa: QuestionAnswer,
-    memory: Any | None,
-) -> dict[str, Any]:
-    if memory is None:
-        raise RuntimeError("Mem0 context requires a memory store.")
-    raw_results = _search_mem0_memory(memory, qa.question, config.top_k)
-    hits = mem0_results_to_search_hits(raw_results)
-    answer_messages = build_retrieval_answer_messages(sample, qa, hits)
-    store_metrics = _mem0_store_search_metrics(memory)
-    vector_search_ms = store_metrics.search_time_ms
-    answer = clients.answer_client.chat(
-        answer_messages,
-        max_tokens=config.max_answer_tokens,
-        temperature=config.temperature,
-        top_p=config.top_p,
-    )
-    judge_messages = build_judge_messages(qa, answer.content)
-    judge = clients.judge_client.chat(
-        judge_messages,
-        max_tokens=config.max_judge_tokens,
-        temperature=0.0,
-        top_p=1.0,
-    )
-    correct, reason = parse_judge_response(judge.content)
-    judge_payload = {"correct": correct, "reason": reason, "raw": judge.content}
-
-    return {
-        "run_id": config.run_id,
-        "mode": "baseline",
-        "sample_id": sample.sample_id,
-        "question_id": qa.question_id,
-        "category": qa.category,
-        "question": qa.question,
-        "gold_answer": qa.answer,
-        "predicted_answer": answer.content,
-        "evidence": qa.evidence,
-        "retrieved_memories": [
-            {
-                "id": hit.id,
-                "rank": hit.rank,
-                "score": hit.score,
-                "distance": hit.distance,
-                "memory": hit.payload.get("memory") or hit.payload.get("text") or "",
-                "metadata": hit.payload.get("metadata", {}),
-            }
-            for hit in hits
-        ],
-        "judge": judge_payload,
-        "metrics": {
-            "time_to_first_token_ms": answer.ttft_ms,
-            "vector_db_query_time_ms": vector_search_ms,
-            "throughput_tokens_per_sec": answer.output_tokens_per_sec,
-        },
-    }
-
-
-def _finalize_mem0_memory(memory: Any) -> None:
-    vector_store = getattr(memory, "vector_store", None)
-    finalize = getattr(vector_store, "finalize", None)
-    if callable(finalize):
-        finalize()
-
-
-def _mem0_store_search_metrics(memory: Any) -> SearchMetrics:
-    vector_store = getattr(memory, "vector_store", None)
-    metrics = getattr(vector_store, "last_search_metrics", None)
-    if isinstance(metrics, SearchMetrics):
-        return metrics
-    return SearchMetrics(
-        search_time_ms=float(getattr(metrics, "search_time_ms", 0.0) or 0.0),
-    )
-
-
-def _search_mem0_memory(memory: Any, query: str, top_k: int) -> Any:
-    vector_store = getattr(memory, "vector_store", None)
-    search = getattr(vector_store, "search", None)
-    if not callable(search):
-        raise RuntimeError("Mem0 memory has no searchable vector_store.")
-
-    query_embedding = _embed_mem0_query(memory, query)
-    return search(query=query, vectors=query_embedding, top_k=top_k)
-
-
-def _embed_mem0_query(memory: Any, query: str) -> Any:
-    embedder = getattr(memory, "embedding_model", None) or getattr(memory, "embedder", None)
-    embed = getattr(embedder, "embed", None)
-    if not callable(embed):
-        raise RuntimeError("Mem0 memory has no callable embedder.")
-    return embed(query, "search")
-
-
-def _install_embedding_cache(memory: Any, config: BenchmarkConfig) -> None:
-    if not config.embedding_cache_enabled:
-        logger.info("Embedding cache disabled")
-        return
-
-    embedder = getattr(memory, "embedding_model", None) or getattr(memory, "embedder", None)
-    if embedder is None:
-        logger.warning("Embedding cache requested but Mem0 memory has no embedder attribute")
-        return
-
-    cached = CachedEmbedder(embedder, cache_dir=config.embedding_cache_dir, model=config.embedding_model)
-    if hasattr(memory, "embedding_model"):
-        memory.embedding_model = cached
-    if hasattr(memory, "embedder"):
-        memory.embedder = cached
-    memory._locomo_embedding_cache = cached
-    logger.info("Embedding cache enabled dir={}", cached.cache_dir)
-
-
-def _log_embedding_cache_stats(memory: Any, sample_id: str) -> None:
-    cache = getattr(memory, "_locomo_embedding_cache", None)
-    if not isinstance(cache, CachedEmbedder):
-        return
-    stats = cache.stats()
-    logger.info(
-        "Embedding cache sample_id={} hits={} misses={} dir={}",
-        sample_id,
-        stats["hits"],
-        stats["misses"],
-        stats["cache_dir"],
-    )
-
-
-def _close_mem0_memory(memory: Any) -> None:
-    vector_store = getattr(memory, "vector_store", None)
-    close = getattr(vector_store, "close", None)
-    if callable(close):
-        close()
 
 
 def _store_config(config: BenchmarkConfig) -> VectorStoreConfig:

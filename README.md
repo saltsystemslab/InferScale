@@ -4,7 +4,7 @@ This repository contains code to run LoCoMo against a local vLLM server with Mem
 
 ## 1. Setup
 
-Run from the repo root after allocating GPU, you may need to load `cuda/12.8.0`, `cmake`, and `python`:
+Run from the repo root after allocating GPU, you may need to load `cmake/4.2.3`, `python/3.13.5`, and `cuda/12.8.0`.
 
 ```bash
 cd /projects/SaltSystemsLab/peter/benchmark-jasper
@@ -43,8 +43,6 @@ In tmux window 1:
 
 ```bash
 cd /projects/SaltSystemsLab/peter/benchmark-jasper
-source .venv/bin/activate
-source scripts/scratch_env.sh
 
 export CUDA_MODULE=cuda/12.8
 export VLLM_TP=1
@@ -90,8 +88,6 @@ Run this in the benchmark tmux window before any benchmark command:
 
 ```bash
 cd /projects/SaltSystemsLab/peter/benchmark-jasper
-source .venv/bin/activate
-source scripts/scratch_env.sh
 
 export VLLM_BASE_URL=http://127.0.0.1:8000/v1
 export JUDGE_BASE_URL=http://127.0.0.1:8000/v1

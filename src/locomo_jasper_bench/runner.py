@@ -204,7 +204,7 @@ def _answer_question(
 ) -> dict[str, Any]:
     if memory is None:
         raise RuntimeError("Mem0 context requires a memory store.")
-    raw_results = _search_mem0_memory(memory, qa.question, sample.sample_id, config.top_k)
+    raw_results = _search_mem0_memory(memory, qa.question, config.top_k)
     hits = mem0_results_to_search_hits(raw_results)
     answer_messages = build_retrieval_answer_messages(sample, qa, hits)
     store_metrics = _mem0_store_search_metrics(memory)
@@ -272,45 +272,22 @@ def _mem0_store_search_metrics(memory: Any) -> SearchMetrics:
     )
 
 
-def _search_mem0_memory(memory: Any, query: str, sample_id: str, top_k: int) -> Any:
-    direct_results = _search_mem0_vector_store_direct(memory, query, top_k)
-    if direct_results is not None:
-        return direct_results
-    try:
-        return memory.search(query=query, filters={"user_id": sample_id}, top_k=top_k)
-    except TypeError as exc:
-        if "top_k" not in str(exc):
-            raise
-    return memory.search(query=query, filters={"user_id": sample_id}, limit=top_k)
-
-
-def _search_mem0_vector_store_direct(memory: Any, query: str, top_k: int) -> Any:
+def _search_mem0_memory(memory: Any, query: str, top_k: int) -> Any:
     vector_store = getattr(memory, "vector_store", None)
     search = getattr(vector_store, "search", None)
     if not callable(search):
-        return None
+        raise RuntimeError("Mem0 memory has no searchable vector_store.")
 
     query_embedding = _embed_mem0_query(memory, query)
-    if query_embedding is None:
-        return None
-
-    try:
-        return search(query=query, vectors=query_embedding, top_k=top_k)
-    except TypeError as exc:
-        if "top_k" not in str(exc):
-            raise
-    return search(query=query, vectors=query_embedding, limit=top_k)
+    return search(query=query, vectors=query_embedding, top_k=top_k)
 
 
 def _embed_mem0_query(memory: Any, query: str) -> Any:
     embedder = getattr(memory, "embedding_model", None) or getattr(memory, "embedder", None)
     embed = getattr(embedder, "embed", None)
     if not callable(embed):
-        return None
-    try:
-        return embed(query, "search")
-    except TypeError:
-        return embed(query)
+        raise RuntimeError("Mem0 memory has no callable embedder.")
+    return embed(query, "search")
 
 
 def _install_embedding_cache(memory: Any, config: BenchmarkConfig) -> None:

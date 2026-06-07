@@ -82,75 +82,16 @@ class Mem0JasperVectorStore(VectorStoreBase):
         query: str,
         vectors: list[float] | list[list[float]],
         top_k: int = 5,
-        limit: int | None = None,
-        filters: dict[str, Any] | None = None,
         **_: Any,
     ) -> list[Mem0JasperSearchResult]:
-        requested_top_k = max(1, int(limit or top_k or 5))
+        requested_top_k = max(1, int(top_k or 5))
         query_vector = _first_vector(vectors)
         hits, metrics = self.store.search(query_vector, top_k=requested_top_k)
         self.last_search_metrics = metrics
-        scope_satisfies_filter = _scope_satisfies_broad_sample_filter(self.root, filters)
-        candidates = hits
-        if filters and not scope_satisfies_filter:
-            candidates = [hit for hit in candidates if _matches_filters(hit.payload, filters)]
         return [
             Mem0JasperSearchResult(id=hit.id, score=hit.score, payload=hit.payload)
-            for hit in candidates[:requested_top_k]
+            for hit in hits[:requested_top_k]
         ]
-
-    def delete(self, vector_id: str) -> None:
-        self.store.delete(str(vector_id))
-
-    def update(
-        self,
-        vector_id: str,
-        vector: list[float] | None = None,
-        payload: dict[str, Any] | None = None,
-    ) -> None:
-        next_payload = _normalize_memory_payload(payload) if payload is not None else None
-        self.store.update(str(vector_id), vector=vector, payload=next_payload)
-
-    def get(self, vector_id: str) -> Mem0JasperSearchResult | None:
-        payload = self.store.get(str(vector_id))
-        if payload is None:
-            return None
-        return Mem0JasperSearchResult(id=str(vector_id), score=0.0, payload=payload)
-
-    def list_cols(self) -> list[str]:
-        return [self.collection_name]
-
-    def delete_col(self) -> None:
-        self.store.reset()
-
-    def col_info(self) -> dict[str, Any]:
-        return {
-            "name": self.collection_name,
-            "backend": self.config.backend,
-            "vectors": self.store.vector_count,
-            "embedding_dim": self.store.dim,
-            "path": str(self.root),
-        }
-
-    def list(
-        self,
-        filters: dict[str, Any] | None = None,
-        top_k: int | None = None,
-        limit: int | None = None,
-        **_: Any,
-    ) -> list[Mem0JasperSearchResult]:
-        limit = limit or top_k or 100
-        results: list[Mem0JasperSearchResult] = []
-        active_filters = None if _scope_satisfies_broad_sample_filter(self.root, filters) else filters
-        for item_id, payload in self.store.list_payloads(limit=limit):
-            normalized_payload = _normalize_memory_payload(payload)
-            if active_filters and not _matches_filters(normalized_payload, active_filters):
-                continue
-            results.append(Mem0JasperSearchResult(id=str(item_id), score=0.0, payload=normalized_payload))
-        return results
-
-    def reset(self) -> None:
-        self.delete_col()
 
     def finalize(self) -> None:
         self.store.finalize()
@@ -363,93 +304,6 @@ def _normalize_memory_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
 
     normalized["metadata"] = metadata
     return normalized
-
-
-def _matches_filters(payload: dict[str, Any], filters: dict[str, Any]) -> bool:
-    for key, value in filters.items():
-        if key in {"AND", "$and"}:
-            if not isinstance(value, list) or not all(_matches_filters(payload, item) for item in value):
-                return False
-            continue
-        if key in {"OR", "$or"}:
-            if not isinstance(value, list) or not any(_matches_filters(payload, item) for item in value):
-                return False
-            continue
-        if key in {"NOT", "$not"}:
-            if not isinstance(value, list) or any(_matches_filters(payload, item) for item in value):
-                return False
-            continue
-        if not _matches_value(_payload_value(payload, key), value):
-            return False
-    return True
-
-
-def _payload_value(payload: dict[str, Any], key: str) -> Any:
-    if key in payload:
-        return payload[key]
-    metadata = payload.get("metadata")
-    if isinstance(metadata, dict) and key in metadata:
-        return metadata[key]
-    if "." in key:
-        current: Any = payload
-        for part in key.split("."):
-            if not isinstance(current, dict) or part not in current:
-                return None
-            current = current[part]
-        return current
-    return None
-
-
-def _matches_value(actual: Any, expected: Any) -> bool:
-    if expected == "*":
-        return actual is not None
-    if isinstance(expected, dict):
-        for operator, value in expected.items():
-            if operator == "eq" and actual != value:
-                return False
-            if operator == "ne" and actual == value:
-                return False
-            if operator == "in" and actual not in value:
-                return False
-            if operator == "nin" and actual in value:
-                return False
-            if operator == "contains" and str(value) not in str(actual):
-                return False
-            if operator == "icontains" and str(value).lower() not in str(actual).lower():
-                return False
-            if operator in {"gt", "gte", "lt", "lte"} and not _compare(actual, value, operator):
-                return False
-        return True
-    if isinstance(expected, list):
-        return actual in expected
-    return actual == expected
-
-
-def _compare(actual: Any, expected: Any, operator: str) -> bool:
-    try:
-        if operator == "gt":
-            return actual > expected
-        if operator == "gte":
-            return actual >= expected
-        if operator == "lt":
-            return actual < expected
-        if operator == "lte":
-            return actual <= expected
-    except TypeError:
-        return False
-    return False
-
-
-def _is_broad_sample_filter(filters: dict[str, Any] | None) -> bool:
-    if not filters:
-        return False
-    return set(filters) == {"user_id"} and filters.get("user_id") not in (None, "")
-
-
-def _scope_satisfies_broad_sample_filter(root: Path, filters: dict[str, Any] | None) -> bool:
-    if not _is_broad_sample_filter(filters):
-        return False
-    return str(filters["user_id"]) == root.parent.name
 
 
 def _normalize_distance(distance: str) -> str:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 import sqlite3
 import time
 import uuid
@@ -154,74 +153,6 @@ class JasperVectorStore:
                 free()
             self._graph = None
         self._conn.close()
-
-    def delete(self, vector_id: str) -> None:
-        vector_id = str(vector_id)
-        with self._conn:
-            self._conn.execute("DELETE FROM payloads WHERE id = ?", (vector_id,))
-        ordinal = self._ordinals_by_id.pop(vector_id, None)
-        if ordinal is not None:
-            self._payloads_by_ordinal.pop(ordinal, None)
-        self._graph = None
-
-    def update(
-        self,
-        vector_id: str,
-        vector: np.ndarray | list[float] | None = None,
-        payload: dict[str, Any] | None = None,
-    ) -> None:
-        row = self._conn.execute(
-            "SELECT ord, payload_json FROM payloads WHERE id = ?",
-            (str(vector_id),),
-        ).fetchone()
-        if row is None:
-            if vector is None:
-                return
-            self.add_many([vector], [payload or {}], [str(vector_id)])
-            return
-
-        ordinal = int(row[0])
-        current_payload = json.loads(row[1])
-        next_payload = current_payload if payload is None else payload
-        if vector is not None and self._vectors is not None:
-            next_vector = np.asarray(vector, dtype=np.float32)
-            self._vectors[ordinal] = next_vector
-        with self._conn:
-            payload_json = json.dumps(next_payload, ensure_ascii=False)
-            self._conn.execute(
-                "UPDATE payloads SET payload_json = ? WHERE id = ?",
-                (payload_json, str(vector_id)),
-            )
-        self._ordinals_by_id[str(vector_id)] = ordinal
-        self._payloads_by_ordinal[ordinal] = (str(vector_id), json.loads(payload_json))
-        self._graph = None
-
-    def get(self, vector_id: str) -> dict[str, Any] | None:
-        row = self._conn.execute(
-            "SELECT payload_json FROM payloads WHERE id = ?",
-            (str(vector_id),),
-        ).fetchone()
-        if row is None:
-            return None
-        return json.loads(row[0])
-
-    def list_payloads(self, limit: int = 100) -> list[tuple[str, dict[str, Any]]]:
-        rows = self._conn.execute(
-            "SELECT id, payload_json FROM payloads ORDER BY ord LIMIT ?",
-            (limit,),
-        ).fetchall()
-        return [(str(item_id), json.loads(payload_json)) for item_id, payload_json in rows]
-
-    def reset(self) -> None:
-        self.close()
-        shutil.rmtree(self.root, ignore_errors=True)
-        self.root.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self._db_path, timeout=30.0)
-        self._init_db()
-        self._payloads_by_ordinal = {}
-        self._ordinals_by_id = {}
-        self._vectors = None
-        self._graph = None
 
     def _init_db(self) -> None:
         self._configure_db()
@@ -426,76 +357,6 @@ class QdrantVectorStore:
         if callable(close):
             close()
 
-    def delete(self, vector_id: str) -> None:
-        models = self._models()
-        self._client.delete(
-            collection_name=self._collection_name,
-            points_selector=models.PointIdsList(points=[self._point_id(str(vector_id))]),
-        )
-
-    def update(
-        self,
-        vector_id: str,
-        vector: np.ndarray | list[float] | None = None,
-        payload: dict[str, Any] | None = None,
-    ) -> None:
-        existing = self.get(vector_id)
-        if existing is None and vector is None:
-            return
-        next_payload = existing or {}
-        if payload is not None:
-            next_payload = payload
-        if vector is not None:
-            self.add_many([vector], [next_payload], [str(vector_id)])
-            return
-        next_payload = dict(next_payload)
-        next_payload[self._ID_PAYLOAD_KEY] = str(vector_id)
-        overwrite_payload = getattr(self._client, "overwrite_payload", None)
-        if callable(overwrite_payload):
-            overwrite_payload(
-                collection_name=self._collection_name,
-                payload=next_payload,
-                points=[self._point_id(str(vector_id))],
-            )
-        else:
-            self._client.set_payload(
-                collection_name=self._collection_name,
-                payload=next_payload,
-                points=[self._point_id(str(vector_id))],
-            )
-
-    def get(self, vector_id: str) -> dict[str, Any] | None:
-        try:
-            points = self._client.retrieve(
-                collection_name=self._collection_name,
-                ids=[self._point_id(str(vector_id))],
-                with_payload=True,
-                with_vectors=False,
-            )
-        except Exception:
-            return None
-        if not points:
-            return None
-        return self._payload_from_qdrant(getattr(points[0], "payload", None))
-
-    def list_payloads(self, limit: int = 100) -> list[tuple[str, dict[str, Any]]]:
-        try:
-            points, _ = self._client.scroll(
-                collection_name=self._collection_name,
-                limit=limit,
-                with_payload=True,
-                with_vectors=False,
-            )
-        except Exception:
-            return []
-        results: list[tuple[str, dict[str, Any]]] = []
-        for point in points:
-            raw_payload = getattr(point, "payload", None)
-            item_id = self._original_id(getattr(point, "id", None), raw_payload)
-            payload = self._payload_from_qdrant(raw_payload)
-            results.append((item_id, payload))
-        return results
-
     def _payloads_for_points(self, points: list[Any]) -> dict[str, Any]:
         point_ids = [getattr(point, "id", None) for point in points]
         point_ids = [point_id for point_id in point_ids if point_id is not None]
@@ -511,13 +372,6 @@ class QdrantVectorStore:
         except Exception:
             return {}
         return {str(getattr(point, "id", None)): getattr(point, "payload", None) for point in retrieved}
-
-    def reset(self) -> None:
-        self.close()
-        shutil.rmtree(self.root, ignore_errors=True)
-        self.root.mkdir(parents=True, exist_ok=True)
-        self._client = self._create_client()
-        self._dim = None
 
     def _create_client(self) -> Any:
         try:

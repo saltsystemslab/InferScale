@@ -93,6 +93,47 @@ class Mem0JasperVectorStore(VectorStoreBase):
             for hit in hits[:requested_top_k]
         ]
 
+    def delete(self, vector_id: str) -> None:
+        raise NotImplementedError("Mem0JasperVectorStore.delete is not used by this benchmark.")
+
+    def update(
+        self,
+        vector_id: str,
+        vector: list[float] | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        raise NotImplementedError("Mem0JasperVectorStore.update is not used by this benchmark.")
+
+    def get(self, vector_id: str) -> Mem0JasperSearchResult | None:
+        raise NotImplementedError("Mem0JasperVectorStore.get is not used by this benchmark.")
+
+    def list_cols(self) -> list[str]:
+        return [self.collection_name]
+
+    def delete_col(self) -> None:
+        raise NotImplementedError("Mem0JasperVectorStore.delete_col is not used by this benchmark.")
+
+    def col_info(self) -> dict[str, Any]:
+        return {
+            "name": self.collection_name,
+            "backend": self.config.backend,
+            "vectors": self.store.vector_count,
+            "embedding_dim": self.store.dim,
+            "path": str(self.root),
+        }
+
+    def list(
+        self,
+        filters: dict[str, Any] | None = None,
+        top_k: int | None = None,
+        limit: int | None = None,
+        **_: Any,
+    ) -> list[Mem0JasperSearchResult]:
+        raise NotImplementedError("Mem0JasperVectorStore.list is not used by this benchmark.")
+
+    def reset(self) -> None:
+        raise NotImplementedError("Mem0JasperVectorStore.reset is not used by this benchmark.")
+
     def finalize(self) -> None:
         self.store.finalize()
 

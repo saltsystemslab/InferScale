@@ -4,27 +4,42 @@ import hashlib
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
+
+CacheMode = Literal["read", "write"]
+
+
+class CachedEmbeddingMissingError(RuntimeError):
+    pass
 
 
 class CachedEmbedder:
     """Disk-backed wrapper for Mem0 embedders."""
 
-    def __init__(self, wrapped: Any, *, cache_dir: str | Path, model: str) -> None:
+    def __init__(self, wrapped: Any, *, cache_dir: str | Path, model: str, mode: CacheMode = "write") -> None:
+        if mode not in {"read", "write"}:
+            raise ValueError(f"Unsupported embedding cache mode: {mode}")
         self._wrapped = wrapped
         self.cache_dir = Path(cache_dir) / _safe_path_part(model)
         self.model = model
+        self.mode = mode
         self.hits = 0
         self.misses = 0
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        if self.mode == "write":
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._wrapped, name)
 
     def embed(self, text: Any, *args: Any, **kwargs: Any) -> list[float]:
         if not isinstance(text, str):
+            if self.mode == "read":
+                raise CachedEmbeddingMissingError(
+                    "Benchmark embedding cache is read-only and cannot serve non-string embedding input. "
+                    "Run with --no-embedding-cache only for debugging."
+                )
             return self._wrapped.embed(text, *args, **kwargs)
 
         purpose = _embedding_purpose(args, kwargs)
@@ -33,11 +48,23 @@ class CachedEmbedder:
             try:
                 self.hits += 1
                 return np.load(path).astype(np.float32, copy=False).tolist()
-            except Exception:
-                path.unlink(missing_ok=True)
+            except Exception as exc:
                 self.hits -= 1
+                if self.mode == "read":
+                    raise CachedEmbeddingMissingError(
+                        f"Cached embedding at {path} could not be loaded. "
+                        "Delete the corrupt file and rerun locomo-jasper-bench --preembed-only with the same "
+                        "dataset, embedding model, and embedding cache dir."
+                    ) from exc
+                path.unlink(missing_ok=True)
 
         self.misses += 1
+        if self.mode == "read":
+            raise CachedEmbeddingMissingError(
+                f"Missing cached embedding for model={self.model!r} purpose={purpose!r}. "
+                "Run locomo-jasper-bench --preembed-only with the same dataset, embedding model, "
+                "and embedding cache dir before running the benchmark."
+            )
         vector = self._wrapped.embed(text, *args, **kwargs)
         array = np.asarray(vector, dtype=np.float32)
         self._write_array(path, array)
@@ -46,6 +73,7 @@ class CachedEmbedder:
     def stats(self) -> dict[str, Any]:
         return {
             "enabled": True,
+            "mode": self.mode,
             "cache_dir": str(self.cache_dir),
             "hits": self.hits,
             "misses": self.misses,

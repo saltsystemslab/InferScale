@@ -66,6 +66,7 @@ class BenchmarkConfig:
     max_samples: int | None = None
     max_questions: int | None = None
     log_every: int = 5
+    preembed_only: bool = False
 
     def to_jsonable(self) -> dict[str, object]:
         data = asdict(self)
@@ -123,6 +124,11 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     parser.add_argument("--max-samples", type=int)
     parser.add_argument("--max-questions", type=int)
     parser.add_argument("--log-every", type=int, default=int(os.environ.get("LOCOMO_LOG_EVERY", "5")))
+    parser.add_argument(
+        "--preembed-only",
+        action="store_true",
+        help="Precompute LoCoMo turn and question embeddings into the cache, then exit.",
+    )
 
     ns = parser.parse_args(argv)
     return BenchmarkConfig(**vars(ns))

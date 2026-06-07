@@ -8,8 +8,9 @@ import numpy as np
 
 from .jasper_vector_store import JasperVectorStore
 from .qdrant_vector_store import QdrantVectorStore
-from .search_results import _normalize_memory_payload
 from .vector_types import SearchMetrics, VectorStoreConfig
+
+_MIRRORED_METADATA_KEYS = ("user_id", "sample_id", "turn_id", "session_id", "turn_index", "speaker", "timestamp", "role")
 
 try:
     from mem0.vector_stores.base import VectorStoreBase
@@ -161,3 +162,27 @@ def _normalize_distance(distance: str) -> str:
     if lowered in {"euclidean", "l2"}:
         return "l2"
     return lowered
+
+
+def _normalize_memory_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+    normalized = dict(payload or {})
+    memory = normalized.get("memory") or normalized.get("data") or normalized.get("text") or ""
+    normalized.setdefault("memory", memory)
+    normalized.setdefault("data", memory)
+
+    metadata = normalized.get("metadata")
+    if isinstance(metadata, dict):
+        metadata = dict(metadata)
+    else:
+        metadata = {}
+
+    for key in _MIRRORED_METADATA_KEYS:
+        top_value = normalized.get(key)
+        metadata_value = metadata.get(key)
+        if top_value is None and metadata_value is not None:
+            normalized[key] = metadata_value
+        elif metadata_value is None and top_value is not None:
+            metadata[key] = top_value
+
+    normalized["metadata"] = metadata
+    return normalized

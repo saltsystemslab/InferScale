@@ -97,9 +97,24 @@ export NO_PROXY=localhost,127.0.0.1,::1
 export no_proxy="${NO_PROXY}"
 ```
 
-`OPENAI_API_KEY` is required for Mem0 embeddings. The benchmark caches embeddings under `${BENCHMARK_CACHE_ROOT}/embeddings`, keyed by model, purpose, and exact text. Use `--no-embedding-cache` only when you intentionally want to re-embed everything.
+`OPENAI_API_KEY` is required for Mem0 embeddings. The benchmark caches embeddings under `${BENCHMARK_CACHE_ROOT}/embeddings`, keyed by model, purpose, and exact text.
 
 Embeddings are passed to Jasper and Qdrant as raw vectors.
+
+Before timed benchmark runs, precompute the LoCoMo turn and question embeddings:
+
+```bash
+RUN_STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+
+locomo-jasper-bench \
+  --dataset data/locomo10.json \
+  --results-dir "${SCRATCH_ROOT}/results" \
+  --max-samples 20 \
+  --preembed-only \
+  --run-id preembed-20samples-${RUN_STAMP}
+```
+
+Timed benchmark runs read embeddings from the cache and fail if an embedding is missing.
 
 ## 7. Jasper vs Qdrant
 
@@ -155,7 +170,7 @@ cat "${SCRATCH_ROOT}/results/jasper-20samples-${RUN_STAMP}/summary.json"
 Important fields:
 
 - `metrics.accuracy`: judged answer quality.
-- `metrics.time_to_first_token_ms`: time to first answer token, only populated with `--stream`.
+- `metrics.time_to_first_token_ms`: time from initial question handling through first answer token; only populated with `--stream`.
 - `metrics.vector_db_query_time_ms`: raw backend vector DB query time; payload lookup and result formatting are excluded.
 - `metrics.vector_db_query_count`: number of measured vector DB queries.
 - `metrics.vector_db_query_time_total_ms`: total measured vector DB query time.

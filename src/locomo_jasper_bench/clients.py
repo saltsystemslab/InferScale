@@ -19,6 +19,7 @@ class ChatClient(Protocol):
         max_tokens: int,
         temperature: float,
         top_p: float,
+        ttft_started_at: float | None = None,
     ) -> ChatResult:
         ...
 
@@ -48,9 +49,10 @@ class OpenAICompatibleChatClient:
         max_tokens: int,
         temperature: float,
         top_p: float,
+        ttft_started_at: float | None = None,
     ) -> ChatResult:
         if self._stream:
-            started = time.perf_counter()
+            started = ttft_started_at if ttft_started_at is not None else time.perf_counter()
             return self._chat_streaming(messages, max_tokens, temperature, top_p, started)
 
         request: dict[str, Any] = {

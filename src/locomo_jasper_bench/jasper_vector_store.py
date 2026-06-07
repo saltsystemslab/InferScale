@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-import sqlite3
 import time
 import uuid
 from pathlib import Path
@@ -13,21 +11,14 @@ from .vector_types import SearchHit, SearchMetrics, VectorStoreConfig
 
 
 class JasperVectorStore:
-    """File-backed vector store with Jasper GPU search."""
+    """In-process vector store with Jasper GPU search."""
 
     def __init__(self, root: str | Path, config: VectorStoreConfig) -> None:
         self.root = Path(root)
         self.config = config
         self.root.mkdir(parents=True, exist_ok=True)
-        self._vectors_path = self.root / "vectors.npy"
-        self._graph_path = self.root / "jasper.graph"
-        self._db_path = self.root / "payloads.sqlite"
-        self._conn = sqlite3.connect(self._db_path, timeout=30.0)
-        self._init_db()
         self._payloads_by_ordinal: dict[int, tuple[str, dict[str, Any]]] = {}
-        self._ordinals_by_id: dict[str, int] = {}
-        self._load_payload_cache()
-        self._vectors: np.ndarray | None = self._load_vectors()
+        self._vectors: np.ndarray | None = None
         self._graph: Any = None
 
     @property
@@ -69,29 +60,10 @@ class JasperVectorStore:
             start_ord = int(self._vectors.shape[0])
             self._vectors = np.vstack([self._vectors, matrix]).astype(np.float32, copy=False)
 
-        cache_updates: list[tuple[str, int, dict[str, Any]]] = []
-        try:
-            with self._conn:
-                for offset, (item_id, payload) in enumerate(zip(id_list, payload_list)):
-                    payload_json = json.dumps(payload, ensure_ascii=False)
-                    self._conn.execute(
-                        "INSERT OR REPLACE INTO payloads (id, ord, payload_json) VALUES (?, ?, ?)",
-                        (item_id, start_ord + offset, payload_json),
-                    )
-                    cache_updates.append((str(item_id), start_ord + offset, json.loads(payload_json)))
-        except sqlite3.OperationalError as exc:
-            raise RuntimeError(
-                f"Could not write Jasper payload database at {self._db_path}. "
-                "On shared clusters this is usually caused by project quota, permissions, or SQLite journal/locking "
-                "support on the target filesystem. Check free space and quota for the results directory, and rerun "
-                "with --results-dir and BENCHMARK_CACHE_ROOT pointing at a writable project filesystem."
-            ) from exc
-        for item_id, ordinal, payload in cache_updates:
-            old_ordinal = self._ordinals_by_id.get(item_id)
-            if old_ordinal is not None:
-                self._payloads_by_ordinal.pop(old_ordinal, None)
-            self._ordinals_by_id[item_id] = ordinal
-            self._payloads_by_ordinal[ordinal] = (item_id, payload)
+        for offset, (item_id, payload) in enumerate(zip(id_list, payload_list)):
+            item_id = str(item_id)
+            ordinal = start_ord + offset
+            self._payloads_by_ordinal[ordinal] = (item_id, dict(payload))
         self._graph = None
         return id_list
 
@@ -102,10 +74,7 @@ class JasperVectorStore:
         if self.config.backend != "jasper":
             raise ValueError(f"Unsupported vector backend: {self.config.backend}")
 
-        np.save(self._vectors_path, self._vectors)
         self._graph = self._build_jasper_graph()
-        if self._graph_path:
-            self._graph.save(str(self._graph_path))
 
     def search(self, query_vector: np.ndarray | list[float], top_k: int) -> tuple[list[SearchHit], SearchMetrics]:
         if self._vectors is None or self._vectors.size == 0:
@@ -129,37 +98,6 @@ class JasperVectorStore:
             if callable(free):
                 free()
             self._graph = None
-        self._conn.close()
-
-    def _init_db(self) -> None:
-        self._configure_db()
-        with self._conn:
-            self._conn.execute(
-                "CREATE TABLE IF NOT EXISTS payloads (id TEXT PRIMARY KEY, ord INTEGER UNIQUE NOT NULL, payload_json TEXT NOT NULL)"
-            )
-
-    def _configure_db(self) -> None:
-        # Avoid sidecar journal/temp files; they are fragile on some shared HPC filesystems.
-        self._conn.execute("PRAGMA journal_mode=MEMORY")
-        self._conn.execute("PRAGMA synchronous=OFF")
-        self._conn.execute("PRAGMA temp_store=MEMORY")
-        self._conn.execute("PRAGMA busy_timeout=30000")
-
-    def _load_vectors(self) -> np.ndarray | None:
-        if self._vectors_path.exists():
-            return np.load(self._vectors_path).astype(np.float32, copy=False)
-        return None
-
-    def _load_payload_cache(self) -> None:
-        rows = self._conn.execute("SELECT id, ord, payload_json FROM payloads").fetchall()
-        self._payloads_by_ordinal = {}
-        self._ordinals_by_id = {}
-        for item_id, ordinal, payload_json in rows:
-            item_id = str(item_id)
-            ordinal = int(ordinal)
-            payload = json.loads(payload_json)
-            self._payloads_by_ordinal[ordinal] = (item_id, payload)
-            self._ordinals_by_id[item_id] = ordinal
 
     def _build_jasper_graph(self) -> Any:
         try:
@@ -186,10 +124,7 @@ class JasperVectorStore:
 
     def _search_jasper(self, query: np.ndarray, top_k: int) -> tuple[list[SearchHit], float]:
         if self._graph is None:
-            if self._graph_path.exists():
-                self._graph = self._load_jasper_graph()
-            else:
-                self._graph = self._build_jasper_graph()
+            self._graph = self._build_jasper_graph()
         import torch
 
         query_tensor = torch.from_numpy(query.reshape(1, -1)).to(device="cuda", dtype=torch.float32)
@@ -221,18 +156,6 @@ class JasperVectorStore:
                 )
             )
         return hits, search_time_ms
-
-    def _load_jasper_graph(self) -> Any:
-        try:
-            import jasper
-        except ImportError as exc:
-            raise RuntimeError("Could not import jasper to load the graph.") from exc
-        return jasper.Graph.load(
-            str(self._graph_path),
-            dim=int(self.dim or 0),
-            n_neighbors=self.config.n_neighbors,
-            distance=self.config.distance,
-        )
 
     def _payload_by_ordinal(self, ordinal: int) -> tuple[str, dict[str, Any]] | None:
         return self._payloads_by_ordinal.get(ordinal)

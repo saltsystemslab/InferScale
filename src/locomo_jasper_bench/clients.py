@@ -9,7 +9,6 @@ from typing import Any, Protocol
 class ChatResult:
     content: str
     ttft_ms: float | None = None
-    output_tokens_per_sec: float | None = None
 
 
 class ChatClient(Protocol):
@@ -50,8 +49,8 @@ class OpenAICompatibleChatClient:
         temperature: float,
         top_p: float,
     ) -> ChatResult:
-        started = time.perf_counter()
         if self._stream:
+            started = time.perf_counter()
             return self._chat_streaming(messages, max_tokens, temperature, top_p, started)
 
         request: dict[str, Any] = {
@@ -66,14 +65,8 @@ class OpenAICompatibleChatClient:
         except Exception as exc:
             _raise_context_limit_error(exc)
             raise
-        elapsed_ms = (time.perf_counter() - started) * 1000
         content = response.choices[0].message.content or ""
-        usage = getattr(response, "usage", None)
-        output_token_count = getattr(usage, "completion_tokens", None)
-        return ChatResult(
-            content=content,
-            output_tokens_per_sec=_tokens_per_second(output_token_count, elapsed_ms),
-        )
+        return ChatResult(content=content)
 
     def _chat_streaming(
         self,
@@ -90,7 +83,6 @@ class OpenAICompatibleChatClient:
             "top_p": top_p,
             "max_tokens": max_tokens,
             "stream": True,
-            "stream_options": {"include_usage": True},
         }
         try:
             chunks = self._client.chat.completions.create(**request)
@@ -99,12 +91,8 @@ class OpenAICompatibleChatClient:
             raise
         content_parts: list[str] = []
         ttft_ms: float | None = None
-        usage = None
         try:
             for chunk in chunks:
-                chunk_usage = getattr(chunk, "usage", None)
-                if chunk_usage is not None:
-                    usage = chunk_usage
                 if not chunk.choices:
                     continue
                 delta = getattr(chunk.choices[0], "delta", None)
@@ -117,19 +105,7 @@ class OpenAICompatibleChatClient:
             _raise_context_limit_error(exc)
             raise
 
-        elapsed_ms = (time.perf_counter() - started) * 1000
-        output_token_count = getattr(usage, "completion_tokens", None)
-        return ChatResult(
-            content="".join(content_parts),
-            ttft_ms=ttft_ms,
-            output_tokens_per_sec=_tokens_per_second(output_token_count, elapsed_ms),
-        )
-
-
-def _tokens_per_second(tokens: int | None, elapsed_ms: float) -> float | None:
-    if tokens is None or elapsed_ms <= 0:
-        return None
-    return tokens / (elapsed_ms / 1000)
+        return ChatResult(content="".join(content_parts), ttft_ms=ttft_ms)
 
 
 def _raise_context_limit_error(exc: Exception) -> None:

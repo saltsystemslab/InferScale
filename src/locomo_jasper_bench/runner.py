@@ -224,7 +224,6 @@ class QuestionEvaluator:
             "metrics": {
                 "time_to_first_token_ms": answer.ttft_ms,
                 "vector_db_query_time_ms": vector_search_ms,
-                "throughput_tokens_per_sec": answer.output_tokens_per_sec,
             },
         }
 

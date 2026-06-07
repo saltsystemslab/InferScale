@@ -157,4 +157,6 @@ Important fields:
 - `metrics.accuracy`: judged answer quality.
 - `metrics.time_to_first_token_ms`: time to first answer token, only populated with `--stream`.
 - `metrics.vector_db_query_time_ms`: raw backend vector DB query time; payload lookup and result formatting are excluded.
-- `metrics.throughput_tokens_per_sec`: answer generation throughput.
+- `metrics.vector_db_query_count`: number of measured vector DB queries.
+- `metrics.vector_db_query_time_total_ms`: total measured vector DB query time.
+- `metrics.vector_db_queries_per_sec`: vector DB throughput, computed as measured queries divided by total measured query time.

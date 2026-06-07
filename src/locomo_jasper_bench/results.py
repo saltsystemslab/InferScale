@@ -41,6 +41,9 @@ def summarize_records(
     rows = list(records)
     judged = [row for row in rows if row.get("judge", {}).get("correct") is not None]
     correct = sum(1 for row in judged if row.get("judge", {}).get("correct") is True)
+    vector_query_times = _number_values(_metric_values(rows, "vector_db_query_time_ms"))
+    vector_query_total_ms = sum(vector_query_times)
+    vector_query_count = len(vector_query_times)
 
     return {
         "run_id": run_id,
@@ -51,8 +54,10 @@ def summarize_records(
         "metrics": {
             "accuracy": _safe_div(correct, len(judged)),
             "time_to_first_token_ms": _numeric_summary(_metric_values(rows, "time_to_first_token_ms")),
-            "vector_db_query_time_ms": _numeric_summary(_metric_values(rows, "vector_db_query_time_ms")),
-            "throughput_tokens_per_sec": _numeric_summary(_metric_values(rows, "throughput_tokens_per_sec")),
+            "vector_db_query_time_ms": _numeric_summary(vector_query_times),
+            "vector_db_query_count": vector_query_count,
+            "vector_db_query_time_total_ms": vector_query_total_ms,
+            "vector_db_queries_per_sec": _queries_per_second(vector_query_count, vector_query_total_ms),
         },
         "config": config,
         "system": system_metadata,
@@ -66,8 +71,12 @@ def _metric_values(rows: list[dict[str, Any]], key: str) -> Iterable[Any]:
             yield metrics.get(key)
 
 
+def _number_values(values: Iterable[Any]) -> list[float]:
+    return [float(value) for value in values if value is not None]
+
+
 def _numeric_summary(values: Iterable[Any]) -> dict[str, float | int | None]:
-    numbers = sorted(float(value) for value in values if value is not None)
+    numbers = sorted(_number_values(values))
     if not numbers:
         return {"count": 0, "avg": None, "min": None, "p50": None, "p95": None, "max": None}
     return {
@@ -94,3 +103,9 @@ def _safe_div(numerator: int, denominator: int) -> float | None:
     if denominator == 0:
         return None
     return numerator / denominator
+
+
+def _queries_per_second(query_count: int, total_ms: float) -> float | None:
+    if query_count == 0 or total_ms <= 0:
+        return None
+    return query_count / (total_ms / 1000)

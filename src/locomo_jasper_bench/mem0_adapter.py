@@ -77,10 +77,26 @@ class Mem0JasperVectorStore(VectorStoreBase):
         query_vector = _first_vector(vectors)
         hits, metrics = self.store.search(query_vector, top_k=requested_top_k)
         self.last_search_metrics = metrics
+        return [_mem0_search_hit(hit, rank) for rank, hit in enumerate(hits, start=1)]
+
+    def search_many(
+        self,
+        vectors: list[list[float]],
+        top_k: int = 5,
+        **_: Any,
+    ) -> tuple[list[list[SearchHit]], SearchMetrics]:
+        search_many = getattr(self.store, "search_many", None)
+        if not callable(search_many):
+            raise NotImplementedError("The configured vector store does not support batch search.")
+
+        requested_top_k = max(1, int(top_k or 5))
+        query_vectors = _vector_matrix(vectors)
+        hits_by_query, metrics = search_many(query_vectors, top_k=requested_top_k)
+        self.last_search_metrics = metrics
         return [
-            SearchHit(id=hit.id, payload=hit.payload, score=hit.score, distance=hit.score, rank=rank)
-            for rank, hit in enumerate(hits, start=1)
-        ]
+            [_mem0_search_hit(hit, rank) for rank, hit in enumerate(hits, start=1)]
+            for hits in hits_by_query
+        ], metrics
 
     def delete(self, vector_id: str) -> None:
         raise NotImplementedError("Mem0JasperVectorStore.delete is not used by this benchmark.")
@@ -142,6 +158,17 @@ def _first_vector(vectors: list[float] | list[list[float]]) -> np.ndarray:
     if array.ndim == 2 and array.shape[0] > 0:
         return array[0]
     raise ValueError("vectors must be a one-dimensional vector or a non-empty list of vectors")
+
+
+def _vector_matrix(vectors: list[list[float]]) -> np.ndarray:
+    array = np.asarray(vectors, dtype=np.float32)
+    if array.ndim == 2:
+        return array
+    raise ValueError("vectors must be a two-dimensional list of vectors")
+
+
+def _mem0_search_hit(hit: SearchHit, rank: int) -> SearchHit:
+    return SearchHit(id=hit.id, payload=hit.payload, score=hit.score, distance=hit.score, rank=rank)
 
 
 def _normalize_distance(distance: str) -> str:

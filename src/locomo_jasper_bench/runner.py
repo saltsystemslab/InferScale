@@ -22,6 +22,15 @@ class RuntimeClients:
     judge_client: ChatClient
 
 
+@dataclass(slots=True)
+class RetrievalResults:
+    hits_by_question: list[list[SearchHit]]
+    vector_times_ms: list[float]
+    search_time_total_ms: float
+    search_calls: int
+    used_batch: bool
+
+
 def run_benchmark(config: BenchmarkConfig, clients: RuntimeClients | None = None) -> dict[str, Any]:
     logger.info(
         "Starting benchmark run_id={} dataset={} results_dir={}",
@@ -84,13 +93,25 @@ class QuestionEvaluator:
         self.config = config
         self.clients = clients
 
-    def answer(self, sample: ConversationSample, qa: QuestionAnswer, memory: Any | None) -> dict[str, Any]:
+    def answer(
+        self,
+        sample: ConversationSample,
+        qa: QuestionAnswer,
+        memory: Any | None,
+        *,
+        retrieved_hits: list[SearchHit] | None = None,
+        vector_search_time_ms: float | None = None,
+    ) -> dict[str, Any]:
         ttft_started_at = time.perf_counter()
-        if memory is None:
-            raise RuntimeError("Mem0 context requires a memory store.")
-        hits = self._search_mem0_memory(memory, qa.question)
+        if retrieved_hits is None:
+            if memory is None:
+                raise RuntimeError("Mem0 context requires a memory store.")
+            hits = self._search_mem0_memory(memory, qa.question)
+            vector_search_time_ms = self._mem0_store_search_metrics(memory).search_time_ms
+        else:
+            hits = retrieved_hits
+            vector_search_time_ms = float(vector_search_time_ms or 0.0)
         answer_messages = build_retrieval_answer_messages(sample, qa, hits)
-        store_metrics = self._mem0_store_search_metrics(memory)
         answer = self.clients.answer_client.chat(
             answer_messages,
             max_tokens=self.config.max_answer_tokens,
@@ -132,9 +153,62 @@ class QuestionEvaluator:
             "judge": judge_payload,
             "metrics": {
                 "time_to_first_token_ms": answer.ttft_ms,
-                "vector_db_query_time_ms": store_metrics.search_time_ms,
+                "vector_db_query_time_ms": vector_search_time_ms,
             },
         }
+
+    def retrieve_many(self, memory: Any, questions: list[QuestionAnswer]) -> RetrievalResults:
+        if not questions:
+            return RetrievalResults([], [], 0.0, 0, False)
+
+        vector_store = getattr(memory, "vector_store", None)
+        if vector_store is None:
+            raise RuntimeError("Mem0 memory has no vector_store.")
+
+        query_embeddings = [embed_mem0_query(memory, qa.question) for qa in questions]
+        search_many = getattr(vector_store, "search_many", None)
+        if callable(search_many):
+            try:
+                hits_by_question, metrics = search_many(vectors=query_embeddings, top_k=self.config.top_k)
+                self._validate_hits_by_question(hits_by_question, questions)
+                search_time_total_ms = float(getattr(metrics, "search_time_ms", 0.0) or 0.0)
+                return RetrievalResults(
+                    hits_by_question=hits_by_question,
+                    vector_times_ms=_amortized_times(search_time_total_ms, len(questions)),
+                    search_time_total_ms=search_time_total_ms,
+                    search_calls=1,
+                    used_batch=True,
+                )
+            except NotImplementedError:
+                logger.debug("Batch search unavailable for vector_store={}; falling back to single-query search", type(vector_store).__name__)
+
+        search = getattr(vector_store, "search", None)
+        if not callable(search):
+            raise RuntimeError("Mem0 memory has no searchable vector_store.")
+
+        hits_by_question: list[list[SearchHit]] = []
+        vector_times_ms: list[float] = []
+        for qa, query_embedding in zip(questions, query_embeddings):
+            hits_by_question.append(search(query=qa.question, vectors=query_embedding, top_k=self.config.top_k))
+            vector_times_ms.append(self._mem0_store_search_metrics(memory).search_time_ms)
+
+        return RetrievalResults(
+            hits_by_question=hits_by_question,
+            vector_times_ms=vector_times_ms,
+            search_time_total_ms=sum(vector_times_ms),
+            search_calls=len(questions),
+            used_batch=False,
+        )
+
+    def _validate_hits_by_question(
+        self,
+        hits_by_question: list[list[SearchHit]],
+        questions: list[QuestionAnswer],
+    ) -> None:
+        if len(hits_by_question) != len(questions):
+            raise RuntimeError(
+                f"Batch search returned {len(hits_by_question)} result sets for {len(questions)} questions."
+            )
 
     def _mem0_store_search_metrics(self, memory: Any) -> SearchMetrics:
         vector_store = getattr(memory, "vector_store", None)
@@ -192,7 +266,12 @@ def _run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> li
                 sample_questions = sample.qa
                 if question_budget is not None:
                     sample_questions = sample_questions[:question_budget]
-                for qa in sample_questions:
+                sample_questions = list(sample_questions)
+                _log_sample_workload(config, sample, memory, sample_questions)
+                retrieval_results = question_evaluator.retrieve_many(memory, sample_questions)
+                _log_search_results(sample, retrieval_results)
+
+                for question_offset, qa in enumerate(sample_questions):
                     next_question = completed_questions + 1
                     if _should_log_progress(next_question, planned_questions, config.log_every):
                         logger.info(
@@ -203,7 +282,13 @@ def _run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> li
                             qa.question_id,
                             qa.category,
                         )
-                    record = question_evaluator.answer(sample, qa, memory)
+                    record = question_evaluator.answer(
+                        sample,
+                        qa,
+                        memory,
+                        retrieved_hits=retrieval_results.hits_by_question[question_offset],
+                        vector_search_time_ms=retrieval_results.vector_times_ms[question_offset],
+                    )
                     writer.write(record)
                     all_records.append(record)
                     completed_questions += 1
@@ -216,10 +301,8 @@ def _run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> li
                             qa.question_id,
                             _judge_label(record.get("judge", {}).get("correct")),
                         )
-                    if question_budget is not None:
-                        question_budget -= 1
-                        if question_budget <= 0:
-                            break
+                if question_budget is not None:
+                    question_budget -= len(sample_questions)
             finally:
                 memory_builder.log_embedding_cache_stats(memory, sample.sample_id)
                 memory_builder.close(memory)
@@ -239,6 +322,83 @@ def _should_log_progress(index: int, total: int, interval: int) -> bool:
     if interval <= 0 or total <= 0:
         return False
     return index == 1 or index == total or index % interval == 0
+
+
+def _log_sample_workload(
+    config: BenchmarkConfig,
+    sample: ConversationSample,
+    memory: Any,
+    sample_questions: list[QuestionAnswer],
+) -> None:
+    vector_count, dim = _memory_vector_store_shape(memory)
+    logger.info(
+        "Vector workload sample_id={} vectors={} dim={} questions={} batch_size={} top_k={} beam_width={}",
+        sample.sample_id,
+        vector_count,
+        dim,
+        len(sample_questions),
+        len(sample_questions),
+        config.top_k,
+        config.jasper_beam_width,
+    )
+
+
+def _log_search_results(sample: ConversationSample, retrieval_results: RetrievalResults) -> None:
+    question_count = len(retrieval_results.hits_by_question)
+    per_query_ms = retrieval_results.search_time_total_ms / question_count if question_count else 0.0
+    qps = question_count / (retrieval_results.search_time_total_ms / 1000) if retrieval_results.search_time_total_ms > 0 else None
+    logger.info(
+        "Vector search sample_id={} mode={} calls={} questions={} total_ms={:.3f} ms_per_query={:.3f} qps={}",
+        sample.sample_id,
+        "batch" if retrieval_results.used_batch else "single",
+        retrieval_results.search_calls,
+        question_count,
+        retrieval_results.search_time_total_ms,
+        per_query_ms,
+        _format_optional_float(qps),
+    )
+
+
+def _memory_vector_store_shape(memory: Any) -> tuple[Any, Any]:
+    vector_store = getattr(memory, "vector_store", None)
+    info = _col_info(vector_store)
+    store = getattr(vector_store, "store", None)
+    vector_count = info.get("vectors", _attr_or_none(store, "vector_count"))
+    dim = info.get("embedding_dim", _attr_or_none(store, "dim"))
+    if vector_count is None:
+        vector_count = _attr_or_none(vector_store, "vector_count")
+    if dim is None:
+        dim = _attr_or_none(vector_store, "dim")
+    return vector_count, dim
+
+
+def _col_info(vector_store: Any) -> dict[str, Any]:
+    col_info = getattr(vector_store, "col_info", None)
+    if not callable(col_info):
+        return {}
+    try:
+        info = col_info()
+    except Exception:
+        return {}
+    return info if isinstance(info, dict) else {}
+
+
+def _attr_or_none(obj: Any, name: str) -> Any:
+    if obj is None:
+        return None
+    return getattr(obj, name, None)
+
+
+def _amortized_times(total_ms: float, count: int) -> list[float]:
+    if count <= 0:
+        return []
+    return [total_ms / count for _ in range(count)]
+
+
+def _format_optional_float(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:.3f}"
 
 
 def _judge_label(value: Any) -> str:

@@ -83,23 +83,63 @@ class QdrantVectorStore:
         if self.dim is not None and query.shape[0] != self.dim:
             raise ValueError(f"query dim {query.shape[0]} does not match store dim {self.dim}")
         top_k = max(1, min(top_k, self.vector_count))
-        query_list = query.tolist()
 
         started = time.perf_counter()
         result = self._client.query_points(
             collection_name=self._collection_name,
-            query=query_list,
+            query=query.tolist(),
             limit=top_k,
             with_payload=False,
         )
         elapsed_ms = (time.perf_counter() - started) * 1000
-        points = getattr(result, "points", result)
+        points = _points_from_query_result(result)
         payloads_by_point_id = self._payloads_for_points(points)
         hits = [
             self._hit_from_point(point, rank, payloads_by_point_id.get(str(getattr(point, "id", None))))
             for rank, point in enumerate(points, start=1)
         ]
         return hits, SearchMetrics(elapsed_ms)
+
+    def search_many(
+        self,
+        query_vectors: np.ndarray | list[list[float]],
+        top_k: int,
+    ) -> tuple[list[list[SearchHit]], SearchMetrics]:
+        queries = np.asarray(query_vectors, dtype=np.float32)
+        if queries.ndim != 2:
+            raise ValueError("query_vectors must be two-dimensional")
+
+        if self.vector_count == 0:
+            return [[] for _ in range(int(queries.shape[0]))], SearchMetrics(0.0)
+        if self.dim is not None and queries.shape[1] != self.dim:
+            raise ValueError(f"query dim {queries.shape[1]} does not match store dim {self.dim}")
+        top_k = max(1, min(top_k, self.vector_count))
+
+        query_batch_points = getattr(self._client, "query_batch_points", None)
+        if not callable(query_batch_points):
+            raise NotImplementedError("qdrant-client does not support query_batch_points.")
+
+        models = self._models()
+        requests = [
+            models.QueryRequest(query=query.tolist(), limit=top_k, with_payload=False)
+            for query in queries
+        ]
+
+        started = time.perf_counter()
+        results = query_batch_points(collection_name=self._collection_name, requests=requests)
+        elapsed_ms = (time.perf_counter() - started) * 1000
+
+        points_by_query = [_points_from_query_result(result) for result in results]
+        all_points = [point for points in points_by_query for point in points]
+        payloads_by_point_id = self._payloads_for_points(all_points)
+        hits_by_query = [
+            [
+                self._hit_from_point(point, rank, payloads_by_point_id.get(str(getattr(point, "id", None))))
+                for rank, point in enumerate(points, start=1)
+            ]
+            for points in points_by_query
+        ]
+        return hits_by_query, SearchMetrics(elapsed_ms)
 
     def close(self) -> None:
         close = getattr(self._client, "close", None)
@@ -200,3 +240,8 @@ class QdrantVectorStore:
 
     def _point_id(self, item_id: str) -> str:
         return str(uuid.uuid5(self._UUID_NAMESPACE, item_id))
+
+
+def _points_from_query_result(result: Any) -> list[Any]:
+    points = getattr(result, "points", result)
+    return list(points or [])

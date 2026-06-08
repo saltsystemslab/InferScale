@@ -1,6 +1,6 @@
 # LoCoMo vLLM Jasper Benchmark
 
-This repository contains code to run LoCoMo against a local vLLM server with Mem) retrieval backed by a vector database (e.g. Jasper or Qdrant). All files are kept  under `/scratch/$USER/benchmark-jasper` so the repo/project doesn't run out of memory.
+This repository contains code to run LoCoMo against a local vLLM server with Mem0 retrieval backed by a vector database such as Jasper or Qdrant. Runtime files are kept under `/scratch/$USER/benchmark-jasper` so the repo does not run out of space.
 
 ## 1. Configure
 

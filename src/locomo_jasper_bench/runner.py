@@ -6,18 +6,14 @@ from typing import Any
 
 from loguru import logger
 
-from .clients import (
-    ChatClient,
-    OpenAICompatibleChatClient,
-)
+from .clients import ChatClient, OpenAICompatibleChatClient
 from .config import BenchmarkConfig
 from .data import ConversationSample, QuestionAnswer, load_locomo
 from .memory_builder import SampleMemoryBuilder, embed_mem0_query
 from .prompts import build_judge_messages, build_retrieval_answer_messages, parse_judge_response
 from .results import JsonlWriter, summarize_records, write_json
-from .search_results import mem0_results_to_search_hits
 from .system import collect_system_metadata
-from .vector_types import SearchMetrics
+from .vector_types import SearchHit, SearchMetrics
 
 
 @dataclass(slots=True)
@@ -92,11 +88,9 @@ class QuestionEvaluator:
         ttft_started_at = time.perf_counter()
         if memory is None:
             raise RuntimeError("Mem0 context requires a memory store.")
-        raw_results = self._search_mem0_memory(memory, qa.question)
-        hits = mem0_results_to_search_hits(raw_results)
+        hits = self._search_mem0_memory(memory, qa.question)
         answer_messages = build_retrieval_answer_messages(sample, qa, hits)
         store_metrics = self._mem0_store_search_metrics(memory)
-        vector_search_ms = store_metrics.search_time_ms
         answer = self.clients.answer_client.chat(
             answer_messages,
             max_tokens=self.config.max_answer_tokens,
@@ -138,7 +132,7 @@ class QuestionEvaluator:
             "judge": judge_payload,
             "metrics": {
                 "time_to_first_token_ms": answer.ttft_ms,
-                "vector_db_query_time_ms": vector_search_ms,
+                "vector_db_query_time_ms": store_metrics.search_time_ms,
             },
         }
 
@@ -151,7 +145,7 @@ class QuestionEvaluator:
             search_time_ms=float(getattr(metrics, "search_time_ms", 0.0) or 0.0),
         )
 
-    def _search_mem0_memory(self, memory: Any, query: str) -> Any:
+    def _search_mem0_memory(self, memory: Any, query: str) -> list[SearchHit]:
         vector_store = getattr(memory, "vector_store", None)
         search = getattr(vector_store, "search", None)
         if not callable(search):

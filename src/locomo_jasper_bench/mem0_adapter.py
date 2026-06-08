@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -8,7 +7,7 @@ import numpy as np
 
 from .jasper_vector_store import JasperVectorStore
 from .qdrant_vector_store import QdrantVectorStore
-from .vector_types import SearchMetrics, VectorStoreConfig
+from .vector_types import SearchHit, SearchMetrics, VectorStoreConfig
 
 _MIRRORED_METADATA_KEYS = ("user_id", "sample_id", "turn_id", "session_id", "turn_index", "speaker", "timestamp", "role")
 
@@ -18,14 +17,6 @@ except Exception:  # pragma: no cover - mem0 is optional for local unit tests
 
     class VectorStoreBase:  # type: ignore[no-redef]
         pass
-
-
-@dataclass(slots=True)
-class Mem0JasperSearchResult:
-    id: str
-    score: float
-    payload: dict[str, Any]
-    vector: list[float] | None = None
 
 
 class Mem0JasperVectorStore(VectorStoreBase):
@@ -56,7 +47,6 @@ class Mem0JasperVectorStore(VectorStoreBase):
             beam_width=beam_width,
         )
         self.store = self._create_store()
-        self.last_insert_ids: list[str] = []
         self.last_search_metrics = SearchMetrics(search_time_ms=0.0)
 
     def create_col(self, name: str | None = None, vector_size: int | None = None, distance: str | None = None) -> None:
@@ -74,8 +64,7 @@ class Mem0JasperVectorStore(VectorStoreBase):
 
     def insert(self, vectors: list[Any], payloads: list[dict[str, Any]] | None = None, ids: list[str] | None = None) -> list[str]:
         payload_list = [_normalize_memory_payload(payload) for payload in (payloads or [{} for _ in vectors])]
-        self.last_insert_ids = self.store.add_many(vectors, payload_list, ids)
-        return self.last_insert_ids
+        return self.store.add_many(vectors, payload_list, ids)
 
     def search(
         self,
@@ -83,14 +72,14 @@ class Mem0JasperVectorStore(VectorStoreBase):
         vectors: list[float] | list[list[float]],
         top_k: int = 5,
         **_: Any,
-    ) -> list[Mem0JasperSearchResult]:
+    ) -> list[SearchHit]:
         requested_top_k = max(1, int(top_k or 5))
         query_vector = _first_vector(vectors)
         hits, metrics = self.store.search(query_vector, top_k=requested_top_k)
         self.last_search_metrics = metrics
         return [
-            Mem0JasperSearchResult(id=hit.id, score=hit.score, payload=hit.payload)
-            for hit in hits[:requested_top_k]
+            SearchHit(id=hit.id, payload=hit.payload, score=hit.score, distance=hit.score, rank=rank)
+            for rank, hit in enumerate(hits, start=1)
         ]
 
     def delete(self, vector_id: str) -> None:
@@ -104,7 +93,7 @@ class Mem0JasperVectorStore(VectorStoreBase):
     ) -> None:
         raise NotImplementedError("Mem0JasperVectorStore.update is not used by this benchmark.")
 
-    def get(self, vector_id: str) -> Mem0JasperSearchResult | None:
+    def get(self, vector_id: str) -> SearchHit | None:
         raise NotImplementedError("Mem0JasperVectorStore.get is not used by this benchmark.")
 
     def list_cols(self) -> list[str]:
@@ -128,7 +117,7 @@ class Mem0JasperVectorStore(VectorStoreBase):
         top_k: int | None = None,
         limit: int | None = None,
         **_: Any,
-    ) -> list[Mem0JasperSearchResult]:
+    ) -> list[SearchHit]:
         raise NotImplementedError("Mem0JasperVectorStore.list is not used by this benchmark.")
 
     def reset(self) -> None:

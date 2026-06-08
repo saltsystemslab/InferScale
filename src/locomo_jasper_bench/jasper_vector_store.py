@@ -71,9 +71,6 @@ class JasperVectorStore:
         if self._vectors is None or self._vectors.size == 0:
             return
 
-        if self.config.backend != "jasper":
-            raise ValueError(f"Unsupported vector backend: {self.config.backend}")
-
         self._graph = self._build_jasper_graph()
 
     def search(self, query_vector: np.ndarray | list[float], top_k: int) -> tuple[list[SearchHit], SearchMetrics]:
@@ -86,10 +83,7 @@ class JasperVectorStore:
             raise ValueError(f"query dim {query.shape[0]} does not match store dim {self._vectors.shape[1]}")
         top_k = max(1, min(top_k, self.vector_count))
 
-        if self.config.backend == "jasper":
-            hits, search_time_ms = self._search_jasper(query, top_k)
-        else:
-            raise ValueError(f"Unsupported vector backend: {self.config.backend}")
+        hits, search_time_ms = self._search_jasper(query, top_k)
         return hits, SearchMetrics(search_time_ms)
 
     def close(self) -> None:

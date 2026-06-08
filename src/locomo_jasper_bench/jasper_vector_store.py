@@ -11,7 +11,7 @@ from .vector_types import SearchHit, SearchMetrics, VectorStoreConfig
 
 
 class JasperVectorStore:
-    """In-process vector store with Jasper GPU search."""
+    """In-memory vector store with Jasper GPU search."""
 
     def __init__(self, root: str | Path, config: VectorStoreConfig) -> None:
         self.root = Path(root)
@@ -106,11 +106,10 @@ class JasperVectorStore:
         except ImportError as exc:
             raise RuntimeError(
                 "Jasper backend requires torch, apache-tvm-ffi, and the built jasper Python package. "
-                "Use --vector-backend qdrant for CPU-only vector-search comparisons."
             ) from exc
         if not torch.cuda.is_available():
             raise RuntimeError(
-                "Jasper backend requires a CUDA device. Use --vector-backend qdrant for CPU-only vector-search comparisons."
+                "Jasper backend requires a CUDA device."
             )
         vectors = torch.from_numpy(self._vectors).to(device="cuda", dtype=torch.float32)
 

@@ -30,8 +30,6 @@ source scripts/load_env.sh
 
 ## 2. Install
 
-For a normal install:
-
 ```bash
 bash scripts/setup_remote.sh
 source .venv/bin/activate

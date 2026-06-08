@@ -4,12 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
-# Remote runs default to scratch-backed caches. Set BENCHMARK_USE_SCRATCH=0
-# before launching if you intentionally want project-local cache defaults.
-if [[ "${BENCHMARK_USE_SCRATCH:-1}" != "0" ]]; then
-  # shellcheck source=scripts/scratch_env.sh
-  source "${SCRIPT_DIR}/scratch_env.sh"
-fi
+# shellcheck source=scripts/load_env.sh
+source "${SCRIPT_DIR}/load_env.sh"
 
 MODEL="${VLLM_MODEL:-meta-llama/Llama-3.1-8B-Instruct}"
 API_KEY="${VLLM_API_KEY:-token-abc123}"
@@ -19,18 +15,6 @@ MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-32768}"
 DTYPE="${VLLM_DTYPE:-auto}"
 QUANTIZATION="${VLLM_QUANTIZATION:-}"
 
-export BENCHMARK_CACHE_ROOT="${BENCHMARK_CACHE_ROOT:-${PROJECT_ROOT}/.cache}"
-export HF_HOME="${HF_HOME:-${BENCHMARK_CACHE_ROOT}/huggingface}"
-export HF_HUB_CACHE="${HF_HUB_CACHE:-${HF_HOME}/hub}"
-export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-${HF_HOME}/transformers}"
-export TORCH_HOME="${TORCH_HOME:-${BENCHMARK_CACHE_ROOT}/torch}"
-export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-${BENCHMARK_CACHE_ROOT}/triton}"
-export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-${BENCHMARK_CACHE_ROOT}/torchinductor}"
-export TORCH_EXTENSIONS_DIR="${TORCH_EXTENSIONS_DIR:-${BENCHMARK_CACHE_ROOT}/torch_extensions}"
-export CUDA_CACHE_PATH="${CUDA_CACHE_PATH:-${BENCHMARK_CACHE_ROOT}/cuda}"
-export XDG_CACHE_HOME="${XDG_CACHE_HOME:-${BENCHMARK_CACHE_ROOT}/xdg}"
-export VLLM_CACHE_ROOT="${VLLM_CACHE_ROOT:-${BENCHMARK_CACHE_ROOT}/vllm}"
-export VLLM_CONFIG_ROOT="${VLLM_CONFIG_ROOT:-${BENCHMARK_CACHE_ROOT}/vllm_config}"
 export VLLM_NO_USAGE_STATS="${VLLM_NO_USAGE_STATS:-1}"
 export VLLM_USE_FLASHINFER_SAMPLER="${VLLM_USE_FLASHINFER_SAMPLER:-0}"
 if [[ -z "${FLASHINFER_WORKSPACE_BASE:-}" ]]; then
@@ -43,23 +27,10 @@ else
   export FLASHINFER_WORKSPACE_BASE
 fi
 export FLASHINFER_WORKSPACE_DIR="${FLASHINFER_WORKSPACE_DIR:-${FLASHINFER_WORKSPACE_BASE}/.cache/flashinfer}"
-export TMPDIR="${TMPDIR:-${PROJECT_ROOT}/tmp}"
 
 mkdir -p \
-  "${HF_HOME}" \
-  "${HF_HUB_CACHE}" \
-  "${TRANSFORMERS_CACHE}" \
-  "${TORCH_HOME}" \
-  "${TRITON_CACHE_DIR}" \
-  "${TORCHINDUCTOR_CACHE_DIR}" \
-  "${TORCH_EXTENSIONS_DIR}" \
-  "${CUDA_CACHE_PATH}" \
-  "${XDG_CACHE_HOME}" \
-  "${VLLM_CACHE_ROOT}" \
-  "${VLLM_CONFIG_ROOT}" \
   "${FLASHINFER_WORKSPACE_BASE}/.cache/flashinfer" \
-  "${FLASHINFER_WORKSPACE_DIR}" \
-  "${TMPDIR}"
+  "${FLASHINFER_WORKSPACE_DIR}"
 
 if [[ -n "${CUDA_MODULE:-}" ]]; then
   if ! command -v module >/dev/null 2>&1 && [[ -r /etc/profile.d/modules.sh ]]; then

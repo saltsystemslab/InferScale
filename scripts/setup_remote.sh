@@ -5,12 +5,8 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 cd "${PROJECT_ROOT}"
 
-if [[ "${FRESH_REMOTE_BUILD:-0}" == "1" ]]; then
-  rm -rf .venv .cache tmp jasperpy/build jasperpy/python/jasper/lib/*.so
-fi
-
-# shellcheck source=scripts/scratch_env.sh
-source "${SCRIPT_DIR}/scratch_env.sh"
+# shellcheck source=scripts/load_env.sh
+source "${SCRIPT_DIR}/load_env.sh"
 
 CUDA_MODULE="${CUDA_MODULE:-cuda/12.8}"
 PYTORCH_INDEX="${PYTORCH_INDEX:-https://download.pytorch.org/whl/cu128}"
@@ -18,7 +14,22 @@ JASPER_CUDA_ARCHITECTURES="${JASPER_CUDA_ARCHITECTURES:-native}"
 CONSTRAINTS_FILE="${CONSTRAINTS_FILE:-constraints-cu128.txt}"
 VENV_DIR="${VENV_DIR:-.venv}"
 
-echo "Using scratch root: ${SCRATCH_ROOT}"
+if [[ "${FRESH_REMOTE_BUILD:-0}" == "1" ]]; then
+  rm -rf "${VENV_DIR}" .cache tmp jasperpy/build jasperpy/python/jasper/lib/*.so
+  # Recreate scratch-backed paths after removing the local .cache entry.
+  # shellcheck source=scripts/load_env.sh
+  source "${SCRIPT_DIR}/load_env.sh"
+fi
+
+if [[ "${SKIP_SUBMODULE_INIT:-0}" != "1" ]]; then
+  git submodule update --init --recursive
+fi
+
+if [[ "${BENCHMARK_USE_SCRATCH:-1}" != "0" ]]; then
+  echo "Using scratch root: ${SCRATCH_ROOT}"
+else
+  echo "Using project-local cache/results directories."
+fi
 echo "Using benchmark cache root: ${BENCHMARK_CACHE_ROOT}"
 echo "Using benchmark results root: ${BENCHMARK_RESULTS_ROOT}"
 

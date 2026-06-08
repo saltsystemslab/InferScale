@@ -32,7 +32,6 @@ source scripts/load_env.sh
 
 ```bash
 bash scripts/setup_remote.sh
-source .venv/bin/activate
 ```
 
 ## 3. Start vLLM
@@ -46,18 +45,14 @@ tmux new -s locomo
 In window 1:
 
 ```bash
-cd /projects/SaltSystemsLab/<PATH_TO_REPO>/benchmark-jasper
 source .venv/bin/activate
-source scripts/load_env.sh
 bash scripts/serve_vllm.sh
 ```
 
 Create window 2 with `Ctrl-b c`, then check the server:
 
 ```bash
-cd /projects/SaltSystemsLab/<PATH_TO_REPO>/benchmark-jasper
 source .venv/bin/activate
-source scripts/load_env.sh
 
 curl --noproxy '*' \
   -H "Authorization: Bearer ${VLLM_API_KEY}" \

@@ -39,11 +39,22 @@ def summarize_records(
     system_metadata: dict[str, Any],
 ) -> dict[str, Any]:
     rows = list(records)
-    judged = [row for row in rows if row.get("judge", {}).get("correct") is not None]
-    correct = sum(1 for row in judged if row.get("judge", {}).get("correct") is True)
+    judged = [row for row in rows if _judge_correct(row) is not None]
+    correct = sum(1 for row in judged if _judge_correct(row) is True)
     vector_query_times = _number_values(_metric_values(rows, "vector_db_query_time_ms"))
     vector_query_total_ms = sum(vector_query_times)
     vector_query_count = len(vector_query_times)
+    metrics = {
+        "accuracy": _safe_div(correct, len(judged)),
+        "time_to_first_token_ms": _numeric_summary(_metric_values(rows, "time_to_first_token_ms")),
+        "vector_db_query_time_ms": _numeric_summary(vector_query_times),
+        "vector_db_query_count": vector_query_count,
+        "vector_db_query_time_total_ms": vector_query_total_ms,
+        "vector_db_queries_per_sec": _queries_per_second(vector_query_count, vector_query_total_ms),
+    }
+    retrieval_diagnostics = _summarize_retrieval_diagnostics(rows)
+    if retrieval_diagnostics is not None:
+        metrics["retrieval_diagnostics"] = retrieval_diagnostics
 
     return {
         "run_id": run_id,
@@ -51,14 +62,7 @@ def summarize_records(
         "question_count": len(rows),
         "judged_count": len(judged),
         "correct_count": correct,
-        "metrics": {
-            "accuracy": _safe_div(correct, len(judged)),
-            "time_to_first_token_ms": _numeric_summary(_metric_values(rows, "time_to_first_token_ms")),
-            "vector_db_query_time_ms": _numeric_summary(vector_query_times),
-            "vector_db_query_count": vector_query_count,
-            "vector_db_query_time_total_ms": vector_query_total_ms,
-            "vector_db_queries_per_sec": _queries_per_second(vector_query_count, vector_query_total_ms),
-        },
+        "metrics": metrics,
         "config": config,
         "system": system_metadata,
     }
@@ -69,6 +73,13 @@ def _metric_values(rows: list[dict[str, Any]], key: str) -> Iterable[Any]:
         metrics = row.get("metrics")
         if isinstance(metrics, dict) and key in metrics:
             yield metrics.get(key)
+
+
+def _judge_correct(row: dict[str, Any]) -> Any:
+    judge = row.get("judge")
+    if not isinstance(judge, dict):
+        return None
+    return judge.get("correct")
 
 
 def _number_values(values: Iterable[Any]) -> list[float]:
@@ -97,6 +108,38 @@ def _percentile(sorted_numbers: list[float], percentile: float) -> float:
     upper = min(lower + 1, len(sorted_numbers) - 1)
     weight = index - lower
     return sorted_numbers[lower] * (1 - weight) + sorted_numbers[upper] * weight
+
+
+def _summarize_retrieval_diagnostics(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    diagnostics = [
+        row.get("retrieval_diagnostics")
+        for row in rows
+        if isinstance(row.get("retrieval_diagnostics"), dict)
+        and row.get("retrieval_diagnostics", {}).get("enabled") is True
+    ]
+    if not diagnostics:
+        return None
+    return {
+        "count": len(diagnostics),
+        "exact_recall_at_requested_top_k": _numeric_summary(
+            diagnostic.get("exact_recall_at_requested_top_k") for diagnostic in diagnostics
+        ),
+        "jasper_candidate_recall_at_diagnostic_k": _numeric_summary(
+            diagnostic.get("jasper_candidate_recall_at_diagnostic_k") for diagnostic in diagnostics
+        ),
+        "exact_top_k_missing_from_retrieved_top_k": _numeric_summary(
+            len(diagnostic.get("exact_top_k_missing_from_retrieved_top_k") or [])
+            for diagnostic in diagnostics
+        ),
+        "exact_top_k_found_below_retrieved_top_k": _numeric_summary(
+            len(diagnostic.get("exact_top_k_found_below_retrieved_top_k") or [])
+            for diagnostic in diagnostics
+        ),
+        "exact_top_k_missing_from_jasper_candidates": _numeric_summary(
+            len(diagnostic.get("exact_top_k_missing_from_jasper_candidates") or [])
+            for diagnostic in diagnostics
+        ),
+    }
 
 
 def _safe_div(numerator: int, denominator: int) -> float | None:

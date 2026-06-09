@@ -11,6 +11,7 @@ from .config import BenchmarkConfig
 from .data import ConversationSample, QuestionAnswer, load_locomo
 from .memory_builder import SampleMemoryBuilder, embed_mem0_query
 from .prompts import build_judge_messages, build_retrieval_answer_messages, parse_judge_response
+from .retrieval_diagnostics import build_exact_vector_diagnostics
 from .results import JsonlWriter, summarize_records, write_json
 from .system import collect_system_metadata
 from .vector_types import SearchHit, SearchMetrics
@@ -88,9 +89,17 @@ class QuestionEvaluator:
         ttft_started_at = time.perf_counter()
         if memory is None:
             raise RuntimeError("Mem0 context requires a memory store.")
-        hits = self._search_mem0_memory(memory, qa.question)
-        answer_messages = build_retrieval_answer_messages(sample, qa, hits)
+        query_embedding = embed_mem0_query(memory, qa.question)
+        hits = self._search_mem0_memory(memory, qa.question, query_embedding, self.config.top_k)
         store_metrics = self._mem0_store_search_metrics(memory)
+        retrieval_diagnostics = self._retrieval_diagnostics(
+            memory=memory,
+            query=qa.question,
+            query_embedding=query_embedding,
+            hits=hits,
+            original_metrics=store_metrics,
+        )
+        answer_messages = build_retrieval_answer_messages(sample, qa, hits)
         answer = self.clients.answer_client.chat(
             answer_messages,
             max_tokens=self.config.max_answer_tokens,
@@ -108,7 +117,7 @@ class QuestionEvaluator:
         correct, reason = parse_judge_response(judge.content)
         judge_payload = {"correct": correct, "reason": reason, "raw": judge.content}
 
-        return {
+        record = {
             "run_id": self.config.run_id,
             "mode": "baseline",
             "sample_id": sample.sample_id,
@@ -135,6 +144,9 @@ class QuestionEvaluator:
                 "vector_db_query_time_ms": store_metrics.search_time_ms,
             },
         }
+        if retrieval_diagnostics is not None:
+            record["retrieval_diagnostics"] = retrieval_diagnostics
+        return record
 
     def _mem0_store_search_metrics(self, memory: Any) -> SearchMetrics:
         vector_store = getattr(memory, "vector_store", None)
@@ -145,14 +157,74 @@ class QuestionEvaluator:
             search_time_ms=float(getattr(metrics, "search_time_ms", 0.0) or 0.0),
         )
 
-    def _search_mem0_memory(self, memory: Any, query: str) -> list[SearchHit]:
+    def _search_mem0_memory(
+        self,
+        memory: Any,
+        query: str,
+        query_embedding: Any,
+        top_k: int,
+    ) -> list[SearchHit]:
         vector_store = getattr(memory, "vector_store", None)
         search = getattr(vector_store, "search", None)
         if not callable(search):
             raise RuntimeError("Mem0 memory has no searchable vector_store.")
 
-        query_embedding = embed_mem0_query(memory, query)
-        return search(query=query, vectors=query_embedding, top_k=self.config.top_k)
+        return search(query=query, vectors=query_embedding, top_k=top_k)
+
+    def _retrieval_diagnostics(
+        self,
+        *,
+        memory: Any,
+        query: str,
+        query_embedding: Any,
+        hits: list[SearchHit],
+        original_metrics: SearchMetrics,
+    ) -> dict[str, Any] | None:
+        if self.config.retrieval_diagnostic_k <= 0:
+            return None
+
+        vector_store = getattr(memory, "vector_store", None)
+        exact_search = getattr(vector_store, "exact_search", None)
+        if not callable(exact_search):
+            return {
+                "enabled": False,
+                "reason": f"{type(vector_store).__name__} does not expose exact_search.",
+            }
+
+        requested_top_k = max(1, int(self.config.top_k))
+        requested_diagnostic_k = max(requested_top_k, int(self.config.retrieval_diagnostic_k))
+        diagnostic_k = requested_diagnostic_k
+        if self.config.vector_backend == "jasper" and self.config.jasper_beam_width > 0:
+            diagnostic_k = min(diagnostic_k, max(requested_top_k, self.config.jasper_beam_width))
+
+        candidate_hits = hits
+        diagnostic_query_time_ms = None
+        if diagnostic_k > requested_top_k:
+            search = getattr(vector_store, "search", None)
+            if callable(search):
+                candidate_hits = search(query=query, vectors=query_embedding, top_k=diagnostic_k)
+                diagnostic_query_time_ms = self._mem0_store_search_metrics(memory).search_time_ms
+                self._restore_mem0_store_search_metrics(memory, original_metrics)
+
+        exact_hits = exact_search(query=query, vectors=query_embedding, top_k=diagnostic_k)
+        diagnostics = build_exact_vector_diagnostics(
+            retrieved_hits=hits,
+            candidate_hits=candidate_hits,
+            exact_hits=exact_hits,
+            requested_top_k=requested_top_k,
+            diagnostic_k=diagnostic_k,
+        )
+        if requested_diagnostic_k != diagnostic_k:
+            diagnostics["requested_diagnostic_k"] = requested_diagnostic_k
+            diagnostics["diagnostic_k_cap_reason"] = "Jasper candidate diagnostics are capped at beam width."
+        if diagnostic_query_time_ms is not None:
+            diagnostics["diagnostic_vector_db_query_time_ms"] = diagnostic_query_time_ms
+        return diagnostics
+
+    def _restore_mem0_store_search_metrics(self, memory: Any, metrics: SearchMetrics) -> None:
+        vector_store = getattr(memory, "vector_store", None)
+        if vector_store is not None and hasattr(vector_store, "last_search_metrics"):
+            vector_store.last_search_metrics = metrics
 
 
 def _run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> list[dict[str, Any]]:

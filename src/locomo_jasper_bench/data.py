@@ -18,6 +18,7 @@ class Turn:
     turn_index: int
     speaker: str
     text: str
+    dia_id: str | None = None
     timestamp: str | None = None
     image_caption: str | None = None
     raw: dict[str, Any] | None = None
@@ -122,11 +123,13 @@ def _turns_from_session_list(
     for turn_index, turn in enumerate(turns):
         if isinstance(turn, str):
             speaker = ""
+            dia_id = None
             text = turn
             image_caption = None
             raw = {"text": turn}
         elif isinstance(turn, dict):
             speaker = str(turn.get("speaker") or turn.get("role") or "")
+            dia_id = _string_or_none(turn.get("dia_id") or turn.get("dialogue_id"))
             text = str(
                 turn.get("text")
                 or turn.get("content")
@@ -152,6 +155,7 @@ def _turns_from_session_list(
             turn_index=turn_index,
             speaker=speaker,
             text=text,
+            dia_id=dia_id,
             timestamp=session_timestamp,
             image_caption=image_caption,
             raw=raw,

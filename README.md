@@ -142,3 +142,35 @@ Primary metrics:
 - `metrics.time_to_first_token_ms`: time to first answer token; populated when using `--stream`.
 - `metrics.vector_db_query_time_ms`: raw backend vector query time.
 - `metrics.vector_db_queries_per_sec`: vector DB query throughput.
+
+## 8. Diagnose Retrieval Quality
+
+To compare completed Jasper and Qdrant runs against LoCoMo evidence turns, run:
+
+```bash
+locomo-retrieval-diagnostics \
+  --dataset data/locomo10.json \
+  --jasper-run "${BENCHMARK_RESULTS_ROOT}/jasper-20samples-${RUN_STAMP}" \
+  --qdrant-run "${BENCHMARK_RESULTS_ROOT}/qdrant-20samples-${RUN_STAMP}" \
+  --top-k 20 \
+  --output-dir "${BENCHMARK_RESULTS_ROOT}/retrieval-diagnostics-${RUN_STAMP}"
+```
+
+This writes `summary.json`, `jasper_retrieval.jsonl`, and, when provided, `qdrant_retrieval.jsonl`. The summary reports evidence hit rate, evidence item recall, MRR, answer accuracy, and pairwise examples where Qdrant found evidence but Jasper missed it.
+
+For a future Jasper run, enable exact-vector diagnostics to compare Jasper's approximate results against exact nearest neighbors over the same in-memory vectors:
+
+```bash
+locomo-jasper-bench \
+  --dataset data/locomo10.json \
+  --results-dir "${BENCHMARK_RESULTS_ROOT}" \
+  --vector-backend jasper \
+  --retrieval-diagnostic-k 64 \
+  --max-samples 20 \
+  --stream \
+  --run-id jasper-diagnostic-20samples-${RUN_STAMP}
+```
+
+Each prediction record will include `retrieval_diagnostics`, including exact recall at the requested `top_k`, exact top-k items missing from Jasper's top-k, and exact top-k items found lower in the larger Jasper candidate list.
+
+Because this mode runs extra candidate search and exact CPU scoring, use it for retrieval diagnosis rather than latency comparisons.

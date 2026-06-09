@@ -86,6 +86,28 @@ class JasperVectorStore:
         hits, search_time_ms = self._search_jasper(query, top_k)
         return hits, SearchMetrics(search_time_ms)
 
+    def exact_search(self, query_vector: np.ndarray | list[float], top_k: int) -> tuple[list[SearchHit], SearchMetrics]:
+        if self._vectors is None or self._vectors.size == 0:
+            return [], SearchMetrics(0.0)
+        query = np.asarray(query_vector, dtype=np.float32)
+        if query.ndim != 1:
+            raise ValueError("query_vector must be one-dimensional")
+        if query.shape[0] != self._vectors.shape[1]:
+            raise ValueError(f"query dim {query.shape[0]} does not match store dim {self._vectors.shape[1]}")
+        top_k = max(1, min(top_k, self.vector_count))
+
+        started = time.perf_counter()
+        distances = self._exact_distances(query)
+        if top_k >= distances.shape[0]:
+            candidate_ordinals = np.arange(distances.shape[0], dtype=np.int64)
+        else:
+            candidate_ordinals = np.argpartition(distances, top_k - 1)[:top_k].astype(np.int64, copy=False)
+        ordered_ordinals = sorted(candidate_ordinals.tolist(), key=lambda ordinal: (float(distances[ordinal]), ordinal))
+        ordered_distances = [float(distances[ordinal]) for ordinal in ordered_ordinals]
+        hits = self._hits_from_ordinals_and_distances(ordered_ordinals, ordered_distances)
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        return hits, SearchMetrics(elapsed_ms)
+
     def close(self) -> None:
         if self._graph is not None:
             free = getattr(self._graph, "free", None)
@@ -132,8 +154,30 @@ class JasperVectorStore:
 
         index_values = indices[0].detach().cpu().numpy().astype(np.int64)
         distance_values = distances[0].detach().cpu().numpy().astype(np.float32)
+        ordered = sorted(
+            zip(index_values.tolist(), distance_values.tolist()),
+            key=lambda row: (float(row[1]), int(row[0])),
+        )
+        index_values = np.asarray([ordinal for ordinal, _distance in ordered], dtype=np.int64)
+        distance_values = np.asarray([distance for _ordinal, distance in ordered], dtype=np.float32)
+        hits = self._hits_from_ordinals_and_distances(index_values.tolist(), distance_values)
+        return hits, search_time_ms
+
+    def _exact_distances(self, query: np.ndarray) -> np.ndarray:
+        if self._vectors is None:
+            raise RuntimeError("Cannot compute exact distances before vectors are added.")
+        if self.config.distance == "ip":
+            return -(self._vectors @ query).astype(np.float32, copy=False)
+        diff = self._vectors - query.reshape(1, -1)
+        return np.einsum("ij,ij->i", diff, diff, dtype=np.float32).astype(np.float32, copy=False)
+
+    def _hits_from_ordinals_and_distances(
+        self,
+        ordinals: list[int],
+        distances: np.ndarray | list[float],
+    ) -> list[SearchHit]:
         hits: list[SearchHit] = []
-        for ordinal, distance in zip(index_values.tolist(), distance_values.tolist()):
+        for ordinal, distance in zip(ordinals, np.asarray(distances, dtype=np.float32).tolist()):
             row = self._payload_by_ordinal(int(ordinal))
             if row is None:
                 continue
@@ -148,7 +192,7 @@ class JasperVectorStore:
                     rank=len(hits) + 1,
                 )
             )
-        return hits, search_time_ms
+        return hits
 
     def _payload_by_ordinal(self, ordinal: int) -> tuple[str, dict[str, Any]] | None:
         return self._payloads_by_ordinal.get(ordinal)

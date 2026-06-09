@@ -9,7 +9,17 @@ from .jasper_vector_store import JasperVectorStore
 from .qdrant_vector_store import QdrantVectorStore
 from .vector_types import SearchHit, SearchMetrics, VectorStoreConfig
 
-_MIRRORED_METADATA_KEYS = ("user_id", "sample_id", "turn_id", "session_id", "turn_index", "speaker", "timestamp", "role")
+_MIRRORED_METADATA_KEYS = (
+    "user_id",
+    "sample_id",
+    "turn_id",
+    "dia_id",
+    "session_id",
+    "turn_index",
+    "speaker",
+    "timestamp",
+    "role",
+)
 
 try:
     from mem0.vector_stores.base import VectorStoreBase
@@ -78,7 +88,24 @@ class Mem0JasperVectorStore(VectorStoreBase):
         hits, metrics = self.store.search(query_vector, top_k=requested_top_k)
         self.last_search_metrics = metrics
         return [
-            SearchHit(id=hit.id, payload=hit.payload, score=hit.score, distance=hit.score, rank=rank)
+            SearchHit(id=hit.id, payload=hit.payload, score=hit.score, distance=hit.distance, rank=rank)
+            for rank, hit in enumerate(hits, start=1)
+        ]
+
+    def exact_search(
+        self,
+        query: str,
+        vectors: list[float] | list[list[float]],
+        top_k: int = 5,
+        **_: Any,
+    ) -> list[SearchHit]:
+        exact_search = getattr(self.store, "exact_search", None)
+        if not callable(exact_search):
+            raise RuntimeError(f"{type(self.store).__name__} does not support exact_search diagnostics.")
+        query_vector = _first_vector(vectors)
+        hits, _metrics = exact_search(query_vector, top_k=max(1, int(top_k or 5)))
+        return [
+            SearchHit(id=hit.id, payload=hit.payload, score=hit.score, distance=hit.distance, rank=rank)
             for rank, hit in enumerate(hits, start=1)
         ]
 

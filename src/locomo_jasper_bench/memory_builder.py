@@ -33,6 +33,7 @@ class SampleMemoryBuilder:
                 "user_id": sample.sample_id,
                 "sample_id": sample.sample_id,
                 "turn_id": turn.id,
+                "dia_id": turn.dia_id,
                 "session_id": turn.session_id,
                 "turn_index": turn.turn_index,
                 "speaker": turn.speaker,

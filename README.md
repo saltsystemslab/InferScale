@@ -142,8 +142,29 @@ Primary metrics:
 - `metrics.time_to_first_token_ms`: time to first answer token; populated when using `--stream`.
 - `metrics.vector_db_query_time_ms`: raw backend vector query time.
 - `metrics.vector_db_queries_per_sec`: vector DB query throughput.
+- `metrics.exact_top_k_answer_accuracy`: judged answer quality when Jasper exact top-k answer diagnostics are enabled.
 
-## 8. Diagnose Retrieval Quality
+## 8. Diagnose Jasper Exact Top-K Answer Quality
+
+To compare Jasper's approximate-retrieval answer accuracy against exact top-k retrieval over the same in-memory vectors, run Jasper with:
+
+```bash
+locomo-jasper-bench \
+  --dataset data/locomo10.json \
+  --results-dir "${BENCHMARK_RESULTS_ROOT}" \
+  --vector-backend jasper \
+  --exact-answer-baseline \
+  --top-k 20 \
+  --max-samples 20 \
+  --stream \
+  --run-id jasper-exact-answer-20samples-${RUN_STAMP}
+```
+
+The normal Jasper answer remains in each `predictions.jsonl` row. The exact top-k answer is added under `exact_top_k_answer`, including its retrieved memories, predicted answer, judge result, and diagnostic metrics. The summary includes `metrics.exact_top_k_answer_accuracy`, `metrics.answer_accuracy_delta_exact_minus_jasper`, and paired disagreement counts.
+
+This mode runs an extra exact search, answer call, and judge call per question, so use it for answer-quality diagnosis rather than latency benchmarking.
+
+## 9. Diagnose Retrieval Quality
 
 To compare completed Jasper and Qdrant runs against LoCoMo evidence turns, run:
 

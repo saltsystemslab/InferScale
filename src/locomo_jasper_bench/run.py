@@ -36,6 +36,16 @@ def main(argv: list[str] | None = None) -> None:
         print(f"accuracy={accuracy:.4f} judged={summary['judged_count']}/{summary['question_count']}")
     else:
         print(f"questions={summary['question_count']} judged={summary['judged_count']}")
+    exact_accuracy = summary.get("metrics", {}).get("exact_top_k_answer_accuracy")
+    if exact_accuracy is not None:
+        delta = summary.get("metrics", {}).get("answer_accuracy_delta_exact_minus_jasper")
+        delta_text = f"{delta:.4f}" if delta is not None else "n/a"
+        exact_judged = summary.get("metrics", {}).get("exact_top_k_judged_count")
+        print(
+            f"exact_top_k_answer_accuracy={exact_accuracy:.4f} "
+            f"judged={exact_judged}/{summary['question_count']} "
+            f"delta_exact_minus_jasper={delta_text}"
+        )
 
 
 def _configure_logging() -> None:

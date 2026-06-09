@@ -68,6 +68,7 @@ class BenchmarkConfig:
     max_questions: int | None = None
     log_every: int = 5
     preembed_only: bool = False
+    exact_answer_baseline: bool = False
 
     def to_jsonable(self) -> dict[str, object]:
         data = asdict(self)
@@ -138,6 +139,14 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
         "--preembed-only",
         action="store_true",
         help="Precompute LoCoMo turn and question embeddings into the cache, then exit.",
+    )
+    parser.add_argument(
+        "--exact-answer-baseline",
+        action="store_true",
+        help=(
+            "For Jasper runs, also answer and judge each question using exact top-k vector search. "
+            "This is for answer-quality diagnosis, not latency benchmarking."
+        ),
     )
 
     ns = parser.parse_args(argv)

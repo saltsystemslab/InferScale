@@ -24,6 +24,9 @@ class RuntimeClients:
 
 
 def run_benchmark(config: BenchmarkConfig, clients: RuntimeClients | None = None) -> dict[str, Any]:
+    if config.exact_answer_baseline and config.vector_backend != "jasper":
+        raise ValueError("--exact-answer-baseline is only supported with --vector-backend jasper.")
+
     logger.info(
         "Starting benchmark run_id={} dataset={} results_dir={}",
         config.run_id,
@@ -127,17 +130,7 @@ class QuestionEvaluator:
             "gold_answer": qa.answer,
             "predicted_answer": answer.content,
             "evidence": qa.evidence,
-            "retrieved_memories": [
-                {
-                    "id": hit.id,
-                    "rank": hit.rank,
-                    "score": hit.score,
-                    "distance": hit.distance,
-                    "memory": hit.payload.get("memory") or hit.payload.get("text") or "",
-                    "metadata": hit.payload.get("metadata", {}),
-                }
-                for hit in hits
-            ],
+            "retrieved_memories": _search_hit_rows(hits),
             "judge": judge_payload,
             "metrics": {
                 "time_to_first_token_ms": answer.ttft_ms,
@@ -146,6 +139,13 @@ class QuestionEvaluator:
         }
         if retrieval_diagnostics is not None:
             record["retrieval_diagnostics"] = retrieval_diagnostics
+        if self.config.exact_answer_baseline:
+            record["exact_top_k_answer"] = self._exact_top_k_answer(
+                sample=sample,
+                qa=qa,
+                memory=memory,
+                query_embedding=query_embedding,
+            )
         return record
 
     def _mem0_store_search_metrics(self, memory: Any) -> SearchMetrics:
@@ -170,6 +170,50 @@ class QuestionEvaluator:
             raise RuntimeError("Mem0 memory has no searchable vector_store.")
 
         return search(query=query, vectors=query_embedding, top_k=top_k)
+
+    def _exact_top_k_answer(
+        self,
+        *,
+        sample: ConversationSample,
+        qa: QuestionAnswer,
+        memory: Any,
+        query_embedding: Any,
+    ) -> dict[str, Any]:
+        vector_store = getattr(memory, "vector_store", None)
+        exact_search = getattr(vector_store, "exact_search", None)
+        if not callable(exact_search):
+            raise RuntimeError(f"{type(vector_store).__name__} does not expose exact_search.")
+
+        started = time.perf_counter()
+        exact_hits = exact_search(query=qa.question, vectors=query_embedding, top_k=self.config.top_k)
+        exact_search_time_ms = (time.perf_counter() - started) * 1000
+
+        exact_answer_started_at = time.perf_counter()
+        answer_messages = build_retrieval_answer_messages(sample, qa, exact_hits)
+        answer = self.clients.answer_client.chat(
+            answer_messages,
+            max_tokens=self.config.max_answer_tokens,
+            temperature=self.config.temperature,
+            top_p=self.config.top_p,
+            ttft_started_at=exact_answer_started_at,
+        )
+        judge_messages = build_judge_messages(qa, answer.content)
+        judge = self.clients.judge_client.chat(
+            judge_messages,
+            max_tokens=self.config.max_judge_tokens,
+            temperature=0.0,
+            top_p=1.0,
+        )
+        correct, reason = parse_judge_response(judge.content)
+        return {
+            "predicted_answer": answer.content,
+            "retrieved_memories": _search_hit_rows(exact_hits),
+            "judge": {"correct": correct, "reason": reason, "raw": judge.content},
+            "metrics": {
+                "answer_time_to_first_token_ms": answer.ttft_ms,
+                "exact_vector_db_query_time_ms": exact_search_time_ms,
+            },
+        }
 
     def _retrieval_diagnostics(
         self,
@@ -319,6 +363,20 @@ def _judge_label(value: Any) -> str:
     if value is False:
         return "incorrect"
     return "skipped"
+
+
+def _search_hit_rows(hits: list[SearchHit]) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": hit.id,
+            "rank": hit.rank,
+            "score": hit.score,
+            "distance": hit.distance,
+            "memory": hit.payload.get("memory") or hit.payload.get("text") or "",
+            "metadata": hit.payload.get("metadata", {}),
+        }
+        for hit in hits
+    ]
 
 
 def _format_accuracy(value: Any) -> str:

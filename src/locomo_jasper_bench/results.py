@@ -55,6 +55,9 @@ def summarize_records(
     retrieval_diagnostics = _summarize_retrieval_diagnostics(rows)
     if retrieval_diagnostics is not None:
         metrics["retrieval_diagnostics"] = retrieval_diagnostics
+    exact_top_k_answers = _summarize_exact_top_k_answers(rows)
+    if exact_top_k_answers is not None:
+        metrics.update(exact_top_k_answers)
 
     return {
         "run_id": run_id,
@@ -77,6 +80,16 @@ def _metric_values(rows: list[dict[str, Any]], key: str) -> Iterable[Any]:
 
 def _judge_correct(row: dict[str, Any]) -> Any:
     judge = row.get("judge")
+    if not isinstance(judge, dict):
+        return None
+    return judge.get("correct")
+
+
+def _exact_top_k_judge_correct(row: dict[str, Any]) -> Any:
+    exact_top_k_answer = row.get("exact_top_k_answer")
+    if not isinstance(exact_top_k_answer, dict):
+        return None
+    judge = exact_top_k_answer.get("judge")
     if not isinstance(judge, dict):
         return None
     return judge.get("correct")
@@ -138,6 +151,44 @@ def _summarize_retrieval_diagnostics(rows: list[dict[str, Any]]) -> dict[str, An
         "exact_top_k_missing_from_jasper_candidates": _numeric_summary(
             len(diagnostic.get("exact_top_k_missing_from_jasper_candidates") or [])
             for diagnostic in diagnostics
+        ),
+    }
+
+
+def _summarize_exact_top_k_answers(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    exact_judged = [row for row in rows if _exact_top_k_judge_correct(row) is not None]
+    if not exact_judged:
+        return None
+
+    exact_correct_count = sum(1 for row in exact_judged if _exact_top_k_judge_correct(row) is True)
+    paired = [
+        row
+        for row in rows
+        if _judge_correct(row) is not None and _exact_top_k_judge_correct(row) is not None
+    ]
+    jasper_paired_correct = sum(1 for row in paired if _judge_correct(row) is True)
+    exact_paired_correct = sum(1 for row in paired if _exact_top_k_judge_correct(row) is True)
+    jasper_paired_accuracy = _safe_div(jasper_paired_correct, len(paired))
+    exact_paired_accuracy = _safe_div(exact_paired_correct, len(paired))
+    accuracy_delta = None
+    if jasper_paired_accuracy is not None and exact_paired_accuracy is not None:
+        accuracy_delta = exact_paired_accuracy - jasper_paired_accuracy
+
+    return {
+        "exact_top_k_answer_accuracy": _safe_div(exact_correct_count, len(exact_judged)),
+        "exact_top_k_judged_count": len(exact_judged),
+        "exact_top_k_correct_count": exact_correct_count,
+        "exact_top_k_paired_judged_count": len(paired),
+        "answer_accuracy_delta_exact_minus_jasper": accuracy_delta,
+        "exact_correct_jasper_wrong_count": sum(
+            1
+            for row in paired
+            if _exact_top_k_judge_correct(row) is True and _judge_correct(row) is False
+        ),
+        "jasper_correct_exact_wrong_count": sum(
+            1
+            for row in paired
+            if _judge_correct(row) is True and _exact_top_k_judge_correct(row) is False
         ),
     }
 

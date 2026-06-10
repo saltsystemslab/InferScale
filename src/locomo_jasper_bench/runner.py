@@ -19,8 +19,7 @@ from .vector_types import SearchHit, SearchMetrics
 
 @dataclass(slots=True)
 class RuntimeClients:
-    answer_client: ChatClient
-    judge_client: ChatClient
+    chat_client: ChatClient
 
 
 def run_benchmark(config: BenchmarkConfig, clients: RuntimeClients | None = None) -> dict[str, Any]:
@@ -63,24 +62,18 @@ def run_benchmark(config: BenchmarkConfig, clients: RuntimeClients | None = None
 
 def build_clients(config: BenchmarkConfig) -> RuntimeClients:
     logger.info(
-        "Configuring clients llm={} judge={} vector_backend={}",
+        "Configuring chat client llm={} model={} vector_backend={}",
         config.llm_base_url,
-        config.judge_base_url,
+        config.model,
         config.vector_backend,
     )
-    answer_client = OpenAICompatibleChatClient(
+    chat_client = OpenAICompatibleChatClient(
         base_url=config.llm_base_url,
         api_key=config.llm_api_key,
         model=config.model,
         stream=config.stream,
     )
-    judge_client = OpenAICompatibleChatClient(
-        base_url=config.judge_base_url,
-        api_key=config.judge_api_key,
-        model=config.judge_model,
-        stream=config.stream,
-    )
-    return RuntimeClients(answer_client=answer_client, judge_client=judge_client)
+    return RuntimeClients(chat_client=chat_client)
 
 
 class QuestionEvaluator:
@@ -103,7 +96,7 @@ class QuestionEvaluator:
             original_metrics=store_metrics,
         )
         answer_messages = build_retrieval_answer_messages(sample, qa, hits)
-        answer = self.clients.answer_client.chat(
+        answer = self.clients.chat_client.chat(
             answer_messages,
             max_tokens=self.config.max_answer_tokens,
             temperature=self.config.temperature,
@@ -111,7 +104,7 @@ class QuestionEvaluator:
             ttft_started_at=ttft_started_at,
         )
         judge_messages = build_judge_messages(qa, answer.content)
-        judge = self.clients.judge_client.chat(
+        judge = self.clients.chat_client.chat(
             judge_messages,
             max_tokens=self.config.max_judge_tokens,
             temperature=0.0,
@@ -190,7 +183,7 @@ class QuestionEvaluator:
 
         exact_answer_started_at = time.perf_counter()
         answer_messages = build_retrieval_answer_messages(sample, qa, exact_hits)
-        answer = self.clients.answer_client.chat(
+        answer = self.clients.chat_client.chat(
             answer_messages,
             max_tokens=self.config.max_answer_tokens,
             temperature=self.config.temperature,
@@ -198,7 +191,7 @@ class QuestionEvaluator:
             ttft_started_at=exact_answer_started_at,
         )
         judge_messages = build_judge_messages(qa, answer.content)
-        judge = self.clients.judge_client.chat(
+        judge = self.clients.chat_client.chat(
             judge_messages,
             max_tokens=self.config.max_judge_tokens,
             temperature=0.0,

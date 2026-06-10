@@ -67,7 +67,7 @@ def _summary_row(summary: dict[str, Any], summary_path: Path) -> dict[str, Any]:
         "run_id": summary.get("run_id") or summary_path.parent.name,
         "summary_path": str(summary_path),
         "backend": config.get("vector_backend"),
-        "judge_model": config.get("judge_model"),
+        "judge_model": config.get("judge_model") or config.get("model"),
         "jasper_beam_width": config.get("jasper_beam_width"),
         "vector_normalize": bool(config.get("vector_normalize", False)),
         "accuracy": metrics.get("accuracy"),
@@ -101,7 +101,7 @@ def _retrieval_summary_value(retrieval_diagnostics: dict[str, Any], metric_key: 
 def _markdown_table(rows: list[dict[str, Any]]) -> str:
     headers = [
         "run_id",
-        "judge",
+        "model",
         "beam",
         "norm",
         "accuracy",

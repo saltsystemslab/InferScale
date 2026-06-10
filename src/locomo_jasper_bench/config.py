@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Literal
 
 
-DEFAULT_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
+DEFAULT_MODEL = "google/gemma-3-12b-it"
 DEFAULT_LLM_BASE_URL = "http://localhost:8000/v1"
 DEFAULT_VLLM_API_KEY = "token-abc123"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
@@ -38,10 +38,6 @@ class BenchmarkConfig:
     model: str = DEFAULT_MODEL
     llm_base_url: str = DEFAULT_LLM_BASE_URL
     llm_api_key: str = DEFAULT_VLLM_API_KEY
-
-    judge_model: str = DEFAULT_MODEL
-    judge_base_url: str = DEFAULT_LLM_BASE_URL
-    judge_api_key: str = DEFAULT_VLLM_API_KEY
 
     embedding_model: str = DEFAULT_EMBEDDING_MODEL
     embedding_base_url: str | None = None
@@ -76,7 +72,7 @@ class BenchmarkConfig:
         for key in ("dataset_path", "results_dir", "embedding_cache_dir"):
             if data[key] is not None:
                 data[key] = str(data[key])
-        for key in ("llm_api_key", "judge_api_key", "embedding_api_key"):
+        for key in ("llm_api_key", "embedding_api_key"):
             if data.get(key):
                 data[key] = "<redacted>"
         return data
@@ -99,10 +95,6 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     parser.add_argument("--model", default=os.environ.get("VLLM_MODEL", DEFAULT_MODEL))
     parser.add_argument("--llm-base-url", default=os.environ.get("VLLM_BASE_URL", DEFAULT_LLM_BASE_URL))
     parser.add_argument("--llm-api-key", default=os.environ.get("VLLM_API_KEY", DEFAULT_VLLM_API_KEY))
-
-    parser.add_argument("--judge-model", default=os.environ.get("JUDGE_MODEL", DEFAULT_MODEL))
-    parser.add_argument("--judge-base-url", default=os.environ.get("JUDGE_BASE_URL", DEFAULT_LLM_BASE_URL))
-    parser.add_argument("--judge-api-key", default=os.environ.get("JUDGE_API_KEY", DEFAULT_VLLM_API_KEY))
 
     parser.add_argument("--embedding-model", default=os.environ.get("OPENAI_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL))
     parser.add_argument("--embedding-base-url", default=os.environ.get("OPENAI_BASE_URL"))

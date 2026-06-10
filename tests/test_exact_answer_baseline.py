@@ -42,11 +42,15 @@ def test_exact_answer_baseline_requires_jasper_backend(tmp_path) -> None:
 
 
 def test_exact_top_k_answer_records_answer_judge_retrieval_and_metrics() -> None:
-    answer_client = _SequencedChatClient([ChatResult("exact answer", ttft_ms=12.5)])
-    judge_client = _SequencedChatClient([ChatResult('{"correct": true, "reason": "matches"}')])
+    chat_client = _SequencedChatClient(
+        [
+            ChatResult("exact answer", ttft_ms=12.5),
+            ChatResult('{"correct": true, "reason": "matches"}'),
+        ]
+    )
     evaluator = QuestionEvaluator(
         BenchmarkConfig(top_k=2, exact_answer_baseline=True),
-        RuntimeClients(answer_client=answer_client, judge_client=judge_client),
+        RuntimeClients(chat_client=chat_client),
     )
     vector_store = _ExactVectorStore()
     memory = _Memory(vector_store)
@@ -81,6 +85,7 @@ def test_exact_top_k_answer_records_answer_judge_retrieval_and_metrics() -> None
     ]
     assert result["metrics"]["answer_time_to_first_token_ms"] == 12.5
     assert result["metrics"]["exact_vector_db_query_time_ms"] >= 0.0
+    assert len(chat_client.calls) == 2
 
 
 def _row(*, jasper_correct: bool, exact_correct: bool) -> dict[str, object]:

@@ -15,10 +15,8 @@ Edit `.env` for your session. The common values are:
 
 - `SCRATCH_ROOT=/scratch/$USER/benchmark-jasper`
 - `CUDA_MODULE=cuda/12.8`
-- `VLLM_MODEL=meta-llama/Llama-3.1-8B-Instruct`
+- `VLLM_MODEL=google/gemma-3-12b-it`
 - `VLLM_API_KEY=token-abc123`
-- `JUDGE_VLLM_MODEL=google/gemma-3-12b-it`
-- `JUDGE_BASE_URL=http://127.0.0.1:8001/v1`
 - `OPENAI_API_KEY=...`
 - `HF_TOKEN=...` (optional)
 
@@ -38,27 +36,20 @@ bash scripts/setup_remote.sh
 
 ## 3. Start vLLM
 
-Use tmux so the answer and judge servers keep running while the benchmark runs in another window:
+Use tmux so the server keeps running while the benchmark runs in another window:
 
 ```bash
 tmux new -s locomo
 ```
 
-In window 1, start the answer model server:
+In window 1, start the Gemma server:
 
 ```bash
 source .venv/bin/activate
-VLLM_ROLE=answer bash scripts/serve_vllm.sh
+bash scripts/serve_vllm.sh
 ```
 
-Create window 2 with `Ctrl-b c`, then start the Gemma judge server:
-
-```bash
-source .venv/bin/activate
-VLLM_ROLE=judge bash scripts/serve_vllm.sh
-```
-
-Create window 3 with `Ctrl-b c`, then check both servers:
+Create window 2 with `Ctrl-b c`, then check the server:
 
 ```bash
 source .venv/bin/activate
@@ -66,13 +57,9 @@ source .venv/bin/activate
 curl --noproxy '*' \
   -H "Authorization: Bearer ${VLLM_API_KEY}" \
   "${VLLM_BASE_URL}/models"
-
-curl --noproxy '*' \
-  -H "Authorization: Bearer ${JUDGE_API_KEY}" \
-  "${JUDGE_BASE_URL}/models"
 ```
 
-The judge server defaults to `google/gemma-3-12b-it` on port `8001`. If Hugging Face gates the model, make sure `HF_TOKEN` is set before starting vLLM.
+The server defaults to `google/gemma-3-12b-it` on port `8000`. If Hugging Face gates the model, make sure `HF_TOKEN` is set before starting vLLM.
 
 ## 4. Data
 
@@ -147,7 +134,7 @@ For a quick smoke comparison, add this to each command:
 
 ## 7. Full-Dataset Jasper Ablations
 
-To test whether beam width `128` or L2 vector normalization helps, run the full dataset with the Gemma judge:
+To test whether beam width `128` or L2 vector normalization helps, run the full dataset with the Gemma model:
 
 ```bash
 RUN_STAMP=$(date -u +%Y%m%dT%H%M%SZ)
@@ -159,9 +146,6 @@ COMMON_ARGS=(
   --top-k 20
   --retrieval-diagnostic-k 128
   --stream
-  --judge-model "${JUDGE_MODEL}"
-  --judge-base-url "${JUDGE_BASE_URL}"
-  --judge-api-key "${JUDGE_API_KEY}"
 )
 
 locomo-jasper-bench "${COMMON_ARGS[@]}" \
@@ -194,7 +178,7 @@ locomo-compare-runs \
   --json-output "${BENCHMARK_RESULTS_ROOT}/jasper-ablation-${RUN_STAMP}.json"
 ```
 
-Treat a setting as helpful only if it improves `metrics.accuracy` under the same Gemma judge setup; use vector query time and exact recall as secondary tradeoff metrics.
+Treat a setting as helpful only if it improves `metrics.accuracy` under the same Gemma setup; use vector query time and exact recall as secondary tradeoff metrics.
 
 ## 8. Results
 

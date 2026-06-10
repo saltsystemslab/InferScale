@@ -24,7 +24,7 @@ def test_compare_run_summaries_reads_run_dirs_and_extracts_matrix_fields(tmp_pat
                 },
                 "config": {
                     "vector_backend": "jasper",
-                    "judge_model": "google/gemma-3-12b-it",
+                    "model": "google/gemma-3-12b-it",
                     "jasper_beam_width": 128,
                     "vector_normalize": True,
                 },

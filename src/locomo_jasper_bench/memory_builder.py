@@ -128,6 +128,7 @@ def _store_config(config: BenchmarkConfig) -> VectorStoreConfig:
     return VectorStoreConfig(
         backend=config.vector_backend,
         distance=config.vector_distance,
+        normalize_vectors=config.vector_normalize,
         n_neighbors=config.jasper_n_neighbors,
         alpha=config.jasper_alpha,
         workspace_budget=config.jasper_workspace_budget,

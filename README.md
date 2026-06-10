@@ -17,6 +17,8 @@ Edit `.env` for your session. The common values are:
 - `CUDA_MODULE=cuda/12.8`
 - `VLLM_MODEL=meta-llama/Llama-3.1-8B-Instruct`
 - `VLLM_API_KEY=token-abc123`
+- `JUDGE_VLLM_MODEL=google/gemma-3-12b-it`
+- `JUDGE_BASE_URL=http://127.0.0.1:8001/v1`
 - `OPENAI_API_KEY=...`
 - `HF_TOKEN=...` (optional)
 
@@ -36,20 +38,27 @@ bash scripts/setup_remote.sh
 
 ## 3. Start vLLM
 
-Use tmux so the server keeps running while the benchmark runs in another window:
+Use tmux so the answer and judge servers keep running while the benchmark runs in another window:
 
 ```bash
 tmux new -s locomo
 ```
 
-In window 1:
+In window 1, start the answer model server:
 
 ```bash
 source .venv/bin/activate
-bash scripts/serve_vllm.sh
+VLLM_ROLE=answer bash scripts/serve_vllm.sh
 ```
 
-Create window 2 with `Ctrl-b c`, then check the server:
+Create window 2 with `Ctrl-b c`, then start the Gemma judge server:
+
+```bash
+source .venv/bin/activate
+VLLM_ROLE=judge bash scripts/serve_vllm.sh
+```
+
+Create window 3 with `Ctrl-b c`, then check both servers:
 
 ```bash
 source .venv/bin/activate
@@ -57,7 +66,13 @@ source .venv/bin/activate
 curl --noproxy '*' \
   -H "Authorization: Bearer ${VLLM_API_KEY}" \
   "${VLLM_BASE_URL}/models"
+
+curl --noproxy '*' \
+  -H "Authorization: Bearer ${JUDGE_API_KEY}" \
+  "${JUDGE_BASE_URL}/models"
 ```
+
+The judge server defaults to `google/gemma-3-12b-it` on port `8001`. If Hugging Face gates the model, make sure `HF_TOKEN` is set before starting vLLM.
 
 ## 4. Data
 
@@ -86,6 +101,16 @@ locomo-jasper-bench \
 ```
 
 Timed runs read from that cache and fail if an embedding is missing.
+
+For full-dataset ablations, precompute without `--max-samples`:
+
+```bash
+locomo-jasper-bench \
+  --dataset data/locomo10.json \
+  --results-dir "${BENCHMARK_RESULTS_ROOT}" \
+  --preembed-only \
+  --run-id preembed-full-${RUN_STAMP}
+```
 
 ## 6. Compare Qdrant And Jasper
 
@@ -120,7 +145,58 @@ For a quick smoke comparison, add this to each command:
 --max-samples 1 --max-questions 3 --log-every 1
 ```
 
-## 7. Results
+## 7. Full-Dataset Jasper Ablations
+
+To test whether beam width `128` or L2 vector normalization helps, run the full dataset with the Gemma judge:
+
+```bash
+RUN_STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+
+COMMON_ARGS=(
+  --dataset data/locomo10.json
+  --results-dir "${BENCHMARK_RESULTS_ROOT}"
+  --vector-backend jasper
+  --top-k 20
+  --retrieval-diagnostic-k 128
+  --stream
+  --judge-model "${JUDGE_MODEL}"
+  --judge-base-url "${JUDGE_BASE_URL}"
+  --judge-api-key "${JUDGE_API_KEY}"
+)
+
+locomo-jasper-bench "${COMMON_ARGS[@]}" \
+  --jasper-beam-width 64 \
+  --run-id jasper-bw64-raw-${RUN_STAMP}
+
+locomo-jasper-bench "${COMMON_ARGS[@]}" \
+  --jasper-beam-width 128 \
+  --run-id jasper-bw128-raw-${RUN_STAMP}
+
+locomo-jasper-bench "${COMMON_ARGS[@]}" \
+  --jasper-beam-width 64 \
+  --vector-normalize \
+  --run-id jasper-bw64-norm-${RUN_STAMP}
+
+locomo-jasper-bench "${COMMON_ARGS[@]}" \
+  --jasper-beam-width 128 \
+  --vector-normalize \
+  --run-id jasper-bw128-norm-${RUN_STAMP}
+```
+
+Compare the run summaries:
+
+```bash
+locomo-compare-runs \
+  "${BENCHMARK_RESULTS_ROOT}/jasper-bw64-raw-${RUN_STAMP}" \
+  "${BENCHMARK_RESULTS_ROOT}/jasper-bw128-raw-${RUN_STAMP}" \
+  "${BENCHMARK_RESULTS_ROOT}/jasper-bw64-norm-${RUN_STAMP}" \
+  "${BENCHMARK_RESULTS_ROOT}/jasper-bw128-norm-${RUN_STAMP}" \
+  --json-output "${BENCHMARK_RESULTS_ROOT}/jasper-ablation-${RUN_STAMP}.json"
+```
+
+Treat a setting as helpful only if it improves `metrics.accuracy` under the same Gemma judge setup; use vector query time and exact recall as secondary tradeoff metrics.
+
+## 8. Results
 
 Each run writes to `${BENCHMARK_RESULTS_ROOT}/<run-id>/`:
 
@@ -144,7 +220,7 @@ Primary metrics:
 - `metrics.vector_db_queries_per_sec`: vector DB query throughput.
 - `metrics.exact_top_k_answer_accuracy`: judged answer quality when Jasper exact top-k answer diagnostics are enabled.
 
-## 8. Diagnose Jasper Exact Top-K Answer Quality
+## 9. Diagnose Jasper Exact Top-K Answer Quality
 
 To compare Jasper's approximate-retrieval answer accuracy against exact top-k retrieval over the same in-memory vectors, run Jasper with:
 
@@ -164,7 +240,7 @@ The normal Jasper answer remains in each `predictions.jsonl` row. The exact top-
 
 This mode runs an extra exact search, answer call, and judge call per question, so use it for answer-quality diagnosis rather than latency benchmarking.
 
-## 9. Diagnose Retrieval Quality
+## 10. Diagnose Retrieval Quality
 
 To compare completed Jasper and Qdrant runs against LoCoMo evidence turns, run:
 

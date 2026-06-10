@@ -40,6 +40,7 @@ class Mem0JasperVectorStore(VectorStoreBase):
         path: str = "/tmp/jasper",
         backend: str = "jasper",
         distance: str = "ip",
+        normalize_vectors: bool = False,
         n_neighbors: int = 64,
         alpha: float = 1.0,
         workspace_budget: str = "10GB",
@@ -51,6 +52,7 @@ class Mem0JasperVectorStore(VectorStoreBase):
         self.config = VectorStoreConfig(
             backend=backend,
             distance=distance,
+            normalize_vectors=normalize_vectors,
             n_neighbors=n_neighbors,
             alpha=alpha,
             workspace_budget=workspace_budget,
@@ -74,7 +76,8 @@ class Mem0JasperVectorStore(VectorStoreBase):
 
     def insert(self, vectors: list[Any], payloads: list[dict[str, Any]] | None = None, ids: list[str] | None = None) -> list[str]:
         payload_list = [_normalize_memory_payload(payload) for payload in (payloads or [{} for _ in vectors])]
-        return self.store.add_many(vectors, payload_list, ids)
+        prepared_vectors = _prepare_vectors(vectors, normalize=self.config.normalize_vectors)
+        return self.store.add_many(prepared_vectors, payload_list, ids)
 
     def search(
         self,
@@ -84,7 +87,7 @@ class Mem0JasperVectorStore(VectorStoreBase):
         **_: Any,
     ) -> list[SearchHit]:
         requested_top_k = max(1, int(top_k or 5))
-        query_vector = _first_vector(vectors)
+        query_vector = _prepare_query_vector(vectors, normalize=self.config.normalize_vectors)
         hits, metrics = self.store.search(query_vector, top_k=requested_top_k)
         self.last_search_metrics = metrics
         return [
@@ -102,7 +105,7 @@ class Mem0JasperVectorStore(VectorStoreBase):
         exact_search = getattr(self.store, "exact_search", None)
         if not callable(exact_search):
             raise RuntimeError(f"{type(self.store).__name__} does not support exact_search diagnostics.")
-        query_vector = _first_vector(vectors)
+        query_vector = _prepare_query_vector(vectors, normalize=self.config.normalize_vectors)
         hits, _metrics = exact_search(query_vector, top_k=max(1, int(top_k or 5)))
         return [
             SearchHit(id=hit.id, payload=hit.payload, score=hit.score, distance=hit.distance, rank=rank)
@@ -133,6 +136,7 @@ class Mem0JasperVectorStore(VectorStoreBase):
         return {
             "name": self.collection_name,
             "backend": self.config.backend,
+            "normalize_vectors": self.config.normalize_vectors,
             "vectors": self.store.vector_count,
             "embedding_dim": self.store.dim,
             "path": str(self.root),
@@ -169,6 +173,27 @@ def _first_vector(vectors: list[float] | list[list[float]]) -> np.ndarray:
     if array.ndim == 2 and array.shape[0] > 0:
         return array[0]
     raise ValueError("vectors must be a one-dimensional vector or a non-empty list of vectors")
+
+
+def _prepare_vectors(vectors: list[Any], *, normalize: bool) -> list[np.ndarray | Any]:
+    if not normalize:
+        return list(vectors)
+    return [_l2_normalize(np.asarray(vector, dtype=np.float32)) for vector in vectors]
+
+
+def _prepare_query_vector(vectors: list[float] | list[list[float]], *, normalize: bool) -> np.ndarray:
+    query_vector = _first_vector(vectors)
+    if not normalize:
+        return query_vector
+    return _l2_normalize(query_vector)
+
+
+def _l2_normalize(vector: np.ndarray) -> np.ndarray:
+    prepared = np.asarray(vector, dtype=np.float32)
+    norm = float(np.linalg.norm(prepared))
+    if norm == 0.0 or not np.isfinite(norm):
+        return prepared.astype(np.float32, copy=True)
+    return (prepared / norm).astype(np.float32, copy=False)
 
 
 def _normalize_distance(distance: str) -> str:

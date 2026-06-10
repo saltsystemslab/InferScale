@@ -51,6 +51,7 @@ class BenchmarkConfig:
 
     vector_backend: VectorBackend = "jasper"
     vector_distance: DistanceMetric = "ip"
+    vector_normalize: bool = False
     top_k: int = 20
     retrieval_diagnostic_k: int = 0
     jasper_n_neighbors: int = 64
@@ -111,6 +112,11 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
 
     parser.add_argument("--vector-backend", choices=["jasper", "qdrant"], default="jasper")
     parser.add_argument("--vector-distance", choices=["ip", "l2"], default="ip")
+    parser.add_argument(
+        "--vector-normalize",
+        action="store_true",
+        help="L2-normalize stored and query vectors before vector search.",
+    )
     parser.add_argument("--top-k", type=int, default=20)
     parser.add_argument(
         "--retrieval-diagnostic-k",

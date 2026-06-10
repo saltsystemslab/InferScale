@@ -35,6 +35,7 @@ remote = [
 [project.scripts]
 locomo-jasper-bench = "locomo_jasper_bench.run:main"
 locomo-retrieval-diagnostics = "locomo_jasper_bench.retrieval_diagnostics:main"
+locomo-compare-runs = "locomo_jasper_bench.compare_runs:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

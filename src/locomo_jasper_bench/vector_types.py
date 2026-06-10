@@ -8,6 +8,7 @@ from typing import Any
 class VectorStoreConfig:
     backend: str = "jasper"
     distance: str = "ip"
+    normalize_vectors: bool = False
     n_neighbors: int = 64
     alpha: float = 1.0
     workspace_budget: str = "10GB"

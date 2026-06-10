@@ -120,7 +120,31 @@ For a quick smoke comparison, add this to each command:
 --max-samples 1 --max-questions 3 --log-every 1
 ```
 
-## 7. Results
+## 7. Strict GPU KV Injection
+
+The `ai-memory-code` submodule can be used through an opt-in in-process vLLM backend. This mode keeps the current Mem0/Jasper top-k retrieval step, then composes the retrieved turns as chunked-RoPE KV tensors on GPU and injects them through a strict GPU connector. It does not use `memory_path`, safetensors loading, `CPUMemoryStore`, vLLM CPU swap, or vLLM CPU offload.
+
+This path runs vLLM inside the benchmark process, so do not start `scripts/serve_vllm.sh` for the answer model. The judge still uses `--judge-base-url`.
+
+```bash
+locomo-jasper-bench \
+  --dataset data/locomo10.json \
+  --results-dir "${BENCHMARK_RESULTS_ROOT}" \
+  --answer-backend vllm-kv \
+  --vector-backend jasper \
+  --top-k 20 \
+  --kv-gpu-memory-utilization 0.55 \
+  --kv-max-model-len 32768 \
+  --kv-max-position 32768 \
+  --max-samples 1 \
+  --max-questions 3 \
+  --log-every 1 \
+  --run-id kv-strict-smoke-${RUN_STAMP}
+```
+
+Use `--kv-gpu-memory-utilization` conservatively because the retrieved chunk KV tensors remain GPU-resident while vLLM is loaded.
+
+## 8. Results
 
 Each run writes to `${BENCHMARK_RESULTS_ROOT}/<run-id>/`:
 

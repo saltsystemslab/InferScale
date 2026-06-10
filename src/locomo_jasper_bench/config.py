@@ -15,6 +15,7 @@ DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 
 VectorBackend = Literal["jasper", "qdrant"]
 DistanceMetric = Literal["ip", "l2"]
+AnswerBackend = Literal["openai", "vllm-kv"]
 
 
 def default_run_id() -> str:
@@ -38,6 +39,7 @@ class BenchmarkConfig:
     model: str = DEFAULT_MODEL
     llm_base_url: str = DEFAULT_LLM_BASE_URL
     llm_api_key: str = DEFAULT_VLLM_API_KEY
+    answer_backend: AnswerBackend = "openai"
 
     judge_model: str = DEFAULT_MODEL
     judge_base_url: str = DEFAULT_LLM_BASE_URL
@@ -62,6 +64,14 @@ class BenchmarkConfig:
     max_answer_tokens: int = 512
     max_judge_tokens: int = 256
     stream: bool = False
+
+    kv_connector_module: str = "locomo_jasper_bench.kv.strict_gpu_connector"
+    kv_sample_window: int = 1
+    kv_gpu_memory_utilization: float = 0.55
+    kv_max_model_len: int = 32768
+    kv_max_position: int = 32768
+    kv_dtype: str = "bfloat16"
+    kv_device: str = "cuda:0"
 
     max_samples: int | None = None
     max_questions: int | None = None
@@ -96,6 +106,12 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     parser.add_argument("--model", default=os.environ.get("VLLM_MODEL", DEFAULT_MODEL))
     parser.add_argument("--llm-base-url", default=os.environ.get("VLLM_BASE_URL", DEFAULT_LLM_BASE_URL))
     parser.add_argument("--llm-api-key", default=os.environ.get("VLLM_API_KEY", DEFAULT_VLLM_API_KEY))
+    parser.add_argument(
+        "--answer-backend",
+        choices=["openai", "vllm-kv"],
+        default=os.environ.get("LOCOMO_ANSWER_BACKEND", "openai"),
+        help="Use the existing OpenAI-compatible answer client or in-process vLLM KV injection.",
+    )
 
     parser.add_argument("--judge-model", default=os.environ.get("JUDGE_MODEL", DEFAULT_MODEL))
     parser.add_argument("--judge-base-url", default=os.environ.get("JUDGE_BASE_URL", DEFAULT_LLM_BASE_URL))
@@ -120,6 +136,36 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     parser.add_argument("--max-answer-tokens", type=int, default=512)
     parser.add_argument("--max-judge-tokens", type=int, default=256)
     parser.add_argument("--stream", action="store_true")
+
+    parser.add_argument(
+        "--kv-connector-module",
+        default=os.environ.get("LOCOMO_KV_CONNECTOR_MODULE", "locomo_jasper_bench.kv.strict_gpu_connector"),
+        help="Import path for the strict GPU MemoryKVConnector module used by in-process vLLM.",
+    )
+    parser.add_argument(
+        "--kv-sample-window",
+        type=int,
+        default=int(os.environ.get("LOCOMO_KV_SAMPLE_WINDOW", "1")),
+        help="Number of LoCoMo samples to keep in the strict GPU KV pipeline at once. v1 supports 1.",
+    )
+    parser.add_argument(
+        "--kv-gpu-memory-utilization",
+        type=float,
+        default=float(os.environ.get("LOCOMO_KV_GPU_MEMORY_UTILIZATION", "0.55")),
+    )
+    parser.add_argument(
+        "--kv-max-model-len",
+        type=int,
+        default=int(os.environ.get("LOCOMO_KV_MAX_MODEL_LEN", "32768")),
+    )
+    parser.add_argument(
+        "--kv-max-position",
+        type=int,
+        default=int(os.environ.get("LOCOMO_KV_MAX_POSITION", "32768")),
+        help="Maximum RoPE virtual position for top-k memory composition.",
+    )
+    parser.add_argument("--kv-dtype", default=os.environ.get("LOCOMO_KV_DTYPE", "bfloat16"))
+    parser.add_argument("--kv-device", default=os.environ.get("LOCOMO_KV_DEVICE", "cuda:0"))
 
     parser.add_argument("--max-samples", type=int)
     parser.add_argument("--max-questions", type=int)

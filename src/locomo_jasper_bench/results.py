@@ -45,20 +45,33 @@ def summarize_records(
     vector_query_total_ms = sum(vector_query_times)
     vector_query_count = len(vector_query_times)
 
+    metrics = {
+        "accuracy": _safe_div(correct, len(judged)),
+        "time_to_first_token_ms": _numeric_summary(_metric_values(rows, "time_to_first_token_ms")),
+        "vector_db_query_time_ms": _numeric_summary(vector_query_times),
+        "vector_db_query_count": vector_query_count,
+        "vector_db_query_time_total_ms": vector_query_total_ms,
+        "vector_db_queries_per_sec": _queries_per_second(vector_query_count, vector_query_total_ms),
+    }
+    for key in (
+        "kv_memory_tokens",
+        "kv_compose_time_ms",
+        "answer_generate_time_ms",
+        "answer_total_time_ms",
+        "kv_query_tokens",
+        "kv_store_gpu_mb",
+    ):
+        summary = _numeric_summary(_metric_values(rows, key))
+        if summary["count"]:
+            metrics[key] = summary
+
     return {
         "run_id": run_id,
         "mode": mode,
         "question_count": len(rows),
         "judged_count": len(judged),
         "correct_count": correct,
-        "metrics": {
-            "accuracy": _safe_div(correct, len(judged)),
-            "time_to_first_token_ms": _numeric_summary(_metric_values(rows, "time_to_first_token_ms")),
-            "vector_db_query_time_ms": _numeric_summary(vector_query_times),
-            "vector_db_query_count": vector_query_count,
-            "vector_db_query_time_total_ms": vector_query_total_ms,
-            "vector_db_queries_per_sec": _queries_per_second(vector_query_count, vector_query_total_ms),
-        },
+        "metrics": metrics,
         "config": config,
         "system": system_metadata,
     }

@@ -32,16 +32,23 @@ def run_benchmark(config: BenchmarkConfig, clients: RuntimeClients | None = None
     config.run_dir.mkdir(parents=True, exist_ok=True)
     write_json(config.run_dir / "config.json", config.to_jsonable())
 
+    owns_clients = clients is None
     runtime_clients = clients or build_clients(config)
     system_metadata = collect_system_metadata()
     write_json(config.run_dir / "system.json", system_metadata)
 
-    records = _run_prediction_mode(config, runtime_clients)
+    try:
+        records = _run_prediction_mode(config, runtime_clients)
+    finally:
+        if owns_clients:
+            close_answer_client = getattr(runtime_clients.answer_client, "close", None)
+            if callable(close_answer_client):
+                close_answer_client()
 
     summary = summarize_records(
         records,
         run_id=config.run_id,
-        mode="baseline",
+        mode=_result_mode(config),
         config=config.to_jsonable(),
         system_metadata=system_metadata,
     )
@@ -64,12 +71,17 @@ def build_clients(config: BenchmarkConfig) -> RuntimeClients:
         config.judge_base_url,
         config.vector_backend,
     )
-    answer_client = OpenAICompatibleChatClient(
-        base_url=config.llm_base_url,
-        api_key=config.llm_api_key,
-        model=config.model,
-        stream=config.stream,
-    )
+    if config.answer_backend == "vllm-kv":
+        from .kv.answer_client import VLLMChunkedKVAnswerClient
+
+        answer_client = VLLMChunkedKVAnswerClient(config)
+    else:
+        answer_client = OpenAICompatibleChatClient(
+            base_url=config.llm_base_url,
+            api_key=config.llm_api_key,
+            model=config.model,
+            stream=config.stream,
+        )
     judge_client = OpenAICompatibleChatClient(
         base_url=config.judge_base_url,
         api_key=config.judge_api_key,
@@ -89,15 +101,54 @@ class QuestionEvaluator:
         if memory is None:
             raise RuntimeError("Mem0 context requires a memory store.")
         hits = self._search_mem0_memory(memory, qa.question)
-        answer_messages = build_retrieval_answer_messages(sample, qa, hits)
         store_metrics = self._mem0_store_search_metrics(memory)
-        answer = self.clients.answer_client.chat(
-            answer_messages,
-            max_tokens=self.config.max_answer_tokens,
-            temperature=self.config.temperature,
-            top_p=self.config.top_p,
+        return self.answer_from_hits(
+            sample,
+            qa,
+            hits,
+            store_metrics,
             ttft_started_at=ttft_started_at,
         )
+
+    def answer_from_hits(
+        self,
+        sample: ConversationSample,
+        qa: QuestionAnswer,
+        hits: list[SearchHit],
+        store_metrics: SearchMetrics,
+        *,
+        ttft_started_at: float | None = None,
+    ) -> dict[str, Any]:
+        kv_answer = getattr(self.clients.answer_client, "answer_with_retrieved_memory", None)
+        if callable(kv_answer):
+            answer = kv_answer(
+                sample=sample,
+                qa=qa,
+                hits=hits,
+                max_tokens=self.config.max_answer_tokens,
+                temperature=self.config.temperature,
+                top_p=self.config.top_p,
+                ttft_started_at=ttft_started_at,
+            )
+        else:
+            answer_messages = build_retrieval_answer_messages(sample, qa, hits)
+            answer = self.clients.answer_client.chat(
+                answer_messages,
+                max_tokens=self.config.max_answer_tokens,
+                temperature=self.config.temperature,
+                top_p=self.config.top_p,
+                ttft_started_at=ttft_started_at,
+            )
+        return self.record_answer(sample, qa, hits, store_metrics, answer)
+
+    def record_answer(
+        self,
+        sample: ConversationSample,
+        qa: QuestionAnswer,
+        hits: list[SearchHit],
+        store_metrics: SearchMetrics,
+        answer: Any,
+    ) -> dict[str, Any]:
         judge_messages = build_judge_messages(qa, answer.content)
         judge = self.clients.judge_client.chat(
             judge_messages,
@@ -110,7 +161,7 @@ class QuestionEvaluator:
 
         return {
             "run_id": self.config.run_id,
-            "mode": "baseline",
+            "mode": _result_mode(self.config),
             "sample_id": sample.sample_id,
             "question_id": qa.question_id,
             "category": qa.category,
@@ -133,6 +184,7 @@ class QuestionEvaluator:
             "metrics": {
                 "time_to_first_token_ms": answer.ttft_ms,
                 "vector_db_query_time_ms": store_metrics.search_time_ms,
+                **getattr(answer, "metrics", {}),
             },
         }
 
@@ -156,6 +208,12 @@ class QuestionEvaluator:
 
 
 def _run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> list[dict[str, Any]]:
+    if config.answer_backend == "vllm-kv":
+        return _run_kv_prediction_mode(config, clients)
+    return _run_openai_prediction_mode(config, clients)
+
+
+def _run_openai_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> list[dict[str, Any]]:
     logger.info("Loading LoCoMo dataset from {}", config.dataset_path)
     samples = load_locomo(config.dataset_path, max_samples=config.max_samples)
     planned_questions = _planned_question_count(samples, config.max_questions)
@@ -228,6 +286,108 @@ def _run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> li
     return all_records
 
 
+def _run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> list[dict[str, Any]]:
+    if config.kv_sample_window != 1:
+        raise RuntimeError("Strict GPU KV mode currently supports --kv-sample-window 1.")
+
+    logger.info("Loading LoCoMo dataset from {}", config.dataset_path)
+    samples = load_locomo(config.dataset_path, max_samples=config.max_samples)
+    planned_questions = _planned_question_count(samples, config.max_questions)
+    logger.info(
+        "Loaded {} samples for strict GPU KV; planned_questions={} max_samples={} max_questions={}",
+        len(samples),
+        planned_questions,
+        config.max_samples,
+        config.max_questions,
+    )
+
+    prepare_sample = getattr(clients.answer_client, "prepare_sample", None)
+    close_sample = getattr(clients.answer_client, "close_sample", None)
+    if not callable(prepare_sample) or not callable(close_sample):
+        raise RuntimeError("vllm-kv answer backend does not expose prepare_sample/close_sample.")
+
+    output_path = config.run_dir / "predictions.jsonl"
+    all_records: list[dict[str, Any]] = []
+    question_budget = config.max_questions
+    completed_questions = 0
+    memory_builder = SampleMemoryBuilder(config)
+    question_evaluator = QuestionEvaluator(config, clients)
+
+    with JsonlWriter(output_path) as writer:
+        for sample_index, sample in enumerate(samples, start=1):
+            if question_budget is not None and question_budget <= 0:
+                break
+            sample_questions = sample.qa
+            if question_budget is not None:
+                sample_questions = sample_questions[:question_budget]
+            logger.info(
+                "KV sample {}/{} sample_id={} turns={} questions={} retrieval starting",
+                sample_index,
+                len(samples),
+                sample.sample_id,
+                len(sample.turns),
+                len(sample_questions),
+            )
+
+            memory = memory_builder.build(sample)
+            retrieved: list[tuple[QuestionAnswer, list[SearchHit], SearchMetrics]] = []
+            try:
+                for qa in sample_questions:
+                    hits = question_evaluator._search_mem0_memory(memory, qa.question)
+                    store_metrics = question_evaluator._mem0_store_search_metrics(memory)
+                    retrieved.append((qa, hits, store_metrics))
+            finally:
+                memory_builder.log_embedding_cache_stats(memory, sample.sample_id)
+                memory_builder.close(memory)
+
+            logger.info(
+                "KV sample sample_id={} retrieval finished; vector index closed before encoder/vLLM load",
+                sample.sample_id,
+            )
+            prepare_sample(sample, [hits for _, hits, _ in retrieved])
+            try:
+                for qa, hits, store_metrics in retrieved:
+                    next_question = completed_questions + 1
+                    if _should_log_progress(next_question, planned_questions, config.log_every):
+                        logger.info(
+                            "KV question {}/{} starting sample_id={} question_id={} category={}",
+                            next_question,
+                            planned_questions,
+                            sample.sample_id,
+                            qa.question_id,
+                            qa.category,
+                        )
+                    record = question_evaluator.answer_from_hits(
+                        sample,
+                        qa,
+                        hits,
+                        store_metrics,
+                        ttft_started_at=time.perf_counter(),
+                    )
+                    writer.write(record)
+                    all_records.append(record)
+                    completed_questions += 1
+                    if _should_log_progress(completed_questions, planned_questions, config.log_every):
+                        logger.info(
+                            "KV question {}/{} finished sample_id={} question_id={} judge={}",
+                            completed_questions,
+                            planned_questions,
+                            sample.sample_id,
+                            qa.question_id,
+                            _judge_label(record.get("judge", {}).get("correct")),
+                        )
+                    if question_budget is not None:
+                        question_budget -= 1
+                        if question_budget <= 0:
+                            break
+            finally:
+                close_sample()
+            logger.info("KV sample {}/{} sample_id={} finished", sample_index, len(samples), sample.sample_id)
+
+    logger.info("Wrote {} KV prediction records to {}", len(all_records), output_path)
+    return all_records
+
+
 def _planned_question_count(samples: list[ConversationSample], max_questions: int | None) -> int:
     total = sum(len(sample.qa) for sample in samples)
     if max_questions is None:
@@ -253,3 +413,9 @@ def _format_accuracy(value: Any) -> str:
     if value is None:
         return "n/a"
     return f"{float(value):.4f}"
+
+
+def _result_mode(config: BenchmarkConfig) -> str:
+    if config.answer_backend == "openai":
+        return "baseline"
+    return config.answer_backend

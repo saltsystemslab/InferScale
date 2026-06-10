@@ -1,3 +1,6 @@
 [submodule "jasperpy"]
 	path = jasperpy
 	url = git@github.com:saltsystemslab/jasperpy.git
+[submodule "ai-memory-code"]
+	path = ai-memory-code
+	url = git@github.com:saltsystemslab/ai-memory-code.git

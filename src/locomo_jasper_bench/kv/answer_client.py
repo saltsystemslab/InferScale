@@ -1,0 +1,220 @@
+from __future__ import annotations
+
+import gc
+import logging
+import time
+import uuid
+from typing import Any
+
+from ..clients import ChatResult
+from ..config import BenchmarkConfig
+from ..data import ConversationSample, QuestionAnswer
+from ..prompts import RETRIEVAL_ANSWER_SYSTEM_PROMPT
+from ..vector_types import SearchHit
+from .chunked_rope import ChunkedRopeSampleComposer, selected_turn_ids
+from .strict_gpu_registry import clear_namespace, namespace_stats, register_user_memory, remove_user_memory
+from .submodule import require_ai_memory_submodule
+
+logger = logging.getLogger(__name__)
+
+
+class VLLMChunkedKVAnswerClient:
+    """In-process vLLM answer client using strict GPU chunked-RoPE KV injection."""
+
+    def __init__(self, config: BenchmarkConfig) -> None:
+        self.config = config
+        self.namespace = f"{config.run_id}-{uuid.uuid4().hex}"
+        self._llm: Any | None = None
+        self._tokenizer: Any | None = None
+        self._sampling_cls: Any | None = None
+        self._composer: ChunkedRopeSampleComposer | None = None
+
+    def prepare_sample(self, sample: ConversationSample, hits_by_question: list[list[SearchHit]]) -> None:
+        if self.config.kv_sample_window != 1:
+            raise RuntimeError("Strict GPU KV mode currently supports --kv-sample-window 1.")
+        self.close_sample()
+        require_ai_memory_submodule()
+
+        needed_turn_ids: set[str] = set()
+        for hits in hits_by_question:
+            needed_turn_ids.update(selected_turn_ids(hits))
+        if not needed_turn_ids:
+            raise RuntimeError(f"No retrieved turn ids for sample_id={sample.sample_id}; cannot prepare KV memory.")
+
+        logger.info(
+            "Preparing strict GPU KV sample_id=%s retrieved_turns=%d",
+            sample.sample_id,
+            len(needed_turn_ids),
+        )
+        self._composer = ChunkedRopeSampleComposer(
+            model=self.config.model,
+            dtype=self.config.kv_dtype,
+            device=self.config.kv_device,
+            max_position=self.config.kv_max_position,
+        )
+        self._composer.encode_sample(sample, turn_ids=needed_turn_ids)
+
+        # Free the encoder model before vLLM is constructed; the encoded chunks
+        # remain in GPU tensors owned by the composer.
+        self._composer.encoder._model = None
+        self._composer.hf_model = None
+        gc.collect()
+        try:
+            import torch
+
+            torch.cuda.empty_cache()
+        except ImportError:
+            pass
+
+        from vllm import LLM, SamplingParams
+
+        self._sampling_cls = SamplingParams
+        self._llm = LLM(
+            model=self.config.model,
+            dtype=self.config.kv_dtype,
+            trust_remote_code=True,
+            enable_prefix_caching=False,
+            swap_space=0,
+            cpu_offload_gb=0,
+            gpu_memory_utilization=self.config.kv_gpu_memory_utilization,
+            max_model_len=self.config.kv_max_model_len,
+            kv_transfer_config=build_strict_gpu_kv_transfer_config(
+                connector_module=self.config.kv_connector_module,
+                namespace=self.namespace,
+            ),
+        )
+        self._tokenizer = self._llm.get_tokenizer()
+
+    def answer_with_retrieved_memory(
+        self,
+        *,
+        sample: ConversationSample,
+        qa: QuestionAnswer,
+        hits: list[SearchHit],
+        max_tokens: int,
+        temperature: float,
+        top_p: float,
+        ttft_started_at: float | None = None,
+    ) -> ChatResult:
+        if self._composer is None or self._llm is None or self._tokenizer is None or self._sampling_cls is None:
+            raise RuntimeError("VLLMChunkedKVAnswerClient.prepare_sample() must be called before answering.")
+
+        request_started = ttft_started_at if ttft_started_at is not None else time.perf_counter()
+        composed = self._composer.compose(hits)
+        user_id = _memory_user_id(sample.sample_id, qa.question_id)
+        register_user_memory(
+            self.namespace,
+            user_id=user_id,
+            kv_by_layer=composed.kv_by_layer,
+            num_tokens=composed.num_tokens,
+            token_ids=composed.token_ids,
+            memory_text="strict-gpu chunked-rope top-k",
+        )
+        try:
+            query_tokens = self._query_token_ids(sample, qa)
+            prompt_token_ids = list(composed.token_ids) + query_tokens
+            sampling = self._sampling_cls(
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_tokens,
+            )
+            generate_started = time.perf_counter()
+            outputs = self._llm.generate(
+                [{"prompt_token_ids": prompt_token_ids}],
+                sampling,
+                use_tqdm=False,
+            )
+            finished = time.perf_counter()
+            generate_ms = (finished - generate_started) * 1000
+            total_ms = (finished - request_started) * 1000
+            text = outputs[0].outputs[0].text.strip()
+            stats = namespace_stats(self.namespace)
+            return ChatResult(
+                content=text,
+                metrics={
+                    "kv_memory_tokens": composed.num_tokens,
+                    "kv_compose_time_ms": composed.compose_time_ms,
+                    "answer_generate_time_ms": generate_ms,
+                    "answer_total_time_ms": total_ms,
+                    "kv_query_tokens": len(query_tokens),
+                    "kv_store_gpu_mb": stats.get("total_gpu_mb", 0.0),
+                    "kv_selected_turn_ids": composed.selected_turn_ids,
+                },
+            )
+        finally:
+            remove_user_memory(self.namespace, user_id)
+
+    def close_sample(self) -> None:
+        if self._llm is not None:
+            del self._llm
+            self._llm = None
+        if self._composer is not None:
+            self._composer.close()
+            self._composer = None
+        self._tokenizer = None
+        clear_namespace(self.namespace)
+        gc.collect()
+        try:
+            import torch
+
+            torch.cuda.empty_cache()
+        except ImportError:
+            pass
+
+    def close(self) -> None:
+        self.close_sample()
+
+    def _query_token_ids(self, sample: ConversationSample, qa: QuestionAnswer) -> list[int]:
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    RETRIEVAL_ANSWER_SYSTEM_PROMPT
+                    + " Relevant retrieved memory is available before the current question."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Conversation id: {sample.sample_id}\n\n"
+                    f"Question: {qa.question}\n\n"
+                    "Answer:"
+                ),
+            },
+        ]
+        return tokenize_messages(self._tokenizer, messages)
+
+
+def build_strict_gpu_kv_transfer_config(*, connector_module: str, namespace: str) -> dict[str, Any]:
+    return {
+        "kv_connector": "MemoryKVConnector",
+        "kv_role": "kv_both",
+        "kv_connector_module_path": connector_module,
+        "kv_connector_extra_config": {
+            "memory_namespace": namespace,
+        },
+    }
+
+
+def tokenize_messages(tokenizer: Any, messages: list[dict[str, str]]) -> list[int]:
+    apply_chat_template = getattr(tokenizer, "apply_chat_template", None)
+    if callable(apply_chat_template):
+        return list(
+            apply_chat_template(
+                messages,
+                tokenize=True,
+                add_generation_prompt=True,
+            )
+        )
+
+    text = "\n\n".join(f"{message['role'].upper()}: {message['content']}" for message in messages)
+    encode = getattr(tokenizer, "encode", None)
+    if not callable(encode):
+        raise RuntimeError("Tokenizer has neither apply_chat_template nor encode.")
+    return list(encode(text))
+
+
+def _memory_user_id(sample_id: str, question_id: str) -> str:
+    safe_sample = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in sample_id)
+    safe_question = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in question_id)
+    return f"{safe_sample}__{safe_question}"

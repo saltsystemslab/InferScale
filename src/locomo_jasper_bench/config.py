@@ -51,7 +51,7 @@ class BenchmarkConfig:
 
     vector_backend: VectorBackend = "jasper"
     vector_distance: DistanceMetric = "ip"
-    top_k: int = 20
+    top_k: int = 50
     jasper_n_neighbors: int = 64
     jasper_alpha: float = 1.0
     jasper_workspace_budget: str = "10GB"
@@ -109,7 +109,7 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
 
     parser.add_argument("--vector-backend", choices=["jasper", "qdrant"], default="jasper")
     parser.add_argument("--vector-distance", choices=["ip", "l2"], default="ip")
-    parser.add_argument("--top-k", type=int, default=20)
+    parser.add_argument("--top-k", type=int, default=50)
     parser.add_argument("--jasper-n-neighbors", type=int, default=64)
     parser.add_argument("--jasper-alpha", type=float, default=1.0)
     parser.add_argument("--jasper-workspace-budget", default="10GB")

@@ -98,6 +98,7 @@ locomo-jasper-bench \
   --dataset data/locomo10.json \
   --results-dir "${BENCHMARK_RESULTS_ROOT}" \
   --vector-backend qdrant \
+  --top-k 50 \
   --max-samples 20 \
   --stream \
   --log-every "${LOCOMO_LOG_EVERY:-10}" \
@@ -108,6 +109,7 @@ locomo-jasper-bench \
   --results-dir "${BENCHMARK_RESULTS_ROOT}" \
   --vector-backend jasper \
   --jasper-alpha 1.0 \
+  --top-k 50 \
   --max-samples 20 \
   --stream \
   --log-every "${LOCOMO_LOG_EVERY:-10}" \

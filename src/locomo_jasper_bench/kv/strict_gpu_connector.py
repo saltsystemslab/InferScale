@@ -255,7 +255,7 @@ class MemoryKVConnector(KVConnectorBase_V1):
 
         cached_reqs = scheduler_output.scheduled_cached_reqs
         for index, req_id in enumerate(cached_reqs.req_ids):
-            if req_id not in cached_reqs.resumed_req_ids or req_id not in self._requests_need_load:
+            if not cached_reqs.resumed_from_preemption[index] or req_id not in self._requests_need_load:
                 continue
 
             new_block_ids = cached_reqs.new_block_ids[index]

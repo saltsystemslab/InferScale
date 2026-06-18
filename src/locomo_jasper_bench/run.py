@@ -2,16 +2,12 @@ from __future__ import annotations
 
 import os
 import sys
-from pathlib import Path
 
 from loguru import logger
 
-if "SCRATCH_ROOT" in os.environ:
-    _DEFAULT_CACHE_ROOT = Path(os.environ["SCRATCH_ROOT"]) / "cache"
-else:
-    _DEFAULT_CACHE_ROOT = Path(__file__).resolve().parents[2] / ".cache"
-os.environ.setdefault("BENCHMARK_CACHE_ROOT", str(_DEFAULT_CACHE_ROOT))
-os.environ.setdefault("MEM0_DIR", str(Path(os.environ["BENCHMARK_CACHE_ROOT"]) / "mem0"))
+from .runtime_paths import configure_runtime_environment
+
+configure_runtime_environment()
 
 from .config import parse_args
 from .embedding.preembed import preembed_locomo_embeddings

@@ -5,6 +5,7 @@ import types
 from pathlib import Path
 from typing import Any
 
+from .runtime_paths import default_mem0_dir_string
 from .vector_types import VectorStoreConfig
 
 
@@ -94,7 +95,10 @@ def _install_jasper_config_module() -> None:
     class JasperConfig(BaseModel):
         collection_name: str = Field("memories", description="Name of the collection")
         embedding_model_dims: int | None = Field(1536, description="Dimensions of the embedding model")
-        path: str = Field("/tmp/jasper", description="Path for the Jasper vector store")
+        path: str = Field(
+            default_factory=default_mem0_dir_string,
+            description="Path for the Jasper vector store",
+        )
         backend: str = Field("jasper", description="JasperVectorStore backend")
         distance: str = Field("ip", description="Distance metric")
         n_neighbors: int = Field(64, description="Jasper graph neighbor count")

@@ -1,20 +1,20 @@
 # LoCoMo vLLM Jasper Benchmark
 
-This repository contains code to run LoCoMo against a local vLLM server with Mem0 retrieval backed by a vector database such as Jasper or Qdrant. Runtime files are kept under `/scratch/$USER/benchmark-jasper` so the repo does not run out of space.
+This repository contains code to run LoCoMo against a local vLLM server with Mem0 retrieval backed by a vector database such as Jasper or Qdrant. On Runpod, keep the repo and runtime files under `/workspace` so caches, model downloads, temp files, and results persist on workspace storage.
 
 ## 1. Configure
 
 From the repo root on the remote machine:
 
 ```bash
-cd /projects/SaltSystemsLab/<PATH_TO_REPO>/benchmark-jasper
+cd /workspace
 cp .env.example .env
 ```
 
 Edit `.env` for your session. The common values are:
 
-- `SCRATCH_ROOT=/scratch/$USER/benchmark-jasper`
-- `CUDA_MODULE=cuda/12.8`
+- `BENCHMARK_RUNTIME_ROOT=/workspace`
+- `CUDA_MODULE=` on Runpod, or `CUDA_MODULE=cuda/12.8` on module-based clusters
 - `VLLM_MODEL=meta-llama/Llama-3.1-8B-Instruct`
 - `VLLM_API_KEY=token-abc123`
 - `OPENAI_API_KEY=...`
@@ -26,7 +26,7 @@ Load the environment in any shell that will run project commands:
 source scripts/load_env.sh
 ```
 
-`scripts/load_env.sh` reads `.env`, prepares scratch-backed cache/result/temp directories, and refreshes `.cache` as a symlink to `${SCRATCH_ROOT}/cache`. Set `BENCHMARK_USE_SCRATCH=0` in `.env` only if you intentionally want local repo cache/result directories.
+`scripts/load_env.sh` reads `.env` and prepares cache/result/temp directories under `${BENCHMARK_RUNTIME_ROOT}`. With `BENCHMARK_RUNTIME_ROOT=/workspace`, caches live under `/workspace/.cache`, results under `/workspace/results`, and temp files under `/workspace/tmp`. Legacy scratch clusters can set `SCRATCH_ROOT=/scratch/$USER/benchmark-jasper`; set `BENCHMARK_USE_SCRATCH=0` only if you intentionally want project-local cache/result directories.
 
 ## 2. Install
 

@@ -80,6 +80,8 @@ class BenchmarkConfig:
     max_questions: int | None = None
     log_every: int = 5
     preembed_only: bool = False
+    skip_judge: bool = False
+    judge_only: bool = False
 
     def to_jsonable(self) -> dict[str, object]:
         data = asdict(self)
@@ -177,6 +179,16 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
         "--preembed-only",
         action="store_true",
         help="Precompute LoCoMo turn and question embeddings into the cache, then exit.",
+    )
+    parser.add_argument(
+        "--skip-judge",
+        action="store_true",
+        help="Generate predictions without calling the judge endpoint.",
+    )
+    parser.add_argument(
+        "--judge-only",
+        action="store_true",
+        help="Judge missing results in an existing run directory and regenerate summary.json.",
     )
 
     ns = parser.parse_args(argv)

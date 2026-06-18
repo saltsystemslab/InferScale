@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import time
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+from textwrap import shorten
 from typing import Any
 
 from loguru import logger
@@ -113,7 +115,7 @@ def judge_existing_run(config: BenchmarkConfig) -> dict[str, Any]:
 
     judged_now = 0
     for row_number, record in enumerate(records, start=1):
-        if _is_judged(record):
+        if _is_judged(record) and not config.judge_rejudge:
             continue
         logger.info("Judging row {}/{} {}", row_number, len(records), _record_label(record))
         try:
@@ -151,6 +153,49 @@ def judge_existing_run(config: BenchmarkConfig) -> dict[str, Any]:
         _format_accuracy(summary.get("metrics", {}).get("accuracy")),
     )
     return summary
+
+
+def inspect_existing_run(config: BenchmarkConfig) -> list[str]:
+    predictions_path = config.run_dir / "predictions.jsonl"
+    if not predictions_path.exists():
+        raise FileNotFoundError(f"predictions file not found: {predictions_path}")
+
+    records = _read_jsonl(predictions_path)
+    saved_config = _read_json_or_default(config.run_dir / "config.json", config.to_jsonable())
+    system_metadata = _read_json_or_default(config.run_dir / "system.json", {})
+    summary = summarize_records(
+        records,
+        run_id=config.run_id,
+        mode=_existing_run_mode(saved_config, records, config),
+        config=saved_config,
+        system_metadata=system_metadata,
+    )
+
+    status_counts = Counter(_judge_status(record) for record in records)
+    blank_predictions = sum(1 for record in records if not str(record.get("predicted_answer") or "").strip())
+    accuracy = summary.get("metrics", {}).get("accuracy")
+    lines = [
+        f"run_dir={config.run_dir}",
+        f"predictions={predictions_path}",
+        (
+            f"questions={summary['question_count']} judged={summary['judged_count']} "
+            f"correct={summary['correct_count']} accuracy={_format_accuracy(accuracy)}"
+        ),
+        "judge_statuses=" + ", ".join(f"{key}:{status_counts[key]}" for key in sorted(status_counts)),
+        f"blank_predictions={blank_predictions}",
+    ]
+
+    limit = max(config.inspect_limit, 0)
+    if limit == 0:
+        return lines
+
+    interesting = [record for record in records if record.get("judge", {}).get("correct") is not True]
+    shown = interesting[:limit] if interesting else records[:limit]
+    lines.append("")
+    lines.append(f"showing={len(shown)} rows")
+    for index, record in enumerate(shown, start=1):
+        lines.extend(_inspect_record_lines(index, record))
+    return lines
 
 
 class QuestionEvaluator:
@@ -513,7 +558,8 @@ def _judge_qa(
         top_p=1.0,
     )
     correct, reason = parse_judge_response(judge.content)
-    return {"correct": correct, "reason": reason, "raw": judge.content}
+    status = "judged" if correct is not None else "unparsed"
+    return {"correct": correct, "reason": reason, "raw": judge.content, "status": status}
 
 
 def _judge_record(config: BenchmarkConfig, judge_client: ChatClient, record: dict[str, Any]) -> dict[str, Any]:
@@ -539,6 +585,50 @@ def _record_label(record: dict[str, Any]) -> str:
         f"question_id={record.get('question_id') or ''} "
         f"category={record.get('category') or ''}"
     ).strip()
+
+
+def _judge_status(record: dict[str, Any]) -> str:
+    judge = record.get("judge")
+    if not isinstance(judge, dict):
+        return "missing"
+    correct = judge.get("correct")
+    if correct is True:
+        return "correct"
+    if correct is False:
+        return "incorrect"
+    return str(judge.get("status") or "unjudged")
+
+
+def _inspect_record_lines(index: int, record: dict[str, Any]) -> list[str]:
+    judge = record.get("judge")
+    if not isinstance(judge, dict):
+        judge = {}
+    lines = [
+        f"[{index}] {_record_label(record)} judge={_judge_status(record)}",
+        f"  question: {_short_text(record.get('question'))}",
+        f"  gold: {_short_text(record.get('gold_answer'))}",
+        f"  predicted: {_short_text(record.get('predicted_answer'))}",
+        f"  judge_reason: {_short_text(judge.get('reason'))}",
+    ]
+    raw = str(judge.get("raw") or "").strip()
+    if raw:
+        lines.append(f"  judge_raw: {_short_text(raw)}")
+    retrieved = record.get("retrieved_memories")
+    if isinstance(retrieved, list) and retrieved:
+        for hit in retrieved[:3]:
+            if not isinstance(hit, dict):
+                continue
+            lines.append(
+                f"  hit{hit.get('rank')}: score={hit.get('score')} memory={_short_text(hit.get('memory'))}"
+            )
+    return lines
+
+
+def _short_text(value: Any, *, width: int = 180) -> str:
+    text = " ".join(str(value or "").split())
+    if not text:
+        return "<empty>"
+    return shorten(text, width=width, placeholder="...")
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from .data import ConversationSample, QuestionAnswer
@@ -14,7 +15,8 @@ RETRIEVAL_ANSWER_SYSTEM_PROMPT = (
 
 JUDGE_SYSTEM_PROMPT = (
     "You are a strict evaluator for question answering. Compare the predicted answer to the reference answer. "
-    "Return only a JSON object with keys correct and reason."
+    "Return exactly one JSON object and nothing else. Use this schema: "
+    '{"correct": true, "reason": "short reason"} or {"correct": false, "reason": "short reason"}.'
 )
 
 
@@ -58,21 +60,44 @@ def parse_judge_response(text: str) -> tuple[bool | None, str]:
     stripped = text.strip()
     parsed = _parse_json_object(stripped)
     if isinstance(parsed, dict):
-        correct = parsed.get("correct")
-        if isinstance(correct, bool):
-            return correct, str(parsed.get("reason") or "")
-        if isinstance(correct, str):
-            lowered = correct.lower()
-            if lowered in {"true", "yes", "correct"}:
-                return True, str(parsed.get("reason") or "")
-            if lowered in {"false", "no", "incorrect"}:
-                return False, str(parsed.get("reason") or "")
+        for key in ("correct", "is_correct", "isCorrect", "answer_correct", "verdict", "judgment", "judgement"):
+            if key not in parsed:
+                continue
+            correct = _coerce_judge_bool(parsed.get(key))
+            if correct is not None:
+                return correct, str(parsed.get("reason") or parsed.get("explanation") or "")
+
+    field_match = re.search(
+        r"\b(?:correct|is_correct|answer_correct|verdict|judg(?:e)?ment)\b\s*[:=]\s*"
+        r"(?P<value>true|false|yes|no|correct|incorrect)",
+        stripped,
+        flags=re.IGNORECASE,
+    )
+    if field_match:
+        correct = _coerce_judge_bool(field_match.group("value"))
+        if correct is not None:
+            return correct, stripped
+
     lowered = stripped.lower()
-    if "incorrect" in lowered or '"correct": false' in lowered:
-        return False, stripped
-    if "correct" in lowered or '"correct": true' in lowered:
+    true_match = re.search(r"\b(true|yes|correct|equivalent)\b|\bnot\s+incorrect\b", lowered)
+    false_match = re.search(r"\b(false|no|incorrect|wrong|not\s+correct|not\s+equivalent)\b", lowered)
+    if true_match and not false_match:
         return True, stripped
+    if false_match and not true_match:
+        return False, stripped
     return None, stripped
+
+
+def _coerce_judge_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower().strip("\"'`.,:; ")
+        if lowered in {"true", "yes", "correct", "equivalent", "same", "pass", "1"}:
+            return True
+        if lowered in {"false", "no", "incorrect", "wrong", "not correct", "not equivalent", "fail", "0"}:
+            return False
+    return None
 
 
 def _parse_json_object(text: str) -> Any:

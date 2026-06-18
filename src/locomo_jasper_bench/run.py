@@ -10,12 +10,16 @@ from .runtime_paths import configure_runtime_environment
 configure_runtime_environment()
 
 from .config import parse_args
-from .runner import judge_existing_run, run_benchmark
+from .runner import inspect_existing_run, judge_existing_run, run_benchmark
 
 
 def main(argv: list[str] | None = None) -> None:
     config = parse_args(argv)
     _configure_logging()
+    if config.inspect_run:
+        for line in inspect_existing_run(config):
+            print(line)
+        return
     if config.judge_only:
         summary = judge_existing_run(config)
         print(f"judged results in {config.run_dir}")

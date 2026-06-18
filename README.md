@@ -195,6 +195,31 @@ locomo-jasper-bench \
 
 `--judge-only` reads `${BENCHMARK_RESULTS_ROOT}/${RUN_ID}/predictions.jsonl`, fills only rows that are still unjudged, preserves any rows already judged, and regenerates `summary.json`.
 
+To inspect what is in `predictions.jsonl` before or after judging:
+
+```bash
+locomo-jasper-bench \
+  --results-dir "${BENCHMARK_RESULTS_ROOT}" \
+  --run-id "${RUN_ID}" \
+  --inspect-run \
+  --inspect-limit 5
+```
+
+This prints judge status counts plus a few question, reference answer, predicted answer, judge reason, and top retrieved memory snippets. Use it to distinguish bad predictions from bad judge parsing.
+
+If a judge run produced bad labels, for example `accuracy=0.0000` because the judge model returned malformed or overly strict judgments, rejudge the existing predictions without rerunning inference:
+
+```bash
+locomo-jasper-bench \
+  --results-dir "${BENCHMARK_RESULTS_ROOT}" \
+  --run-id "${RUN_ID}" \
+  --judge-only \
+  --judge-rejudge \
+  --judge-base-url "${JUDGE_BASE_URL:-${VLLM_BASE_URL}}" \
+  --judge-api-key "${JUDGE_API_KEY:-${VLLM_API_KEY}}" \
+  --judge-model "${JUDGE_MODEL:-${VLLM_MODEL}}"
+```
+
 If the judge server returns an error such as `openai.InternalServerError`, check the judge server logs first. The benchmark saves completed judgments back to `predictions.jsonl`, marks the failed row with `judge.status = "error"` while leaving it unjudged, and can be resumed by rerunning the same `--judge-only` command.
 
 ## 9. Results

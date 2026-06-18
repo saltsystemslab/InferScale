@@ -82,6 +82,9 @@ class BenchmarkConfig:
     preembed_only: bool = False
     skip_judge: bool = False
     judge_only: bool = False
+    judge_rejudge: bool = False
+    inspect_run: bool = False
+    inspect_limit: int = 5
 
     def to_jsonable(self) -> dict[str, object]:
         data = asdict(self)
@@ -189,6 +192,22 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
         "--judge-only",
         action="store_true",
         help="Judge missing results in an existing run directory and regenerate summary.json.",
+    )
+    parser.add_argument(
+        "--judge-rejudge",
+        action="store_true",
+        help="With --judge-only, rejudge every prediction, including rows that already have true/false judgments.",
+    )
+    parser.add_argument(
+        "--inspect-run",
+        action="store_true",
+        help="Inspect predictions.jsonl for an existing run without running inference or judging.",
+    )
+    parser.add_argument(
+        "--inspect-limit",
+        type=int,
+        default=5,
+        help="Number of prediction rows to print with --inspect-run.",
     )
 
     ns = parser.parse_args(argv)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .submodule import require_ai_memory_submodule
+from .gpu_memory_store_loader import load_gpu_memory_store_class
 
 _STORES: dict[str, Any] = {}
 
@@ -10,15 +10,14 @@ _STORES: dict[str, Any] = {}
 def get_gpu_memory_store(namespace: str = "default") -> Any:
     """Return the process-local GPU memory store for a connector namespace."""
     if namespace not in _STORES:
-        require_ai_memory_submodule()
         try:
-            from memory_connector.gpu_memory_store import GPUMemoryStore
-        except ImportError as exc:
+            gpu_memory_store_cls = load_gpu_memory_store_class()
+        except (ImportError, RuntimeError) as exc:
             raise RuntimeError(
-                "Could not import ai-memory-code memory_connector. Ensure the submodule exists "
+                "Could not load ai-memory-code GPUMemoryStore. Ensure the submodule exists "
                 "and the remote environment has torch/vLLM dependencies installed."
             ) from exc
-        _STORES[namespace] = GPUMemoryStore()
+        _STORES[namespace] = gpu_memory_store_cls()
     return _STORES[namespace]
 
 
@@ -60,4 +59,3 @@ def namespace_stats(namespace: str) -> dict[str, Any]:
     if store is None:
         return {"num_users": 0, "total_tokens": 0, "total_gpu_mb": 0.0}
     return dict(store.get_stats())
-

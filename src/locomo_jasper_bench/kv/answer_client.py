@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gc
 import logging
+import os
 import time
 import uuid
 from typing import Any
@@ -24,6 +25,7 @@ class VLLMChunkedKVAnswerClient:
     def __init__(self, config: BenchmarkConfig) -> None:
         self.config = config
         self.namespace = f"{config.run_id}-{uuid.uuid4().hex}"
+        self.active_user_id = f"{self.namespace}-active"
         self._llm: Any | None = None
         self._tokenizer: Any | None = None
         self._sampling_cls: Any | None = None
@@ -32,6 +34,7 @@ class VLLMChunkedKVAnswerClient:
     def prepare_sample(self, sample: ConversationSample, hits_by_question: list[list[SearchHit]]) -> None:
         if self.config.kv_sample_window != 1:
             raise RuntimeError("Strict GPU KV mode currently supports --kv-sample-window 1.")
+        os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
         self.close_sample()
         require_ai_memory_submodule()
 
@@ -81,6 +84,7 @@ class VLLMChunkedKVAnswerClient:
             kv_transfer_config=build_strict_gpu_kv_transfer_config(
                 connector_module=self.config.kv_connector_module,
                 namespace=self.namespace,
+                default_user_id=self.active_user_id,
             ),
         )
         self._tokenizer = self._llm.get_tokenizer()
@@ -101,7 +105,7 @@ class VLLMChunkedKVAnswerClient:
 
         request_started = ttft_started_at if ttft_started_at is not None else time.perf_counter()
         composed = self._composer.compose(hits)
-        user_id = _memory_user_id(sample.sample_id, qa.question_id)
+        user_id = self.active_user_id
         register_user_memory(
             self.namespace,
             user_id=user_id,
@@ -185,13 +189,19 @@ class VLLMChunkedKVAnswerClient:
         return tokenize_messages(self._tokenizer, messages)
 
 
-def build_strict_gpu_kv_transfer_config(*, connector_module: str, namespace: str) -> dict[str, Any]:
+def build_strict_gpu_kv_transfer_config(
+    *,
+    connector_module: str,
+    namespace: str,
+    default_user_id: str = "default",
+) -> dict[str, Any]:
     return {
         "kv_connector": "MemoryKVConnector",
         "kv_role": "kv_both",
         "kv_connector_module_path": connector_module,
         "kv_connector_extra_config": {
             "memory_namespace": namespace,
+            "default_user_id": default_user_id,
         },
     }
 

@@ -59,6 +59,15 @@ curl --noproxy '*' \
   "${VLLM_BASE_URL}/models"
 ```
 
+If `vllm serve` returns `500 Internal Server Error` and the server log contains `AttributeError: '_IncludedRouter' object has no attribute 'path'`, reinstall the pinned FastAPI version in the venv and restart vLLM:
+
+```bash
+source .venv/bin/activate
+python -m pip install -c constraints-cu128.txt "fastapi[standard]==0.115.14"
+```
+
+That error comes from vLLM 0.10.2's Prometheus middleware with newer FastAPI route objects, before the request reaches model generation.
+
 ## 4. Data
 
 Place LoCoMo at `data/locomo10.json`:
@@ -185,6 +194,8 @@ locomo-jasper-bench \
 ```
 
 `--judge-only` reads `${BENCHMARK_RESULTS_ROOT}/${RUN_ID}/predictions.jsonl`, fills only rows that are still unjudged, preserves any rows already judged, and regenerates `summary.json`.
+
+If the judge server returns an error such as `openai.InternalServerError`, check the judge server logs first. The benchmark saves completed judgments back to `predictions.jsonl`, marks the failed row with `judge.status = "error"` while leaving it unjudged, and can be resumed by rerunning the same `--judge-only` command.
 
 ## 9. Results
 

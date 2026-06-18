@@ -102,6 +102,8 @@ def judge_existing_run(config: BenchmarkConfig) -> dict[str, Any]:
 
     logger.info("Judging existing run_id={} predictions={}", config.run_id, predictions_path)
     records = _read_jsonl(predictions_path)
+    saved_config = _read_json_or_default(config.run_dir / "config.json", config.to_jsonable())
+    system_metadata = _read_json_or_default(config.run_dir / "system.json", {})
     judge_client = OpenAICompatibleChatClient(
         base_url=config.judge_base_url,
         api_key=config.judge_api_key,
@@ -110,25 +112,37 @@ def judge_existing_run(config: BenchmarkConfig) -> dict[str, Any]:
     )
 
     judged_now = 0
-    for record in records:
+    for row_number, record in enumerate(records, start=1):
         if _is_judged(record):
             continue
-        judge_payload = _judge_record(config, judge_client, record)
+        logger.info("Judging row {}/{} {}", row_number, len(records), _record_label(record))
+        try:
+            judge_payload = _judge_record(config, judge_client, record)
+        except Exception as exc:
+            record["judge"] = _failed_judge_payload(exc)
+            _write_deferred_judging_outputs(
+                config,
+                predictions_path,
+                records,
+                saved_config=saved_config,
+                system_metadata=system_metadata,
+            )
+            raise RuntimeError(
+                f"Judge request failed for row {row_number}/{len(records)} {_record_label(record)}. "
+                f"Saved progress to {predictions_path}; fix or restart the judge server, then rerun --judge-only. "
+                f"Original error: {type(exc).__name__}: {exc}"
+            ) from exc
         record["judge"] = judge_payload
         judged_now += 1
+        _replace_jsonl(predictions_path, records)
 
-    _replace_jsonl(predictions_path, records)
-
-    saved_config = _read_json_or_default(config.run_dir / "config.json", config.to_jsonable())
-    system_metadata = _read_json_or_default(config.run_dir / "system.json", {})
-    summary = summarize_records(
+    summary = _write_deferred_judging_outputs(
+        config,
+        predictions_path,
         records,
-        run_id=config.run_id,
-        mode=_existing_run_mode(saved_config, records, config),
-        config=saved_config,
+        saved_config=saved_config,
         system_metadata=system_metadata,
     )
-    write_json(config.run_dir / "summary.json", summary)
     logger.info(
         "Finished deferred judging run_id={} judged_now={} judged={} accuracy={}",
         config.run_id,
@@ -476,6 +490,15 @@ def _skipped_judge_payload() -> dict[str, Any]:
     return {"correct": None, "reason": "skipped", "raw": "", "status": "skipped"}
 
 
+def _failed_judge_payload(exc: Exception) -> dict[str, Any]:
+    return {
+        "correct": None,
+        "reason": f"{type(exc).__name__}: {exc}",
+        "raw": "",
+        "status": "error",
+    }
+
+
 def _judge_qa(
     config: BenchmarkConfig,
     judge_client: ChatClient,
@@ -510,6 +533,14 @@ def _is_judged(record: dict[str, Any]) -> bool:
     return isinstance(judge, dict) and isinstance(judge.get("correct"), bool)
 
 
+def _record_label(record: dict[str, Any]) -> str:
+    return (
+        f"sample_id={record.get('sample_id') or ''} "
+        f"question_id={record.get('question_id') or ''} "
+        f"category={record.get('category') or ''}"
+    ).strip()
+
+
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     rows = []
     for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
@@ -528,6 +559,26 @@ def _replace_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
         for row in rows:
             writer.write(row)
     tmp_path.replace(path)
+
+
+def _write_deferred_judging_outputs(
+    config: BenchmarkConfig,
+    predictions_path: Path,
+    records: list[dict[str, Any]],
+    *,
+    saved_config: dict[str, Any],
+    system_metadata: dict[str, Any],
+) -> dict[str, Any]:
+    _replace_jsonl(predictions_path, records)
+    summary = summarize_records(
+        records,
+        run_id=config.run_id,
+        mode=_existing_run_mode(saved_config, records, config),
+        config=saved_config,
+        system_metadata=system_metadata,
+    )
+    write_json(config.run_dir / "summary.json", summary)
+    return summary
 
 
 def _read_json_or_default(path: Path, default: dict[str, Any]) -> dict[str, Any]:

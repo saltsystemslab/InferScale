@@ -69,7 +69,7 @@ class BenchmarkConfig:
     stream: bool = False
 
     kv_connector_module: str = "locomo_jasper_bench.kv.strict_gpu_connector"
-    kv_sample_window: int = 1
+    kv_sample_window: int = 3
     kv_gpu_memory_utilization: float = 0.55
     kv_max_model_len: int = 32768
     kv_max_position: int = 32768
@@ -153,8 +153,8 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     parser.add_argument(
         "--kv-sample-window",
         type=int,
-        default=int(os.environ.get("LOCOMO_KV_SAMPLE_WINDOW", "1")),
-        help="Number of LoCoMo samples to keep in the strict GPU KV pipeline at once. v1 supports 1.",
+        default=int(os.environ.get("LOCOMO_KV_SAMPLE_WINDOW", "3")),
+        help="Number of LoCoMo samples to stage in the strict GPU KV pipeline at once.",
     )
     parser.add_argument(
         "--kv-gpu-memory-utilization",

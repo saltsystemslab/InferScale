@@ -151,8 +151,8 @@ does not use safetensors, `CPUMemoryStore`, vLLM CPU swap, or vLLM CPU offload.
 | Baseline | `openai` | Mem0 + Jasper/Qdrant top-k | Retrieved memory text is inserted into the prompt. |
 | Strict GPU KV | `vllm-kv` | Mem0 + Jasper/Qdrant top-k | Retrieved turns become GPU KV tensors injected before query tokens. |
 
-Strict GPU KV mode currently supports `--kv-sample-window 1`. For each sample,
-the benchmark retrieves all planned question memories, closes the vector index,
-encodes the union of retrieved turn IDs, constructs in-process vLLM, answers the
-sample's questions, and then clears the namespace before moving on.
-
+Strict GPU KV mode defaults to `--kv-sample-window 3`. For each sample window,
+the benchmark retrieves all planned question memories, closes the vector
+indexes, encodes each sample's union of retrieved turn IDs, constructs
+in-process vLLM, answers the window's questions, and then clears the namespace
+before moving on.

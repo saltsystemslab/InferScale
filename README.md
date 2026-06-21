@@ -1,24 +1,27 @@
 # LoCoMo vLLM Jasper Benchmark
 
-This repository contains code to run LoCoMo against a local vLLM server with Mem0 retrieval backed by a vector database such as Jasper or Qdrant. On Runpod, keep the repo and runtime files under `/workspace` so caches, model downloads, temp files, and results persist on workspace storage.
+This repository contains code to run LoCoMo against a local vLLM server with Mem0 retrieval backed by a vector database such as Jasper or Qdrant. By default, runtime files are kept under `/projects/SaltSystemsLab/benchmark-jasper` on the SaltSystems lab computer so caches, model downloads, temp files, and results persist on project storage.
 
 ## 1. Configure
 
 From the repo root on the remote machine:
 
 ```bash
-cd /workspace
+cd /projects/SaltSystemsLab/benchmark-jasper
 cp .env.example .env
 ```
 
 Edit `.env` for your session. The common values are:
 
-- `BENCHMARK_RUNTIME_ROOT=/workspace`
-- `CUDA_MODULE=` on Runpod, or `CUDA_MODULE=cuda/12.8` on module-based clusters
+- `BENCHMARK_RUNTIME_ROOT=/projects/SaltSystemsLab/benchmark-jasper`
+- `CUDA_MODULE=cuda/12.8`
 - `VLLM_MODEL=meta-llama/Llama-3.1-8B-Instruct`
 - `VLLM_API_KEY=token-abc123`
 - `OPENAI_API_KEY=...`
 - `HF_TOKEN=...` (optional)
+- `LOCOMO_KV_SAMPLE_WINDOW=3`
+
+For Runpod, set `BENCHMARK_RUNTIME_ROOT=/workspace` and `CUDA_MODULE=`.
 
 Load the environment in any shell that will run project commands:
 
@@ -26,7 +29,7 @@ Load the environment in any shell that will run project commands:
 source scripts/load_env.sh
 ```
 
-`scripts/load_env.sh` reads `.env` and prepares cache/result/temp directories under `${BENCHMARK_RUNTIME_ROOT}`. With `BENCHMARK_RUNTIME_ROOT=/workspace`, caches live under `/workspace/.cache`, results under `/workspace/results`, and temp files under `/workspace/tmp`. Legacy scratch clusters can set `SCRATCH_ROOT=/scratch/$USER/benchmark-jasper`; set `BENCHMARK_USE_SCRATCH=0` only if you intentionally want project-local cache/result directories.
+`scripts/load_env.sh` reads `.env` and prepares cache/result/temp directories under `${BENCHMARK_RUNTIME_ROOT}`. With the SaltSystems default, caches live under `/projects/SaltSystemsLab/benchmark-jasper/.cache`, results under `/projects/SaltSystemsLab/benchmark-jasper/results`, and temp files under `/projects/SaltSystemsLab/benchmark-jasper/tmp`. Legacy scratch clusters can set `SCRATCH_ROOT=/scratch/$USER/benchmark-jasper`; set `BENCHMARK_USE_SCRATCH=0` only if you intentionally want project-local cache/result directories.
 
 ## 2. Install
 
@@ -147,6 +150,7 @@ locomo-jasper-bench \
   --answer-backend vllm-kv \
   --vector-backend jasper \
   --top-k 20 \
+  --kv-sample-window 3 \
   --kv-gpu-memory-utilization 0.55 \
   --kv-max-model-len 32768 \
   --kv-max-position 32768 \

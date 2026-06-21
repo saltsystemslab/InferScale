@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+SALT_SYSTEMS_RUNTIME_ROOT = Path("/projects/SaltSystemsLab/benchmark-jasper")
+
 
 def project_root() -> Path:
     return Path(__file__).resolve().parents[2]
@@ -15,6 +17,8 @@ def default_cache_root(root: str | Path | None = None) -> Path:
         return Path(os.environ["BENCHMARK_RUNTIME_ROOT"]) / ".cache"
     if os.environ.get("SCRATCH_ROOT"):
         return Path(os.environ["SCRATCH_ROOT"]) / "cache"
+    if _is_salt_systems_lab_project(root):
+        return SALT_SYSTEMS_RUNTIME_ROOT / ".cache"
     if _is_workspace_project(root):
         return Path("/workspace/.cache")
     return project_root() / ".cache"
@@ -27,6 +31,8 @@ def default_results_root(root: str | Path | None = None) -> Path:
         return Path(os.environ["BENCHMARK_RUNTIME_ROOT"]) / "results"
     if os.environ.get("SCRATCH_ROOT"):
         return Path(os.environ["SCRATCH_ROOT"]) / "results"
+    if _is_salt_systems_lab_project(root):
+        return SALT_SYSTEMS_RUNTIME_ROOT / "results"
     if _is_workspace_project(root):
         return Path("/workspace/results")
     return Path("results")
@@ -39,6 +45,8 @@ def default_tmp_dir(root: str | Path | None = None) -> Path:
         return Path(os.environ["BENCHMARK_RUNTIME_ROOT"]) / "tmp"
     if os.environ.get("SCRATCH_ROOT"):
         return Path(os.environ["SCRATCH_ROOT"]) / "tmp"
+    if _is_salt_systems_lab_project(root):
+        return SALT_SYSTEMS_RUNTIME_ROOT / "tmp"
     if _is_workspace_project(root):
         return Path("/workspace/tmp")
     return project_root() / "tmp"
@@ -86,3 +94,13 @@ def _is_workspace_project(root: str | Path | None = None) -> bool:
         candidate = candidate.absolute()
     workspace = Path("/workspace")
     return candidate == workspace or workspace in candidate.parents
+
+
+def _is_salt_systems_lab_project(root: str | Path | None = None) -> bool:
+    candidate = Path(root) if root is not None else project_root()
+    try:
+        candidate = candidate.resolve()
+    except OSError:
+        candidate = candidate.absolute()
+    salt_systems_root = Path("/projects/SaltSystemsLab")
+    return candidate == salt_systems_root or salt_systems_root in candidate.parents

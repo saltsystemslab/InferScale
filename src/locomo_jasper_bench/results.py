@@ -59,6 +59,8 @@ def summarize_records(
         "answer_generate_time_ms",
         "answer_total_time_ms",
         "kv_query_tokens",
+        "kv_prompt_bos_count",
+        "kv_injected_prefix_tokens",
         "kv_store_gpu_mb",
     ):
         summary = _numeric_summary(_metric_values(rows, key))

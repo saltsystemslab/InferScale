@@ -163,6 +163,11 @@ locomo-jasper-bench \
 
 Use `--kv-gpu-memory-utilization` conservatively because the retrieved chunk KV tensors remain GPU-resident while vLLM is loaded.
 
+For accuracy diagnosis on a small subset, add `--kv-composition-mode contiguous`.
+This precomputes each question's retrieved-memory prefix as one contiguous
+chat-template system message, which is slower and uses more GPU memory but helps
+separate prompt-framing issues from isolated chunk composition loss.
+
 ## 8. Deferred Judging
 
 Use deferred judging when the answer model and judge model cannot run at the same time. This works for both normal OpenAI-compatible answer runs and strict GPU KV runs.

@@ -10,7 +10,6 @@ from typing import Any
 from ..clients import ChatResult
 from ..config import BenchmarkConfig
 from ..data import ConversationSample, QuestionAnswer
-from ..prompts import RETRIEVAL_ANSWER_SYSTEM_PROMPT
 from ..vector_types import SearchHit
 from .chunked_rope import ChunkedRopeSampleComposer, selected_turn_ids
 from .strict_gpu_registry import clear_namespace, namespace_stats, register_user_memory, remove_user_memory
@@ -74,9 +73,11 @@ class VLLMChunkedKVAnswerClient:
                     dtype=self.config.kv_dtype,
                     device=self.config.kv_device,
                     max_position=self.config.kv_max_position,
+                    composition_mode=self.config.kv_composition_mode,
                 )
                 try:
                     composer.encode_sample(sample, turn_ids=needed_turn_ids)
+                    composer.precompose_contiguous(hits_by_question)
                     self._free_composer_encoder(composer)
                 except Exception:
                     composer.close()
@@ -143,6 +144,7 @@ class VLLMChunkedKVAnswerClient:
         try:
             query_tokens = self._query_token_ids(sample, qa)
             prompt_token_ids = list(composed.token_ids) + query_tokens
+            prompt_bos_count = count_bos_tokens(self._tokenizer, prompt_token_ids)
             sampling = self._sampling_cls(
                 temperature=temperature,
                 top_p=top_p,
@@ -167,6 +169,9 @@ class VLLMChunkedKVAnswerClient:
                     "answer_generate_time_ms": generate_ms,
                     "answer_total_time_ms": total_ms,
                     "kv_query_tokens": len(query_tokens),
+                    "kv_prompt_bos_count": prompt_bos_count,
+                    "kv_injected_prefix_tokens": composed.num_tokens,
+                    "kv_composition_mode": self.config.kv_composition_mode,
                     "kv_store_gpu_mb": stats.get("total_gpu_mb", 0.0),
                     "kv_selected_turn_ids": composed.selected_turn_ids,
                 },
@@ -210,13 +215,6 @@ class VLLMChunkedKVAnswerClient:
     def _query_token_ids(self, sample: ConversationSample, qa: QuestionAnswer) -> list[int]:
         messages = [
             {
-                "role": "system",
-                "content": (
-                    RETRIEVAL_ANSWER_SYSTEM_PROMPT
-                    + " Relevant retrieved memory is available before the current question."
-                ),
-            },
-            {
                 "role": "user",
                 "content": (
                     f"Conversation id: {sample.sample_id}\n\n"
@@ -225,7 +223,7 @@ class VLLMChunkedKVAnswerClient:
                 ),
             },
         ]
-        return tokenize_messages(self._tokenizer, messages)
+        return tokenize_messages(self._tokenizer, messages, strip_leading_bos=True)
 
 
 def build_strict_gpu_kv_transfer_config(
@@ -245,22 +243,43 @@ def build_strict_gpu_kv_transfer_config(
     }
 
 
-def tokenize_messages(tokenizer: Any, messages: list[dict[str, str]]) -> list[int]:
+def tokenize_messages(
+    tokenizer: Any,
+    messages: list[dict[str, str]],
+    *,
+    strip_leading_bos: bool = False,
+) -> list[int]:
     apply_chat_template = getattr(tokenizer, "apply_chat_template", None)
     if callable(apply_chat_template):
-        return list(
+        token_ids = list(
             apply_chat_template(
                 messages,
                 tokenize=True,
                 add_generation_prompt=True,
             )
         )
+        return strip_leading_bos_token(tokenizer, token_ids) if strip_leading_bos else token_ids
 
     text = "\n\n".join(f"{message['role'].upper()}: {message['content']}" for message in messages)
     encode = getattr(tokenizer, "encode", None)
     if not callable(encode):
         raise RuntimeError("Tokenizer has neither apply_chat_template nor encode.")
-    return list(encode(text))
+    token_ids = list(encode(text))
+    return strip_leading_bos_token(tokenizer, token_ids) if strip_leading_bos else token_ids
+
+
+def strip_leading_bos_token(tokenizer: Any, token_ids: list[int]) -> list[int]:
+    bos_token_id = getattr(tokenizer, "bos_token_id", None)
+    if bos_token_id is not None and token_ids and token_ids[0] == bos_token_id:
+        return token_ids[1:]
+    return token_ids
+
+
+def count_bos_tokens(tokenizer: Any, token_ids: list[int]) -> int:
+    bos_token_id = getattr(tokenizer, "bos_token_id", None)
+    if bos_token_id is None:
+        return 0
+    return sum(1 for token_id in token_ids if token_id == bos_token_id)
 
 
 def _memory_user_id(sample_id: str, question_id: str) -> str:

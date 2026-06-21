@@ -19,6 +19,7 @@ DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 VectorBackend = Literal["jasper", "qdrant"]
 DistanceMetric = Literal["ip", "l2"]
 AnswerBackend = Literal["openai", "vllm-kv"]
+KvCompositionMode = Literal["chunked", "contiguous"]
 
 
 def default_run_id() -> str:
@@ -70,6 +71,7 @@ class BenchmarkConfig:
 
     kv_connector_module: str = "locomo_jasper_bench.kv.strict_gpu_connector"
     kv_sample_window: int = 3
+    kv_composition_mode: KvCompositionMode = "chunked"
     kv_gpu_memory_utilization: float = 0.55
     kv_max_model_len: int = 32768
     kv_max_position: int = 32768
@@ -155,6 +157,12 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
         type=int,
         default=int(os.environ.get("LOCOMO_KV_SAMPLE_WINDOW", "3")),
         help="Number of LoCoMo samples to stage in the strict GPU KV pipeline at once.",
+    )
+    parser.add_argument(
+        "--kv-composition-mode",
+        choices=["chunked", "contiguous"],
+        default=os.environ.get("LOCOMO_KV_COMPOSITION_MODE", "chunked"),
+        help="Compose retrieved memory from isolated chunks, or precompute contiguous per-question prefixes.",
     )
     parser.add_argument(
         "--kv-gpu-memory-utilization",

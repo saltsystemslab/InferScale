@@ -148,7 +148,7 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
         "--kv-sample-window",
         type=int,
         default=1,
-        help="Number of LoCoMo samples to keep in the strict GPU KV pipeline at once. Currently supports 1.",
+        help="Number of LoCoMo samples to stage in the strict GPU KV pipeline at once.",
     )
     parser.add_argument(
         "--kv-gpu-memory-utilization",
@@ -189,6 +189,6 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     )
 
     ns = parser.parse_args(argv)
-    if ns.answer_backend == "vllm-kv" and ns.kv_sample_window != 1:
-        parser.error("--kv-sample-window must be 1 when --answer-backend vllm-kv.")
+    if ns.kv_sample_window < 1:
+        parser.error("--kv-sample-window must be >= 1.")
     return BenchmarkConfig(**vars(ns))

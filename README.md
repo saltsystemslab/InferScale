@@ -116,7 +116,7 @@ locomo-jasper-bench \
 
 ## 7. GPU KV Injection
 
-The `ai-memory-code` submodule can be used through an opt-in in-process vLLM backend. This mode keeps the current Mem0/Jasper top-k retrieval step, then composes the retrieved turns as chunked-RoPE KV tensors on GPU and injects them through a GPU connector.
+The `ai-memory-code` submodule can be used through an opt-in in-process vLLM backend. This mode keeps the current Mem0/Jasper top-k retrieval step, then composes the retrieved turns as chunked-RoPE KV tensors on GPU and injects them through a GPU connector. It forces vLLM V1 multiprocessing off so the connector can share the benchmark process's GPU memory registry.
 
 ```bash
 RUN_STAMP=$(date -u +%Y%m%dT%H%M%SZ)

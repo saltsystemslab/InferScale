@@ -128,6 +128,7 @@ locomo-jasper-bench \
   --answer-backend vllm-kv \
   --vector-backend jasper \
   --top-k 50 \
+  --kv-sample-window 1 \
   --kv-gpu-memory-utilization 0.30 \
   --kv-max-model-len 32768 \
   --kv-max-position 32768 \

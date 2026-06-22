@@ -114,37 +114,48 @@ locomo-jasper-bench \
   --run-id jasper-20samples-${RUN_STAMP}
 ```
 
-For a quick smoke comparison, add this to each command:
+## 7. GPU KV Injection
+
+The `ai-memory-code` submodule can be used through an opt-in in-process vLLM backend. This mode keeps the current Mem0/Jasper top-k retrieval step, then composes the retrieved turns as chunked-RoPE KV tensors on GPU and injects them through a GPU connector.
 
 ```bash
---max-samples 1 --max-questions 3 --log-every 1
-```
+RUN_STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+RUN_ID=kv-strict-smoke-${RUN_STAMP}
 
-## 7. Strict GPU KV Injection
-
-The `ai-memory-code` submodule can be used through an opt-in in-process vLLM backend. This mode keeps the current Mem0/Jasper top-k retrieval step, then composes the retrieved turns as chunked-RoPE KV tensors on GPU and injects them through a strict GPU connector. It does not use `memory_path`, safetensors loading, `CPUMemoryStore`, vLLM CPU swap, or vLLM CPU offload.
-
-This path runs vLLM inside the benchmark process, so do not start `scripts/serve_vllm.sh` for the answer model. The judge still uses `--judge-base-url`.
-
-```bash
 locomo-jasper-bench \
   --dataset data/locomo10.json \
   --results-dir "${BENCHMARK_RESULTS_ROOT}" \
   --answer-backend vllm-kv \
   --vector-backend jasper \
-  --top-k 20 \
-  --kv-gpu-memory-utilization 0.55 \
+  --top-k 50 \
+  --kv-gpu-memory-utilization 0.30 \
   --kv-max-model-len 32768 \
   --kv-max-position 32768 \
-  --max-samples 1 \
-  --max-questions 3 \
+  --max-samples 5 \
   --log-every 1 \
-  --run-id kv-strict-smoke-${RUN_STAMP}
+  --skip-judge \
+  --run-id "${RUN_ID}"
 ```
 
-Use `--kv-gpu-memory-utilization` conservatively because the retrieved chunk KV tensors remain GPU-resident while vLLM is loaded.
+## 8. Deferred Judging
 
-## 8. Results
+Use deferred judging when the answer model and judge model cannot run at the same time. This works for both normal OpenAI-compatible answer runs and GPU KV runs.
+
+After inference finishes, stop the answer model if needed, start the judge model, then judge the existing run:
+
+```bash
+locomo-jasper-bench \
+  --results-dir "${BENCHMARK_RESULTS_ROOT}" \
+  --run-id "${RUN_ID}" \
+  --judge-only \
+  --judge-base-url "${JUDGE_BASE_URL:-${VLLM_BASE_URL}}" \
+  --judge-api-key "${JUDGE_API_KEY:-${VLLM_API_KEY}}" \
+  --judge-model "${JUDGE_MODEL:-${VLLM_MODEL}}"
+```
+
+`--judge-only` reads `${BENCHMARK_RESULTS_ROOT}/${RUN_ID}/predictions.jsonl`, fills only rows that are still unjudged, preserves any rows already judged, and regenerates `summary.json`.
+
+## 9. Results
 
 Each run writes to `${BENCHMARK_RESULTS_ROOT}/<run-id>/`:
 

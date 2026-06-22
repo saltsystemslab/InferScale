@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -9,7 +11,6 @@ from loguru import logger
 from .clients import ChatClient, OpenAICompatibleChatClient
 from .config import BenchmarkConfig
 from .data import ConversationSample, QuestionAnswer, load_locomo
-from .memory_builder import SampleMemoryBuilder, embed_mem0_query
 from .prompts import build_judge_messages, build_retrieval_answer_messages, parse_judge_response
 from .results import JsonlWriter, summarize_records, write_json
 from .system import collect_system_metadata
@@ -19,7 +20,7 @@ from .vector_types import SearchHit, SearchMetrics
 @dataclass(slots=True)
 class RuntimeClients:
     answer_client: ChatClient
-    judge_client: ChatClient
+    judge_client: ChatClient | None
 
 
 def run_benchmark(config: BenchmarkConfig, clients: RuntimeClients | None = None) -> dict[str, Any]:
@@ -82,13 +83,60 @@ def build_clients(config: BenchmarkConfig) -> RuntimeClients:
             model=config.model,
             stream=config.stream,
         )
+    if config.skip_judge:
+        judge_client = None
+    else:
+        judge_client = OpenAICompatibleChatClient(
+            base_url=config.judge_base_url,
+            api_key=config.judge_api_key,
+            model=config.judge_model,
+            stream=config.stream,
+        )
+    return RuntimeClients(answer_client=answer_client, judge_client=judge_client)
+
+
+def judge_existing_run(config: BenchmarkConfig) -> dict[str, Any]:
+    predictions_path = config.run_dir / "predictions.jsonl"
+    if not predictions_path.exists():
+        raise FileNotFoundError(f"predictions file not found: {predictions_path}")
+
+    logger.info("Judging existing run_id={} predictions={}", config.run_id, predictions_path)
+    records = _read_jsonl(predictions_path)
     judge_client = OpenAICompatibleChatClient(
         base_url=config.judge_base_url,
         api_key=config.judge_api_key,
         model=config.judge_model,
         stream=config.stream,
     )
-    return RuntimeClients(answer_client=answer_client, judge_client=judge_client)
+
+    judged_now = 0
+    for record in records:
+        if _is_judged(record):
+            continue
+        judge_payload = _judge_record(config, judge_client, record)
+        record["judge"] = judge_payload
+        judged_now += 1
+
+    _replace_jsonl(predictions_path, records)
+
+    saved_config = _read_json_or_default(config.run_dir / "config.json", config.to_jsonable())
+    system_metadata = _read_json_or_default(config.run_dir / "system.json", {})
+    summary = summarize_records(
+        records,
+        run_id=config.run_id,
+        mode=_existing_run_mode(saved_config, records, config),
+        config=saved_config,
+        system_metadata=system_metadata,
+    )
+    write_json(config.run_dir / "summary.json", summary)
+    logger.info(
+        "Finished deferred judging run_id={} judged_now={} judged={} accuracy={}",
+        config.run_id,
+        judged_now,
+        summary["judged_count"],
+        _format_accuracy(summary.get("metrics", {}).get("accuracy")),
+    )
+    return summary
 
 
 class QuestionEvaluator:
@@ -149,15 +197,12 @@ class QuestionEvaluator:
         store_metrics: SearchMetrics,
         answer: Any,
     ) -> dict[str, Any]:
-        judge_messages = build_judge_messages(qa, answer.content)
-        judge = self.clients.judge_client.chat(
-            judge_messages,
-            max_tokens=self.config.max_judge_tokens,
-            temperature=0.0,
-            top_p=1.0,
-        )
-        correct, reason = parse_judge_response(judge.content)
-        judge_payload = {"correct": correct, "reason": reason, "raw": judge.content}
+        if self.config.skip_judge:
+            judge_payload = _skipped_judge_payload()
+        else:
+            if self.clients.judge_client is None:
+                raise RuntimeError("Judge client is not configured. Use --skip-judge to write unjudged predictions.")
+            judge_payload = _judge_qa(self.config, self.clients.judge_client, qa, answer.content)
 
         return {
             "run_id": self.config.run_id,
@@ -198,6 +243,8 @@ class QuestionEvaluator:
         )
 
     def _search_mem0_memory(self, memory: Any, query: str) -> list[SearchHit]:
+        from .memory_builder import embed_mem0_query
+
         vector_store = getattr(memory, "vector_store", None)
         search = getattr(vector_store, "search", None)
         if not callable(search):
@@ -214,6 +261,8 @@ def _run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> li
 
 
 def _run_openai_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> list[dict[str, Any]]:
+    from .memory_builder import SampleMemoryBuilder
+
     logger.info("Loading LoCoMo dataset from {}", config.dataset_path)
     samples = load_locomo(config.dataset_path, max_samples=config.max_samples)
     planned_questions = _planned_question_count(samples, config.max_questions)
@@ -287,6 +336,8 @@ def _run_openai_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients
 
 
 def _run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> list[dict[str, Any]]:
+    from .memory_builder import SampleMemoryBuilder
+
     if config.kv_sample_window != 1:
         raise RuntimeError("Strict GPU KV mode currently supports --kv-sample-window 1.")
 
@@ -419,3 +470,85 @@ def _result_mode(config: BenchmarkConfig) -> str:
     if config.answer_backend == "openai":
         return "baseline"
     return config.answer_backend
+
+
+def _skipped_judge_payload() -> dict[str, Any]:
+    return {"correct": None, "reason": "skipped", "raw": "", "status": "skipped"}
+
+
+def _judge_qa(
+    config: BenchmarkConfig,
+    judge_client: ChatClient,
+    qa: QuestionAnswer,
+    predicted_answer: str,
+) -> dict[str, Any]:
+    judge_messages = build_judge_messages(qa, predicted_answer)
+    judge = judge_client.chat(
+        judge_messages,
+        max_tokens=config.max_judge_tokens,
+        temperature=0.0,
+        top_p=1.0,
+    )
+    correct, reason = parse_judge_response(judge.content)
+    return {"correct": correct, "reason": reason, "raw": judge.content}
+
+
+def _judge_record(config: BenchmarkConfig, judge_client: ChatClient, record: dict[str, Any]) -> dict[str, Any]:
+    qa = QuestionAnswer(
+        sample_id=str(record.get("sample_id") or ""),
+        question_id=str(record.get("question_id") or ""),
+        question=str(record.get("question") or ""),
+        answer=str(record.get("gold_answer") or ""),
+        category=str(record.get("category") or ""),
+        evidence=record.get("evidence"),
+    )
+    return _judge_qa(config, judge_client, qa, str(record.get("predicted_answer") or ""))
+
+
+def _is_judged(record: dict[str, Any]) -> bool:
+    judge = record.get("judge")
+    return isinstance(judge, dict) and isinstance(judge.get("correct"), bool)
+
+
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    rows = []
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        if not isinstance(row, dict):
+            raise ValueError(f"{path}:{line_number} is not a JSON object")
+        rows.append(row)
+    return rows
+
+
+def _replace_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+    tmp_path = path.with_name(path.name + ".tmp")
+    with JsonlWriter(tmp_path) as writer:
+        for row in rows:
+            writer.write(row)
+    tmp_path.replace(path)
+
+
+def _read_json_or_default(path: Path, default: dict[str, Any]) -> dict[str, Any]:
+    if not path.exists():
+        return default
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        return default
+    return data
+
+
+def _existing_run_mode(
+    saved_config: dict[str, Any],
+    records: list[dict[str, Any]],
+    fallback_config: BenchmarkConfig,
+) -> str:
+    answer_backend = saved_config.get("answer_backend")
+    if answer_backend == "openai":
+        return "baseline"
+    if isinstance(answer_backend, str) and answer_backend:
+        return answer_backend
+    if records and isinstance(records[0].get("mode"), str):
+        return str(records[0]["mode"])
+    return _result_mode(fallback_config)

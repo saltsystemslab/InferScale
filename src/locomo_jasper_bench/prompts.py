@@ -13,7 +13,8 @@ RETRIEVAL_ANSWER_SYSTEM_PROMPT = (
 )
 
 JUDGE_SYSTEM_PROMPT = (
-    "You are a strict evaluator for question answering. Compare the predicted answer to the reference answer. "
+    "You are evaluating the correctness of an answer about a conversation. "
+    "Compare the predicted answer to the reference answer. "
     "Return only a JSON object with keys correct and reason."
 )
 
@@ -45,7 +46,7 @@ def build_judge_messages(qa: QuestionAnswer, predicted_answer: str) -> list[dict
         f"Question: {qa.question}\n"
         f"Reference answer: {qa.answer}\n"
         f"Predicted answer: {predicted_answer}\n\n"
-        "Mark correct as true if the prediction captures the same answer, allowing paraphrases and minor wording differences. "
+        "Mark correct as true if the prediction conveys the same essential information as the reference answer, even if worded differently. "
         "Mark correct as false for contradictions, unsupported answers, or missing key facts."
     )
     return [

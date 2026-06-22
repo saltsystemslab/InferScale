@@ -165,7 +165,7 @@ Use `--kv-gpu-memory-utilization` conservatively because the retrieved chunk KV 
 
 For accuracy diagnosis on a small subset, add `--kv-composition-mode contiguous`.
 This precomputes each question's retrieved-memory prefix as one contiguous
-chat-template system message, which is slower and uses more GPU memory but helps
+chat-template retrieval prompt prefix, which is slower and uses more GPU memory but helps
 separate prompt-framing issues from isolated chunk composition loss.
 
 ## 8. Deferred Judging

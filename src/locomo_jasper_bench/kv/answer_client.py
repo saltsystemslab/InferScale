@@ -11,7 +11,7 @@ from ..clients import ChatResult
 from ..config import BenchmarkConfig
 from ..data import ConversationSample, QuestionAnswer
 from ..vector_types import SearchHit
-from .chunked_rope import ChunkedRopeSampleComposer, selected_turn_ids
+from .chunked_rope import ChunkedRopeSampleComposer, encode_retrieval_query_tail, selected_turn_ids
 from .strict_gpu_registry import clear_namespace, namespace_stats, register_user_memory, remove_user_memory
 from .submodule import require_ai_memory_submodule
 
@@ -77,6 +77,7 @@ class VLLMChunkedKVAnswerClient:
                 )
                 try:
                     composer.encode_sample(sample, turn_ids=needed_turn_ids)
+                    composer.encode_rank_prefixes(hits_by_question)
                     composer.precompose_contiguous(hits_by_question)
                     self._free_composer_encoder(composer)
                 except Exception:
@@ -213,17 +214,7 @@ class VLLMChunkedKVAnswerClient:
             pass
 
     def _query_token_ids(self, sample: ConversationSample, qa: QuestionAnswer) -> list[int]:
-        messages = [
-            {
-                "role": "user",
-                "content": (
-                    f"Conversation id: {sample.sample_id}\n\n"
-                    f"Question: {qa.question}\n\n"
-                    "Answer:"
-                ),
-            },
-        ]
-        return tokenize_messages(self._tokenizer, messages, strip_leading_bos=True)
+        return encode_retrieval_query_tail(self._tokenizer, sample.sample_id, qa.question)
 
 
 def build_strict_gpu_kv_transfer_config(

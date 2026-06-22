@@ -5,13 +5,13 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from ..data import ConversationSample, Turn, format_turn_for_memory
-from ..prompts import RETRIEVAL_ANSWER_SYSTEM_PROMPT
+from ..data import ConversationSample, format_turn_for_memory
+from ..prompts import RETRIEVAL_ANSWER_SYSTEM_PROMPT, build_retrieval_answer_user_content
 from ..vector_types import SearchHit
 from .submodule import require_ai_memory_submodule
 
-MEMORY_CONTEXT_LABEL = "Retrieved memory context:\n"
 MEMORY_TEMPLATE_PLACEHOLDER = "__LOCOMO_JASPER_RETRIEVED_MEMORY__"
+QUESTION_TEMPLATE_PLACEHOLDER = "__LOCOMO_JASPER_QUESTION__"
 logger = logging.getLogger(__name__)
 
 
@@ -30,6 +30,13 @@ class ComposedMemory:
     num_tokens: int
     compose_time_ms: float
     selected_turn_ids: list[str]
+
+
+@dataclass(slots=True)
+class RetrievalPromptTemplate:
+    memory_prefix_text: str
+    query_intro_text: str
+    query_suffix_text: str
 
 
 def hit_turn_id(hit: SearchHit) -> str | None:
@@ -114,9 +121,13 @@ class ChunkedRopeSampleComposer:
         self.chunks: dict[str, EncodedChunk] = {}
         self.turn_text_by_id: dict[str, str] = {}
         self.precomposed: dict[tuple[str, ...], ComposedMemory] = {}
-        self.system_header_chunk, self.system_footer_chunk = self._encode_memory_template_chunks()
+        self.prompt_prefix_chunk: EncodedChunk | None = None
+        self.memory_prompt_prefix_text = ""
+        self.memory_line_separator_chunk = self._encode_text_chunk("__memory_line_separator__", "\n")
+        self.rank_prefix_chunks: dict[int, EncodedChunk] = {}
 
     def encode_sample(self, sample: ConversationSample, turn_ids: set[str] | None = None) -> None:
+        self.prompt_prefix_chunk = self._encode_retrieval_prompt_prefix(sample.sample_id)
         turns = sample.turns
         if turn_ids is not None:
             turns = [turn for turn in sample.turns if turn.id in turn_ids]
@@ -127,11 +138,21 @@ class ChunkedRopeSampleComposer:
             self.composition_mode,
         )
         for turn in turns:
-            text = format_turn_for_memory(turn).strip() + "\n"
+            text = format_turn_for_memory(turn).strip()
             self.turn_text_by_id[turn.id] = text
             if self.composition_mode == "chunked":
                 self.chunks[turn.id] = self._encode_text_chunk(turn.id, text)
         logger.info("Pre-RoPE encoded %d chunks for sample_id=%s", len(self.chunks), sample.sample_id)
+
+    def encode_rank_prefixes(self, hits_by_question: list[list[SearchHit]]) -> None:
+        if self.composition_mode != "chunked":
+            return
+
+        max_rank = 0
+        for hits in hits_by_question:
+            max_rank = max(max_rank, len(selected_turn_ids(hits)))
+        for rank in range(1, max_rank + 1):
+            self.rank_prefix_chunks[rank] = self._encode_text_chunk(f"__memory_rank_{rank}__", f"{rank}. ")
 
     def precompose_contiguous(self, hits_by_question: list[list[SearchHit]]) -> None:
         if self.composition_mode != "contiguous":
@@ -171,18 +192,27 @@ class ChunkedRopeSampleComposer:
 
         selected = []
         missing = []
-        for turn_id in turn_ids:
+        for rank, turn_id in enumerate(turn_ids, start=1):
+            rank_chunk = self.rank_prefix_chunks.get(rank)
+            if rank_chunk is None:
+                missing.append(f"rank:{rank}")
+            else:
+                selected.append(rank_chunk)
             chunk = self.chunks.get(turn_id)
             if chunk is None:
                 missing.append(turn_id)
             else:
                 selected.append(chunk)
+            if rank < len(turn_ids):
+                selected.append(self.memory_line_separator_chunk)
         if missing:
             raise RuntimeError(
                 "Retrieved memory chunks were not pre-encoded: " + ", ".join(missing[:5])
             )
+        if self.prompt_prefix_chunk is None:
+            raise RuntimeError("Retrieval prompt prefix was not encoded before KV composition.")
 
-        chunks = [self.system_header_chunk, *selected, self.system_footer_chunk]
+        chunks = [self.prompt_prefix_chunk, *selected]
         kv_by_layer = self._compose_chunks(chunks)
         token_ids: list[int] = []
         for chunk in chunks:
@@ -212,10 +242,10 @@ class ChunkedRopeSampleComposer:
             "chunks",
             "turn_text_by_id",
             "precomposed",
-            "system_header_chunk",
-            "system_footer_chunk",
-            "memory_system_header_text",
-            "memory_system_footer_text",
+            "prompt_prefix_chunk",
+            "memory_prompt_prefix_text",
+            "memory_line_separator_chunk",
+            "rank_prefix_chunks",
         ):
             if hasattr(self, attr):
                 try:
@@ -225,17 +255,10 @@ class ChunkedRopeSampleComposer:
         gc.collect()
         torch.cuda.empty_cache()
 
-    def _encode_turn_chunk(self, turn: Turn) -> EncodedChunk:
-        return self._encode_text_chunk(turn.id, format_turn_for_memory(turn).strip() + "\n")
-
-    def _encode_memory_template_chunks(self) -> tuple[EncodedChunk, EncodedChunk]:
-        header_tokens, footer_tokens, header_text, footer_text = encode_memory_system_template(self.tokenizer)
-        self.memory_system_header_text = header_text
-        self.memory_system_footer_text = footer_text
-        return (
-            self._encode_token_chunk("__system_header__", header_tokens, header_text),
-            self._encode_token_chunk("__system_footer__", footer_tokens, footer_text),
-        )
+    def _encode_retrieval_prompt_prefix(self, sample_id: str) -> EncodedChunk:
+        prefix_tokens, prefix_text = encode_retrieval_memory_prefix(self.tokenizer, sample_id)
+        self.memory_prompt_prefix_text = prefix_text
+        return self._encode_token_chunk("__retrieval_prompt_prefix__", prefix_tokens, prefix_text)
 
     def _encode_text_chunk(self, turn_id: str, text: str) -> EncodedChunk:
         token_ids = encode_text_without_special_tokens(self.tokenizer, text)
@@ -291,6 +314,8 @@ class ChunkedRopeSampleComposer:
         return composed
 
     def _compose_contiguous_turn_order(self, turn_ids: tuple[str, ...]) -> ComposedMemory:
+        if not self.memory_prompt_prefix_text:
+            raise RuntimeError("Retrieval prompt prefix was not encoded before contiguous composition.")
         missing = [turn_id for turn_id in turn_ids if turn_id not in self.turn_text_by_id]
         if missing:
             raise RuntimeError(
@@ -302,8 +327,8 @@ class ChunkedRopeSampleComposer:
             f"{rank}. {self.turn_text_by_id[turn_id].strip()}"
             for rank, turn_id in enumerate(turn_ids, start=1)
         ]
-        memory_text = "\n".join(memory_lines) + "\n"
-        full_text = self.memory_system_header_text + memory_text + self.memory_system_footer_text
+        memory_text = "\n".join(memory_lines)
+        full_text = self.memory_prompt_prefix_text + memory_text
         token_ids = encode_text_without_special_tokens(self.tokenizer, full_text)
         chunk = self._encode_token_chunk("__contiguous_memory__", token_ids, full_text)
         kv_by_layer = self._compose_chunks([chunk])
@@ -316,39 +341,63 @@ class ChunkedRopeSampleComposer:
         )
 
 
-def memory_system_content() -> str:
-    return f"{RETRIEVAL_ANSWER_SYSTEM_PROMPT}\n\n{MEMORY_CONTEXT_LABEL}{MEMORY_TEMPLATE_PLACEHOLDER}"
-
-
-def split_memory_system_template(tokenizer: Any) -> tuple[str, str]:
+def split_retrieval_prompt_template(tokenizer: Any, sample_id: str) -> RetrievalPromptTemplate:
+    user_content = build_retrieval_answer_user_content(
+        sample_id=sample_id,
+        context=MEMORY_TEMPLATE_PLACEHOLDER,
+        question=QUESTION_TEMPLATE_PLACEHOLDER,
+    )
+    messages = [
+        {"role": "system", "content": RETRIEVAL_ANSWER_SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
     apply_chat_template = getattr(tokenizer, "apply_chat_template", None)
     if callable(apply_chat_template):
         rendered = apply_chat_template(
-            [{"role": "system", "content": memory_system_content()}],
+            messages,
             tokenize=False,
-            add_generation_prompt=False,
+            add_generation_prompt=True,
         )
     else:
-        rendered = f"SYSTEM: {memory_system_content()}\n"
+        rendered = "\n\n".join(f"{message['role'].upper()}: {message['content']}" for message in messages)
+        rendered += "\n\nASSISTANT:"
 
     if MEMORY_TEMPLATE_PLACEHOLDER not in rendered:
         raise RuntimeError(
-            "Could not split memory system prompt because the tokenizer chat template "
+            "Could not split retrieval prompt because the tokenizer chat template "
             "did not preserve the memory placeholder."
         )
-    return rendered.split(MEMORY_TEMPLATE_PLACEHOLDER, 1)
-
-
-def encode_memory_system_template(tokenizer: Any) -> tuple[list[int], list[int], str, str]:
-    header_text, footer_text = split_memory_system_template(tokenizer)
-    header_tokens = encode_text_without_special_tokens(tokenizer, header_text)
-    footer_tokens = encode_text_without_special_tokens(tokenizer, footer_text)
-    if not header_tokens or not footer_tokens:
+    memory_prefix_text, after_memory_text = rendered.split(MEMORY_TEMPLATE_PLACEHOLDER, 1)
+    if QUESTION_TEMPLATE_PLACEHOLDER not in after_memory_text:
         raise RuntimeError(
-            f"Memory system template produced empty header/footer tokens: "
-            f"header={len(header_tokens)} footer={len(footer_tokens)}."
+            "Could not split retrieval prompt because the tokenizer chat template "
+            "did not preserve the question placeholder."
         )
-    return header_tokens, footer_tokens, header_text, footer_text
+    query_intro_text, query_suffix_text = after_memory_text.split(QUESTION_TEMPLATE_PLACEHOLDER, 1)
+    return RetrievalPromptTemplate(
+        memory_prefix_text=memory_prefix_text,
+        query_intro_text=query_intro_text,
+        query_suffix_text=query_suffix_text,
+    )
+
+
+def encode_retrieval_memory_prefix(tokenizer: Any, sample_id: str) -> tuple[list[int], str]:
+    template = split_retrieval_prompt_template(tokenizer, sample_id)
+    token_ids = encode_text_without_special_tokens(tokenizer, template.memory_prefix_text)
+    if not token_ids:
+        raise RuntimeError("Retrieval memory prompt prefix produced zero tokens.")
+    return token_ids, template.memory_prefix_text
+
+
+def encode_retrieval_query_tail(tokenizer: Any, sample_id: str, question: str) -> list[int]:
+    template = split_retrieval_prompt_template(tokenizer, sample_id)
+    token_ids = encode_text_without_special_tokens(
+        tokenizer,
+        template.query_intro_text + question + template.query_suffix_text,
+    )
+    if not token_ids:
+        raise RuntimeError("Retrieval query prompt tail produced zero tokens.")
+    return token_ids
 
 
 def encode_text_without_special_tokens(tokenizer: Any, text: str) -> list[int]:

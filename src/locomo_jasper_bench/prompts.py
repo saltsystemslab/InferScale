@@ -12,6 +12,7 @@ RETRIEVAL_ANSWER_SYSTEM_PROMPT = (
     "You answer questions about a long conversation. Use the retrieved memory context when it is relevant. "
     "Be concise and do not invent details that are not supported by the context."
 )
+RETRIEVAL_MEMORY_CONTEXT_LABEL = "Retrieved memory context:\n"
 
 JUDGE_SYSTEM_PROMPT = (
     "You are a strict evaluator for question answering. Compare the predicted answer to the reference answer. "
@@ -30,16 +31,26 @@ def build_retrieval_answer_messages(
         memory = hit.payload.get("memory") or hit.payload.get("text") or ""
         context_lines.append(f"{hit.rank}. {memory}")
     context = "\n".join(context_lines) if context_lines else "No retrieved context."
-    user = (
-        f"Conversation id: {sample.sample_id}\n\n"
-        f"Retrieved memory context:\n{context}\n\n"
-        f"Question: {qa.question}\n\n"
-        "Answer:"
-    )
     return [
         {"role": "system", "content": RETRIEVAL_ANSWER_SYSTEM_PROMPT},
-        {"role": "user", "content": user},
+        {
+            "role": "user",
+            "content": build_retrieval_answer_user_content(
+                sample_id=sample.sample_id,
+                context=context,
+                question=qa.question,
+            ),
+        },
     ]
+
+
+def build_retrieval_answer_user_content(*, sample_id: str, context: str, question: str) -> str:
+    return (
+        f"Conversation id: {sample_id}\n\n"
+        f"{RETRIEVAL_MEMORY_CONTEXT_LABEL}{context}\n\n"
+        f"Question: {question}\n\n"
+        "Answer:"
+    )
 
 
 def build_judge_messages(qa: QuestionAnswer, predicted_answer: str) -> list[dict[str, str]]:

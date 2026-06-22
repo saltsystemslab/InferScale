@@ -62,7 +62,7 @@ class BenchmarkConfig:
     temperature: float = 0.0
     top_p: float = 1.0
     max_answer_tokens: int = 512
-    max_judge_tokens: int = 256
+    max_judge_tokens: int = 4
     stream: bool = False
 
     kv_connector_module: str = "locomo_jasper_bench.kv.strict_gpu_connector"
@@ -136,7 +136,7 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top-p", type=float, default=1.0)
     parser.add_argument("--max-answer-tokens", type=int, default=512)
-    parser.add_argument("--max-judge-tokens", type=int, default=256)
+    parser.add_argument("--max-judge-tokens", type=int, default=4)
     parser.add_argument("--stream", action="store_true")
 
     parser.add_argument(

@@ -149,13 +149,12 @@ locomo-jasper-bench \
   --results-dir "${BENCHMARK_RESULTS_ROOT}" \
   --answer-backend vllm-kv \
   --vector-backend jasper \
-  --top-k 20 \
+  --top-k 50 \
   --kv-sample-window 3 \
   --kv-gpu-memory-utilization 0.55 \
   --kv-max-model-len 32768 \
   --kv-max-position 32768 \
-  --max-samples 1 \
-  --max-questions 3 \
+  --max-samples 5 \
   --log-every 1 \
   --skip-judge \
   --run-id "${RUN_ID}"

@@ -47,8 +47,13 @@ def remove_user_memory(namespace: str, user_id: str) -> bool:
 
 
 def clear_namespace(namespace: str) -> None:
-    store = _STORES.pop(namespace, None)
+    store = _STORES.get(namespace)
     if store is None:
         return
     for user_id in list(store.get_all_user_ids()):
         store.remove_user_memory(user_id)
+
+
+def drop_namespace(namespace: str) -> None:
+    clear_namespace(namespace)
+    _STORES.pop(namespace, None)

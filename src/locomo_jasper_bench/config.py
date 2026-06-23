@@ -71,7 +71,7 @@ class BenchmarkConfig:
     max_judge_tokens: int = 4
 
     kv_connector_module: str = "locomo_jasper_bench.kv.strict_gpu_connector"
-    kv_sample_window: int = 1
+    context_window: int = 0
     kv_gpu_memory_utilization: float = 0.55
     kv_max_model_len: int = 32768
     kv_max_position: int = 32768
@@ -146,10 +146,13 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
         help="Import path for the strict GPU MemoryKVConnector module used by in-process vLLM.",
     )
     parser.add_argument(
-        "--kv-sample-window",
+        "--context-window",
         type=int,
-        default=1,
-        help="Number of LoCoMo samples to stage in the strict GPU KV pipeline at once.",
+        default=int(os.environ.get("LOCOMO_KV_CONTEXT_WINDOW", "0")),
+        help=(
+            "Number of previous LoCoMo sessions to include as prefix context when "
+            "pre-RoPE encoding each selected KV memory turn. 0 encodes each turn in isolation."
+        ),
     )
     parser.add_argument(
         "--kv-gpu-memory-utilization",
@@ -192,6 +195,6 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     ns = parser.parse_args(argv)
     if ns.answer_backend not in {"vllm-kv", "vllm-prefix"}:
         parser.error("--answer-backend must be vllm-kv or vllm-prefix.")
-    if ns.kv_sample_window < 1:
-        parser.error("--kv-sample-window must be >= 1.")
+    if ns.context_window < 0:
+        parser.error("--context-window must be >= 0.")
     return BenchmarkConfig(**vars(ns))

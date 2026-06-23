@@ -2,19 +2,28 @@ from __future__ import annotations
 
 import gc
 import logging
+import multiprocessing as mp
 import os
+import shutil
 import sys
 import time
+import traceback
 import uuid
+from pathlib import Path
 from typing import Any
 
 from ..clients import ChatResult
 from ..config import BenchmarkConfig
 from ..data import ConversationSample, QuestionAnswer
 from ..vector_types import SearchHit
-from .chunked_rope import ChunkedRopeSampleComposer
-from .prompting import build_kv_equivalence_prompt_token_ids, selected_turn_ids
-from .strict_gpu_registry import clear_namespace, register_user_memory, remove_user_memory
+from .chunked_rope import (
+    CachedChunkedRopeSampleComposer,
+    ChunkedRopeSampleComposer,
+    load_sample_kv_cache,
+    save_sample_kv_cache,
+)
+from .prompting import build_kv_equivalence_prompt_token_ids
+from .strict_gpu_registry import clear_namespace, drop_namespace, namespace_stats, register_user_memory, remove_user_memory
 from .submodule import require_ai_memory_submodule
 
 logger = logging.getLogger(__name__)
@@ -31,62 +40,33 @@ class VLLMChunkedKVAnswerClient:
         self._llm: Any | None = None
         self._tokenizer: Any | None = None
         self._sampling_cls: Any | None = None
-        self._composers: dict[int, ChunkedRopeSampleComposer] = {}
+        self._composer: CachedChunkedRopeSampleComposer | None = None
+        self._active_sample_id: int | None = None
+        self._sample_cache_dir: Path | None = None
+        self._cache_dirs: set[Path] = set()
 
-    def prepare_sample(self, sample: ConversationSample, hits_by_question: list[list[SearchHit]]) -> None:
-        self.prepare_samples([(sample, hits_by_question)])
-
-    def prepare_samples(
-        self,
-        samples: list[tuple[ConversationSample, list[list[SearchHit]]]],
-    ) -> None:
-        if not samples:
-            raise RuntimeError("Strict GPU KV mode cannot prepare an empty sample window.")
-        if self.config.kv_sample_window < 1:
-            raise RuntimeError("--kv-sample-window must be >= 1.")
-        if len(samples) > self.config.kv_sample_window:
-            raise RuntimeError(
-                f"Strict GPU KV sample window got {len(samples)} samples, "
-                f"exceeding --kv-sample-window {self.config.kv_sample_window}."
-            )
-
+    def precompute_sample_cache(self, sample: ConversationSample) -> None:
         force_vllm_inprocess_mode()
-        self.close_sample()
         require_ai_memory_submodule()
+        cache_dir = self._sample_cache_dir_for(sample)
+        cache_path = cache_dir / "sample_kv.pt"
+        logger.info(
+            "Precomputing CPU KV cache sample_id=%s turns=%d context_window=%d",
+            sample.sample_id,
+            len(sample.turns),
+            self.config.context_window,
+        )
+        _build_sample_kv_cache_in_subprocess(
+            self.config,
+            sample,
+            cache_path,
+        )
+        self._cache_dirs.add(cache_dir)
 
-        try:
-            for sample, hits_by_question in samples:
-                needed_turn_ids: set[str] = set()
-                for hits in hits_by_question:
-                    needed_turn_ids.update(selected_turn_ids(hits))
-                if not needed_turn_ids:
-                    raise RuntimeError(
-                        f"No retrieved turn ids for sample_id={sample.sample_id}; cannot prepare KV memory."
-                    )
-
-                logger.info(
-                    "Preparing strict GPU KV sample_id=%s retrieved_turns=%d window=%d/%d",
-                    sample.sample_id,
-                    len(needed_turn_ids),
-                    len(self._composers) + 1,
-                    len(samples),
-                )
-                composer = ChunkedRopeSampleComposer(
-                    model=self.config.model,
-                    dtype=self.config.kv_dtype,
-                    device=self.config.kv_device,
-                    max_position=self.config.kv_max_position,
-                )
-                try:
-                    composer.encode_sample(sample, turn_ids=needed_turn_ids)
-                    self._free_composer_encoder(composer)
-                except Exception:
-                    composer.close()
-                    raise
-                self._composers[id(sample)] = composer
-        except Exception:
-            self.close_sample()
-            raise
+    def start_llm(self) -> None:
+        force_vllm_inprocess_mode()
+        if self._llm is not None:
+            return
 
         from vllm import LLM, SamplingParams
 
@@ -109,8 +89,22 @@ class VLLMChunkedKVAnswerClient:
             )
             self._tokenizer = self._llm.get_tokenizer()
         except Exception:
-            self.close_sample()
+            self.close()
             raise
+
+    def prepare_sample(
+        self,
+        sample: ConversationSample,
+        question_hits: list[tuple[QuestionAnswer, list[SearchHit]]] | list[list[SearchHit]],
+    ) -> None:
+        self.close_sample()
+        cache_dir = self._sample_cache_dir_for(sample)
+        cache_path = cache_dir / "sample_kv.pt"
+        if not cache_path.exists():
+            raise RuntimeError(f"CPU KV cache for sample_id={sample.sample_id} does not exist: {cache_path}")
+        self._composer = load_sample_kv_cache(cache_path, device=self.config.kv_device)
+        self._sample_cache_dir = cache_dir
+        self._active_sample_id = id(sample)
 
     def answer_with_retrieved_memory(
         self,
@@ -121,15 +115,17 @@ class VLLMChunkedKVAnswerClient:
         max_tokens: int,
         temperature: float,
         top_p: float,
+        ttft_started_at: float | None = None,
     ) -> ChatResult:
         if self._llm is None or self._tokenizer is None or self._sampling_cls is None:
             raise RuntimeError("VLLMChunkedKVAnswerClient.prepare_sample() must be called before answering.")
-        composer = self._composers.get(id(sample))
+        composer = self._composer
         if composer is None:
-            raise RuntimeError(
-                f"Strict GPU KV sample_id={sample.sample_id} was not prepared in the active sample window."
-            )
+            raise RuntimeError(f"Strict GPU KV CPU cache sample_id={sample.sample_id} was not prepared.")
+        if self._active_sample_id != id(sample):
+            raise RuntimeError(f"Strict GPU KV sample_id={sample.sample_id} is not the active prepared sample.")
 
+        request_started = ttft_started_at if ttft_started_at is not None else time.perf_counter()
         composed = composer.compose(hits)
         user_id = self.active_user_id
         register_user_memory(
@@ -147,38 +143,65 @@ class VLLMChunkedKVAnswerClient:
                 sample,
                 qa,
             )
-            ttft_ms = self._measure_one_token_ttft(
+            metrics: dict[str, Any] = {
+                "kv_memory_tokens": composed.num_tokens,
+                "kv_compose_time_ms": composed.compose_time_ms,
+                "kv_context_window": composed.context_window,
+                "kv_context_prefix_tokens_total": composed.context_prefix_tokens_total,
+                "kv_context_prefix_tokens_max": composed.context_prefix_tokens_max,
+                "kv_context_prefix_truncated_tokens": composed.context_prefix_truncated_tokens,
+                "kv_query_tokens": len(prompt.query_token_ids),
+                "kv_query_bos_stripped": int(prompt.stripped_query_bos),
+            }
+            ttft_ms: float | None = None
+            ttft_probe_ms = 0.0
+            _total_ttft_ms, engine_ttft_ms, ttft_probe_ms = self._measure_one_token_ttft(
                 prompt_token_ids=prompt.prompt_token_ids,
                 temperature=temperature,
                 top_p=top_p,
+                request_started=request_started,
             )
+            ttft_ms = engine_ttft_ms
+            metrics["kv_engine_time_to_first_token_ms"] = engine_ttft_ms
 
             sampling = self._sampling_cls(
                 temperature=temperature,
                 top_p=top_p,
                 max_tokens=max_tokens,
             )
+            generate_started = time.perf_counter()
             outputs = self._llm.generate(
                 [{"prompt_token_ids": prompt.prompt_token_ids}],
                 sampling,
                 use_tqdm=False,
             )
+            finished = time.perf_counter()
+            generate_ms = (finished - generate_started) * 1000
+            total_ms = max(0.0, (finished - request_started) * 1000 - ttft_probe_ms)
             text = outputs[0].outputs[0].text.strip()
+            stats = namespace_stats(self.namespace)
+            metrics.update(
+                {
+                    "answer_generate_time_ms": generate_ms,
+                    "answer_total_time_ms": total_ms,
+                    "kv_store_gpu_mb": stats.get("total_gpu_mb", 0.0),
+                    "kv_selected_turn_ids": composed.selected_turn_ids,
+                }
+            )
             return ChatResult(
                 content=text,
                 ttft_ms=ttft_ms,
+                metrics=metrics,
             )
         finally:
             remove_user_memory(self.namespace, user_id)
 
     def close_sample(self) -> None:
-        if self._llm is not None:
-            del self._llm
-            self._llm = None
-        for composer in self._composers.values():
-            composer.close()
-        self._composers.clear()
-        self._tokenizer = None
+        if self._composer is not None:
+            self._composer.close()
+            self._composer = None
+        self._sample_cache_dir = None
+        self._active_sample_id = None
         clear_namespace(self.namespace)
         gc.collect()
         try:
@@ -190,6 +213,23 @@ class VLLMChunkedKVAnswerClient:
 
     def close(self) -> None:
         self.close_sample()
+        if self._llm is not None:
+            del self._llm
+            self._llm = None
+        self._tokenizer = None
+        self._sampling_cls = None
+        drop_namespace(self.namespace)
+        for cache_dir in list(self._cache_dirs):
+            shutil.rmtree(cache_dir, ignore_errors=True)
+        self._cache_dirs.clear()
+        gc.collect()
+        try:
+            import torch
+
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+        except Exception:
+            pass
 
     def _measure_one_token_ttft(
         self,
@@ -197,7 +237,8 @@ class VLLMChunkedKVAnswerClient:
         prompt_token_ids: list[int],
         temperature: float,
         top_p: float,
-    ) -> float:
+        request_started: float,
+    ) -> tuple[float, float, float]:
         sampling = self._sampling_cls(
             temperature=temperature,
             top_p=top_p,
@@ -213,20 +254,81 @@ class VLLMChunkedKVAnswerClient:
         )
         _synchronize_cuda()
         finished = time.perf_counter()
-        return (finished - engine_started) * 1000
+        return (
+            (finished - request_started) * 1000,
+            (finished - engine_started) * 1000,
+            (finished - engine_started) * 1000,
+        )
 
-    @staticmethod
-    def _free_composer_encoder(composer: ChunkedRopeSampleComposer) -> None:
-        # The encoded chunks stay GPU-resident; the HF model is released before vLLM loads.
-        composer.encoder._model = None
-        composer.hf_model = None
-        gc.collect()
+    def _sample_cache_dir_for(self, sample: ConversationSample) -> Path:
+        return self.config.run_dir / "kv_chunk_cache" / _safe_path_component(sample.sample_id)
+
+
+def _build_sample_kv_cache_in_subprocess(
+    config: BenchmarkConfig,
+    sample: ConversationSample,
+    cache_path: Path,
+) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    error_path = cache_path.with_suffix(".error.txt")
+    for path in (cache_path, error_path):
         try:
-            import torch
-
-            torch.cuda.empty_cache()
-        except ImportError:
+            path.unlink()
+        except FileNotFoundError:
             pass
+
+    ctx = mp.get_context("spawn")
+    process = ctx.Process(
+        target=_build_sample_kv_cache_worker,
+        args=(config, sample, str(cache_path), str(error_path)),
+        name=f"kv-cache-{_safe_path_component(sample.sample_id)}",
+    )
+    process.start()
+    process.join()
+
+    if process.exitcode != 0:
+        details = ""
+        if error_path.exists():
+            details = error_path.read_text()
+        raise RuntimeError(
+            f"KV cache encoder process failed for sample_id={sample.sample_id} "
+            f"with exit code {process.exitcode}.\n{details}"
+        )
+    if not cache_path.exists():
+        raise RuntimeError(f"KV cache encoder process did not write {cache_path}.")
+
+
+def _build_sample_kv_cache_worker(
+    config: BenchmarkConfig,
+    sample: ConversationSample,
+    cache_path: str,
+    error_path: str,
+) -> None:
+    composer: ChunkedRopeSampleComposer | None = None
+    try:
+        force_vllm_inprocess_mode()
+        require_ai_memory_submodule()
+        composer = ChunkedRopeSampleComposer(
+            model=config.model,
+            dtype=config.kv_dtype,
+            device=config.kv_device,
+            max_position=config.kv_max_position,
+            context_window=config.context_window,
+        )
+        composer.encode_sample(sample)
+        save_sample_kv_cache(Path(cache_path), composer)
+    except BaseException:
+        Path(error_path).write_text(traceback.format_exc())
+        raise
+    finally:
+        if composer is not None:
+            composer.close()
+
+
+def _safe_path_component(value: str) -> str:
+    safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value)
+    return safe or "sample"
+
 
 def build_strict_gpu_kv_transfer_config(
     *,
@@ -277,9 +379,3 @@ def _synchronize_cuda() -> None:
         return
     if torch.cuda.is_available():
         torch.cuda.synchronize()
-
-
-def _memory_user_id(sample_id: str, question_id: str) -> str:
-    safe_sample = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in sample_id)
-    safe_question = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in question_id)
-    return f"{safe_sample}__{safe_question}"

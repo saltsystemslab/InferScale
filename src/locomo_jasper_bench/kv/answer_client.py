@@ -307,6 +307,7 @@ class VLLMChunkedKVAnswerClient:
         if llm is not None:
             _log_cuda_memory("before vLLM close", self.config.kv_device)
             _sleep_vllm_engine(llm)
+            _shutdown_vllm_engine(llm)
             del llm
         self._llm = None
         self._tokenizer = None
@@ -546,6 +547,24 @@ def _sleep_vllm_engine(llm: Any) -> None:
             logger.warning("vLLM sleep(2) fallback failed during shutdown; continuing cleanup.", exc_info=True)
     except Exception:
         logger.warning("vLLM sleep(level=2) failed during shutdown; continuing cleanup.", exc_info=True)
+
+
+def _shutdown_vllm_engine(llm: Any) -> None:
+    llm_engine = getattr(llm, "llm_engine", None)
+    candidates = (
+        getattr(llm_engine, "engine_core", None),
+        getattr(llm_engine, "model_executor", None),
+        llm_engine,
+    )
+    for target in candidates:
+        shutdown = getattr(target, "shutdown", None)
+        if not callable(shutdown):
+            continue
+        try:
+            shutdown()
+            return
+        except Exception:
+            logger.warning("vLLM engine shutdown failed for %s.", type(target).__name__, exc_info=True)
 
 
 def _cleanup_vllm_distributed_state() -> None:

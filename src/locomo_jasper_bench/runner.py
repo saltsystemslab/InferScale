@@ -83,6 +83,10 @@ def build_clients(config: BenchmarkConfig) -> RuntimeClients:
         from .kv.answer_client import VLLMChunkedKVAnswerClient
 
         answer_client = VLLMChunkedKVAnswerClient(config)
+    elif config.answer_backend == "vllm-prefix":
+        from .kv.prefix_answer_client import VLLMPrefixPromptAnswerClient
+
+        answer_client = VLLMPrefixPromptAnswerClient(config)
     else:
         answer_client = OpenAICompatibleChatClient(
             base_url=config.llm_base_url,
@@ -289,7 +293,7 @@ class QuestionEvaluator:
 
 
 def _run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> list[dict[str, Any]]:
-    if config.answer_backend == "vllm-kv":
+    if config.answer_backend in {"vllm-kv", "vllm-prefix"}:
         return _run_kv_prediction_mode(config, clients)
     return _run_openai_prediction_mode(config, clients)
 
@@ -379,8 +383,9 @@ def _run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) ->
     samples = load_locomo(config.dataset_path, max_samples=config.max_samples)
     planned_questions = _planned_question_count(samples, config.max_questions)
     logger.info(
-        "Loaded {} samples for strict GPU KV; planned_questions={} max_samples={} max_questions={} sample_window={}",
+        "Loaded {} samples for prepared vLLM backend={}; planned_questions={} max_samples={} max_questions={} sample_window={}",
         len(samples),
+        config.answer_backend,
         planned_questions,
         config.max_samples,
         config.max_questions,
@@ -391,7 +396,7 @@ def _run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) ->
     prepare_samples = getattr(clients.answer_client, "prepare_samples", None)
     close_sample = getattr(clients.answer_client, "close_sample", None)
     if not callable(close_sample) or not (callable(prepare_samples) or callable(prepare_sample)):
-        raise RuntimeError("vllm-kv answer backend does not expose sample-window preparation methods.")
+        raise RuntimeError(f"{config.answer_backend} answer backend does not expose sample-window preparation methods.")
 
     output_path = config.run_dir / "predictions.jsonl"
     all_records: list[dict[str, Any]] = []
@@ -456,7 +461,7 @@ def _run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) ->
                 prepare_samples([(work.sample, [hits for _, hits, _ in work.retrieved]) for work in window])
             else:
                 if len(window) != 1:
-                    raise RuntimeError("vllm-kv answer backend does not support --kv-sample-window > 1.")
+                    raise RuntimeError(f"{config.answer_backend} answer backend does not support --kv-sample-window > 1.")
                 work = window[0]
                 prepare_sample(work.sample, [hits for _, hits, _ in work.retrieved])
 
@@ -501,7 +506,7 @@ def _run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) ->
             finally:
                 close_sample()
 
-    logger.info("Wrote {} KV prediction records to {}", len(all_records), output_path)
+    logger.info("Wrote {} prepared vLLM prediction records to {}", len(all_records), output_path)
     return all_records
 
 

@@ -11,9 +11,9 @@ from typing import Any
 from ..clients import ChatResult
 from ..config import BenchmarkConfig
 from ..data import ConversationSample, QuestionAnswer
-from ..prompts import RETRIEVAL_ANSWER_SYSTEM_PROMPT
 from ..vector_types import SearchHit
-from .chunked_rope import ChunkedRopeSampleComposer, selected_turn_ids
+from .chunked_rope import ChunkedRopeSampleComposer
+from .prompting import build_kv_equivalence_prompt_token_ids, selected_turn_ids
 from .strict_gpu_registry import clear_namespace, namespace_stats, register_user_memory, remove_user_memory
 from .submodule import require_ai_memory_submodule
 
@@ -143,18 +143,23 @@ class VLLMChunkedKVAnswerClient:
             memory_text="strict-gpu chunked-rope top-k",
         )
         try:
-            query_tokens = self._query_token_ids(sample, qa)
-            prompt_token_ids = list(composed.token_ids) + query_tokens
+            prompt = build_kv_equivalence_prompt_token_ids(
+                self._tokenizer,
+                list(composed.token_ids),
+                sample,
+                qa,
+            )
             metrics: dict[str, Any] = {
                 "kv_memory_tokens": composed.num_tokens,
                 "kv_compose_time_ms": composed.compose_time_ms,
-                "kv_query_tokens": len(query_tokens),
+                "kv_query_tokens": len(prompt.query_token_ids),
+                "kv_query_bos_stripped": int(prompt.stripped_query_bos),
             }
             ttft_ms: float | None = None
             ttft_probe_ms = 0.0
             if self.config.measure_ttft:
                 _total_ttft_ms, engine_ttft_ms, ttft_probe_ms = self._measure_one_token_ttft(
-                    prompt_token_ids=prompt_token_ids,
+                    prompt_token_ids=prompt.prompt_token_ids,
                     temperature=temperature,
                     top_p=top_p,
                     request_started=request_started,
@@ -169,7 +174,7 @@ class VLLMChunkedKVAnswerClient:
             )
             generate_started = time.perf_counter()
             outputs = self._llm.generate(
-                [{"prompt_token_ids": prompt_token_ids}],
+                [{"prompt_token_ids": prompt.prompt_token_ids}],
                 sampling,
                 use_tqdm=False,
             )
@@ -256,27 +261,6 @@ class VLLMChunkedKVAnswerClient:
         except ImportError:
             pass
 
-    def _query_token_ids(self, sample: ConversationSample, qa: QuestionAnswer) -> list[int]:
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    RETRIEVAL_ANSWER_SYSTEM_PROMPT
-                    + " Relevant retrieved memory is available before the current question."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Conversation id: {sample.sample_id}\n\n"
-                    f"Question: {qa.question}\n\n"
-                    "Answer:"
-                ),
-            },
-        ]
-        return tokenize_messages(self._tokenizer, messages)
-
-
 def build_strict_gpu_kv_transfer_config(
     *,
     connector_module: str,
@@ -326,24 +310,6 @@ def _synchronize_cuda() -> None:
         return
     if torch.cuda.is_available():
         torch.cuda.synchronize()
-
-
-def tokenize_messages(tokenizer: Any, messages: list[dict[str, str]]) -> list[int]:
-    apply_chat_template = getattr(tokenizer, "apply_chat_template", None)
-    if callable(apply_chat_template):
-        return list(
-            apply_chat_template(
-                messages,
-                tokenize=True,
-                add_generation_prompt=True,
-            )
-        )
-
-    text = "\n\n".join(f"{message['role'].upper()}: {message['content']}" for message in messages)
-    encode = getattr(tokenizer, "encode", None)
-    if not callable(encode):
-        raise RuntimeError("Tokenizer has neither apply_chat_template nor encode.")
-    return list(encode(text))
 
 
 def _memory_user_id(sample_id: str, question_id: str) -> str:

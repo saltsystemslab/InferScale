@@ -18,7 +18,7 @@ DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 
 VectorBackend = Literal["jasper", "qdrant"]
 DistanceMetric = Literal["ip", "l2"]
-AnswerBackend = Literal["openai", "vllm-kv"]
+AnswerBackend = Literal["openai", "vllm-kv", "vllm-prefix"]
 
 
 def default_run_id() -> str:
@@ -114,9 +114,12 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     parser.add_argument("--llm-api-key", default=os.environ.get("VLLM_API_KEY", DEFAULT_VLLM_API_KEY))
     parser.add_argument(
         "--answer-backend",
-        choices=["openai", "vllm-kv"],
+        choices=["openai", "vllm-kv", "vllm-prefix"],
         default=os.environ.get("LOCOMO_ANSWER_BACKEND", "openai"),
-        help="Use the existing OpenAI-compatible answer client or in-process vLLM KV injection.",
+        help=(
+            "Use the OpenAI-compatible RAG text prompt, in-process vLLM KV injection, "
+            "or in-process vLLM same-token prefix prompt injection."
+        ),
     )
 
     parser.add_argument("--judge-model", default=os.environ.get("JUDGE_MODEL", DEFAULT_MODEL))
@@ -146,8 +149,8 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
         "--measure-ttft",
         action="store_true",
         help=(
-            "Record true first-token latency. Non-KV OpenAI-compatible runs require --stream; "
-            "vllm-kv runs use a one-token in-process vLLM probe."
+            "Record true first-token latency. OpenAI-compatible runs require --stream; "
+            "in-process vLLM runs use a one-token probe."
         ),
     )
 
@@ -205,7 +208,7 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
         parser.error("--kv-sample-window must be >= 1.")
     if (
         ns.measure_ttft
-        and ns.answer_backend != "vllm-kv"
+        and ns.answer_backend == "openai"
         and not ns.stream
         and not ns.judge_only
         and not ns.preembed_only

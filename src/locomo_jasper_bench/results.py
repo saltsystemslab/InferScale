@@ -61,7 +61,9 @@ def summarize_records(
         "answer_total_time_ms",
         "kv_engine_time_to_first_token_ms",
         "kv_query_tokens",
+        "kv_query_bos_stripped",
         "kv_store_gpu_mb",
+        "prefix_engine_time_to_first_token_ms",
     ):
         summary = _numeric_summary(_metric_values(rows, key))
         if summary["count"]:

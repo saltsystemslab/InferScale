@@ -7,9 +7,9 @@ from typing import Any
 
 from ..data import ConversationSample, Turn, format_turn_for_memory
 from ..vector_types import SearchHit
+from .prompting import MEMORY_PREFIX_TEXT, selected_turn_ids
 from .submodule import require_ai_memory_submodule
 
-MEMORY_PREFIX_TEXT = "Retrieved memory context:\n"
 logger = logging.getLogger(__name__)
 
 
@@ -28,26 +28,6 @@ class ComposedMemory:
     num_tokens: int
     compose_time_ms: float
     selected_turn_ids: list[str]
-
-
-def hit_turn_id(hit: SearchHit) -> str | None:
-    metadata = hit.payload.get("metadata")
-    if isinstance(metadata, dict) and metadata.get("turn_id"):
-        return str(metadata["turn_id"])
-    if hit.payload.get("turn_id"):
-        return str(hit.payload["turn_id"])
-    return None
-
-
-def selected_turn_ids(hits: list[SearchHit]) -> list[str]:
-    ids: list[str] = []
-    seen: set[str] = set()
-    for hit in hits:
-        turn_id = hit_turn_id(hit)
-        if turn_id and turn_id not in seen:
-            ids.append(turn_id)
-            seen.add(turn_id)
-    return ids
 
 
 def torch_dtype(dtype_name: str) -> Any:

@@ -138,6 +138,33 @@ locomo-jasper-bench \
   --run-id "${RUN_ID}"
 ```
 
+To separate KV-injection correctness from prompt-framing effects, run a same-token
+prefix baseline with the same retrieval settings. `vllm-prefix` uses the same
+memory-token prefix and query-token suffix as `vllm-kv`, but it disables the KV
+connector so vLLM prefills the full prompt normally:
+
+```bash
+PREFIX_RUN_ID=prefix-gpu-jasper5-${RUN_STAMP}
+
+locomo-jasper-bench \
+  --dataset data/locomo10.json \
+  --results-dir "${BENCHMARK_RESULTS_ROOT}" \
+  --answer-backend vllm-prefix \
+  --vector-backend jasper \
+  --top-k 50 \
+  --kv-sample-window 1 \
+  --kv-gpu-memory-utilization 0.30 \
+  --kv-max-model-len 32768 \
+  --kv-max-position 32768 \
+  --max-samples 5 \
+  --log-every 1 \
+  --skip-judge \
+  --measure-ttft \
+  --run-id "${PREFIX_RUN_ID}"
+```
+
+Compare `vllm-kv` against `vllm-prefix` for injection equivalence.
+
 ## 8. Deferred Judging
 
 Use deferred judging when the answer model and judge model cannot run at the same time. This works for both normal OpenAI-compatible answer runs and GPU KV runs.
@@ -178,5 +205,6 @@ Primary metrics:
 - `metrics.time_to_first_token_ms`: LLM/backend time to first answer token; populated by non-KV runs with `--stream` and KV runs with `--measure-ttft`.
 - `metrics.retrieval_to_ttft_ms`: non-KV retrieval-inclusive time from Mem0 query start to first streamed answer token.
 - `metrics.kv_engine_time_to_first_token_ms`: vLLM engine time for the one-token KV TTFT probe; populated by KV runs with `--measure-ttft`.
+- `metrics.prefix_engine_time_to_first_token_ms`: vLLM engine time for the one-token same-token prefix probe; populated by `vllm-prefix` runs with `--measure-ttft`.
 - `metrics.vector_db_query_time_ms`: raw backend vector query time.
 - `metrics.vector_db_queries_per_sec`: vector DB query throughput.

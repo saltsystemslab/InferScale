@@ -90,6 +90,10 @@ def summarize_records(
         "kv_ttft_connector_last_aligned_tokens",
         "kv_ttft_connector_last_new_tokens",
         "kv_ttft_connector_last_num_computed_tokens",
+        "kv_ttft_connector_store_id",
+        "kv_ttft_connector_store_user_count",
+        "kv_ttft_connector_registry_store_id",
+        "kv_ttft_connector_registry_user_count",
         "kv_answer_connector_init_count",
         "kv_answer_connector_match_attempts",
         "kv_answer_connector_hits",
@@ -108,6 +112,10 @@ def summarize_records(
         "kv_answer_connector_last_aligned_tokens",
         "kv_answer_connector_last_new_tokens",
         "kv_answer_connector_last_num_computed_tokens",
+        "kv_answer_connector_store_id",
+        "kv_answer_connector_store_user_count",
+        "kv_answer_connector_registry_store_id",
+        "kv_answer_connector_registry_user_count",
         "prefix_engine_time_to_first_token_ms",
     ):
         summary = _numeric_summary(_metric_values(rows, key))

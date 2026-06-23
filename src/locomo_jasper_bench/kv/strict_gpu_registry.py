@@ -33,6 +33,10 @@ def _default_diagnostics() -> dict[str, Any]:
         "connector_last_new_tokens": 0,
         "connector_last_num_computed_tokens": 0,
         "connector_last_request_id": "",
+        "connector_store_id": 0,
+        "connector_store_user_count": 0,
+        "registry_store_id": 0,
+        "registry_user_count": 0,
     }
 
 
@@ -58,7 +62,14 @@ def update_namespace_diagnostics(
 def reset_namespace_diagnostics(namespace: str) -> None:
     existing = _DIAGNOSTICS.get(namespace, {})
     reset = _default_diagnostics()
-    for key in ("connector_init_count", "connector_block_size", "connector_last_role"):
+    for key in (
+        "connector_init_count",
+        "connector_block_size",
+        "connector_last_role",
+        "connector_store_id",
+        "registry_store_id",
+        "registry_user_count",
+    ):
         if key in existing:
             reset[key] = existing[key]
     _DIAGNOSTICS[namespace] = reset
@@ -79,6 +90,13 @@ def get_gpu_memory_store(namespace: str = "default") -> Any:
                 "and the remote environment has torch/vLLM dependencies installed."
             ) from exc
         _STORES[namespace] = gpu_memory_store_cls()
+    update_namespace_diagnostics(
+        namespace,
+        values={
+            "registry_store_id": id(_STORES[namespace]),
+            "registry_user_count": _store_user_count(_STORES[namespace]),
+        },
+    )
     return _STORES[namespace]
 
 
@@ -98,22 +116,50 @@ def register_user_memory(
         token_ids=token_ids,
         memory_text=memory_text,
     )
+    store = _STORES[namespace]
+    update_namespace_diagnostics(
+        namespace,
+        values={
+            "registry_store_id": id(store),
+            "registry_user_count": _store_user_count(store),
+        },
+    )
 
 
 def remove_user_memory(namespace: str, user_id: str) -> bool:
     store = _STORES.get(namespace)
     if store is None:
         return False
-    return bool(store.remove_user_memory(user_id))
+    removed = bool(store.remove_user_memory(user_id))
+    update_namespace_diagnostics(
+        namespace,
+        values={
+            "registry_store_id": id(store),
+            "registry_user_count": _store_user_count(store),
+        },
+    )
+    return removed
 
 
 def clear_namespace(namespace: str) -> None:
-    store = _STORES.pop(namespace, None)
-    _DIAGNOSTICS.pop(namespace, None)
+    store = _STORES.get(namespace)
     if store is None:
         return
     for user_id in list(store.get_all_user_ids()):
         store.remove_user_memory(user_id)
+    update_namespace_diagnostics(
+        namespace,
+        values={
+            "registry_store_id": id(store),
+            "registry_user_count": 0,
+        },
+    )
+
+
+def drop_namespace(namespace: str) -> None:
+    clear_namespace(namespace)
+    _STORES.pop(namespace, None)
+    _DIAGNOSTICS.pop(namespace, None)
 
 
 def namespace_stats(namespace: str) -> dict[str, Any]:
@@ -121,3 +167,10 @@ def namespace_stats(namespace: str) -> dict[str, Any]:
     if store is None:
         return {"num_users": 0, "total_tokens": 0, "total_gpu_mb": 0.0}
     return dict(store.get_stats())
+
+
+def _store_user_count(store: Any) -> int:
+    try:
+        return len(store.get_all_user_ids())
+    except Exception:
+        return 0

@@ -144,6 +144,13 @@ def _is_mla_metadata(value: Any) -> bool:
     return bool(_MLA_METADATA_TYPES) and isinstance(value, _MLA_METADATA_TYPES)
 
 
+def _store_user_count(store: Any) -> int:
+    try:
+        return len(store.get_all_user_ids())
+    except Exception:
+        return 0
+
+
 class MemoryKVConnector(KVConnectorBase_V1):
     """Strict GPU-only KV connector for benchmark-composed memory tensors."""
 
@@ -177,6 +184,8 @@ class MemoryKVConnector(KVConnectorBase_V1):
             values={
                 "connector_block_size": self._block_size,
                 "connector_last_role": str(role),
+                "connector_store_id": id(self._memory_store),
+                "connector_store_user_count": _store_user_count(self._memory_store),
             },
         )
 
@@ -186,10 +195,12 @@ class MemoryKVConnector(KVConnectorBase_V1):
                 "This is unsafe for benchmark comparisons unless explicitly intended."
             )
         logger.info(
-            "Strict MemoryKVConnector initialized role=%s namespace=%s block_size=%d",
+            "Strict MemoryKVConnector initialized role=%s namespace=%s block_size=%d store_id=%s users=%d",
             role,
             namespace,
             self._block_size,
+            id(self._memory_store),
+            _store_user_count(self._memory_store),
         )
 
     @property
@@ -211,6 +222,8 @@ class MemoryKVConnector(KVConnectorBase_V1):
             "connector_last_request_id": request_id,
             "connector_last_miss_reason": "",
             "connector_last_mismatch_index": -1,
+            "connector_store_id": id(self._memory_store),
+            "connector_store_user_count": _store_user_count(self._memory_store),
         }
         update_namespace_diagnostics(
             self._strict_memory_namespace,
@@ -271,6 +284,8 @@ class MemoryKVConnector(KVConnectorBase_V1):
                 "connector_last_new_tokens": new_tokens,
                 "connector_last_miss_reason": "",
                 "connector_last_mismatch_index": -1,
+                "connector_store_id": id(self._memory_store),
+                "connector_store_user_count": _store_user_count(self._memory_store),
             },
         )
         logger.info(
@@ -341,6 +356,8 @@ class MemoryKVConnector(KVConnectorBase_V1):
                 "connector_last_raw_memory_tokens": int(raw_memory_tokens),
                 "connector_last_new_tokens": int(new_tokens),
                 "connector_last_mismatch_index": int(mismatch_index),
+                "connector_store_id": id(self._memory_store),
+                "connector_store_user_count": _store_user_count(self._memory_store),
             },
         )
 
@@ -471,6 +488,8 @@ class MemoryKVConnector(KVConnectorBase_V1):
                 values={
                     "connector_last_user_id": load.user_id,
                     "connector_last_new_tokens": load.num_tokens,
+                    "connector_store_id": id(self._memory_store),
+                    "connector_store_user_count": _store_user_count(self._memory_store),
                 },
             )
             logger.info("Injecting %d strict GPU memory tokens for user %s", load.num_tokens, load.user_id)

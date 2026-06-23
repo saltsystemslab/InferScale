@@ -25,6 +25,7 @@ from .chunked_rope import (
 from .prompting import build_kv_equivalence_prompt_token_ids
 from .strict_gpu_registry import (
     clear_namespace,
+    drop_namespace,
     namespace_diagnostics,
     namespace_stats,
     register_user_memory,
@@ -142,6 +143,15 @@ class VLLMChunkedKVAnswerClient:
             num_tokens=composed.num_tokens,
             token_ids=composed.token_ids,
             memory_text="strict-gpu chunked-rope top-k",
+        )
+        register_diagnostics = namespace_diagnostics(self.namespace)
+        logger.info(
+            "Registered strict GPU memory namespace=%s user=%s tokens=%d registry_store_id=%s registry_users=%s",
+            self.namespace,
+            user_id,
+            composed.num_tokens,
+            register_diagnostics.get("registry_store_id", 0),
+            register_diagnostics.get("registry_user_count", 0),
         )
         try:
             prompt = build_kv_equivalence_prompt_token_ids(
@@ -266,6 +276,7 @@ class VLLMChunkedKVAnswerClient:
             self._llm = None
         self._tokenizer = None
         self._sampling_cls = None
+        drop_namespace(self.namespace)
         for cache_dir in list(self._cache_dirs):
             shutil.rmtree(cache_dir, ignore_errors=True)
         self._cache_dirs.clear()
@@ -431,6 +442,10 @@ def _connector_metrics(prefix: str, diagnostics: dict[str, Any]) -> dict[str, An
         "connector_last_aligned_tokens": "last_aligned_tokens",
         "connector_last_new_tokens": "last_new_tokens",
         "connector_last_num_computed_tokens": "last_num_computed_tokens",
+        "connector_store_id": "store_id",
+        "connector_store_user_count": "store_user_count",
+        "registry_store_id": "registry_store_id",
+        "registry_user_count": "registry_user_count",
     }
     metrics: dict[str, Any] = {}
     for source_key, metric_key in numeric_keys.items():
@@ -450,7 +465,8 @@ def _log_connector_diagnostics(
 ) -> None:
     logger.info(
         "Strict GPU KV %s diagnostics: attempts=%s hits=%s misses=%s injected_tokens=%s "
-        "expected_aligned_tokens=%s miss_reason=%s mismatch_index=%s prompt_tokens=%s memory_tokens=%s user=%s",
+        "expected_aligned_tokens=%s miss_reason=%s mismatch_index=%s prompt_tokens=%s memory_tokens=%s "
+        "user=%s connector_store_id=%s connector_users=%s registry_store_id=%s registry_users=%s",
         phase,
         diagnostics.get("connector_match_attempts", 0),
         diagnostics.get("connector_match_hits", 0),
@@ -462,6 +478,10 @@ def _log_connector_diagnostics(
         diagnostics.get("connector_last_prompt_tokens", 0),
         diagnostics.get("connector_last_raw_memory_tokens", 0),
         diagnostics.get("connector_last_user_id", ""),
+        diagnostics.get("connector_store_id", 0),
+        diagnostics.get("connector_store_user_count", 0),
+        diagnostics.get("registry_store_id", 0),
+        diagnostics.get("registry_user_count", 0),
     )
 
 
@@ -487,12 +507,20 @@ def _validate_strict_connector_phase(
         )
     if hits <= 0:
         reason = diagnostics.get("connector_last_miss_reason") or "unknown"
+        user_id = diagnostics.get("connector_last_user_id") or ""
         mismatch_index = diagnostics.get("connector_last_mismatch_index", -1)
         prompt_tokens = diagnostics.get("connector_last_prompt_tokens", 0)
         raw_tokens = diagnostics.get("connector_last_raw_memory_tokens", 0)
+        connector_store_id = diagnostics.get("connector_store_id", 0)
+        registry_store_id = diagnostics.get("registry_store_id", 0)
+        connector_users = diagnostics.get("connector_store_user_count", 0)
+        registry_users = diagnostics.get("registry_user_count", 0)
         raise RuntimeError(
             f"Strict GPU KV connector did not match during {phase}: reason={reason} "
-            f"mismatch_index={mismatch_index} prompt_tokens={prompt_tokens} memory_tokens={raw_tokens}."
+            f"user={user_id} mismatch_index={mismatch_index} prompt_tokens={prompt_tokens} "
+            f"memory_tokens={raw_tokens} connector_store_id={connector_store_id} "
+            f"connector_users={connector_users} registry_store_id={registry_store_id} "
+            f"registry_users={registry_users}."
         )
     if injected_tokens < expected_aligned_tokens:
         raise RuntimeError(

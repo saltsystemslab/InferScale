@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import os
 import sys
 import types
 from pathlib import Path
 from typing import Any
 
-from .runtime_paths import default_mem0_dir_string
 from .vector_types import VectorStoreConfig
 
 
@@ -61,7 +61,6 @@ def build_mem0_config(
             "config": {
                 "collection_name": "memories",
                 "path": str(store_root),
-                "backend": vector_config.backend,
                 "distance": vector_config.distance,
                 "n_neighbors": vector_config.n_neighbors,
                 "alpha": vector_config.alpha,
@@ -96,10 +95,9 @@ def _install_jasper_config_module() -> None:
         collection_name: str = Field("memories", description="Name of the collection")
         embedding_model_dims: int | None = Field(1536, description="Dimensions of the embedding model")
         path: str = Field(
-            default_factory=default_mem0_dir_string,
+            default_factory=_default_mem0_dir_string,
             description="Path for the Jasper vector store",
         )
-        backend: str = Field("jasper", description="JasperVectorStore backend")
         distance: str = Field("ip", description="Distance metric")
         n_neighbors: int = Field(64, description="Jasper graph neighbor count")
         alpha: float = Field(1.0, description="Jasper graph alpha")
@@ -124,3 +122,15 @@ def _patch_mem0_vector_config_registry(mem0_vector_config_cls: Any) -> None:
     default = getattr(private_attr, "default", None)
     if isinstance(default, dict):
         default["jasper"] = "JasperConfig"
+
+
+def _default_mem0_dir_string() -> str:
+    if "MEM0_DIR" in os.environ:
+        return os.environ["MEM0_DIR"]
+    if "BENCHMARK_CACHE_ROOT" in os.environ:
+        cache_root = Path(os.environ["BENCHMARK_CACHE_ROOT"])
+    elif "SCRATCH_ROOT" in os.environ:
+        cache_root = Path(os.environ["SCRATCH_ROOT"]) / "cache"
+    else:
+        cache_root = Path(".cache")
+    return str(cache_root / "mem0")

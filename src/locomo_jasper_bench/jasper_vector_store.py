@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import time
 import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
 import numpy as np
 
-from .vector_types import SearchHit, SearchMetrics, VectorStoreConfig
+from .vector_types import SearchHit, VectorStoreConfig
 
 
 class JasperVectorStore:
@@ -73,9 +72,9 @@ class JasperVectorStore:
 
         self._graph = self._build_jasper_graph()
 
-    def search(self, query_vector: np.ndarray | list[float], top_k: int) -> tuple[list[SearchHit], SearchMetrics]:
+    def search(self, query_vector: np.ndarray | list[float], top_k: int) -> list[SearchHit]:
         if self._vectors is None or self._vectors.size == 0:
-            return [], SearchMetrics(0.0)
+            return []
         query = np.asarray(query_vector, dtype=np.float32)
         if query.ndim != 1:
             raise ValueError("query_vector must be one-dimensional")
@@ -83,8 +82,7 @@ class JasperVectorStore:
             raise ValueError(f"query dim {query.shape[0]} does not match store dim {self._vectors.shape[1]}")
         top_k = max(1, min(top_k, self.vector_count))
 
-        hits, search_time_ms = self._search_jasper(query, top_k)
-        return hits, SearchMetrics(search_time_ms)
+        return self._search_jasper(query, top_k)
 
     def close(self) -> None:
         if self._graph is not None:
@@ -115,20 +113,13 @@ class JasperVectorStore:
             workspace_budget=self.config.workspace_budget,
         )
 
-    def _search_jasper(self, query: np.ndarray, top_k: int) -> tuple[list[SearchHit], float]:
+    def _search_jasper(self, query: np.ndarray, top_k: int) -> list[SearchHit]:
         if self._graph is None:
             self._graph = self._build_jasper_graph()
         import torch
 
         query_tensor = torch.from_numpy(query.reshape(1, -1)).to(device="cuda", dtype=torch.float32)
-        synchronize = getattr(getattr(torch, "cuda", None), "synchronize", None)
-        if callable(synchronize):
-            synchronize()
-        started = time.perf_counter()
         indices, distances = self._graph.search(query_tensor, k=top_k, beam_width=self.config.beam_width)
-        if callable(synchronize):
-            synchronize()
-        search_time_ms = (time.perf_counter() - started) * 1000
 
         index_values = indices[0].detach().cpu().numpy().astype(np.int64)
         distance_values = distances[0].detach().cpu().numpy().astype(np.float32)
@@ -148,7 +139,7 @@ class JasperVectorStore:
                     rank=len(hits) + 1,
                 )
             )
-        return hits, search_time_ms
+        return hits
 
     def _payload_by_ordinal(self, ordinal: int) -> tuple[str, dict[str, Any]] | None:
         return self._payloads_by_ordinal.get(ordinal)

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "locomo-jasper-bench"
 version = "0.1.0"
-description = "LoCoMo benchmark harness for vLLM with Mem0 retrieval backed by Jasper or Qdrant"
+description = "LoCoMo KV-cache benchmark harness for vLLM with Mem0 retrieval backed by Jasper"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -13,7 +13,6 @@ dependencies = [
     "mem0ai[nlp]>=0.1.0",
     "numpy>=1.24",
     "openai>=1.30",
-    "qdrant-client>=1.17,<2",
 ]
 
 [project.optional-dependencies]

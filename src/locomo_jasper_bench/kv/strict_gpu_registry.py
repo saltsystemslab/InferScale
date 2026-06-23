@@ -52,10 +52,3 @@ def clear_namespace(namespace: str) -> None:
         return
     for user_id in list(store.get_all_user_ids()):
         store.remove_user_memory(user_id)
-
-
-def namespace_stats(namespace: str) -> dict[str, Any]:
-    store = _STORES.get(namespace)
-    if store is None:
-        return {"num_users": 0, "total_tokens": 0, "total_gpu_mb": 0.0}
-    return dict(store.get_stats())

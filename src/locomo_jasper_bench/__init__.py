@@ -1,4 +1,4 @@
-"""LoCoMo benchmark for vLLM with Mem0 retrieval using Jasper or Qdrant."""
+"""LoCoMo KV-cache benchmark for vLLM with Mem0 retrieval using Jasper."""
 
 __all__ = ["__version__"]
 

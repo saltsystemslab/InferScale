@@ -14,7 +14,7 @@ from ..data import ConversationSample, QuestionAnswer
 from ..vector_types import SearchHit
 from .chunked_rope import ChunkedRopeSampleComposer
 from .prompting import build_kv_equivalence_prompt_token_ids, selected_turn_ids
-from .strict_gpu_registry import clear_namespace, namespace_stats, register_user_memory, remove_user_memory
+from .strict_gpu_registry import clear_namespace, register_user_memory, remove_user_memory
 from .submodule import require_ai_memory_submodule
 
 logger = logging.getLogger(__name__)
@@ -121,7 +121,6 @@ class VLLMChunkedKVAnswerClient:
         max_tokens: int,
         temperature: float,
         top_p: float,
-        ttft_started_at: float | None = None,
     ) -> ChatResult:
         if self._llm is None or self._tokenizer is None or self._sampling_cls is None:
             raise RuntimeError("VLLMChunkedKVAnswerClient.prepare_sample() must be called before answering.")
@@ -131,7 +130,6 @@ class VLLMChunkedKVAnswerClient:
                 f"Strict GPU KV sample_id={sample.sample_id} was not prepared in the active sample window."
             )
 
-        request_started = ttft_started_at if ttft_started_at is not None else time.perf_counter()
         composed = composer.compose(hits)
         user_id = self.active_user_id
         register_user_memory(
@@ -149,52 +147,26 @@ class VLLMChunkedKVAnswerClient:
                 sample,
                 qa,
             )
-            metrics: dict[str, Any] = {
-                "kv_memory_tokens": composed.num_tokens,
-                "kv_compose_time_ms": composed.compose_time_ms,
-                "kv_query_tokens": len(prompt.query_token_ids),
-                "kv_query_bos_stripped": int(prompt.stripped_query_bos),
-            }
-            ttft_ms: float | None = None
-            ttft_probe_ms = 0.0
-            if self.config.measure_ttft:
-                _total_ttft_ms, engine_ttft_ms, ttft_probe_ms = self._measure_one_token_ttft(
-                    prompt_token_ids=prompt.prompt_token_ids,
-                    temperature=temperature,
-                    top_p=top_p,
-                    request_started=request_started,
-                )
-                ttft_ms = engine_ttft_ms
-                metrics["kv_engine_time_to_first_token_ms"] = engine_ttft_ms
+            ttft_ms = self._measure_one_token_ttft(
+                prompt_token_ids=prompt.prompt_token_ids,
+                temperature=temperature,
+                top_p=top_p,
+            )
 
             sampling = self._sampling_cls(
                 temperature=temperature,
                 top_p=top_p,
                 max_tokens=max_tokens,
             )
-            generate_started = time.perf_counter()
             outputs = self._llm.generate(
                 [{"prompt_token_ids": prompt.prompt_token_ids}],
                 sampling,
                 use_tqdm=False,
             )
-            finished = time.perf_counter()
-            generate_ms = (finished - generate_started) * 1000
-            total_ms = max(0.0, (finished - request_started) * 1000 - ttft_probe_ms)
             text = outputs[0].outputs[0].text.strip()
-            stats = namespace_stats(self.namespace)
-            metrics.update(
-                {
-                    "answer_generate_time_ms": generate_ms,
-                    "answer_total_time_ms": total_ms,
-                    "kv_store_gpu_mb": stats.get("total_gpu_mb", 0.0),
-                    "kv_selected_turn_ids": composed.selected_turn_ids,
-                }
-            )
             return ChatResult(
                 content=text,
                 ttft_ms=ttft_ms,
-                metrics=metrics,
             )
         finally:
             remove_user_memory(self.namespace, user_id)
@@ -225,8 +197,7 @@ class VLLMChunkedKVAnswerClient:
         prompt_token_ids: list[int],
         temperature: float,
         top_p: float,
-        request_started: float,
-    ) -> tuple[float, float, float]:
+    ) -> float:
         sampling = self._sampling_cls(
             temperature=temperature,
             top_p=top_p,
@@ -242,11 +213,7 @@ class VLLMChunkedKVAnswerClient:
         )
         _synchronize_cuda()
         finished = time.perf_counter()
-        return (
-            (finished - request_started) * 1000,
-            (finished - engine_started) * 1000,
-            (finished - engine_started) * 1000,
-        )
+        return (finished - engine_started) * 1000
 
     @staticmethod
     def _free_composer_encoder(composer: ChunkedRopeSampleComposer) -> None:

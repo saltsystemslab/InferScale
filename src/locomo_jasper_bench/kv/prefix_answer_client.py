@@ -73,14 +73,12 @@ class VLLMPrefixPromptAnswerClient:
         max_tokens: int,
         temperature: float,
         top_p: float,
-        ttft_started_at: float | None = None,
     ) -> ChatResult:
         if self._llm is None or self._tokenizer is None or self._sampling_cls is None:
             raise RuntimeError("VLLMPrefixPromptAnswerClient.prepare_sample() must be called before answering.")
         if id(sample) not in self._active_samples:
             raise RuntimeError(f"vllm-prefix sample_id={sample.sample_id} is not in the active sample window.")
 
-        request_started = ttft_started_at if ttft_started_at is not None else time.perf_counter()
         memory = build_memory_prompt_token_ids(self._tokenizer, sample, hits)
         prompt = build_kv_equivalence_prompt_token_ids(
             self._tokenizer,
@@ -88,47 +86,26 @@ class VLLMPrefixPromptAnswerClient:
             sample,
             qa,
         )
-        metrics: dict[str, Any] = {
-            "kv_memory_tokens": len(prompt.memory_token_ids),
-            "kv_query_tokens": len(prompt.query_token_ids),
-            "kv_query_bos_stripped": int(prompt.stripped_query_bos),
-            "kv_selected_turn_ids": memory.selected_turn_ids,
-        }
 
-        ttft_ms: float | None = None
-        ttft_probe_ms = 0.0
-        if self.config.measure_ttft:
-            _total_ttft_ms, engine_ttft_ms, ttft_probe_ms = self._measure_one_token_ttft(
-                prompt_token_ids=prompt.prompt_token_ids,
-                temperature=temperature,
-                top_p=top_p,
-                request_started=request_started,
-            )
-            ttft_ms = engine_ttft_ms
-            metrics["prefix_engine_time_to_first_token_ms"] = engine_ttft_ms
+        ttft_ms = self._measure_one_token_ttft(
+            prompt_token_ids=prompt.prompt_token_ids,
+            temperature=temperature,
+            top_p=top_p,
+        )
 
         sampling = self._sampling_cls(
             temperature=temperature,
             top_p=top_p,
             max_tokens=max_tokens,
         )
-        generate_started = time.perf_counter()
         outputs = self._llm.generate(
             [{"prompt_token_ids": prompt.prompt_token_ids}],
             sampling,
             use_tqdm=False,
         )
-        finished = time.perf_counter()
-        metrics.update(
-            {
-                "answer_generate_time_ms": (finished - generate_started) * 1000,
-                "answer_total_time_ms": max(0.0, (finished - request_started) * 1000 - ttft_probe_ms),
-            }
-        )
         return ChatResult(
             content=outputs[0].outputs[0].text.strip(),
             ttft_ms=ttft_ms,
-            metrics=metrics,
         )
 
     def close_sample(self) -> None:
@@ -150,8 +127,7 @@ class VLLMPrefixPromptAnswerClient:
         prompt_token_ids: list[int],
         temperature: float,
         top_p: float,
-        request_started: float,
-    ) -> tuple[float, float, float]:
+    ) -> float:
         sampling = self._sampling_cls(
             temperature=temperature,
             top_p=top_p,
@@ -167,11 +143,7 @@ class VLLMPrefixPromptAnswerClient:
         )
         _synchronize_cuda()
         finished = time.perf_counter()
-        return (
-            (finished - request_started) * 1000,
-            (finished - engine_started) * 1000,
-            (finished - engine_started) * 1000,
-        )
+        return (finished - engine_started) * 1000
 
 
 def _synchronize_cuda() -> None:

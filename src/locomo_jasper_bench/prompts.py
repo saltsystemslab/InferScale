@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from .data import ConversationSample, QuestionAnswer
-from .vector_types import SearchHit
+from .data import QuestionAnswer
 
 
 RETRIEVAL_ANSWER_SYSTEM_PROMPT = (
@@ -14,28 +13,6 @@ JUDGE_SYSTEM_PROMPT = (
     "Compare the predicted answer to the reference answer. "
     "Answer with exactly one lowercase word: true or false."
 )
-
-
-def build_retrieval_answer_messages(
-    sample: ConversationSample,
-    qa: QuestionAnswer,
-    hits: list[SearchHit],
-) -> list[dict[str, str]]:
-    context_lines = []
-    for hit in hits:
-        memory = hit.payload.get("memory") or hit.payload.get("text") or ""
-        context_lines.append(f"{hit.rank}. {memory}")
-    context = "\n".join(context_lines) if context_lines else "No retrieved context."
-    user = (
-        f"Conversation id: {sample.sample_id}\n\n"
-        f"Retrieved memory context:\n{context}\n\n"
-        f"Question: {qa.question}\n\n"
-        "Answer:"
-    )
-    return [
-        {"role": "system", "content": RETRIEVAL_ANSWER_SYSTEM_PROMPT},
-        {"role": "user", "content": user},
-    ]
 
 
 def build_judge_messages(qa: QuestionAnswer, predicted_answer: str) -> list[dict[str, str]]:

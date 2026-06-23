@@ -41,33 +41,11 @@ def summarize_records(
     rows = list(records)
     judged = [row for row in rows if row.get("judge", {}).get("correct") is not None]
     correct = sum(1 for row in judged if row.get("judge", {}).get("correct") is True)
-    vector_query_times = _number_values(_metric_values(rows, "vector_db_query_time_ms"))
-    vector_query_total_ms = sum(vector_query_times)
-    vector_query_count = len(vector_query_times)
 
     metrics = {
         "accuracy": _safe_div(correct, len(judged)),
         "time_to_first_token_ms": _numeric_summary(_metric_values(rows, "time_to_first_token_ms")),
-        "retrieval_to_ttft_ms": _numeric_summary(_metric_values(rows, "retrieval_to_ttft_ms")),
-        "vector_db_query_time_ms": _numeric_summary(vector_query_times),
-        "vector_db_query_count": vector_query_count,
-        "vector_db_query_time_total_ms": vector_query_total_ms,
-        "vector_db_queries_per_sec": _queries_per_second(vector_query_count, vector_query_total_ms),
     }
-    for key in (
-        "kv_memory_tokens",
-        "kv_compose_time_ms",
-        "answer_generate_time_ms",
-        "answer_total_time_ms",
-        "kv_engine_time_to_first_token_ms",
-        "kv_query_tokens",
-        "kv_query_bos_stripped",
-        "kv_store_gpu_mb",
-        "prefix_engine_time_to_first_token_ms",
-    ):
-        summary = _numeric_summary(_metric_values(rows, key))
-        if summary["count"]:
-            metrics[key] = summary
 
     return {
         "run_id": run_id,
@@ -120,9 +98,3 @@ def _safe_div(numerator: int, denominator: int) -> float | None:
     if denominator == 0:
         return None
     return numerator / denominator
-
-
-def _queries_per_second(query_count: int, total_ms: float) -> float | None:
-    if query_count == 0 or total_ms <= 0:
-        return None
-    return query_count / (total_ms / 1000)

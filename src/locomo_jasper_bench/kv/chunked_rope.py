@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -26,8 +25,6 @@ class ComposedMemory:
     kv_by_layer: dict[str, Any]
     token_ids: list[int]
     num_tokens: int
-    compose_time_ms: float
-    selected_turn_ids: list[str]
 
 
 def torch_dtype(dtype_name: str) -> Any:
@@ -98,7 +95,6 @@ class ChunkedRopeSampleComposer:
         logger.info("Pre-RoPE encoded %d chunks for sample_id=%s", len(self.chunks), sample.sample_id)
 
     def compose(self, hits: list[SearchHit]) -> ComposedMemory:
-        started = time.perf_counter()
         turn_ids = selected_turn_ids(hits)
         if not turn_ids:
             raise RuntimeError("Cannot compose KV memory because retrieval returned no turn ids.")
@@ -129,8 +125,6 @@ class ChunkedRopeSampleComposer:
             kv_by_layer=kv_by_layer,
             token_ids=token_ids,
             num_tokens=len(token_ids),
-            compose_time_ms=(time.perf_counter() - started) * 1000,
-            selected_turn_ids=turn_ids,
         )
 
     def close(self) -> None:

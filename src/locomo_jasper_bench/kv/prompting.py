@@ -13,7 +13,6 @@ MEMORY_PREFIX_TEXT = "Retrieved memory context:\n"
 @dataclass(slots=True, frozen=True)
 class MemoryPromptTokens:
     token_ids: list[int]
-    selected_turn_ids: list[str]
 
 
 @dataclass(slots=True, frozen=True)
@@ -65,7 +64,7 @@ def build_memory_prompt_token_ids(
     token_ids = _encode_text_no_special(tokenizer, MEMORY_PREFIX_TEXT)
     for turn_id in turn_ids:
         token_ids.extend(_encode_text_no_special(tokenizer, format_kv_memory_turn(turns_by_id[turn_id])))
-    return MemoryPromptTokens(token_ids=token_ids, selected_turn_ids=turn_ids)
+    return MemoryPromptTokens(token_ids=token_ids)
 
 
 def build_kv_query_token_ids(

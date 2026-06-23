@@ -1,14 +1,13 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 from .jasper_vector_store import JasperVectorStore
-from .qdrant_vector_store import QdrantVectorStore
-from .runtime_paths import default_mem0_dir
-from .vector_types import SearchHit, SearchMetrics, VectorStoreConfig
+from .vector_types import SearchHit, VectorStoreConfig
 
 _MIRRORED_METADATA_KEYS = ("user_id", "sample_id", "turn_id", "session_id", "turn_index", "speaker", "timestamp", "role")
 
@@ -29,7 +28,6 @@ class Mem0JasperVectorStore(VectorStoreBase):
         collection_name: str = "memories",
         embedding_model_dims: int | None = 1536,
         path: str | Path | None = None,
-        backend: str = "jasper",
         distance: str = "ip",
         n_neighbors: int = 64,
         alpha: float = 1.0,
@@ -39,11 +37,10 @@ class Mem0JasperVectorStore(VectorStoreBase):
         self.collection_name = collection_name
         self.embedding_model_dims = embedding_model_dims
         if path is None:
-            self.root = default_mem0_dir() / collection_name
+            self.root = _default_mem0_dir() / collection_name
         else:
             self.root = Path(path) / collection_name
         self.config = VectorStoreConfig(
-            backend=backend,
             distance=distance,
             n_neighbors=n_neighbors,
             alpha=alpha,
@@ -51,7 +48,6 @@ class Mem0JasperVectorStore(VectorStoreBase):
             beam_width=beam_width,
         )
         self.store = self._create_store()
-        self.last_search_metrics = SearchMetrics(search_time_ms=0.0)
 
     def create_col(self, name: str | None = None, vector_size: int | None = None, distance: str | None = None) -> None:
         if name and name != self.collection_name:
@@ -79,8 +75,7 @@ class Mem0JasperVectorStore(VectorStoreBase):
     ) -> list[SearchHit]:
         requested_top_k = max(1, int(top_k or 5))
         query_vector = _first_vector(vectors)
-        hits, metrics = self.store.search(query_vector, top_k=requested_top_k)
-        self.last_search_metrics = metrics
+        hits = self.store.search(query_vector, top_k=requested_top_k)
         return [
             SearchHit(id=hit.id, payload=hit.payload, score=hit.score, distance=hit.distance, rank=rank)
             for rank, hit in enumerate(hits, start=1)
@@ -109,7 +104,7 @@ class Mem0JasperVectorStore(VectorStoreBase):
     def col_info(self) -> dict[str, Any]:
         return {
             "name": self.collection_name,
-            "backend": self.config.backend,
+            "backend": "jasper",
             "vectors": self.store.vector_count,
             "embedding_dim": self.store.dim,
             "path": str(self.root),
@@ -134,8 +129,6 @@ class Mem0JasperVectorStore(VectorStoreBase):
         self.store.close()
 
     def _create_store(self) -> Any:
-        if self.config.backend == "qdrant":
-            return QdrantVectorStore(self.root, self.config)
         return JasperVectorStore(self.root, self.config)
 
 
@@ -146,6 +139,18 @@ def _first_vector(vectors: list[float] | list[list[float]]) -> np.ndarray:
     if array.ndim == 2 and array.shape[0] > 0:
         return array[0]
     raise ValueError("vectors must be a one-dimensional vector or a non-empty list of vectors")
+
+
+def _default_mem0_dir() -> Path:
+    if "MEM0_DIR" in os.environ:
+        return Path(os.environ["MEM0_DIR"])
+    if "BENCHMARK_CACHE_ROOT" in os.environ:
+        cache_root = Path(os.environ["BENCHMARK_CACHE_ROOT"])
+    elif "SCRATCH_ROOT" in os.environ:
+        cache_root = Path(os.environ["SCRATCH_ROOT"]) / "cache"
+    else:
+        cache_root = Path(".cache")
+    return cache_root / "mem0"
 
 
 def _normalize_distance(distance: str) -> str:

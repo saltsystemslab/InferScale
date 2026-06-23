@@ -16,8 +16,7 @@ VENV_DIR="${VENV_DIR:-.venv}"
 
 if [[ "${FRESH_REMOTE_BUILD:-0}" == "1" ]]; then
   rm -rf "${VENV_DIR}" .cache tmp jasperpy/build jasperpy/python/jasper/lib/*.so
-  # Recreate runtime-backed paths after removing the local .cache entry.
-  # shellcheck source=scripts/load_env.sh
+  # Recreate scratch-backed paths after removing the local .cache entry.
   source "${SCRIPT_DIR}/load_env.sh"
 fi
 
@@ -26,7 +25,7 @@ if [[ "${SKIP_SUBMODULE_INIT:-0}" != "1" ]]; then
 fi
 
 if [[ "${BENCHMARK_USE_SCRATCH:-1}" != "0" ]]; then
-  echo "Using benchmark runtime root: ${BENCHMARK_RUNTIME_ROOT}"
+  echo "Using scratch root: ${SCRATCH_ROOT}"
 else
   echo "Using project-local cache/results directories."
 fi

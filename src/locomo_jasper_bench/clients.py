@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 
@@ -9,7 +8,6 @@ from typing import Any, Protocol
 class ChatResult:
     content: str
     ttft_ms: float | None = None
-    metrics: dict[str, Any] = field(default_factory=dict)
 
 
 class ChatClient(Protocol):
@@ -20,7 +18,6 @@ class ChatClient(Protocol):
         max_tokens: int,
         temperature: float,
         top_p: float,
-        ttft_started_at: float | None = None,
     ) -> ChatResult:
         ...
 
@@ -32,7 +29,6 @@ class OpenAICompatibleChatClient:
         base_url: str,
         api_key: str,
         model: str,
-        stream: bool = False,
     ) -> None:
         try:
             from openai import OpenAI
@@ -41,7 +37,6 @@ class OpenAICompatibleChatClient:
 
         self._client = OpenAI(base_url=base_url, api_key=api_key)
         self._model = model
-        self._stream = stream
 
     def chat(
         self,
@@ -50,12 +45,7 @@ class OpenAICompatibleChatClient:
         max_tokens: int,
         temperature: float,
         top_p: float,
-        ttft_started_at: float | None = None,
     ) -> ChatResult:
-        if self._stream:
-            started = ttft_started_at if ttft_started_at is not None else time.perf_counter()
-            return self._chat_streaming(messages, max_tokens, temperature, top_p, started)
-
         request: dict[str, Any] = {
             "model": self._model,
             "messages": messages,
@@ -70,45 +60,6 @@ class OpenAICompatibleChatClient:
             raise
         content = response.choices[0].message.content or ""
         return ChatResult(content=content)
-
-    def _chat_streaming(
-        self,
-        messages: list[dict[str, str]],
-        max_tokens: int,
-        temperature: float,
-        top_p: float,
-        started: float,
-    ) -> ChatResult:
-        request: dict[str, Any] = {
-            "model": self._model,
-            "messages": messages,
-            "temperature": temperature,
-            "top_p": top_p,
-            "max_tokens": max_tokens,
-            "stream": True,
-        }
-        try:
-            chunks = self._client.chat.completions.create(**request)
-        except Exception as exc:
-            _raise_context_limit_error(exc)
-            raise
-        content_parts: list[str] = []
-        ttft_ms: float | None = None
-        try:
-            for chunk in chunks:
-                if not chunk.choices:
-                    continue
-                delta = getattr(chunk.choices[0], "delta", None)
-                token = getattr(delta, "content", None)
-                if token:
-                    if ttft_ms is None:
-                        ttft_ms = (time.perf_counter() - started) * 1000
-                    content_parts.append(token)
-        except Exception as exc:
-            _raise_context_limit_error(exc)
-            raise
-
-        return ChatResult(content="".join(content_parts), ttft_ms=ttft_ms)
 
 
 def _raise_context_limit_error(exc: Exception) -> None:

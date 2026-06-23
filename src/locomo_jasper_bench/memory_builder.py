@@ -51,9 +51,9 @@ class SampleMemoryBuilder:
         )
 
         if finalize_index:
-            logger.info("Building {} index for sample_id={}", self.config.vector_backend, sample.sample_id)
+            logger.info("Building Jasper index for sample_id={}", sample.sample_id)
             self._finalize(memory)
-            logger.info("Index ready sample_id={} backend={}", sample.sample_id, self.config.vector_backend)
+            logger.info("Index ready sample_id={} backend=jasper", sample.sample_id)
         return memory
 
     def log_embedding_cache_stats(self, memory: Any, sample_id: str) -> None:
@@ -125,7 +125,6 @@ def embed_mem0_query(memory: Any, query: str) -> Any:
 
 def _store_config(config: BenchmarkConfig) -> VectorStoreConfig:
     return VectorStoreConfig(
-        backend=config.vector_backend,
         distance=config.vector_distance,
         n_neighbors=config.jasper_n_neighbors,
         alpha=config.jasper_alpha,

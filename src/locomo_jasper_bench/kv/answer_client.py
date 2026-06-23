@@ -2,26 +2,17 @@ from __future__ import annotations
 
 import gc
 import logging
-import multiprocessing as mp
 import os
-import shutil
 import sys
 import time
-import traceback
 import uuid
-from pathlib import Path
 from typing import Any
 
 from ..clients import ChatResult
 from ..config import BenchmarkConfig
 from ..data import ConversationSample, QuestionAnswer
 from ..vector_types import SearchHit
-from .chunked_rope import (
-    CachedChunkedRopeSampleComposer,
-    ChunkedRopeSampleComposer,
-    load_sample_kv_cache,
-    save_sample_kv_cache,
-)
+from .chunked_rope import ChunkedRopeSampleComposer
 from .prompting import build_kv_equivalence_prompt_token_ids
 from .strict_gpu_registry import clear_namespace, drop_namespace, namespace_stats, register_user_memory, remove_user_memory
 from .submodule import require_ai_memory_submodule
@@ -40,33 +31,80 @@ class VLLMChunkedKVAnswerClient:
         self._llm: Any | None = None
         self._tokenizer: Any | None = None
         self._sampling_cls: Any | None = None
-        self._composer: CachedChunkedRopeSampleComposer | None = None
+        self._precomputed_composers: dict[int, ChunkedRopeSampleComposer] = {}
+        self._precomputed_sample_metrics: dict[int, dict[str, Any]] = {}
+        self._composer: ChunkedRopeSampleComposer | None = None
         self._active_sample_id: int | None = None
-        self._sample_cache_dir: Path | None = None
-        self._cache_dirs: set[Path] = set()
+        self._sample_precompute_metrics: dict[str, Any] = {}
 
     def precompute_sample_cache(self, sample: ConversationSample) -> None:
         force_vllm_inprocess_mode()
+        if self._llm is not None:
+            raise RuntimeError(
+                "GPU-resident KV precompute must run before vLLM is started. "
+                "Precompute all needed samples before starting the single vLLM instance."
+            )
         require_ai_memory_submodule()
-        cache_dir = self._sample_cache_dir_for(sample)
-        cache_path = cache_dir / "sample_kv.pt"
+        sample_key = id(sample)
+        if self._active_sample_id == sample_key:
+            self.close_sample()
+        else:
+            self._release_precomputed_sample(sample_key)
         logger.info(
-            "Precomputing CPU KV cache sample_id=%s turns=%d context_window=%d",
+            "Precomputing GPU-resident KV cache sample_id=%s turns=%d context_window=%d",
             sample.sample_id,
             len(sample.turns),
             self.config.context_window,
         )
-        _build_sample_kv_cache_in_subprocess(
-            self.config,
-            sample,
-            cache_path,
+        started = time.perf_counter()
+        composer: ChunkedRopeSampleComposer | None = None
+        try:
+            composer = ChunkedRopeSampleComposer(
+                model=self.config.model,
+                dtype=self.config.kv_dtype,
+                device=self.config.kv_device,
+                max_position=self.config.kv_max_position,
+                context_window=self.config.context_window,
+            )
+            composer.encode_sample(sample)
+            composer.release_encoder()
+        except RuntimeError as exc:
+            if composer is not None:
+                composer.close()
+            raise RuntimeError(
+                f"GPU-resident KV precompute failed for sample_id={sample.sample_id}. "
+                "No CPU or disk KV fallback was used."
+            ) from exc
+        except BaseException:
+            if composer is not None:
+                composer.close()
+            raise
+
+        sample_metrics = composer.cache_stats()
+        sample_metrics.update(
+            {
+                "kv_precompute_time_ms": (time.perf_counter() - started) * 1000,
+                "kv_chunk_cache_residency_is_gpu": 1,
+            }
         )
-        self._cache_dirs.add(cache_dir)
+        self._precomputed_composers[sample_key] = composer
+        self._precomputed_sample_metrics[sample_key] = sample_metrics
+        logger.info(
+            "Precomputed GPU-resident KV cache sample_id=%s chunks=%s tokens=%s layers=%s gpu_mb=%.1f devices=%s",
+            sample.sample_id,
+            sample_metrics.get("kv_precomputed_chunks", 0),
+            sample_metrics.get("kv_precomputed_tokens", 0),
+            sample_metrics.get("kv_precomputed_layers", 0),
+            sample_metrics.get("kv_precomputed_gpu_mb", 0.0),
+            sample_metrics.get("kv_precomputed_devices", ""),
+        )
 
     def start_llm(self) -> None:
         force_vllm_inprocess_mode()
         if self._llm is not None:
             return
+        if not self._precomputed_composers:
+            raise RuntimeError("At least one GPU-resident KV sample cache must be precomputed before starting vLLM.")
 
         from vllm import LLM, SamplingParams
 
@@ -97,14 +135,17 @@ class VLLMChunkedKVAnswerClient:
         sample: ConversationSample,
         question_hits: list[tuple[QuestionAnswer, list[SearchHit]]] | list[list[SearchHit]],
     ) -> None:
-        self.close_sample()
-        cache_dir = self._sample_cache_dir_for(sample)
-        cache_path = cache_dir / "sample_kv.pt"
-        if not cache_path.exists():
-            raise RuntimeError(f"CPU KV cache for sample_id={sample.sample_id} does not exist: {cache_path}")
-        self._composer = load_sample_kv_cache(cache_path, device=self.config.kv_device)
-        self._sample_cache_dir = cache_dir
-        self._active_sample_id = id(sample)
+        del question_hits
+        sample_key = id(sample)
+        composer = self._precomputed_composers.get(sample_key)
+        if composer is None:
+            raise RuntimeError(f"GPU-resident KV cache for sample_id={sample.sample_id} was not precomputed.")
+        if self._active_sample_id is not None and self._active_sample_id != sample_key:
+            self.close_sample()
+        self._composer = composer
+        self._active_sample_id = sample_key
+        self._sample_precompute_metrics = dict(self._precomputed_sample_metrics.get(sample_key, {}))
+        logger.info("Preparing GPU-resident KV sample_id=%s", sample.sample_id)
 
     def answer_with_retrieved_memory(
         self,
@@ -121,7 +162,7 @@ class VLLMChunkedKVAnswerClient:
             raise RuntimeError("VLLMChunkedKVAnswerClient.prepare_sample() must be called before answering.")
         composer = self._composer
         if composer is None:
-            raise RuntimeError(f"Strict GPU KV CPU cache sample_id={sample.sample_id} was not prepared.")
+            raise RuntimeError(f"Strict GPU KV cache sample_id={sample.sample_id} was not prepared.")
         if self._active_sample_id != id(sample):
             raise RuntimeError(f"Strict GPU KV sample_id={sample.sample_id} is not the active prepared sample.")
 
@@ -144,6 +185,7 @@ class VLLMChunkedKVAnswerClient:
                 qa,
             )
             metrics: dict[str, Any] = {
+                **self._sample_precompute_metrics,
                 "kv_memory_tokens": composed.num_tokens,
                 "kv_compose_time_ms": composed.compose_time_ms,
                 "kv_context_window": composed.context_window,
@@ -197,11 +239,14 @@ class VLLMChunkedKVAnswerClient:
             remove_user_memory(self.namespace, user_id)
 
     def close_sample(self) -> None:
-        if self._composer is not None:
+        sample_key = self._active_sample_id
+        if sample_key is not None:
+            self._release_precomputed_sample(sample_key)
+        elif self._composer is not None:
             self._composer.close()
             self._composer = None
-        self._sample_cache_dir = None
         self._active_sample_id = None
+        self._sample_precompute_metrics = {}
         clear_namespace(self.namespace)
         gc.collect()
         try:
@@ -211,17 +256,33 @@ class VLLMChunkedKVAnswerClient:
         except ImportError:
             pass
 
+    def _release_precomputed_sample(self, sample_key: int) -> None:
+        composer = self._precomputed_composers.pop(sample_key, None)
+        self._precomputed_sample_metrics.pop(sample_key, None)
+        if composer is not None:
+            composer.close()
+        if self._active_sample_id == sample_key or self._composer is composer:
+            self._composer = None
+
+    def _release_all_sample_caches(self) -> None:
+        active_key = self._active_sample_id
+        if active_key is not None:
+            self._release_precomputed_sample(active_key)
+        for sample_key in list(self._precomputed_composers):
+            self._release_precomputed_sample(sample_key)
+        self._composer = None
+        self._active_sample_id = None
+        self._sample_precompute_metrics = {}
+
     def close(self) -> None:
-        self.close_sample()
+        self._release_all_sample_caches()
+        clear_namespace(self.namespace)
         if self._llm is not None:
             del self._llm
             self._llm = None
         self._tokenizer = None
         self._sampling_cls = None
         drop_namespace(self.namespace)
-        for cache_dir in list(self._cache_dirs):
-            shutil.rmtree(cache_dir, ignore_errors=True)
-        self._cache_dirs.clear()
         gc.collect()
         try:
             import torch
@@ -259,75 +320,6 @@ class VLLMChunkedKVAnswerClient:
             (finished - engine_started) * 1000,
             (finished - engine_started) * 1000,
         )
-
-    def _sample_cache_dir_for(self, sample: ConversationSample) -> Path:
-        return self.config.run_dir / "kv_chunk_cache" / _safe_path_component(sample.sample_id)
-
-
-def _build_sample_kv_cache_in_subprocess(
-    config: BenchmarkConfig,
-    sample: ConversationSample,
-    cache_path: Path,
-) -> None:
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    error_path = cache_path.with_suffix(".error.txt")
-    for path in (cache_path, error_path):
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
-
-    ctx = mp.get_context("spawn")
-    process = ctx.Process(
-        target=_build_sample_kv_cache_worker,
-        args=(config, sample, str(cache_path), str(error_path)),
-        name=f"kv-cache-{_safe_path_component(sample.sample_id)}",
-    )
-    process.start()
-    process.join()
-
-    if process.exitcode != 0:
-        details = ""
-        if error_path.exists():
-            details = error_path.read_text()
-        raise RuntimeError(
-            f"KV cache encoder process failed for sample_id={sample.sample_id} "
-            f"with exit code {process.exitcode}.\n{details}"
-        )
-    if not cache_path.exists():
-        raise RuntimeError(f"KV cache encoder process did not write {cache_path}.")
-
-
-def _build_sample_kv_cache_worker(
-    config: BenchmarkConfig,
-    sample: ConversationSample,
-    cache_path: str,
-    error_path: str,
-) -> None:
-    composer: ChunkedRopeSampleComposer | None = None
-    try:
-        force_vllm_inprocess_mode()
-        require_ai_memory_submodule()
-        composer = ChunkedRopeSampleComposer(
-            model=config.model,
-            dtype=config.kv_dtype,
-            device=config.kv_device,
-            max_position=config.kv_max_position,
-            context_window=config.context_window,
-        )
-        composer.encode_sample(sample)
-        save_sample_kv_cache(Path(cache_path), composer)
-    except BaseException:
-        Path(error_path).write_text(traceback.format_exc())
-        raise
-    finally:
-        if composer is not None:
-            composer.close()
-
-
-def _safe_path_component(value: str) -> str:
-    safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value)
-    return safe or "sample"
 
 
 def build_strict_gpu_kv_transfer_config(

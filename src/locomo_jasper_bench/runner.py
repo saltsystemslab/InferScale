@@ -274,6 +274,7 @@ def _run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) ->
     if not callable(close_sample) or not callable(prepare_sample) or not callable(start_llm):
         raise RuntimeError(f"{config.answer_backend} answer backend does not expose sample preparation methods.")
     precompute_sample_cache = getattr(clients.answer_client, "precompute_sample_cache", None)
+    active_sample_gpu_cache = callable(precompute_sample_cache)
 
     output_path = config.run_dir / "predictions.jsonl"
     all_records: list[dict[str, Any]] = []
@@ -325,14 +326,21 @@ def _run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) ->
             sample.sample_id,
         )
         prepared_samples.append(PreparedSample(index=sample_index, sample=sample, questions=prepared_questions))
-        if callable(precompute_sample_cache):
+        if active_sample_gpu_cache:
             precompute_sample_cache(sample)
 
-    logger.info(
-        "Prepared {} samples and {} questions before vLLM startup",
-        len(prepared_samples),
-        sum(len(prepared.questions) for prepared in prepared_samples),
-    )
+    if active_sample_gpu_cache:
+        logger.info(
+            "Precomputed GPU-resident KV caches for {} samples and {} questions before one vLLM startup",
+            len(prepared_samples),
+            sum(len(prepared.questions) for prepared in prepared_samples),
+        )
+    else:
+        logger.info(
+            "Prepared {} samples and {} questions before vLLM startup",
+            len(prepared_samples),
+            sum(len(prepared.questions) for prepared in prepared_samples),
+        )
     if not prepared_samples:
         with JsonlWriter(output_path):
             pass

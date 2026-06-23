@@ -92,10 +92,10 @@ locomo-jasper-bench \
   --answer-backend vllm-kv \
   --top-k 50 \
   --context-window 3 \
-  --kv-gpu-memory-utilization 0.30 \
+  --kv-gpu-memory-utilization 0.50 \
   --kv-max-model-len 32768 \
   --kv-max-position 32768 \
-  --max-samples 5 \
+  --max-samples 20 \
   --log-every 1 \
   --skip-judge \
   --run-id "${KV_RUN_ID}"
@@ -105,10 +105,10 @@ locomo-jasper-bench \
   --results-dir "${BENCHMARK_RESULTS_ROOT}" \
   --answer-backend vllm-prefix \
   --top-k 50 \
-  --kv-gpu-memory-utilization 0.30 \
+  --kv-gpu-memory-utilization 0.50 \
   --kv-max-model-len 32768 \
   --kv-max-position 32768 \
-  --max-samples 5 \
+  --max-samples 20 \
   --log-every 1 \
   --skip-judge \
   --run-id "${PREFIX_RUN_ID}"

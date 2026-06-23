@@ -91,7 +91,7 @@ locomo-jasper-bench \
   --results-dir "${BENCHMARK_RESULTS_ROOT}" \
   --answer-backend vllm-kv \
   --top-k 50 \
-  --kv-sample-window 3 \
+  --context-window 3 \
   --kv-gpu-memory-utilization 0.30 \
   --kv-max-model-len 32768 \
   --kv-max-position 32768 \
@@ -105,7 +105,6 @@ locomo-jasper-bench \
   --results-dir "${BENCHMARK_RESULTS_ROOT}" \
   --answer-backend vllm-prefix \
   --top-k 50 \
-  --kv-sample-window 3 \
   --kv-gpu-memory-utilization 0.30 \
   --kv-max-model-len 32768 \
   --kv-max-position 32768 \

@@ -57,6 +57,7 @@ def summarize_records(
     for key in (
         "kv_memory_tokens",
         "kv_compose_time_ms",
+        "kv_plan_time_ms",
         "answer_generate_time_ms",
         "answer_total_time_ms",
         "kv_engine_time_to_first_token_ms",
@@ -67,6 +68,9 @@ def summarize_records(
         "kv_context_prefix_tokens_max",
         "kv_context_prefix_truncated_tokens",
         "kv_store_gpu_mb",
+        "kv_sample_gpu_mb",
+        "kv_sample_chunk_tokens",
+        "kv_sample_chunks",
         "prefix_engine_time_to_first_token_ms",
     ):
         summary = _numeric_summary(_metric_values(rows, key))

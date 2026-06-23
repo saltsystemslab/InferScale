@@ -273,7 +273,6 @@ def _run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) ->
     start_llm = getattr(clients.answer_client, "start_llm", None)
     if not callable(close_sample) or not callable(prepare_sample) or not callable(start_llm):
         raise RuntimeError(f"{config.answer_backend} answer backend does not expose sample preparation methods.")
-    precompute_sample_cache = getattr(clients.answer_client, "precompute_sample_cache", None)
 
     output_path = config.run_dir / "predictions.jsonl"
     all_records: list[dict[str, Any]] = []
@@ -325,11 +324,9 @@ def _run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) ->
             sample.sample_id,
         )
         prepared_samples.append(PreparedSample(index=sample_index, sample=sample, questions=prepared_questions))
-        if callable(precompute_sample_cache):
-            precompute_sample_cache(sample)
 
     logger.info(
-        "Prepared {} samples and {} questions before vLLM startup",
+        "Prepared retrieval for {} samples and {} questions before vLLM startup",
         len(prepared_samples),
         sum(len(prepared.questions) for prepared in prepared_samples),
     )
@@ -339,12 +336,11 @@ def _run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) ->
         logger.info("Wrote 0 prepared vLLM prediction records to {}", output_path)
         return all_records
 
-    start_llm()
-
     with JsonlWriter(output_path) as writer:
         for prepared in prepared_samples:
             sample = prepared.sample
             prepare_sample(sample, [(question.qa, question.hits) for question in prepared.questions])
+            start_llm()
             try:
                 for question in prepared.questions:
                     qa = question.qa

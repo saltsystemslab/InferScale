@@ -106,7 +106,7 @@ def _is_mla_metadata(value: Any) -> bool:
 
 
 class MemoryKVConnector(KVConnectorBase_V1):
-    """Strict GPU-only KV connector for benchmark-composed memory tensors."""
+    """Strict GPU-only KV connector for benchmark chunk-plan tensors."""
 
     def __init__(
         self,
@@ -194,11 +194,15 @@ class MemoryKVConnector(KVConnectorBase_V1):
         return new_tokens, False
 
     def _try_match_user(self, user_id: str, prompt_token_ids: list[int]) -> tuple[int, int] | None:
-        memory = self._memory_store.get_user_memory(user_id)
-        if memory is None or memory.token_ids is None:
-            return None
+        plan = self._memory_store.get_chunk_plan(user_id)
+        if plan is not None:
+            memory_token_ids = list(plan.token_ids)
+        else:
+            memory = self._memory_store.get_user_memory(user_id)
+            if memory is None or memory.token_ids is None:
+                return None
+            memory_token_ids = list(memory.token_ids)
 
-        memory_token_ids = list(memory.token_ids)
         num_memory_tokens = len(memory_token_ids)
         if len(prompt_token_ids) <= num_memory_tokens:
             return None
@@ -292,6 +296,11 @@ class MemoryKVConnector(KVConnectorBase_V1):
             return
 
         for load in metadata.loads:
+            plan = self._memory_store.get_chunk_plan(load.user_id)
+            if plan is not None:
+                self._start_load_chunk_plan(forward_context, attn_metadata, load, plan)
+                continue
+
             memory = self._memory_store.get_user_memory(load.user_id)
             if memory is None:
                 logger.warning("Strict GPU memory for user %s was not found during load.", load.user_id)
@@ -320,6 +329,50 @@ class MemoryKVConnector(KVConnectorBase_V1):
                     dst_kv_cache_layer=kv_cache_layer,
                     src_kv_cache=self._truncate_kv(src_kv, load.num_tokens),
                     slot_mapping=slot_mapping,
+                    attn_metadata=attn_metadata,
+                    layer_name=layer_name,
+                )
+
+    def _start_load_chunk_plan(
+        self,
+        forward_context: "ForwardContext",
+        attn_metadata: AttentionMetadata,
+        load: MemoryLoadMeta,
+        plan: Any,
+    ) -> None:
+        first_chunk = plan.chunks[0] if plan.chunks else None
+        first_tensor = None
+        if first_chunk is not None:
+            first_tensor = next(iter(first_chunk.kv_by_layer.values()), None)
+        if first_tensor is None:
+            logger.warning("Strict GPU chunk plan %s has no layer tensors.", load.user_id)
+            return
+
+        slot_mapping = load.slot_mapping.to(device=first_tensor.device, dtype=torch.long)
+        logger.info(
+            "Injecting %d strict GPU chunk-plan tokens for user %s chunks=%d raw_tokens=%d",
+            load.num_tokens,
+            load.user_id,
+            len(plan.chunks),
+            plan.num_tokens,
+        )
+
+        for layer_name, layer in forward_context.no_compile_layers.items():
+            kv_cache_attr = getattr(layer, "kv_cache", None)
+            if kv_cache_attr is None:
+                continue
+
+            kv_cache_layer = kv_cache_attr[forward_context.virtual_engine]
+            for span in plan.iter_spans(load.num_tokens):
+                span_slots = slot_mapping[span.dst_start : span.dst_start + span.length]
+                if span_slots.numel() != span.length:
+                    raise RuntimeError(
+                        f"Slot mapping for {load.user_id}/{layer_name} ended inside a GPU chunk span."
+                    )
+                self._inject_kv_into_layer(
+                    dst_kv_cache_layer=kv_cache_layer,
+                    src_kv_cache=plan.layer_span_kv(layer_name, span),
+                    slot_mapping=span_slots,
                     attn_metadata=attn_metadata,
                     layer_name=layer_name,
                 )

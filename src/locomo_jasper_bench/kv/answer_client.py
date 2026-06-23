@@ -2,29 +2,27 @@ from __future__ import annotations
 
 import gc
 import logging
-import multiprocessing as mp
 import os
-import shutil
 import sys
 import time
-import traceback
 import uuid
-from pathlib import Path
 from typing import Any
 
 from ..clients import ChatResult
 from ..config import BenchmarkConfig
 from ..data import ConversationSample, QuestionAnswer
 from ..vector_types import SearchHit
-from .chunked_rope import (
-    CachedChunkedRopeSampleComposer,
-    ChunkedRopeSampleComposer,
-    load_sample_kv_cache,
-    save_sample_kv_cache,
-)
+from .chunked_rope import ChunkedRopeSampleComposer
+from .gpu_chunk_store import GpuSampleChunkStore
 from .prompting import build_kv_equivalence_prompt_token_ids
-from .strict_gpu_registry import clear_namespace, drop_namespace, namespace_stats, register_user_memory, remove_user_memory
-from .submodule import require_ai_memory_submodule
+from .strict_gpu_registry import (
+    drop_namespace,
+    namespace_stats,
+    register_chunk_plan,
+    register_sample_store,
+    remove_sample_store,
+    remove_user_memory,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,28 +38,9 @@ class VLLMChunkedKVAnswerClient:
         self._llm: Any | None = None
         self._tokenizer: Any | None = None
         self._sampling_cls: Any | None = None
-        self._composer: CachedChunkedRopeSampleComposer | None = None
+        self._chunk_store: GpuSampleChunkStore | None = None
         self._active_sample_id: int | None = None
-        self._sample_cache_dir: Path | None = None
-        self._cache_dirs: set[Path] = set()
-
-    def precompute_sample_cache(self, sample: ConversationSample) -> None:
-        force_vllm_inprocess_mode()
-        require_ai_memory_submodule()
-        cache_dir = self._sample_cache_dir_for(sample)
-        cache_path = cache_dir / "sample_kv.pt"
-        logger.info(
-            "Precomputing CPU KV cache sample_id=%s turns=%d context_window=%d",
-            sample.sample_id,
-            len(sample.turns),
-            self.config.context_window,
-        )
-        _build_sample_kv_cache_in_subprocess(
-            self.config,
-            sample,
-            cache_path,
-        )
-        self._cache_dirs.add(cache_dir)
+        self._active_sample_key: str | None = None
 
     def start_llm(self) -> None:
         force_vllm_inprocess_mode()
@@ -97,14 +76,54 @@ class VLLMChunkedKVAnswerClient:
         sample: ConversationSample,
         question_hits: list[tuple[QuestionAnswer, list[SearchHit]]] | list[list[SearchHit]],
     ) -> None:
+        del question_hits
         self.close_sample()
-        cache_dir = self._sample_cache_dir_for(sample)
-        cache_path = cache_dir / "sample_kv.pt"
-        if not cache_path.exists():
-            raise RuntimeError(f"CPU KV cache for sample_id={sample.sample_id} does not exist: {cache_path}")
-        self._composer = load_sample_kv_cache(cache_path, device=self.config.kv_device)
-        self._sample_cache_dir = cache_dir
+        if self._llm is not None:
+            logger.info("Closing vLLM before strict GPU KV sample encoding sample_id=%s", sample.sample_id)
+            self._close_llm()
+
+        logger.info(
+            "Encoding strict GPU KV chunks sample_id=%s turns=%d context_window=%d",
+            sample.sample_id,
+            len(sample.turns),
+            self.config.context_window,
+        )
+        composer = ChunkedRopeSampleComposer(
+            model=self.config.model,
+            dtype=self.config.kv_dtype,
+            device=self.config.kv_device,
+            max_position=self.config.kv_max_position,
+            context_window=self.config.context_window,
+        )
+        try:
+            composer.encode_sample(sample)
+            chunk_store = GpuSampleChunkStore(
+                sample_id=sample.sample_id,
+                prefix_chunk=composer.prefix_chunk,
+                chunks=composer.chunks,
+                cos_table=composer.cos_table,
+                sin_table=composer.sin_table,
+                device=self.config.kv_device,
+                max_position=self.config.kv_max_position,
+                context_window=self.config.context_window,
+            )
+            register_sample_store(self.namespace, sample_id=sample.sample_id, store=chunk_store)
+            composer.release_encoder()
+        except Exception:
+            composer.close()
+            raise
+
+        self._chunk_store = chunk_store
         self._active_sample_id = id(sample)
+        self._active_sample_key = sample.sample_id
+        stats = namespace_stats(self.namespace)
+        logger.info(
+            "Strict GPU KV chunks ready sample_id=%s chunks=%d tokens=%d gpu_mb=%.1f",
+            sample.sample_id,
+            stats.get("sample_chunks", 0),
+            stats.get("sample_chunk_tokens", 0),
+            stats.get("sample_gpu_mb", 0.0),
+        )
 
     def answer_with_retrieved_memory(
         self,
@@ -119,37 +138,31 @@ class VLLMChunkedKVAnswerClient:
     ) -> ChatResult:
         if self._llm is None or self._tokenizer is None or self._sampling_cls is None:
             raise RuntimeError("VLLMChunkedKVAnswerClient.prepare_sample() must be called before answering.")
-        composer = self._composer
-        if composer is None:
-            raise RuntimeError(f"Strict GPU KV CPU cache sample_id={sample.sample_id} was not prepared.")
+        chunk_store = self._chunk_store
+        if chunk_store is None:
+            raise RuntimeError(f"Strict GPU KV chunks sample_id={sample.sample_id} were not prepared.")
         if self._active_sample_id != id(sample):
             raise RuntimeError(f"Strict GPU KV sample_id={sample.sample_id} is not the active prepared sample.")
 
         request_started = ttft_started_at if ttft_started_at is not None else time.perf_counter()
-        composed = composer.compose(hits)
         user_id = self.active_user_id
-        register_user_memory(
-            self.namespace,
-            user_id=user_id,
-            kv_by_layer=composed.kv_by_layer,
-            num_tokens=composed.num_tokens,
-            token_ids=composed.token_ids,
-            memory_text="strict-gpu chunked-rope top-k",
-        )
+        plan = chunk_store.build_plan(plan_id=user_id, hits=hits)
+        register_chunk_plan(self.namespace, plan)
         try:
             prompt = build_kv_equivalence_prompt_token_ids(
                 self._tokenizer,
-                list(composed.token_ids),
+                list(plan.token_ids),
                 sample,
                 qa,
             )
             metrics: dict[str, Any] = {
-                "kv_memory_tokens": composed.num_tokens,
-                "kv_compose_time_ms": composed.compose_time_ms,
-                "kv_context_window": composed.context_window,
-                "kv_context_prefix_tokens_total": composed.context_prefix_tokens_total,
-                "kv_context_prefix_tokens_max": composed.context_prefix_tokens_max,
-                "kv_context_prefix_truncated_tokens": composed.context_prefix_truncated_tokens,
+                "kv_memory_tokens": plan.num_tokens,
+                "kv_compose_time_ms": plan.plan_time_ms,
+                "kv_plan_time_ms": plan.plan_time_ms,
+                "kv_context_window": plan.context_window,
+                "kv_context_prefix_tokens_total": plan.context_prefix_tokens_total,
+                "kv_context_prefix_tokens_max": plan.context_prefix_tokens_max,
+                "kv_context_prefix_truncated_tokens": plan.context_prefix_truncated_tokens,
                 "kv_query_tokens": len(prompt.query_token_ids),
                 "kv_query_bos_stripped": int(prompt.stripped_query_bos),
             }
@@ -185,7 +198,10 @@ class VLLMChunkedKVAnswerClient:
                     "answer_generate_time_ms": generate_ms,
                     "answer_total_time_ms": total_ms,
                     "kv_store_gpu_mb": stats.get("total_gpu_mb", 0.0),
-                    "kv_selected_turn_ids": composed.selected_turn_ids,
+                    "kv_sample_gpu_mb": stats.get("sample_gpu_mb", 0.0),
+                    "kv_sample_chunk_tokens": stats.get("sample_chunk_tokens", 0),
+                    "kv_sample_chunks": stats.get("sample_chunks", 0),
+                    "kv_selected_turn_ids": plan.selected_turn_ids,
                 }
             )
             return ChatResult(
@@ -197,12 +213,12 @@ class VLLMChunkedKVAnswerClient:
             remove_user_memory(self.namespace, user_id)
 
     def close_sample(self) -> None:
-        if self._composer is not None:
-            self._composer.close()
-            self._composer = None
-        self._sample_cache_dir = None
+        remove_user_memory(self.namespace, self.active_user_id)
+        if self._active_sample_key is not None:
+            remove_sample_store(self.namespace, self._active_sample_key)
+        self._chunk_store = None
         self._active_sample_id = None
-        clear_namespace(self.namespace)
+        self._active_sample_key = None
         gc.collect()
         try:
             import torch
@@ -213,15 +229,23 @@ class VLLMChunkedKVAnswerClient:
 
     def close(self) -> None:
         self.close_sample()
+        self._close_llm()
+        drop_namespace(self.namespace)
+        gc.collect()
+        try:
+            import torch
+
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+        except Exception:
+            pass
+
+    def _close_llm(self) -> None:
         if self._llm is not None:
             del self._llm
             self._llm = None
         self._tokenizer = None
         self._sampling_cls = None
-        drop_namespace(self.namespace)
-        for cache_dir in list(self._cache_dirs):
-            shutil.rmtree(cache_dir, ignore_errors=True)
-        self._cache_dirs.clear()
         gc.collect()
         try:
             import torch
@@ -259,76 +283,6 @@ class VLLMChunkedKVAnswerClient:
             (finished - engine_started) * 1000,
             (finished - engine_started) * 1000,
         )
-
-    def _sample_cache_dir_for(self, sample: ConversationSample) -> Path:
-        return self.config.run_dir / "kv_chunk_cache" / _safe_path_component(sample.sample_id)
-
-
-def _build_sample_kv_cache_in_subprocess(
-    config: BenchmarkConfig,
-    sample: ConversationSample,
-    cache_path: Path,
-) -> None:
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    error_path = cache_path.with_suffix(".error.txt")
-    for path in (cache_path, error_path):
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
-
-    ctx = mp.get_context("spawn")
-    process = ctx.Process(
-        target=_build_sample_kv_cache_worker,
-        args=(config, sample, str(cache_path), str(error_path)),
-        name=f"kv-cache-{_safe_path_component(sample.sample_id)}",
-    )
-    process.start()
-    process.join()
-
-    if process.exitcode != 0:
-        details = ""
-        if error_path.exists():
-            details = error_path.read_text()
-        raise RuntimeError(
-            f"KV cache encoder process failed for sample_id={sample.sample_id} "
-            f"with exit code {process.exitcode}.\n{details}"
-        )
-    if not cache_path.exists():
-        raise RuntimeError(f"KV cache encoder process did not write {cache_path}.")
-
-
-def _build_sample_kv_cache_worker(
-    config: BenchmarkConfig,
-    sample: ConversationSample,
-    cache_path: str,
-    error_path: str,
-) -> None:
-    composer: ChunkedRopeSampleComposer | None = None
-    try:
-        force_vllm_inprocess_mode()
-        require_ai_memory_submodule()
-        composer = ChunkedRopeSampleComposer(
-            model=config.model,
-            dtype=config.kv_dtype,
-            device=config.kv_device,
-            max_position=config.kv_max_position,
-            context_window=config.context_window,
-        )
-        composer.encode_sample(sample)
-        save_sample_kv_cache(Path(cache_path), composer)
-    except BaseException:
-        Path(error_path).write_text(traceback.format_exc())
-        raise
-    finally:
-        if composer is not None:
-            composer.close()
-
-
-def _safe_path_component(value: str) -> str:
-    safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value)
-    return safe or "sample"
-
 
 def build_strict_gpu_kv_transfer_config(
     *,

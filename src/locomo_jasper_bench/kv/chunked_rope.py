@@ -3,7 +3,6 @@ from __future__ import annotations
 import time
 import logging
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from ..data import ConversationSample, Turn, format_turn_for_memory
@@ -183,6 +182,20 @@ class ChunkedRopeSampleComposer:
         gc.collect()
         torch.cuda.empty_cache()
 
+    def release_encoder(self) -> None:
+        """Release the HF encoder/model while keeping GPU-resident chunks."""
+        import gc
+        import torch
+
+        for attr in ("encoder", "hf_model", "tokenizer"):
+            if hasattr(self, attr):
+                try:
+                    setattr(self, attr, None)
+                except Exception:
+                    pass
+        gc.collect()
+        torch.cuda.empty_cache()
+
     def _encode_turn_chunk(self, sample: ConversationSample, turn: Turn) -> EncodedChunk:
         plan = build_turn_context_encoding_plan(
             self.tokenizer,
@@ -194,7 +207,7 @@ class ChunkedRopeSampleComposer:
         return EncodedChunk(
             turn_id=turn.id,
             token_ids=plan.target_token_ids,
-            kv_by_layer=_offload_kv_by_layer_to_cpu(
+            kv_by_layer=_contiguous_kv_by_layer(
                 _encode_token_chunk_pre_rope(
                     self.hf_model,
                     plan.input_token_ids,
@@ -217,7 +230,7 @@ class ChunkedRopeSampleComposer:
         return EncodedChunk(
             turn_id=turn_id,
             token_ids=token_ids,
-            kv_by_layer=_offload_kv_by_layer_to_cpu(
+            kv_by_layer=_contiguous_kv_by_layer(
                 _encode_token_chunk_pre_rope(
                     self.hf_model,
                     token_ids,
@@ -237,122 +250,6 @@ class ChunkedRopeSampleComposer:
             cos_table=self.cos_table,
             sin_table=self.sin_table,
         )
-
-
-class CachedChunkedRopeSampleComposer:
-    """CPU-resident chunk composer loaded from a precomputed sample KV cache."""
-
-    def __init__(
-        self,
-        *,
-        prefix_chunk: EncodedChunk,
-        chunks: dict[str, EncodedChunk],
-        cos_table: Any,
-        sin_table: Any,
-        device: str,
-        max_position: int,
-        context_window: int,
-    ) -> None:
-        self.prefix_chunk = prefix_chunk
-        self.chunks = chunks
-        self.cos_table = cos_table
-        self.sin_table = sin_table
-        self.device = device
-        self.max_position = max_position
-        self.context_window = context_window
-
-    def compose(self, hits: list[SearchHit]) -> ComposedMemory:
-        started = time.perf_counter()
-        turn_ids = selected_turn_ids(hits)
-        if not turn_ids:
-            raise RuntimeError("Cannot compose KV memory because retrieval returned no turn ids.")
-
-        selected = []
-        missing = []
-        for turn_id in turn_ids:
-            chunk = self.chunks.get(turn_id)
-            if chunk is None:
-                missing.append(turn_id)
-            else:
-                selected.append(chunk)
-        if missing:
-            raise RuntimeError(
-                "Retrieved memory chunks were not found in the CPU KV cache: " + ", ".join(missing[:5])
-            )
-
-        chunks = [self.prefix_chunk, *selected]
-        kv_by_layer = _compose_encoded_chunks(
-            chunks,
-            device=self.device,
-            max_position=self.max_position,
-            cos_table=_copy_layer_kv_to_device(self.cos_table, self.device),
-            sin_table=_copy_layer_kv_to_device(self.sin_table, self.device),
-        )
-        token_ids: list[int] = []
-        for chunk in chunks:
-            token_ids.extend(chunk.token_ids)
-        selected_context_tokens = [chunk.context_prefix_tokens for chunk in selected]
-        return ComposedMemory(
-            kv_by_layer=kv_by_layer,
-            token_ids=token_ids,
-            num_tokens=len(token_ids),
-            compose_time_ms=(time.perf_counter() - started) * 1000,
-            selected_turn_ids=turn_ids,
-            context_window=self.context_window,
-            context_prefix_tokens_total=sum(selected_context_tokens),
-            context_prefix_tokens_max=max(selected_context_tokens, default=0),
-            context_prefix_truncated_tokens=sum(chunk.context_prefix_truncated_tokens for chunk in selected),
-        )
-
-    def close(self) -> None:
-        import gc
-
-        for attr in ("prefix_chunk", "chunks", "cos_table", "sin_table"):
-            if hasattr(self, attr):
-                try:
-                    setattr(self, attr, None)
-                except Exception:
-                    pass
-        gc.collect()
-
-
-def save_sample_kv_cache(path: Path, composer: ChunkedRopeSampleComposer) -> None:
-    import torch
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "version": 1,
-        "max_position": composer.max_position,
-        "context_window": composer.context_window,
-        "prefix_chunk": _chunk_to_cache_dict(composer.prefix_chunk),
-        "chunks": {
-            turn_id: _chunk_to_cache_dict(chunk)
-            for turn_id, chunk in composer.chunks.items()
-        },
-        "cos_table": _offload_tensor_to_cpu(composer.cos_table),
-        "sin_table": _offload_tensor_to_cpu(composer.sin_table),
-    }
-    torch.save(payload, path)
-
-
-def load_sample_kv_cache(path: Path, *, device: str) -> CachedChunkedRopeSampleComposer:
-    import torch
-
-    payload = torch.load(path, map_location="cpu")
-    if payload.get("version") != 1:
-        raise RuntimeError(f"Unsupported sample KV cache version in {path}: {payload.get('version')!r}")
-    return CachedChunkedRopeSampleComposer(
-        prefix_chunk=_chunk_from_cache_dict(payload["prefix_chunk"]),
-        chunks={
-            str(turn_id): _chunk_from_cache_dict(chunk)
-            for turn_id, chunk in payload["chunks"].items()
-        },
-        cos_table=payload["cos_table"],
-        sin_table=payload["sin_table"],
-        device=device,
-        max_position=int(payload["max_position"]),
-        context_window=int(payload["context_window"]),
-    )
 
 
 def _compose_encoded_chunks(
@@ -400,34 +297,6 @@ def _compose_encoded_chunks(
             dim=0,
         )
     return composed
-
-
-def _chunk_to_cache_dict(chunk: EncodedChunk) -> dict[str, Any]:
-    return {
-        "turn_id": chunk.turn_id,
-        "token_ids": list(chunk.token_ids),
-        "kv_by_layer": chunk.kv_by_layer,
-        "text": chunk.text,
-        "context_window": chunk.context_window,
-        "context_prefix_tokens": chunk.context_prefix_tokens,
-        "raw_context_prefix_tokens": chunk.raw_context_prefix_tokens,
-        "context_prefix_truncated_tokens": chunk.context_prefix_truncated_tokens,
-        "encoding_input_tokens": chunk.encoding_input_tokens,
-    }
-
-
-def _chunk_from_cache_dict(data: dict[str, Any]) -> EncodedChunk:
-    return EncodedChunk(
-        turn_id=str(data["turn_id"]),
-        token_ids=list(data["token_ids"]),
-        kv_by_layer=dict(data["kv_by_layer"]),
-        text=str(data.get("text", "")),
-        context_window=int(data.get("context_window", 0)),
-        context_prefix_tokens=int(data.get("context_prefix_tokens", 0)),
-        raw_context_prefix_tokens=int(data.get("raw_context_prefix_tokens", 0)),
-        context_prefix_truncated_tokens=int(data.get("context_prefix_truncated_tokens", 0)),
-        encoding_input_tokens=int(data.get("encoding_input_tokens", 0)),
-    )
 
 
 def build_turn_context_encoding_plan(
@@ -545,27 +414,11 @@ def _encode_token_chunk_pre_rope(
     return kv_by_layer
 
 
-def _offload_kv_by_layer_to_cpu(kv_by_layer: dict[str, Any]) -> dict[str, Any]:
+def _contiguous_kv_by_layer(kv_by_layer: dict[str, Any]) -> dict[str, Any]:
     return {
-        layer_name: _offload_tensor_to_cpu(tensor)
+        layer_name: tensor.detach().contiguous()
         for layer_name, tensor in kv_by_layer.items()
     }
-
-
-def _offload_tensor_to_cpu(tensor: Any) -> Any:
-    import torch
-
-    detached = tensor.detach()
-    try:
-        host_tensor = torch.empty(
-            detached.shape,
-            dtype=detached.dtype,
-            pin_memory=True,
-        )
-    except RuntimeError:
-        return detached.to(device="cpu").contiguous()
-    host_tensor.copy_(detached, non_blocking=False)
-    return host_tensor
 
 
 def _copy_layer_kv_to_device(layer_kv: Any, device: str) -> Any:

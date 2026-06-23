@@ -402,6 +402,8 @@ def _run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) ->
     if not callable(close_sample) or not callable(prepare_sample) or not callable(start_llm):
         raise RuntimeError(f"{config.answer_backend} answer backend does not expose sample preparation methods.")
     precompute_sample_cache = getattr(clients.answer_client, "precompute_sample_cache", None)
+    close_llm = getattr(clients.answer_client, "close_llm", None)
+    active_sample_gpu_cache = callable(precompute_sample_cache)
 
     output_path = config.run_dir / "predictions.jsonl"
     all_records: list[dict[str, Any]] = []
@@ -411,114 +413,152 @@ def _run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) ->
     question_evaluator = QuestionEvaluator(config, clients)
     prepared_samples: list[PreparedSample] = []
 
-    for sample_index, sample in enumerate(samples, start=1):
-        if remaining_questions is not None and remaining_questions <= 0:
-            break
-
-        sample_questions = sample.qa
-        if remaining_questions is not None:
-            sample_questions = sample_questions[:remaining_questions]
-        if not sample_questions:
-            continue
-
-        logger.info(
-            "KV sample {}/{} sample_id={} turns={} questions={} retrieval starting",
-            sample_index,
-            len(samples),
-            sample.sample_id,
-            len(sample.turns),
-            len(sample_questions),
-        )
-
-        memory = memory_builder.build(sample)
-        prepared_questions: list[PreparedQuestion] = []
-        try:
-            for qa in sample_questions:
-                hits = question_evaluator._search_mem0_memory(memory, qa.question)
-                store_metrics = question_evaluator._mem0_store_search_metrics(memory)
-                prepared_questions.append(PreparedQuestion(qa=qa, hits=hits, store_metrics=store_metrics))
-        finally:
-            memory_builder.log_embedding_cache_stats(memory, sample.sample_id)
-            memory_builder.close(memory)
-
-        if remaining_questions is not None:
-            remaining_questions -= len(sample_questions)
-
-        if not prepared_questions:
-            continue
-
-        logger.info(
-            "KV sample {}/{} sample_id={} retrieval complete; vector indexes closed before encoder/vLLM load",
-            sample_index,
-            len(samples),
-            sample.sample_id,
-        )
-        prepared_samples.append(
-            PreparedSample(index=sample_index, sample=sample, questions=prepared_questions)
-        )
-        if callable(precompute_sample_cache):
-            precompute_sample_cache(sample)
-
-    logger.info(
-        "Prepared {} samples and {} questions before vLLM startup",
-        len(prepared_samples),
-        sum(len(prepared.questions) for prepared in prepared_samples),
-    )
-    if not prepared_samples:
-        with JsonlWriter(output_path):
-            pass
-        logger.info("Wrote 0 prepared vLLM prediction records to {}", output_path)
-        return all_records
-
-    start_llm()
-
     with JsonlWriter(output_path) as writer:
-        for prepared in prepared_samples:
-            sample = prepared.sample
-            prepare_sample(sample, [(question.qa, question.hits) for question in prepared.questions])
+        for sample_index, sample in enumerate(samples, start=1):
+            if remaining_questions is not None and remaining_questions <= 0:
+                break
+
+            sample_questions = sample.qa
+            if remaining_questions is not None:
+                sample_questions = sample_questions[:remaining_questions]
+            if not sample_questions:
+                continue
+
+            logger.info(
+                "KV sample {}/{} sample_id={} turns={} questions={} retrieval starting",
+                sample_index,
+                len(samples),
+                sample.sample_id,
+                len(sample.turns),
+                len(sample_questions),
+            )
+
+            memory = memory_builder.build(sample)
+            prepared_questions: list[PreparedQuestion] = []
             try:
-                for question in prepared.questions:
-                    qa = question.qa
-                    next_question = completed_questions + 1
-                    if _should_log_progress(next_question, planned_questions, config.log_every):
-                        logger.info(
-                            "KV question {}/{} starting sample_id={} question_id={} category={}",
-                            next_question,
-                            planned_questions,
-                            sample.sample_id,
-                            qa.question_id,
-                            qa.category,
-                        )
-                    record = question_evaluator.answer_from_hits(
-                        sample,
-                        qa,
-                        question.hits,
-                        question.store_metrics,
-                        ttft_started_at=time.perf_counter(),
-                    )
-                    writer.write(record)
-                    all_records.append(record)
-                    completed_questions += 1
-                    if _should_log_progress(completed_questions, planned_questions, config.log_every):
-                        logger.info(
-                            "KV question {}/{} finished sample_id={} question_id={} judge={}",
-                            completed_questions,
-                            planned_questions,
-                            sample.sample_id,
-                            qa.question_id,
-                            _judge_label(record.get("judge", {}).get("correct")),
-                        )
-                logger.info(
-                    "KV sample {}/{} sample_id={} finished",
-                    prepared.index,
-                    len(samples),
-                    sample.sample_id,
-                )
+                for qa in sample_questions:
+                    hits = question_evaluator._search_mem0_memory(memory, qa.question)
+                    store_metrics = question_evaluator._mem0_store_search_metrics(memory)
+                    prepared_questions.append(PreparedQuestion(qa=qa, hits=hits, store_metrics=store_metrics))
             finally:
-                close_sample()
+                memory_builder.log_embedding_cache_stats(memory, sample.sample_id)
+                memory_builder.close(memory)
+
+            if remaining_questions is not None:
+                remaining_questions -= len(sample_questions)
+
+            if not prepared_questions:
+                continue
+
+            logger.info(
+                "KV sample {}/{} sample_id={} retrieval complete; vector indexes closed before encoder/vLLM load",
+                sample_index,
+                len(samples),
+                sample.sample_id,
+            )
+            prepared = PreparedSample(index=sample_index, sample=sample, questions=prepared_questions)
+
+            if active_sample_gpu_cache:
+                precompute_sample_cache(sample)
+                try:
+                    start_llm()
+                    prepare_sample(sample, [(question.qa, question.hits) for question in prepared.questions])
+                    completed_questions = _answer_prepared_kv_sample(
+                        config=config,
+                        writer=writer,
+                        question_evaluator=question_evaluator,
+                        prepared=prepared,
+                        total_samples=len(samples),
+                        planned_questions=planned_questions,
+                        completed_questions=completed_questions,
+                        all_records=all_records,
+                    )
+                finally:
+                    close_sample()
+                    if callable(close_llm):
+                        close_llm()
+            else:
+                prepared_samples.append(prepared)
+
+        if not active_sample_gpu_cache:
+            logger.info(
+                "Prepared {} samples and {} questions before vLLM startup",
+                len(prepared_samples),
+                sum(len(prepared.questions) for prepared in prepared_samples),
+            )
+            if prepared_samples:
+                start_llm()
+            for prepared in prepared_samples:
+                sample = prepared.sample
+                prepare_sample(sample, [(question.qa, question.hits) for question in prepared.questions])
+                try:
+                    completed_questions = _answer_prepared_kv_sample(
+                        config=config,
+                        writer=writer,
+                        question_evaluator=question_evaluator,
+                        prepared=prepared,
+                        total_samples=len(samples),
+                        planned_questions=planned_questions,
+                        completed_questions=completed_questions,
+                        all_records=all_records,
+                    )
+                finally:
+                    close_sample()
 
     logger.info("Wrote {} prepared vLLM prediction records to {}", len(all_records), output_path)
     return all_records
+
+
+def _answer_prepared_kv_sample(
+    *,
+    config: BenchmarkConfig,
+    writer: JsonlWriter,
+    question_evaluator: QuestionEvaluator,
+    prepared: PreparedSample,
+    total_samples: int,
+    planned_questions: int,
+    completed_questions: int,
+    all_records: list[dict[str, Any]],
+) -> int:
+    sample = prepared.sample
+    for question in prepared.questions:
+        qa = question.qa
+        next_question = completed_questions + 1
+        if _should_log_progress(next_question, planned_questions, config.log_every):
+            logger.info(
+                "KV question {}/{} starting sample_id={} question_id={} category={}",
+                next_question,
+                planned_questions,
+                sample.sample_id,
+                qa.question_id,
+                qa.category,
+            )
+        record = question_evaluator.answer_from_hits(
+            sample,
+            qa,
+            question.hits,
+            question.store_metrics,
+            ttft_started_at=time.perf_counter(),
+        )
+        writer.write(record)
+        all_records.append(record)
+        completed_questions += 1
+        if _should_log_progress(completed_questions, planned_questions, config.log_every):
+            logger.info(
+                "KV question {}/{} finished sample_id={} question_id={} judge={}",
+                completed_questions,
+                planned_questions,
+                sample.sample_id,
+                qa.question_id,
+                _judge_label(record.get("judge", {}).get("correct")),
+            )
+    logger.info(
+        "KV sample {}/{} sample_id={} finished",
+        prepared.index,
+        total_samples,
+        sample.sample_id,
+    )
+    return completed_questions
 
 
 def _planned_question_count(samples: list[ConversationSample], max_questions: int | None) -> int:

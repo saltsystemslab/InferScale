@@ -68,7 +68,7 @@ def torch_dtype(dtype_name: str) -> Any:
 
 
 class ChunkedRopeSampleComposer:
-    """Pre-RoPE chunk encoder and top-k composer for one sample."""
+    """GPU-resident pre-RoPE chunk encoder and top-k composer for one sample."""
 
     def __init__(
         self,
@@ -170,10 +170,55 @@ class ChunkedRopeSampleComposer:
             context_prefix_truncated_tokens=sum(chunk.context_prefix_truncated_tokens for chunk in selected),
         )
 
+    def cache_stats(self) -> dict[str, Any]:
+        chunks = []
+        prefix_chunk = getattr(self, "prefix_chunk", None)
+        if prefix_chunk is not None:
+            chunks.append(prefix_chunk)
+        chunks.extend(getattr(self, "chunks", {}).values())
+
+        total_bytes = 0
+        total_tokens = 0
+        layer_count = 0
+        devices: set[str] = set()
+        for chunk in chunks:
+            total_tokens += len(chunk.token_ids)
+            layer_count = max(layer_count, len(chunk.kv_by_layer))
+            for tensor in chunk.kv_by_layer.values():
+                total_bytes += int(getattr(tensor, "nbytes", 0) or 0)
+                device = getattr(tensor, "device", None)
+                if device is not None:
+                    devices.add(str(device))
+
+        return {
+            "kv_chunk_cache_residency": "gpu",
+            "kv_precomputed_chunks": max(0, len(chunks) - 1),
+            "kv_precomputed_chunks_with_prefix": len(chunks),
+            "kv_precomputed_tokens": total_tokens,
+            "kv_precomputed_layers": layer_count,
+            "kv_precomputed_gpu_mb": total_bytes / (1024 * 1024),
+            "kv_precomputed_devices": ",".join(sorted(devices)),
+        }
+
+    def release_encoder(self) -> None:
+        """Unload HF encoder weights while keeping encoded GPU chunks resident."""
+        import gc
+        import torch
+
+        for attr in ("encoder", "hf_model", "tokenizer"):
+            if hasattr(self, attr):
+                try:
+                    setattr(self, attr, None)
+                except Exception:
+                    pass
+        gc.collect()
+        torch.cuda.empty_cache()
+
     def close(self) -> None:
         import gc
         import torch
 
+        self.release_encoder()
         for attr in ("encoder", "hf_model", "tokenizer", "cos_table", "sin_table", "chunks", "prefix_chunk"):
             if hasattr(self, attr):
                 try:
@@ -194,13 +239,14 @@ class ChunkedRopeSampleComposer:
         return EncodedChunk(
             turn_id=turn.id,
             token_ids=plan.target_token_ids,
-            kv_by_layer=_offload_kv_by_layer_to_cpu(
+            kv_by_layer=_detach_kv_by_layer_to_device(
                 _encode_token_chunk_pre_rope(
                     self.hf_model,
                     plan.input_token_ids,
                     slice_start=plan.slice_start,
                     slice_end=plan.slice_end,
-                )
+                ),
+                self.device,
             ),
             text=plan.target_text,
             context_window=self.context_window,
@@ -217,13 +263,14 @@ class ChunkedRopeSampleComposer:
         return EncodedChunk(
             turn_id=turn_id,
             token_ids=token_ids,
-            kv_by_layer=_offload_kv_by_layer_to_cpu(
+            kv_by_layer=_detach_kv_by_layer_to_device(
                 _encode_token_chunk_pre_rope(
                     self.hf_model,
                     token_ids,
                     slice_start=0,
                     slice_end=len(token_ids),
-                )
+                ),
+                self.device,
             ),
             text=text,
             encoding_input_tokens=len(token_ids),
@@ -324,9 +371,9 @@ def save_sample_kv_cache(path: Path, composer: ChunkedRopeSampleComposer) -> Non
         "version": 1,
         "max_position": composer.max_position,
         "context_window": composer.context_window,
-        "prefix_chunk": _chunk_to_cache_dict(composer.prefix_chunk),
+        "prefix_chunk": _chunk_to_cache_dict(composer.prefix_chunk, offload_to_cpu=True),
         "chunks": {
-            turn_id: _chunk_to_cache_dict(chunk)
+            turn_id: _chunk_to_cache_dict(chunk, offload_to_cpu=True)
             for turn_id, chunk in composer.chunks.items()
         },
         "cos_table": _offload_tensor_to_cpu(composer.cos_table),
@@ -402,11 +449,16 @@ def _compose_encoded_chunks(
     return composed
 
 
-def _chunk_to_cache_dict(chunk: EncodedChunk) -> dict[str, Any]:
+def _chunk_to_cache_dict(chunk: EncodedChunk, *, offload_to_cpu: bool = False) -> dict[str, Any]:
+    kv_by_layer = (
+        _offload_kv_by_layer_to_cpu(chunk.kv_by_layer)
+        if offload_to_cpu
+        else chunk.kv_by_layer
+    )
     return {
         "turn_id": chunk.turn_id,
         "token_ids": list(chunk.token_ids),
-        "kv_by_layer": chunk.kv_by_layer,
+        "kv_by_layer": kv_by_layer,
         "text": chunk.text,
         "context_window": chunk.context_window,
         "context_prefix_tokens": chunk.context_prefix_tokens,
@@ -550,6 +602,18 @@ def _offload_kv_by_layer_to_cpu(kv_by_layer: dict[str, Any]) -> dict[str, Any]:
         layer_name: _offload_tensor_to_cpu(tensor)
         for layer_name, tensor in kv_by_layer.items()
     }
+
+
+def _detach_kv_by_layer_to_device(kv_by_layer: dict[str, Any], device: str) -> dict[str, Any]:
+    return {
+        layer_name: _detach_tensor_to_device(tensor, device)
+        for layer_name, tensor in kv_by_layer.items()
+    }
+
+
+def _detach_tensor_to_device(tensor: Any, device: str) -> Any:
+    detached = tensor.detach().to(device=device, non_blocking=True)
+    return detached.contiguous()
 
 
 def _offload_tensor_to_cpu(tensor: Any) -> Any:

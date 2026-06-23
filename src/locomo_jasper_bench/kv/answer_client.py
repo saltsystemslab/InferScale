@@ -145,6 +145,22 @@ class VLLMChunkedKVAnswerClient:
         try:
             query_tokens = self._query_token_ids(sample, qa)
             prompt_token_ids = list(composed.token_ids) + query_tokens
+            metrics: dict[str, Any] = {
+                "kv_memory_tokens": composed.num_tokens,
+                "kv_compose_time_ms": composed.compose_time_ms,
+                "kv_query_tokens": len(query_tokens),
+            }
+            ttft_ms: float | None = None
+            ttft_probe_ms = 0.0
+            if self.config.measure_ttft:
+                ttft_ms, engine_ttft_ms, ttft_probe_ms = self._measure_one_token_ttft(
+                    prompt_token_ids=prompt_token_ids,
+                    temperature=temperature,
+                    top_p=top_p,
+                    request_started=request_started,
+                )
+                metrics["kv_engine_time_to_first_token_ms"] = engine_ttft_ms
+
             sampling = self._sampling_cls(
                 temperature=temperature,
                 top_p=top_p,
@@ -158,20 +174,21 @@ class VLLMChunkedKVAnswerClient:
             )
             finished = time.perf_counter()
             generate_ms = (finished - generate_started) * 1000
-            total_ms = (finished - request_started) * 1000
+            total_ms = max(0.0, (finished - request_started) * 1000 - ttft_probe_ms)
             text = outputs[0].outputs[0].text.strip()
             stats = namespace_stats(self.namespace)
-            return ChatResult(
-                content=text,
-                metrics={
-                    "kv_memory_tokens": composed.num_tokens,
-                    "kv_compose_time_ms": composed.compose_time_ms,
+            metrics.update(
+                {
                     "answer_generate_time_ms": generate_ms,
                     "answer_total_time_ms": total_ms,
-                    "kv_query_tokens": len(query_tokens),
                     "kv_store_gpu_mb": stats.get("total_gpu_mb", 0.0),
                     "kv_selected_turn_ids": composed.selected_turn_ids,
-                },
+                }
+            )
+            return ChatResult(
+                content=text,
+                ttft_ms=ttft_ms,
+                metrics=metrics,
             )
         finally:
             remove_user_memory(self.namespace, user_id)
@@ -195,6 +212,35 @@ class VLLMChunkedKVAnswerClient:
 
     def close(self) -> None:
         self.close_sample()
+
+    def _measure_one_token_ttft(
+        self,
+        *,
+        prompt_token_ids: list[int],
+        temperature: float,
+        top_p: float,
+        request_started: float,
+    ) -> tuple[float, float, float]:
+        sampling = self._sampling_cls(
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=1,
+            min_tokens=1,
+        )
+        _synchronize_cuda()
+        engine_started = time.perf_counter()
+        self._llm.generate(
+            [{"prompt_token_ids": prompt_token_ids}],
+            sampling,
+            use_tqdm=False,
+        )
+        _synchronize_cuda()
+        finished = time.perf_counter()
+        return (
+            (finished - request_started) * 1000,
+            (finished - engine_started) * 1000,
+            (finished - engine_started) * 1000,
+        )
 
     @staticmethod
     def _free_composer_encoder(composer: ChunkedRopeSampleComposer) -> None:
@@ -270,6 +316,15 @@ def force_vllm_inprocess_mode() -> None:
 
 def _env_truthy(value: str | None) -> bool:
     return value is not None and value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _synchronize_cuda() -> None:
+    try:
+        import torch
+    except ImportError:
+        return
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
 
 
 def tokenize_messages(tokenizer: Any, messages: list[dict[str, str]]) -> list[int]:

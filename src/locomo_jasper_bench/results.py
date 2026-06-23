@@ -58,6 +58,7 @@ def summarize_records(
         "kv_compose_time_ms",
         "answer_generate_time_ms",
         "answer_total_time_ms",
+        "kv_engine_time_to_first_token_ms",
         "kv_query_tokens",
         "kv_store_gpu_mb",
     ):

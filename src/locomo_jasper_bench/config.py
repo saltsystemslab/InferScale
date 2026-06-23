@@ -67,6 +67,7 @@ class BenchmarkConfig:
     max_answer_tokens: int = 512
     max_judge_tokens: int = 4
     stream: bool = False
+    measure_ttft: bool = False
 
     kv_connector_module: str = "locomo_jasper_bench.kv.strict_gpu_connector"
     kv_sample_window: int = 1
@@ -141,6 +142,14 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     parser.add_argument("--max-answer-tokens", type=int, default=512)
     parser.add_argument("--max-judge-tokens", type=int, default=4)
     parser.add_argument("--stream", action="store_true")
+    parser.add_argument(
+        "--measure-ttft",
+        action="store_true",
+        help=(
+            "Record true first-token latency. Non-KV OpenAI-compatible runs require --stream; "
+            "vllm-kv runs use a one-token in-process vLLM probe."
+        ),
+    )
 
     parser.add_argument(
         "--kv-connector-module",
@@ -194,4 +203,6 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     ns = parser.parse_args(argv)
     if ns.kv_sample_window < 1:
         parser.error("--kv-sample-window must be >= 1.")
+    if ns.measure_ttft and ns.answer_backend != "vllm-kv" and not ns.stream:
+        parser.error("--measure-ttft for non-KV runs requires --stream.")
     return BenchmarkConfig(**vars(ns))

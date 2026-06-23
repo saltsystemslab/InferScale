@@ -39,6 +39,8 @@ class VLLMChunkedKVAnswerClient:
         self._llm: Any | None = None
         self._tokenizer: Any | None = None
         self._sampling_cls: Any | None = None
+        self._precomputed_composers: dict[int, ChunkedRopeSampleComposer] = {}
+        self._precomputed_sample_metrics: dict[int, dict[str, Any]] = {}
         self._composer: ChunkedRopeSampleComposer | None = None
         self._active_sample_id: int | None = None
         self._sample_precompute_metrics: dict[str, Any] = {}
@@ -49,9 +51,13 @@ class VLLMChunkedKVAnswerClient:
         if self._llm is not None:
             raise RuntimeError(
                 "GPU-resident KV precompute must run before vLLM is started. "
-                "Close vLLM before precomputing the next active sample."
+                "Precompute all needed samples before starting the single vLLM instance."
             )
-        self.close_sample()
+        sample_key = id(sample)
+        if self._active_sample_id == sample_key:
+            self.close_sample()
+        else:
+            self._release_precomputed_sample(sample_key)
         _log_cuda_memory("before GPU KV precompute", self.config.kv_device)
         logger.info(
             "Precomputing GPU-resident KV cache sample_id=%s turns=%d context_window=%d",
@@ -84,31 +90,31 @@ class VLLMChunkedKVAnswerClient:
                 composer.close()
             raise
 
-        self._composer = composer
-        self._active_sample_id = id(sample)
-        self._sample_precompute_metrics = composer.cache_stats()
-        self._sample_precompute_metrics.update(
+        sample_metrics = composer.cache_stats()
+        sample_metrics.update(
             {
                 "kv_precompute_time_ms": (time.perf_counter() - started) * 1000,
                 "kv_chunk_cache_residency_is_gpu": 1,
             }
         )
+        self._precomputed_composers[sample_key] = composer
+        self._precomputed_sample_metrics[sample_key] = sample_metrics
         logger.info(
             "Precomputed GPU-resident KV cache sample_id=%s chunks=%s tokens=%s layers=%s gpu_mb=%.1f devices=%s",
             sample.sample_id,
-            self._sample_precompute_metrics.get("kv_precomputed_chunks", 0),
-            self._sample_precompute_metrics.get("kv_precomputed_tokens", 0),
-            self._sample_precompute_metrics.get("kv_precomputed_layers", 0),
-            self._sample_precompute_metrics.get("kv_precomputed_gpu_mb", 0.0),
-            self._sample_precompute_metrics.get("kv_precomputed_devices", ""),
+            sample_metrics.get("kv_precomputed_chunks", 0),
+            sample_metrics.get("kv_precomputed_tokens", 0),
+            sample_metrics.get("kv_precomputed_layers", 0),
+            sample_metrics.get("kv_precomputed_gpu_mb", 0.0),
+            sample_metrics.get("kv_precomputed_devices", ""),
         )
 
     def start_llm(self) -> None:
         force_vllm_inprocess_mode()
         if self._llm is not None:
             return
-        if self._composer is None:
-            raise RuntimeError("GPU-resident KV sample cache must be precomputed before starting vLLM.")
+        if not self._precomputed_composers:
+            raise RuntimeError("At least one GPU-resident KV sample cache must be precomputed before starting vLLM.")
 
         from vllm import LLM, SamplingParams
 
@@ -140,10 +146,15 @@ class VLLMChunkedKVAnswerClient:
         question_hits: list[tuple[QuestionAnswer, list[SearchHit]]] | list[list[SearchHit]],
     ) -> None:
         del question_hits
-        if self._composer is None:
+        sample_key = id(sample)
+        composer = self._precomputed_composers.get(sample_key)
+        if composer is None:
             raise RuntimeError(f"GPU-resident KV cache for sample_id={sample.sample_id} was not precomputed.")
-        if self._active_sample_id != id(sample):
-            raise RuntimeError(f"Strict GPU KV sample_id={sample.sample_id} is not the active precomputed sample.")
+        if self._active_sample_id is not None and self._active_sample_id != sample_key:
+            self.close_sample()
+        self._composer = composer
+        self._active_sample_id = sample_key
+        self._sample_precompute_metrics = dict(self._precomputed_sample_metrics.get(sample_key, {}))
         logger.info("Preparing GPU-resident KV sample_id=%s", sample.sample_id)
 
     def answer_with_retrieved_memory(
@@ -288,7 +299,10 @@ class VLLMChunkedKVAnswerClient:
             remove_user_memory(self.namespace, user_id)
 
     def close_sample(self) -> None:
-        if self._composer is not None:
+        sample_key = self._active_sample_id
+        if sample_key is not None:
+            self._release_precomputed_sample(sample_key)
+        elif self._composer is not None:
             self._composer.close()
             self._composer = None
         self._active_sample_id = None
@@ -301,6 +315,24 @@ class VLLMChunkedKVAnswerClient:
             torch.cuda.empty_cache()
         except ImportError:
             pass
+
+    def _release_precomputed_sample(self, sample_key: int) -> None:
+        composer = self._precomputed_composers.pop(sample_key, None)
+        self._precomputed_sample_metrics.pop(sample_key, None)
+        if composer is not None:
+            composer.close()
+        if self._active_sample_id == sample_key or self._composer is composer:
+            self._composer = None
+
+    def _release_all_sample_caches(self) -> None:
+        active_key = self._active_sample_id
+        if active_key is not None:
+            self._release_precomputed_sample(active_key)
+        for sample_key in list(self._precomputed_composers):
+            self._release_precomputed_sample(sample_key)
+        self._composer = None
+        self._active_sample_id = None
+        self._sample_precompute_metrics = {}
 
     def close_llm(self) -> None:
         llm = self._llm
@@ -318,7 +350,8 @@ class VLLMChunkedKVAnswerClient:
         _log_cuda_memory("after vLLM close", self.config.kv_device)
 
     def close(self) -> None:
-        self.close_sample()
+        self._release_all_sample_caches()
+        clear_namespace(self.namespace)
         self.close_llm()
         drop_namespace(self.namespace)
 

@@ -402,7 +402,6 @@ def _run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) ->
     if not callable(close_sample) or not callable(prepare_sample) or not callable(start_llm):
         raise RuntimeError(f"{config.answer_backend} answer backend does not expose sample preparation methods.")
     precompute_sample_cache = getattr(clients.answer_client, "precompute_sample_cache", None)
-    close_llm = getattr(clients.answer_client, "close_llm", None)
     active_sample_gpu_cache = callable(precompute_sample_cache)
 
     output_path = config.run_dir / "predictions.jsonl"
@@ -460,50 +459,42 @@ def _run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) ->
 
             if active_sample_gpu_cache:
                 precompute_sample_cache(sample)
-                try:
-                    start_llm()
-                    prepare_sample(sample, [(question.qa, question.hits) for question in prepared.questions])
-                    completed_questions = _answer_prepared_kv_sample(
-                        config=config,
-                        writer=writer,
-                        question_evaluator=question_evaluator,
-                        prepared=prepared,
-                        total_samples=len(samples),
-                        planned_questions=planned_questions,
-                        completed_questions=completed_questions,
-                        all_records=all_records,
-                    )
-                finally:
-                    close_sample()
-                    if callable(close_llm):
-                        close_llm()
-            else:
-                prepared_samples.append(prepared)
+            prepared_samples.append(prepared)
 
-        if not active_sample_gpu_cache:
+        if active_sample_gpu_cache:
+            if prepared_samples:
+                logger.info(
+                    "Precomputed GPU-resident KV caches for {} samples and {} questions; "
+                    "starting one vLLM instance",
+                    len(prepared_samples),
+                    sum(len(prepared.questions) for prepared in prepared_samples),
+                )
+            else:
+                logger.info("No GPU-resident KV caches were precomputed; skipping vLLM startup")
+        else:
             logger.info(
                 "Prepared {} samples and {} questions before vLLM startup",
                 len(prepared_samples),
                 sum(len(prepared.questions) for prepared in prepared_samples),
             )
-            if prepared_samples:
-                start_llm()
-            for prepared in prepared_samples:
-                sample = prepared.sample
-                prepare_sample(sample, [(question.qa, question.hits) for question in prepared.questions])
-                try:
-                    completed_questions = _answer_prepared_kv_sample(
-                        config=config,
-                        writer=writer,
-                        question_evaluator=question_evaluator,
-                        prepared=prepared,
-                        total_samples=len(samples),
-                        planned_questions=planned_questions,
-                        completed_questions=completed_questions,
-                        all_records=all_records,
-                    )
-                finally:
-                    close_sample()
+        if prepared_samples:
+            start_llm()
+        for prepared in prepared_samples:
+            sample = prepared.sample
+            prepare_sample(sample, [(question.qa, question.hits) for question in prepared.questions])
+            try:
+                completed_questions = _answer_prepared_kv_sample(
+                    config=config,
+                    writer=writer,
+                    question_evaluator=question_evaluator,
+                    prepared=prepared,
+                    total_samples=len(samples),
+                    planned_questions=planned_questions,
+                    completed_questions=completed_questions,
+                    all_records=all_records,
+                )
+            finally:
+                close_sample()
 
     logger.info("Wrote {} prepared vLLM prediction records to {}", len(all_records), output_path)
     return all_records

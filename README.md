@@ -97,7 +97,7 @@ locomo-jasper-bench \
   --dataset data/locomo10.json \
   --results-dir "${BENCHMARK_RESULTS_ROOT}" \
   --vector-backend qdrant \
-  --max-samples 20 \
+  --max-samples 50 \
   --stream \
   --log-every "${LOCOMO_LOG_EVERY:-10}" \
   --run-id qdrant-20samples-${RUN_STAMP}
@@ -107,7 +107,7 @@ locomo-jasper-bench \
   --results-dir "${BENCHMARK_RESULTS_ROOT}" \
   --vector-backend jasper \
   --jasper-alpha 1.0 \
-  --max-samples 20 \
+  --max-samples 50 \
   --stream \
   --log-every "${LOCOMO_LOG_EVERY:-10}" \
   --run-id jasper-20samples-${RUN_STAMP}

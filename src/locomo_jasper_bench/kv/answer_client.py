@@ -238,7 +238,7 @@ class VLLMChunkedKVAnswerClient:
 
     @staticmethod
     def _free_composer_encoder(composer: ChunkedRopeSampleComposer) -> None:
-        # The encoded chunks stay GPU-resident; the HF model is released before vLLM loads.
+        # Encoded chunks stay CPU-resident; release the HF model before vLLM loads.
         composer.encoder._model = None
         composer.hf_model = None
         gc.collect()

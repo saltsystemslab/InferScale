@@ -67,7 +67,7 @@ def torch_dtype(dtype_name: str) -> Any:
 
 
 class ChunkedRopeSampleComposer:
-    """GPU-resident pre-RoPE chunk encoder and top-k composer for one sample."""
+    """Pre-RoPE chunk encoder and top-k composer for one sample."""
 
     def __init__(
         self,
@@ -193,11 +193,13 @@ class ChunkedRopeSampleComposer:
         return EncodedChunk(
             turn_id=turn.id,
             token_ids=plan.target_token_ids,
-            kv_by_layer=_encode_token_chunk_pre_rope(
-                self.hf_model,
-                plan.input_token_ids,
-                slice_start=plan.slice_start,
-                slice_end=plan.slice_end,
+            kv_by_layer=_offload_kv_by_layer_to_cpu(
+                _encode_token_chunk_pre_rope(
+                    self.hf_model,
+                    plan.input_token_ids,
+                    slice_start=plan.slice_start,
+                    slice_end=plan.slice_end,
+                )
             ),
             text=plan.target_text,
             context_window=self.context_window,
@@ -214,11 +216,13 @@ class ChunkedRopeSampleComposer:
         return EncodedChunk(
             turn_id=turn_id,
             token_ids=token_ids,
-            kv_by_layer=_encode_token_chunk_pre_rope(
-                self.hf_model,
-                token_ids,
-                slice_start=0,
-                slice_end=len(token_ids),
+            kv_by_layer=_offload_kv_by_layer_to_cpu(
+                _encode_token_chunk_pre_rope(
+                    self.hf_model,
+                    token_ids,
+                    slice_start=0,
+                    slice_end=len(token_ids),
+                )
             ),
             text=text,
             encoding_input_tokens=len(token_ids),
@@ -241,7 +245,7 @@ class ChunkedRopeSampleComposer:
             values = []
             virtual_pos = 0
             for chunk in chunks:
-                chunk_kv = chunk.kv_by_layer[layer_name]
+                chunk_kv = _copy_layer_kv_to_device(chunk.kv_by_layer[layer_name], self.device)
                 k_pre = chunk_kv[0]
                 v = chunk_kv[1]
                 token_count = k_pre.shape[0]
@@ -377,3 +381,30 @@ def _encode_token_chunk_pre_rope(
         layer_name = f"model.layers.{layer_idx}.self_attn.attn"
         kv_by_layer[layer_name] = torch.stack([k_pre, value], dim=0)
     return kv_by_layer
+
+
+def _offload_kv_by_layer_to_cpu(kv_by_layer: dict[str, Any]) -> dict[str, Any]:
+    return {
+        layer_name: _offload_tensor_to_cpu(tensor)
+        for layer_name, tensor in kv_by_layer.items()
+    }
+
+
+def _offload_tensor_to_cpu(tensor: Any) -> Any:
+    import torch
+
+    detached = tensor.detach()
+    try:
+        host_tensor = torch.empty(
+            detached.shape,
+            dtype=detached.dtype,
+            pin_memory=True,
+        )
+    except RuntimeError:
+        return detached.to(device="cpu").contiguous()
+    host_tensor.copy_(detached, non_blocking=False)
+    return host_tensor
+
+
+def _copy_layer_kv_to_device(layer_kv: Any, device: str) -> Any:
+    return layer_kv.to(device=device, non_blocking=True)

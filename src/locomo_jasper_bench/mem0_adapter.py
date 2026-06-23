@@ -82,7 +82,7 @@ class Mem0JasperVectorStore(VectorStoreBase):
         hits, metrics = self.store.search(query_vector, top_k=requested_top_k)
         self.last_search_metrics = metrics
         return [
-            SearchHit(id=hit.id, payload=hit.payload, score=hit.score, distance=hit.score, rank=rank)
+            SearchHit(id=hit.id, payload=hit.payload, score=hit.score, distance=hit.distance, rank=rank)
             for rank, hit in enumerate(hits, start=1)
         ]
 

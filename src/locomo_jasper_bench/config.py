@@ -203,6 +203,12 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     ns = parser.parse_args(argv)
     if ns.kv_sample_window < 1:
         parser.error("--kv-sample-window must be >= 1.")
-    if ns.measure_ttft and ns.answer_backend != "vllm-kv" and not ns.stream:
+    if (
+        ns.measure_ttft
+        and ns.answer_backend != "vllm-kv"
+        and not ns.stream
+        and not ns.judge_only
+        and not ns.preembed_only
+    ):
         parser.error("--measure-ttft for non-KV runs requires --stream.")
     return BenchmarkConfig(**vars(ns))

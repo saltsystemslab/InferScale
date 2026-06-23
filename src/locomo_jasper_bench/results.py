@@ -48,6 +48,7 @@ def summarize_records(
     metrics = {
         "accuracy": _safe_div(correct, len(judged)),
         "time_to_first_token_ms": _numeric_summary(_metric_values(rows, "time_to_first_token_ms")),
+        "retrieval_to_ttft_ms": _numeric_summary(_metric_values(rows, "retrieval_to_ttft_ms")),
         "vector_db_query_time_ms": _numeric_summary(vector_query_times),
         "vector_db_query_count": vector_query_count,
         "vector_db_query_time_total_ms": vector_query_total_ms,

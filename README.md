@@ -175,7 +175,8 @@ cat "${BENCHMARK_RESULTS_ROOT}/jasper-20samples-${RUN_STAMP}/summary.json"
 Primary metrics:
 
 - `metrics.accuracy`: judged answer quality.
-- `metrics.time_to_first_token_ms`: time to first answer token; populated by non-KV runs with `--stream` and KV runs with `--measure-ttft`.
+- `metrics.time_to_first_token_ms`: LLM/backend time to first answer token; populated by non-KV runs with `--stream` and KV runs with `--measure-ttft`.
+- `metrics.retrieval_to_ttft_ms`: non-KV retrieval-inclusive time from Mem0 query start to first streamed answer token.
 - `metrics.kv_engine_time_to_first_token_ms`: vLLM engine time for the one-token KV TTFT probe; populated by KV runs with `--measure-ttft`.
 - `metrics.vector_db_query_time_ms`: raw backend vector query time.
 - `metrics.vector_db_queries_per_sec`: vector DB query throughput.

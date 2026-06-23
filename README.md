@@ -119,7 +119,7 @@ The `ai-memory-code` submodule can be used through an opt-in in-process vLLM bac
 
 ```bash
 RUN_STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-RUN_ID=kv-strict-smoke-${RUN_STAMP}
+RUN_ID=kv-gpu-jasper5-${RUN_STAMP}
 
 locomo-jasper-bench \
   --dataset data/locomo10.json \

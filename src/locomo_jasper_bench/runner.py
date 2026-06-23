@@ -438,7 +438,7 @@ def _run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) ->
                 sample.sample_id,
             )
 
-            prepare_sample(sample, [hits for _, hits, _ in retrieved])
+            prepare_sample(sample, [(qa, hits) for qa, hits, _ in retrieved])
 
             try:
                 for qa, hits, store_metrics in retrieved:

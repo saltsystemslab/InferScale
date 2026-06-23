@@ -2,17 +2,26 @@ from __future__ import annotations
 
 import gc
 import logging
+import multiprocessing as mp
 import os
+import shutil
 import sys
 import time
+import traceback
 import uuid
+from pathlib import Path
 from typing import Any
 
 from ..clients import ChatResult
 from ..config import BenchmarkConfig
 from ..data import ConversationSample, QuestionAnswer
 from ..vector_types import SearchHit
-from .chunked_rope import ChunkedRopeSampleComposer
+from .chunked_rope import (
+    CachedChunkedRopeSampleComposer,
+    ChunkedRopeSampleComposer,
+    load_sample_kv_cache,
+    save_sample_kv_cache,
+)
 from .prompting import build_kv_equivalence_prompt_token_ids, selected_turn_ids
 from .strict_gpu_registry import clear_namespace, namespace_stats, register_user_memory, remove_user_memory
 from .submodule import require_ai_memory_submodule
@@ -31,41 +40,43 @@ class VLLMChunkedKVAnswerClient:
         self._llm: Any | None = None
         self._tokenizer: Any | None = None
         self._sampling_cls: Any | None = None
-        self._composer: ChunkedRopeSampleComposer | None = None
+        self._composer: CachedChunkedRopeSampleComposer | None = None
         self._active_sample_id: int | None = None
+        self._sample_cache_dir: Path | None = None
 
-    def prepare_sample(self, sample: ConversationSample, hits_by_question: list[list[SearchHit]]) -> None:
+    def prepare_sample(
+        self,
+        sample: ConversationSample,
+        question_hits: list[tuple[QuestionAnswer, list[SearchHit]]] | list[list[SearchHit]],
+    ) -> None:
         force_vllm_inprocess_mode()
         self.close_sample()
         require_ai_memory_submodule()
 
         try:
+            hit_lists = _prepared_hit_lists(question_hits)
             needed_turn_ids: set[str] = set()
-            for hits in hits_by_question:
+            for hits in hit_lists:
                 needed_turn_ids.update(selected_turn_ids(hits))
             if not needed_turn_ids:
                 raise RuntimeError(f"No retrieved turn ids for sample_id={sample.sample_id}; cannot prepare KV memory.")
 
+            cache_dir = self._sample_cache_dir_for(sample)
+            cache_path = cache_dir / "sample_kv.pt"
             logger.info(
-                "Preparing strict GPU KV sample_id=%s retrieved_turns=%d context_window=%d",
+                "Precomputing CPU KV cache sample_id=%s turns=%d retrieved_turns=%d context_window=%d",
                 sample.sample_id,
+                len(sample.turns),
                 len(needed_turn_ids),
                 self.config.context_window,
             )
-            composer = ChunkedRopeSampleComposer(
-                model=self.config.model,
-                dtype=self.config.kv_dtype,
-                device=self.config.kv_device,
-                max_position=self.config.kv_max_position,
-                context_window=self.config.context_window,
+            _build_sample_kv_cache_in_subprocess(
+                self.config,
+                sample,
+                cache_path,
             )
-            try:
-                composer.encode_sample(sample, turn_ids=needed_turn_ids)
-                self._free_composer_encoder(composer)
-            except Exception:
-                composer.close()
-                raise
-            self._composer = composer
+            self._composer = load_sample_kv_cache(cache_path, device=self.config.kv_device)
+            self._sample_cache_dir = cache_dir
             self._active_sample_id = id(sample)
         except Exception:
             self.close_sample()
@@ -110,7 +121,7 @@ class VLLMChunkedKVAnswerClient:
             raise RuntimeError("VLLMChunkedKVAnswerClient.prepare_sample() must be called before answering.")
         composer = self._composer
         if composer is None:
-            raise RuntimeError(f"Strict GPU KV sample_id={sample.sample_id} was not prepared.")
+            raise RuntimeError(f"Strict GPU KV CPU cache sample_id={sample.sample_id} was not prepared.")
         if self._active_sample_id != id(sample):
             raise RuntimeError(f"Strict GPU KV sample_id={sample.sample_id} is not the active prepared sample.")
 
@@ -193,6 +204,9 @@ class VLLMChunkedKVAnswerClient:
         if self._composer is not None:
             self._composer.close()
             self._composer = None
+        if self._sample_cache_dir is not None:
+            shutil.rmtree(self._sample_cache_dir, ignore_errors=True)
+            self._sample_cache_dir = None
         self._active_sample_id = None
         self._tokenizer = None
         clear_namespace(self.namespace)
@@ -236,18 +250,87 @@ class VLLMChunkedKVAnswerClient:
             (finished - engine_started) * 1000,
         )
 
-    @staticmethod
-    def _free_composer_encoder(composer: ChunkedRopeSampleComposer) -> None:
-        # Encoded chunks stay CPU-resident; release the HF model before vLLM loads.
-        composer.encoder._model = None
-        composer.hf_model = None
-        gc.collect()
-        try:
-            import torch
+    def _sample_cache_dir_for(self, sample: ConversationSample) -> Path:
+        return self.config.run_dir / "kv_chunk_cache" / _safe_path_component(sample.sample_id)
 
-            torch.cuda.empty_cache()
-        except ImportError:
+
+def _build_sample_kv_cache_in_subprocess(
+    config: BenchmarkConfig,
+    sample: ConversationSample,
+    cache_path: Path,
+) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    error_path = cache_path.with_suffix(".error.txt")
+    for path in (cache_path, error_path):
+        try:
+            path.unlink()
+        except FileNotFoundError:
             pass
+
+    ctx = mp.get_context("spawn")
+    process = ctx.Process(
+        target=_build_sample_kv_cache_worker,
+        args=(config, sample, str(cache_path), str(error_path)),
+        name=f"kv-cache-{_safe_path_component(sample.sample_id)}",
+    )
+    process.start()
+    process.join()
+
+    if process.exitcode != 0:
+        details = ""
+        if error_path.exists():
+            details = error_path.read_text()
+        raise RuntimeError(
+            f"KV cache encoder process failed for sample_id={sample.sample_id} "
+            f"with exit code {process.exitcode}.\n{details}"
+        )
+    if not cache_path.exists():
+        raise RuntimeError(f"KV cache encoder process did not write {cache_path}.")
+
+
+def _build_sample_kv_cache_worker(
+    config: BenchmarkConfig,
+    sample: ConversationSample,
+    cache_path: str,
+    error_path: str,
+) -> None:
+    composer: ChunkedRopeSampleComposer | None = None
+    try:
+        force_vllm_inprocess_mode()
+        require_ai_memory_submodule()
+        composer = ChunkedRopeSampleComposer(
+            model=config.model,
+            dtype=config.kv_dtype,
+            device=config.kv_device,
+            max_position=config.kv_max_position,
+            context_window=config.context_window,
+        )
+        composer.encode_sample(sample)
+        save_sample_kv_cache(Path(cache_path), composer)
+    except BaseException:
+        Path(error_path).write_text(traceback.format_exc())
+        raise
+    finally:
+        if composer is not None:
+            composer.close()
+
+
+def _prepared_hit_lists(
+    question_hits: list[tuple[QuestionAnswer, list[SearchHit]]] | list[list[SearchHit]],
+) -> list[list[SearchHit]]:
+    hit_lists: list[list[SearchHit]] = []
+    for item in question_hits:
+        if isinstance(item, tuple) and len(item) == 2:
+            hit_lists.append(item[1])
+        else:
+            hit_lists.append(item)
+    return hit_lists
+
+
+def _safe_path_component(value: str) -> str:
+    safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value)
+    return safe or "sample"
+
 
 def build_strict_gpu_kv_transfer_config(
     *,

@@ -24,7 +24,11 @@ class VLLMPrefixPromptAnswerClient:
         self._sampling_cls: Any | None = None
         self._active_sample_id: int | None = None
 
-    def prepare_sample(self, sample: ConversationSample, hits_by_question: list[list[SearchHit]]) -> None:
+    def prepare_sample(
+        self,
+        sample: ConversationSample,
+        question_hits: list[tuple[QuestionAnswer, list[SearchHit]]] | list[list[SearchHit]],
+    ) -> None:
         self.close_sample()
 
         from vllm import LLM, SamplingParams

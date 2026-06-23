@@ -62,6 +62,10 @@ def summarize_records(
         "kv_engine_time_to_first_token_ms",
         "kv_query_tokens",
         "kv_query_bos_stripped",
+        "kv_context_window",
+        "kv_context_prefix_tokens_total",
+        "kv_context_prefix_tokens_max",
+        "kv_context_prefix_truncated_tokens",
         "kv_store_gpu_mb",
         "prefix_engine_time_to_first_token_ms",
     ):

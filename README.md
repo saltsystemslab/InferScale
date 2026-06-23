@@ -117,6 +117,8 @@ locomo-jasper-bench \
 
 The `ai-memory-code` submodule can be used through an opt-in in-process vLLM backend. This mode keeps the current Mem0/Jasper top-k retrieval step, then composes the retrieved turns as chunked-RoPE KV tensors on GPU and injects them through a GPU connector. It forces vLLM V1 multiprocessing off so the connector can share the benchmark process's GPU memory registry.
 
+`--context-window W` controls KV encoding context. `0` encodes each retrieved turn in isolation. Positive values encode each retrieved turn with the previous `W` LoCoMo sessions as prefix context, then store only the retrieved turn's KV, matching the context-window idea from `ai-memory-code` while keeping turn-level retrieval.
+
 ```bash
 RUN_STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 RUN_ID=kv-gpu-jasper5-${RUN_STAMP}
@@ -127,7 +129,7 @@ locomo-jasper-bench \
   --answer-backend vllm-kv \
   --vector-backend jasper \
   --top-k 50 \
-  --kv-sample-window 3 \
+  --context-window 0 \
   --kv-gpu-memory-utilization 0.30 \
   --kv-max-model-len 32768 \
   --kv-max-position 32768 \
@@ -152,7 +154,6 @@ locomo-jasper-bench \
   --answer-backend vllm-prefix \
   --vector-backend jasper \
   --top-k 50 \
-  --kv-sample-window 3 \
   --kv-gpu-memory-utilization 0.30 \
   --kv-max-model-len 32768 \
   --kv-max-position 32768 \

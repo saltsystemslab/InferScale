@@ -19,6 +19,24 @@ class EncodedChunk:
     token_ids: list[int]
     kv_by_layer: dict[str, Any]
     text: str
+    context_window: int = 0
+    context_prefix_tokens: int = 0
+    raw_context_prefix_tokens: int = 0
+    context_prefix_truncated_tokens: int = 0
+    encoding_input_tokens: int = 0
+
+
+@dataclass(slots=True, frozen=True)
+class ContextEncodingPlan:
+    turn_id: str
+    target_text: str
+    target_token_ids: list[int]
+    context_token_ids: list[int]
+    input_token_ids: list[int]
+    slice_start: int
+    slice_end: int
+    raw_context_prefix_tokens: int
+    context_prefix_truncated_tokens: int
 
 
 @dataclass(slots=True)
@@ -28,6 +46,10 @@ class ComposedMemory:
     num_tokens: int
     compose_time_ms: float
     selected_turn_ids: list[str]
+    context_window: int
+    context_prefix_tokens_total: int
+    context_prefix_tokens_max: int
+    context_prefix_truncated_tokens: int
 
 
 def torch_dtype(dtype_name: str) -> Any:
@@ -54,6 +76,7 @@ class ChunkedRopeSampleComposer:
         dtype: str,
         device: str,
         max_position: int,
+        context_window: int = 0,
     ) -> None:
         require_ai_memory_submodule()
         import torch
@@ -62,10 +85,13 @@ class ChunkedRopeSampleComposer:
 
         if not torch.cuda.is_available():
             raise RuntimeError("KV injection requires a CUDA device.")
+        if context_window < 0:
+            raise ValueError("context_window must be >= 0.")
 
         self.model = model
         self.device = device
         self.max_position = max_position
+        self.context_window = context_window
         self.encoder = PreRoPEMemoryEncoder(
             model_name=model,
             dtype=torch_dtype(dtype),
@@ -92,9 +118,14 @@ class ChunkedRopeSampleComposer:
         turns = sample.turns
         if turn_ids is not None:
             turns = [turn for turn in sample.turns if turn.id in turn_ids]
-        logger.info("Pre-RoPE encoding %d memory chunks for sample_id=%s", len(turns), sample.sample_id)
+        logger.info(
+            "Pre-RoPE encoding %d memory chunks for sample_id=%s context_window=%d",
+            len(turns),
+            sample.sample_id,
+            self.context_window,
+        )
         for turn in turns:
-            self.chunks[turn.id] = self._encode_turn_chunk(turn)
+            self.chunks[turn.id] = self._encode_turn_chunk(sample, turn)
         logger.info("Pre-RoPE encoded %d chunks for sample_id=%s", len(self.chunks), sample.sample_id)
 
     def compose(self, hits: list[SearchHit]) -> ComposedMemory:
@@ -125,12 +156,17 @@ class ChunkedRopeSampleComposer:
             raise RuntimeError(
                 f"Composed memory has {len(token_ids)} tokens, exceeding kv_max_position={self.max_position}."
             )
+        selected_context_tokens = [chunk.context_prefix_tokens for chunk in selected]
         return ComposedMemory(
             kv_by_layer=kv_by_layer,
             token_ids=token_ids,
             num_tokens=len(token_ids),
             compose_time_ms=(time.perf_counter() - started) * 1000,
             selected_turn_ids=turn_ids,
+            context_window=self.context_window,
+            context_prefix_tokens_total=sum(selected_context_tokens),
+            context_prefix_tokens_max=max(selected_context_tokens, default=0),
+            context_prefix_truncated_tokens=sum(chunk.context_prefix_truncated_tokens for chunk in selected),
         )
 
     def close(self) -> None:
@@ -146,8 +182,30 @@ class ChunkedRopeSampleComposer:
         gc.collect()
         torch.cuda.empty_cache()
 
-    def _encode_turn_chunk(self, turn: Turn) -> EncodedChunk:
-        return self._encode_text_chunk(turn.id, format_turn_for_memory(turn).strip() + "\n")
+    def _encode_turn_chunk(self, sample: ConversationSample, turn: Turn) -> EncodedChunk:
+        plan = build_turn_context_encoding_plan(
+            self.tokenizer,
+            sample,
+            turn,
+            context_window=self.context_window,
+            max_input_tokens=self.max_position,
+        )
+        return EncodedChunk(
+            turn_id=turn.id,
+            token_ids=plan.target_token_ids,
+            kv_by_layer=_encode_token_chunk_pre_rope(
+                self.hf_model,
+                plan.input_token_ids,
+                slice_start=plan.slice_start,
+                slice_end=plan.slice_end,
+            ),
+            text=plan.target_text,
+            context_window=self.context_window,
+            context_prefix_tokens=len(plan.context_token_ids),
+            raw_context_prefix_tokens=plan.raw_context_prefix_tokens,
+            context_prefix_truncated_tokens=plan.context_prefix_truncated_tokens,
+            encoding_input_tokens=len(plan.input_token_ids),
+        )
 
     def _encode_text_chunk(self, turn_id: str, text: str) -> EncodedChunk:
         token_ids = self.tokenizer.encode(text, add_special_tokens=False)
@@ -156,8 +214,14 @@ class ChunkedRopeSampleComposer:
         return EncodedChunk(
             turn_id=turn_id,
             token_ids=token_ids,
-            kv_by_layer=_encode_token_chunk_pre_rope(self.hf_model, token_ids),
+            kv_by_layer=_encode_token_chunk_pre_rope(
+                self.hf_model,
+                token_ids,
+                slice_start=0,
+                slice_end=len(token_ids),
+            ),
             text=text,
+            encoding_input_tokens=len(token_ids),
         )
 
     def _compose_chunks(self, chunks: list[EncodedChunk]) -> dict[str, Any]:
@@ -200,9 +264,89 @@ class ChunkedRopeSampleComposer:
         return composed
 
 
-def _encode_token_chunk_pre_rope(hf_model: Any, token_ids: list[int]) -> dict[str, Any]:
+def build_turn_context_encoding_plan(
+    tokenizer: Any,
+    sample: ConversationSample,
+    turn: Turn,
+    *,
+    context_window: int,
+    max_input_tokens: int,
+) -> ContextEncodingPlan:
+    if context_window < 0:
+        raise ValueError("context_window must be >= 0.")
+    if max_input_tokens < 1:
+        raise ValueError("max_input_tokens must be >= 1.")
+
+    target_text = format_memory_turn(turn)
+    target_token_ids = _encode_text_no_special(tokenizer, target_text)
+    if not target_token_ids:
+        raise RuntimeError(f"Memory chunk tokenized to zero tokens: {turn.id}")
+    if len(target_token_ids) > max_input_tokens:
+        raise RuntimeError(
+            f"Memory turn {turn.id} has {len(target_token_ids)} tokens, "
+            f"exceeding kv_max_position={max_input_tokens} even without context."
+        )
+
+    context_token_ids: list[int] = []
+    for context_turn in previous_session_context_turns(sample, turn, context_window):
+        context_token_ids.extend(_encode_text_no_special(tokenizer, format_memory_turn(context_turn)))
+
+    raw_context_prefix_tokens = len(context_token_ids)
+    overflow = len(context_token_ids) + len(target_token_ids) - max_input_tokens
+    context_prefix_truncated_tokens = max(0, overflow)
+    if context_prefix_truncated_tokens:
+        context_token_ids = context_token_ids[context_prefix_truncated_tokens:]
+
+    input_token_ids = context_token_ids + target_token_ids
+    slice_start = len(context_token_ids)
+    slice_end = len(input_token_ids)
+    return ContextEncodingPlan(
+        turn_id=turn.id,
+        target_text=target_text,
+        target_token_ids=target_token_ids,
+        context_token_ids=context_token_ids,
+        input_token_ids=input_token_ids,
+        slice_start=slice_start,
+        slice_end=slice_end,
+        raw_context_prefix_tokens=raw_context_prefix_tokens,
+        context_prefix_truncated_tokens=context_prefix_truncated_tokens,
+    )
+
+
+def previous_session_context_turns(sample: ConversationSample, turn: Turn, context_window: int) -> list[Turn]:
+    if context_window <= 0:
+        return []
+    first_session_index = turn.session_index - context_window
+    return [
+        candidate
+        for candidate in sample.turns
+        if first_session_index <= candidate.session_index < turn.session_index
+    ]
+
+
+def format_memory_turn(turn: Turn) -> str:
+    return format_turn_for_memory(turn).strip() + "\n"
+
+
+def _encode_text_no_special(tokenizer: Any, text: str) -> list[int]:
+    encode = getattr(tokenizer, "encode", None)
+    if not callable(encode):
+        raise RuntimeError("Tokenizer has no encode method.")
+    return list(encode(text, add_special_tokens=False))
+
+
+def _encode_token_chunk_pre_rope(
+    hf_model: Any,
+    token_ids: list[int],
+    *,
+    slice_start: int,
+    slice_end: int,
+) -> dict[str, Any]:
     import torch
     from encode_memories_pre_rope import capture_pre_rope
+
+    if slice_start < 0 or slice_end < slice_start or slice_end > len(token_ids):
+        raise ValueError("Invalid KV slice bounds for pre-RoPE encoding.")
 
     device = next(hf_model.parameters()).device
     input_ids = torch.tensor([token_ids], device=device)
@@ -220,8 +364,16 @@ def _encode_token_chunk_pre_rope(hf_model: Any, token_ids: list[int]) -> dict[st
     kv_by_layer = {}
     for layer_idx, (_, value_post) in enumerate(post_pairs):
         slot = capture.layers[layer_idx]
-        k_pre = slot.k_pre.squeeze(0).transpose(0, 1).contiguous()
-        value = value_post.squeeze(0).transpose(0, 1).contiguous()
+        k_pre = (
+            slot.k_pre.squeeze(0)[:, slice_start:slice_end, :]
+            .transpose(0, 1)
+            .contiguous()
+        )
+        value = (
+            value_post.squeeze(0)[:, slice_start:slice_end, :]
+            .transpose(0, 1)
+            .contiguous()
+        )
         layer_name = f"model.layers.{layer_idx}.self_attn.attn"
         kv_by_layer[layer_name] = torch.stack([k_pre, value], dim=0)
     return kv_by_layer

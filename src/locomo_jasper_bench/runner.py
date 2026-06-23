@@ -23,13 +23,6 @@ class RuntimeClients:
     judge_client: ChatClient | None
 
 
-@dataclass(slots=True)
-class KvSampleWork:
-    sample_index: int
-    sample: ConversationSample
-    retrieved: list[tuple[QuestionAnswer, list[SearchHit], SearchMetrics]]
-
-
 def run_benchmark(config: BenchmarkConfig, clients: RuntimeClients | None = None) -> dict[str, Any]:
     logger.info(
         "Starting benchmark run_id={} dataset={} results_dir={}",
@@ -376,27 +369,23 @@ def _run_openai_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients
 def _run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> list[dict[str, Any]]:
     from .memory_builder import SampleMemoryBuilder
 
-    if config.kv_sample_window < 1:
-        raise RuntimeError("--kv-sample-window must be >= 1.")
-
     logger.info("Loading LoCoMo dataset from {}", config.dataset_path)
     samples = load_locomo(config.dataset_path, max_samples=config.max_samples)
     planned_questions = _planned_question_count(samples, config.max_questions)
     logger.info(
-        "Loaded {} samples for prepared vLLM backend={}; planned_questions={} max_samples={} max_questions={} sample_window={}",
+        "Loaded {} samples for prepared vLLM backend={}; planned_questions={} max_samples={} max_questions={} context_window={}",
         len(samples),
         config.answer_backend,
         planned_questions,
         config.max_samples,
         config.max_questions,
-        config.kv_sample_window,
+        config.context_window,
     )
 
     prepare_sample = getattr(clients.answer_client, "prepare_sample", None)
-    prepare_samples = getattr(clients.answer_client, "prepare_samples", None)
     close_sample = getattr(clients.answer_client, "close_sample", None)
-    if not callable(close_sample) or not (callable(prepare_samples) or callable(prepare_sample)):
-        raise RuntimeError(f"{config.answer_backend} answer backend does not expose sample-window preparation methods.")
+    if not callable(close_sample) or not callable(prepare_sample):
+        raise RuntimeError(f"{config.answer_backend} answer backend does not expose sample preparation methods.")
 
     output_path = config.run_dir / "predictions.jsonl"
     all_records: list[dict[str, Any]] = []
@@ -406,103 +395,88 @@ def _run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) ->
     question_evaluator = QuestionEvaluator(config, clients)
 
     with JsonlWriter(output_path) as writer:
-        sample_offset = 0
-        while sample_offset < len(samples):
+        for sample_index, sample in enumerate(samples, start=1):
             if remaining_questions is not None and remaining_questions <= 0:
                 break
 
-            window: list[KvSampleWork] = []
-            while sample_offset < len(samples) and len(window) < config.kv_sample_window:
-                if remaining_questions is not None and remaining_questions <= 0:
-                    break
-                sample_index = sample_offset + 1
-                sample = samples[sample_offset]
-                sample_offset += 1
-
-                sample_questions = sample.qa
-                if remaining_questions is not None:
-                    sample_questions = sample_questions[:remaining_questions]
-                if not sample_questions:
-                    continue
-
-                logger.info(
-                    "KV sample {}/{} sample_id={} turns={} questions={} retrieval starting",
-                    sample_index,
-                    len(samples),
-                    sample.sample_id,
-                    len(sample.turns),
-                    len(sample_questions),
-                )
-
-                memory = memory_builder.build(sample)
-                retrieved: list[tuple[QuestionAnswer, list[SearchHit], SearchMetrics]] = []
-                try:
-                    for qa in sample_questions:
-                        hits = question_evaluator._search_mem0_memory(memory, qa.question)
-                        store_metrics = question_evaluator._mem0_store_search_metrics(memory)
-                        retrieved.append((qa, hits, store_metrics))
-                finally:
-                    memory_builder.log_embedding_cache_stats(memory, sample.sample_id)
-                    memory_builder.close(memory)
-
-                if remaining_questions is not None:
-                    remaining_questions -= len(sample_questions)
-                window.append(KvSampleWork(sample_index=sample_index, sample=sample, retrieved=retrieved))
-
-            if not window:
+            sample_questions = sample.qa
+            if remaining_questions is not None:
+                sample_questions = sample_questions[:remaining_questions]
+            if not sample_questions:
                 continue
 
             logger.info(
-                "KV sample window prepared {} sample(s); vector indexes closed before encoder/vLLM load",
-                len(window),
+                "KV sample {}/{} sample_id={} turns={} questions={} retrieval starting",
+                sample_index,
+                len(samples),
+                sample.sample_id,
+                len(sample.turns),
+                len(sample_questions),
             )
 
-            if callable(prepare_samples):
-                prepare_samples([(work.sample, [hits for _, hits, _ in work.retrieved]) for work in window])
-            else:
-                if len(window) != 1:
-                    raise RuntimeError(f"{config.answer_backend} answer backend does not support --kv-sample-window > 1.")
-                work = window[0]
-                prepare_sample(work.sample, [hits for _, hits, _ in work.retrieved])
+            memory = memory_builder.build(sample)
+            retrieved: list[tuple[QuestionAnswer, list[SearchHit], SearchMetrics]] = []
+            try:
+                for qa in sample_questions:
+                    hits = question_evaluator._search_mem0_memory(memory, qa.question)
+                    store_metrics = question_evaluator._mem0_store_search_metrics(memory)
+                    retrieved.append((qa, hits, store_metrics))
+            finally:
+                memory_builder.log_embedding_cache_stats(memory, sample.sample_id)
+                memory_builder.close(memory)
+
+            if remaining_questions is not None:
+                remaining_questions -= len(sample_questions)
+
+            if not retrieved:
+                continue
+
+            logger.info(
+                "KV sample {}/{} sample_id={} retrieval complete; vector indexes closed before encoder/vLLM load",
+                sample_index,
+                len(samples),
+                sample.sample_id,
+            )
+
+            prepare_sample(sample, [hits for _, hits, _ in retrieved])
 
             try:
-                for work in window:
-                    for qa, hits, store_metrics in work.retrieved:
-                        next_question = completed_questions + 1
-                        if _should_log_progress(next_question, planned_questions, config.log_every):
-                            logger.info(
-                                "KV question {}/{} starting sample_id={} question_id={} category={}",
-                                next_question,
-                                planned_questions,
-                                work.sample.sample_id,
-                                qa.question_id,
-                                qa.category,
-                            )
-                        record = question_evaluator.answer_from_hits(
-                            work.sample,
-                            qa,
-                            hits,
-                            store_metrics,
-                            ttft_started_at=time.perf_counter(),
+                for qa, hits, store_metrics in retrieved:
+                    next_question = completed_questions + 1
+                    if _should_log_progress(next_question, planned_questions, config.log_every):
+                        logger.info(
+                            "KV question {}/{} starting sample_id={} question_id={} category={}",
+                            next_question,
+                            planned_questions,
+                            sample.sample_id,
+                            qa.question_id,
+                            qa.category,
                         )
-                        writer.write(record)
-                        all_records.append(record)
-                        completed_questions += 1
-                        if _should_log_progress(completed_questions, planned_questions, config.log_every):
-                            logger.info(
-                                "KV question {}/{} finished sample_id={} question_id={} judge={}",
-                                completed_questions,
-                                planned_questions,
-                                work.sample.sample_id,
-                                qa.question_id,
-                                _judge_label(record.get("judge", {}).get("correct")),
-                            )
-                    logger.info(
-                        "KV sample {}/{} sample_id={} finished",
-                        work.sample_index,
-                        len(samples),
-                        work.sample.sample_id,
+                    record = question_evaluator.answer_from_hits(
+                        sample,
+                        qa,
+                        hits,
+                        store_metrics,
+                        ttft_started_at=time.perf_counter(),
                     )
+                    writer.write(record)
+                    all_records.append(record)
+                    completed_questions += 1
+                    if _should_log_progress(completed_questions, planned_questions, config.log_every):
+                        logger.info(
+                            "KV question {}/{} finished sample_id={} question_id={} judge={}",
+                            completed_questions,
+                            planned_questions,
+                            sample.sample_id,
+                            qa.question_id,
+                            _judge_label(record.get("judge", {}).get("correct")),
+                        )
+                logger.info(
+                    "KV sample {}/{} sample_id={} finished",
+                    sample_index,
+                    len(samples),
+                    sample.sample_id,
+                )
             finally:
                 close_sample()
 

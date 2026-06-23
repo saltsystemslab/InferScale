@@ -31,59 +31,42 @@ class VLLMChunkedKVAnswerClient:
         self._llm: Any | None = None
         self._tokenizer: Any | None = None
         self._sampling_cls: Any | None = None
-        self._composers: dict[int, ChunkedRopeSampleComposer] = {}
+        self._composer: ChunkedRopeSampleComposer | None = None
+        self._active_sample_id: int | None = None
 
     def prepare_sample(self, sample: ConversationSample, hits_by_question: list[list[SearchHit]]) -> None:
-        self.prepare_samples([(sample, hits_by_question)])
-
-    def prepare_samples(
-        self,
-        samples: list[tuple[ConversationSample, list[list[SearchHit]]]],
-    ) -> None:
-        if not samples:
-            raise RuntimeError("Strict GPU KV mode cannot prepare an empty sample window.")
-        if self.config.kv_sample_window < 1:
-            raise RuntimeError("--kv-sample-window must be >= 1.")
-        if len(samples) > self.config.kv_sample_window:
-            raise RuntimeError(
-                f"Strict GPU KV sample window got {len(samples)} samples, "
-                f"exceeding --kv-sample-window {self.config.kv_sample_window}."
-            )
-
         force_vllm_inprocess_mode()
         self.close_sample()
         require_ai_memory_submodule()
 
         try:
-            for sample, hits_by_question in samples:
-                needed_turn_ids: set[str] = set()
-                for hits in hits_by_question:
-                    needed_turn_ids.update(selected_turn_ids(hits))
-                if not needed_turn_ids:
-                    raise RuntimeError(
-                        f"No retrieved turn ids for sample_id={sample.sample_id}; cannot prepare KV memory."
-                    )
+            needed_turn_ids: set[str] = set()
+            for hits in hits_by_question:
+                needed_turn_ids.update(selected_turn_ids(hits))
+            if not needed_turn_ids:
+                raise RuntimeError(f"No retrieved turn ids for sample_id={sample.sample_id}; cannot prepare KV memory.")
 
-                logger.info(
-                    "Preparing strict GPU KV sample_id=%s retrieved_turns=%d window=%d/%d",
-                    sample.sample_id,
-                    len(needed_turn_ids),
-                    len(self._composers) + 1,
-                    len(samples),
-                )
-                composer = ChunkedRopeSampleComposer(
-                    model=self.config.model,
-                    dtype=self.config.kv_dtype,
-                    device=self.config.kv_device,
-                    max_position=self.config.kv_max_position,
-                )
-                try:
-                    composer.encode_sample(sample, turn_ids=needed_turn_ids)
-                    self._free_composer_encoder(composer)
-                except Exception:
-                    composer.close()
-                    raise
-                self._composers[id(sample)] = composer
+            logger.info(
+                "Preparing strict GPU KV sample_id=%s retrieved_turns=%d context_window=%d",
+                sample.sample_id,
+                len(needed_turn_ids),
+                self.config.context_window,
+            )
+            composer = ChunkedRopeSampleComposer(
+                model=self.config.model,
+                dtype=self.config.kv_dtype,
+                device=self.config.kv_device,
+                max_position=self.config.kv_max_position,
+                context_window=self.config.context_window,
+            )
+            try:
+                composer.encode_sample(sample, turn_ids=needed_turn_ids)
+                self._free_composer_encoder(composer)
+            except Exception:
+                composer.close()
+                raise
+            self._composer = composer
+            self._active_sample_id = id(sample)
         except Exception:
             self.close_sample()
             raise
@@ -125,11 +108,11 @@ class VLLMChunkedKVAnswerClient:
     ) -> ChatResult:
         if self._llm is None or self._tokenizer is None or self._sampling_cls is None:
             raise RuntimeError("VLLMChunkedKVAnswerClient.prepare_sample() must be called before answering.")
-        composer = self._composers.get(id(sample))
+        composer = self._composer
         if composer is None:
-            raise RuntimeError(
-                f"Strict GPU KV sample_id={sample.sample_id} was not prepared in the active sample window."
-            )
+            raise RuntimeError(f"Strict GPU KV sample_id={sample.sample_id} was not prepared.")
+        if self._active_sample_id != id(sample):
+            raise RuntimeError(f"Strict GPU KV sample_id={sample.sample_id} is not the active prepared sample.")
 
         request_started = ttft_started_at if ttft_started_at is not None else time.perf_counter()
         composed = composer.compose(hits)
@@ -152,6 +135,10 @@ class VLLMChunkedKVAnswerClient:
             metrics: dict[str, Any] = {
                 "kv_memory_tokens": composed.num_tokens,
                 "kv_compose_time_ms": composed.compose_time_ms,
+                "kv_context_window": composed.context_window,
+                "kv_context_prefix_tokens_total": composed.context_prefix_tokens_total,
+                "kv_context_prefix_tokens_max": composed.context_prefix_tokens_max,
+                "kv_context_prefix_truncated_tokens": composed.context_prefix_truncated_tokens,
                 "kv_query_tokens": len(prompt.query_token_ids),
                 "kv_query_bos_stripped": int(prompt.stripped_query_bos),
             }
@@ -203,9 +190,10 @@ class VLLMChunkedKVAnswerClient:
         if self._llm is not None:
             del self._llm
             self._llm = None
-        for composer in self._composers.values():
-            composer.close()
-        self._composers.clear()
+        if self._composer is not None:
+            self._composer.close()
+            self._composer = None
+        self._active_sample_id = None
         self._tokenizer = None
         clear_namespace(self.namespace)
         gc.collect()

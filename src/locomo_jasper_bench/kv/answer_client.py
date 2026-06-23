@@ -52,6 +52,7 @@ class VLLMChunkedKVAnswerClient:
                 "Close vLLM before precomputing the next active sample."
             )
         self.close_sample()
+        _log_cuda_memory("before GPU KV precompute", self.config.kv_device)
         logger.info(
             "Precomputing GPU-resident KV cache sample_id=%s turns=%d context_window=%d",
             sample.sample_id,
@@ -70,6 +71,7 @@ class VLLMChunkedKVAnswerClient:
             )
             composer.encode_sample(sample)
             composer.release_encoder()
+            _log_cuda_memory("after GPU KV precompute encoder release", self.config.kv_device)
         except RuntimeError as exc:
             if composer is not None:
                 composer.close()
@@ -301,19 +303,18 @@ class VLLMChunkedKVAnswerClient:
             pass
 
     def close_llm(self) -> None:
-        if self._llm is not None:
-            del self._llm
-            self._llm = None
+        llm = self._llm
+        if llm is not None:
+            _log_cuda_memory("before vLLM close", self.config.kv_device)
+            _sleep_vllm_engine(llm)
+            del llm
+        self._llm = None
         self._tokenizer = None
         self._sampling_cls = None
         gc.collect()
-        try:
-            import torch
-
-            torch.cuda.empty_cache()
-            torch.cuda.ipc_collect()
-        except Exception:
-            pass
+        _cleanup_vllm_distributed_state()
+        _cleanup_torch_cuda(self.config.kv_device)
+        _log_cuda_memory("after vLLM close", self.config.kv_device)
 
     def close(self) -> None:
         self.close_sample()
@@ -530,6 +531,112 @@ def force_vllm_inprocess_mode() -> None:
 
 def _env_truthy(value: str | None) -> bool:
     return value is not None and value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _sleep_vllm_engine(llm: Any) -> None:
+    sleep = getattr(llm, "sleep", None)
+    if not callable(sleep):
+        return
+    try:
+        sleep(level=2)
+    except TypeError:
+        try:
+            sleep(2)
+        except Exception:
+            logger.warning("vLLM sleep(2) fallback failed during shutdown; continuing cleanup.", exc_info=True)
+    except Exception:
+        logger.warning("vLLM sleep(level=2) failed during shutdown; continuing cleanup.", exc_info=True)
+
+
+def _cleanup_vllm_distributed_state() -> None:
+    try:
+        import importlib
+
+        parallel_state = importlib.import_module("vllm.distributed.parallel_state")
+    except Exception:
+        return
+
+    cleanup = getattr(parallel_state, "cleanup_dist_env_and_memory", None)
+    if callable(cleanup):
+        try:
+            cleanup(shutdown_ray=False)
+            return
+        except TypeError:
+            try:
+                cleanup()
+                return
+            except Exception:
+                logger.warning("vLLM distributed cleanup fallback failed; trying lower-level cleanup.", exc_info=True)
+        except Exception:
+            logger.warning("vLLM distributed cleanup failed; trying lower-level cleanup.", exc_info=True)
+
+    for name in ("destroy_model_parallel", "destroy_distributed_environment"):
+        destroy = getattr(parallel_state, name, None)
+        if callable(destroy):
+            try:
+                destroy()
+            except Exception:
+                logger.warning("vLLM %s failed during shutdown.", name, exc_info=True)
+
+
+def _cleanup_torch_cuda(device: str) -> None:
+    gc.collect()
+    try:
+        import torch
+    except ImportError:
+        return
+
+    cuda = getattr(torch, "cuda", None)
+    if cuda is None or not cuda.is_available():
+        return
+
+    for name in ("synchronize", "empty_cache", "ipc_collect"):
+        fn = getattr(cuda, name, None)
+        if not callable(fn):
+            continue
+        try:
+            if name == "synchronize":
+                _call_cuda_with_optional_device(fn, device)
+            else:
+                fn()
+        except Exception:
+            logger.debug("torch.cuda.%s failed during cleanup.", name, exc_info=True)
+
+
+def _log_cuda_memory(label: str, device: str) -> None:
+    try:
+        import torch
+    except ImportError:
+        return
+
+    cuda = getattr(torch, "cuda", None)
+    if cuda is None or not cuda.is_available():
+        return
+
+    try:
+        free_bytes, total_bytes = _call_cuda_with_optional_device(cuda.mem_get_info, device)
+        allocated_bytes = _call_cuda_with_optional_device(cuda.memory_allocated, device)
+        reserved_bytes = _call_cuda_with_optional_device(cuda.memory_reserved, device)
+    except Exception:
+        logger.debug("Could not read CUDA memory stats for %s.", label, exc_info=True)
+        return
+
+    logger.info(
+        "CUDA memory %s device=%s free_mb=%.1f total_mb=%.1f allocated_mb=%.1f reserved_mb=%.1f",
+        label,
+        device,
+        free_bytes / (1024 * 1024),
+        total_bytes / (1024 * 1024),
+        allocated_bytes / (1024 * 1024),
+        reserved_bytes / (1024 * 1024),
+    )
+
+
+def _call_cuda_with_optional_device(fn: Any, device: str) -> Any:
+    try:
+        return fn(device)
+    except TypeError:
+        return fn()
 
 
 def _synchronize_cuda() -> None:

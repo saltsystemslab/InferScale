@@ -22,7 +22,7 @@ from .chunked_rope import (
     load_sample_kv_cache,
     save_sample_kv_cache,
 )
-from .prompting import build_kv_equivalence_prompt_token_ids, selected_turn_ids
+from .prompting import build_kv_equivalence_prompt_token_ids
 from .strict_gpu_registry import clear_namespace, namespace_stats, register_user_memory, remove_user_memory
 from .submodule import require_ai_memory_submodule
 
@@ -43,44 +43,30 @@ class VLLMChunkedKVAnswerClient:
         self._composer: CachedChunkedRopeSampleComposer | None = None
         self._active_sample_id: int | None = None
         self._sample_cache_dir: Path | None = None
+        self._cache_dirs: set[Path] = set()
 
-    def prepare_sample(
-        self,
-        sample: ConversationSample,
-        question_hits: list[tuple[QuestionAnswer, list[SearchHit]]] | list[list[SearchHit]],
-    ) -> None:
+    def precompute_sample_cache(self, sample: ConversationSample) -> None:
         force_vllm_inprocess_mode()
-        self.close_sample()
         require_ai_memory_submodule()
+        cache_dir = self._sample_cache_dir_for(sample)
+        cache_path = cache_dir / "sample_kv.pt"
+        logger.info(
+            "Precomputing CPU KV cache sample_id=%s turns=%d context_window=%d",
+            sample.sample_id,
+            len(sample.turns),
+            self.config.context_window,
+        )
+        _build_sample_kv_cache_in_subprocess(
+            self.config,
+            sample,
+            cache_path,
+        )
+        self._cache_dirs.add(cache_dir)
 
-        try:
-            hit_lists = _prepared_hit_lists(question_hits)
-            needed_turn_ids: set[str] = set()
-            for hits in hit_lists:
-                needed_turn_ids.update(selected_turn_ids(hits))
-            if not needed_turn_ids:
-                raise RuntimeError(f"No retrieved turn ids for sample_id={sample.sample_id}; cannot prepare KV memory.")
-
-            cache_dir = self._sample_cache_dir_for(sample)
-            cache_path = cache_dir / "sample_kv.pt"
-            logger.info(
-                "Precomputing CPU KV cache sample_id=%s turns=%d retrieved_turns=%d context_window=%d",
-                sample.sample_id,
-                len(sample.turns),
-                len(needed_turn_ids),
-                self.config.context_window,
-            )
-            _build_sample_kv_cache_in_subprocess(
-                self.config,
-                sample,
-                cache_path,
-            )
-            self._composer = load_sample_kv_cache(cache_path, device=self.config.kv_device)
-            self._sample_cache_dir = cache_dir
-            self._active_sample_id = id(sample)
-        except Exception:
-            self.close_sample()
-            raise
+    def start_llm(self) -> None:
+        force_vllm_inprocess_mode()
+        if self._llm is not None:
+            return
 
         from vllm import LLM, SamplingParams
 
@@ -103,8 +89,22 @@ class VLLMChunkedKVAnswerClient:
             )
             self._tokenizer = self._llm.get_tokenizer()
         except Exception:
-            self.close_sample()
+            self.close()
             raise
+
+    def prepare_sample(
+        self,
+        sample: ConversationSample,
+        question_hits: list[tuple[QuestionAnswer, list[SearchHit]]] | list[list[SearchHit]],
+    ) -> None:
+        self.close_sample()
+        cache_dir = self._sample_cache_dir_for(sample)
+        cache_path = cache_dir / "sample_kv.pt"
+        if not cache_path.exists():
+            raise RuntimeError(f"CPU KV cache for sample_id={sample.sample_id} does not exist: {cache_path}")
+        self._composer = load_sample_kv_cache(cache_path, device=self.config.kv_device)
+        self._sample_cache_dir = cache_dir
+        self._active_sample_id = id(sample)
 
     def answer_with_retrieved_memory(
         self,
@@ -198,17 +198,11 @@ class VLLMChunkedKVAnswerClient:
             remove_user_memory(self.namespace, user_id)
 
     def close_sample(self) -> None:
-        if self._llm is not None:
-            del self._llm
-            self._llm = None
         if self._composer is not None:
             self._composer.close()
             self._composer = None
-        if self._sample_cache_dir is not None:
-            shutil.rmtree(self._sample_cache_dir, ignore_errors=True)
-            self._sample_cache_dir = None
+        self._sample_cache_dir = None
         self._active_sample_id = None
-        self._tokenizer = None
         clear_namespace(self.namespace)
         gc.collect()
         try:
@@ -220,6 +214,22 @@ class VLLMChunkedKVAnswerClient:
 
     def close(self) -> None:
         self.close_sample()
+        if self._llm is not None:
+            del self._llm
+            self._llm = None
+        self._tokenizer = None
+        self._sampling_cls = None
+        for cache_dir in list(self._cache_dirs):
+            shutil.rmtree(cache_dir, ignore_errors=True)
+        self._cache_dirs.clear()
+        gc.collect()
+        try:
+            import torch
+
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+        except Exception:
+            pass
 
     def _measure_one_token_ttft(
         self,
@@ -315,18 +325,6 @@ def _build_sample_kv_cache_worker(
             composer.close()
 
 
-def _prepared_hit_lists(
-    question_hits: list[tuple[QuestionAnswer, list[SearchHit]]] | list[list[SearchHit]],
-) -> list[list[SearchHit]]:
-    hit_lists: list[list[SearchHit]] = []
-    for item in question_hits:
-        if isinstance(item, tuple) and len(item) == 2:
-            hit_lists.append(item[1])
-        else:
-            hit_lists.append(item)
-    return hit_lists
-
-
 def _safe_path_component(value: str) -> str:
     safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value)
     return safe or "sample"
@@ -381,9 +379,3 @@ def _synchronize_cuda() -> None:
         return
     if torch.cuda.is_available():
         torch.cuda.synchronize()
-
-
-def _memory_user_id(sample_id: str, question_id: str) -> str:
-    safe_sample = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in sample_id)
-    safe_question = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in question_id)
-    return f"{safe_sample}__{safe_question}"

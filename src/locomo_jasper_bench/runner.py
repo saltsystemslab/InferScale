@@ -23,6 +23,20 @@ class RuntimeClients:
     judge_client: ChatClient | None
 
 
+@dataclass(slots=True)
+class PreparedQuestion:
+    qa: QuestionAnswer
+    hits: list[SearchHit]
+    store_metrics: SearchMetrics
+
+
+@dataclass(slots=True)
+class PreparedSample:
+    index: int
+    sample: ConversationSample
+    questions: list[PreparedQuestion]
+
+
 def run_benchmark(config: BenchmarkConfig, clients: RuntimeClients | None = None) -> dict[str, Any]:
     logger.info(
         "Starting benchmark run_id={} dataset={} results_dir={}",
@@ -384,8 +398,10 @@ def _run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) ->
 
     prepare_sample = getattr(clients.answer_client, "prepare_sample", None)
     close_sample = getattr(clients.answer_client, "close_sample", None)
-    if not callable(close_sample) or not callable(prepare_sample):
+    start_llm = getattr(clients.answer_client, "start_llm", None)
+    if not callable(close_sample) or not callable(prepare_sample) or not callable(start_llm):
         raise RuntimeError(f"{config.answer_backend} answer backend does not expose sample preparation methods.")
+    precompute_sample_cache = getattr(clients.answer_client, "precompute_sample_cache", None)
 
     output_path = config.run_dir / "predictions.jsonl"
     all_records: list[dict[str, Any]] = []
@@ -393,55 +409,76 @@ def _run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) ->
     completed_questions = 0
     memory_builder = SampleMemoryBuilder(config)
     question_evaluator = QuestionEvaluator(config, clients)
+    prepared_samples: list[PreparedSample] = []
+
+    for sample_index, sample in enumerate(samples, start=1):
+        if remaining_questions is not None and remaining_questions <= 0:
+            break
+
+        sample_questions = sample.qa
+        if remaining_questions is not None:
+            sample_questions = sample_questions[:remaining_questions]
+        if not sample_questions:
+            continue
+
+        logger.info(
+            "KV sample {}/{} sample_id={} turns={} questions={} retrieval starting",
+            sample_index,
+            len(samples),
+            sample.sample_id,
+            len(sample.turns),
+            len(sample_questions),
+        )
+
+        memory = memory_builder.build(sample)
+        prepared_questions: list[PreparedQuestion] = []
+        try:
+            for qa in sample_questions:
+                hits = question_evaluator._search_mem0_memory(memory, qa.question)
+                store_metrics = question_evaluator._mem0_store_search_metrics(memory)
+                prepared_questions.append(PreparedQuestion(qa=qa, hits=hits, store_metrics=store_metrics))
+        finally:
+            memory_builder.log_embedding_cache_stats(memory, sample.sample_id)
+            memory_builder.close(memory)
+
+        if remaining_questions is not None:
+            remaining_questions -= len(sample_questions)
+
+        if not prepared_questions:
+            continue
+
+        logger.info(
+            "KV sample {}/{} sample_id={} retrieval complete; vector indexes closed before encoder/vLLM load",
+            sample_index,
+            len(samples),
+            sample.sample_id,
+        )
+        prepared_samples.append(
+            PreparedSample(index=sample_index, sample=sample, questions=prepared_questions)
+        )
+        if callable(precompute_sample_cache):
+            precompute_sample_cache(sample)
+
+    logger.info(
+        "Prepared {} samples and {} questions before vLLM startup",
+        len(prepared_samples),
+        sum(len(prepared.questions) for prepared in prepared_samples),
+    )
+    if not prepared_samples:
+        with JsonlWriter(output_path):
+            pass
+        logger.info("Wrote 0 prepared vLLM prediction records to {}", output_path)
+        return all_records
+
+    start_llm()
 
     with JsonlWriter(output_path) as writer:
-        for sample_index, sample in enumerate(samples, start=1):
-            if remaining_questions is not None and remaining_questions <= 0:
-                break
-
-            sample_questions = sample.qa
-            if remaining_questions is not None:
-                sample_questions = sample_questions[:remaining_questions]
-            if not sample_questions:
-                continue
-
-            logger.info(
-                "KV sample {}/{} sample_id={} turns={} questions={} retrieval starting",
-                sample_index,
-                len(samples),
-                sample.sample_id,
-                len(sample.turns),
-                len(sample_questions),
-            )
-
-            memory = memory_builder.build(sample)
-            retrieved: list[tuple[QuestionAnswer, list[SearchHit], SearchMetrics]] = []
+        for prepared in prepared_samples:
+            sample = prepared.sample
+            prepare_sample(sample, [(question.qa, question.hits) for question in prepared.questions])
             try:
-                for qa in sample_questions:
-                    hits = question_evaluator._search_mem0_memory(memory, qa.question)
-                    store_metrics = question_evaluator._mem0_store_search_metrics(memory)
-                    retrieved.append((qa, hits, store_metrics))
-            finally:
-                memory_builder.log_embedding_cache_stats(memory, sample.sample_id)
-                memory_builder.close(memory)
-
-            if remaining_questions is not None:
-                remaining_questions -= len(sample_questions)
-
-            if not retrieved:
-                continue
-
-            logger.info(
-                "KV sample {}/{} sample_id={} retrieval complete; vector indexes closed before encoder/vLLM load",
-                sample_index,
-                len(samples),
-                sample.sample_id,
-            )
-
-            prepare_sample(sample, [(qa, hits) for qa, hits, _ in retrieved])
-
-            try:
-                for qa, hits, store_metrics in retrieved:
+                for question in prepared.questions:
+                    qa = question.qa
                     next_question = completed_questions + 1
                     if _should_log_progress(next_question, planned_questions, config.log_every):
                         logger.info(
@@ -455,8 +492,8 @@ def _run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) ->
                     record = question_evaluator.answer_from_hits(
                         sample,
                         qa,
-                        hits,
-                        store_metrics,
+                        question.hits,
+                        question.store_metrics,
                         ttft_started_at=time.perf_counter(),
                     )
                     writer.write(record)
@@ -473,7 +510,7 @@ def _run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) ->
                         )
                 logger.info(
                     "KV sample {}/{} sample_id={} finished",
-                    sample_index,
+                    prepared.index,
                     len(samples),
                     sample.sample_id,
                 )

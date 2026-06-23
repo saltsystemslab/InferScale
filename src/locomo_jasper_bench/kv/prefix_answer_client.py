@@ -24,17 +24,13 @@ class VLLMPrefixPromptAnswerClient:
         self._sampling_cls: Any | None = None
         self._active_sample_id: int | None = None
 
-    def prepare_sample(
-        self,
-        sample: ConversationSample,
-        question_hits: list[tuple[QuestionAnswer, list[SearchHit]]] | list[list[SearchHit]],
-    ) -> None:
-        self.close_sample()
+    def start_llm(self) -> None:
+        if self._llm is not None:
+            return
 
         from vllm import LLM, SamplingParams
 
         try:
-            logger.info("Preparing vLLM prefix prompt sample_id=%s", sample.sample_id)
             self._sampling_cls = SamplingParams
             self._llm = LLM(
                 model=self.config.model,
@@ -47,10 +43,18 @@ class VLLMPrefixPromptAnswerClient:
                 max_model_len=self.config.kv_max_model_len,
             )
             self._tokenizer = self._llm.get_tokenizer()
-            self._active_sample_id = id(sample)
         except Exception:
-            self.close_sample()
+            self.close()
             raise
+
+    def prepare_sample(
+        self,
+        sample: ConversationSample,
+        question_hits: list[tuple[QuestionAnswer, list[SearchHit]]] | list[list[SearchHit]],
+    ) -> None:
+        self.close_sample()
+        logger.info("Preparing vLLM prefix prompt sample_id=%s", sample.sample_id)
+        self._active_sample_id = id(sample)
 
     def answer_with_retrieved_memory(
         self,
@@ -120,17 +124,18 @@ class VLLMPrefixPromptAnswerClient:
         )
 
     def close_sample(self) -> None:
+        self._active_sample_id = None
+        gc.collect()
+
+    def close(self) -> None:
+        self.close_sample()
         if self._llm is not None:
             del self._llm
         self._llm = None
         self._tokenizer = None
         self._sampling_cls = None
-        self._active_sample_id = None
         gc.collect()
         _empty_cuda_cache()
-
-    def close(self) -> None:
-        self.close_sample()
 
     def _measure_one_token_ttft(
         self,

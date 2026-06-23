@@ -33,6 +33,7 @@ if [[ "${BENCHMARK_USE_SCRATCH:-1}" != "0" ]]; then
   # shellcheck source=scripts/scratch_env.sh
   source "${_LOAD_ENV_SCRIPT_DIR}/scratch_env.sh"
 else
+  export BENCHMARK_RUNTIME_ROOT="${BENCHMARK_RUNTIME_ROOT:-${PROJECT_ROOT}}"
   export BENCHMARK_CACHE_ROOT="${BENCHMARK_CACHE_ROOT:-${PROJECT_ROOT}/.cache}"
   export BENCHMARK_RESULTS_ROOT="${BENCHMARK_RESULTS_ROOT:-${PROJECT_ROOT}/results}"
   export MEM0_DIR="${MEM0_DIR:-${BENCHMARK_CACHE_ROOT}/mem0}"

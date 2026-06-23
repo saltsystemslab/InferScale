@@ -1,17 +1,44 @@
 #!/usr/bin/env bash
 # Source this file from the repo root on remote GPU machines to keep
-# caches, temp files, and benchmark outputs under scratch storage.
+# caches, temp files, and benchmark outputs under runtime storage.
 
 _SCRATCH_ENV_SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd -- "${_SCRATCH_ENV_SCRIPT_DIR}/.." && pwd)}"
 
 _SCRATCH_ENV_USER="${USER:-$(id -un)}"
-export SCRATCH_ROOT="${SCRATCH_ROOT:-/scratch/${_SCRATCH_ENV_USER}/benchmark-jasper}"
-export BENCHMARK_CACHE_ROOT="${BENCHMARK_CACHE_ROOT:-${SCRATCH_ROOT}/cache}"
-export BENCHMARK_RESULTS_ROOT="${BENCHMARK_RESULTS_ROOT:-${SCRATCH_ROOT}/results}"
+if [[ -n "${BENCHMARK_RUNTIME_ROOT:-}" ]]; then
+  _SCRATCH_ENV_RUNTIME_ROOT="${BENCHMARK_RUNTIME_ROOT}"
+  _SCRATCH_ENV_CACHE_DEFAULT="${_SCRATCH_ENV_RUNTIME_ROOT}/.cache"
+  _SCRATCH_ENV_RESULTS_DEFAULT="${_SCRATCH_ENV_RUNTIME_ROOT}/results"
+  _SCRATCH_ENV_TMP_DEFAULT="${_SCRATCH_ENV_RUNTIME_ROOT}/tmp"
+  _SCRATCH_ENV_PIP_DEFAULT="${_SCRATCH_ENV_CACHE_DEFAULT}/pip"
+elif [[ -n "${SCRATCH_ROOT:-}" ]]; then
+  _SCRATCH_ENV_RUNTIME_ROOT="${SCRATCH_ROOT}"
+  _SCRATCH_ENV_CACHE_DEFAULT="${_SCRATCH_ENV_RUNTIME_ROOT}/cache"
+  _SCRATCH_ENV_RESULTS_DEFAULT="${_SCRATCH_ENV_RUNTIME_ROOT}/results"
+  _SCRATCH_ENV_TMP_DEFAULT="${_SCRATCH_ENV_RUNTIME_ROOT}/tmp"
+  _SCRATCH_ENV_PIP_DEFAULT="${_SCRATCH_ENV_RUNTIME_ROOT}/pip"
+elif [[ "${PROJECT_ROOT}" == "/workspace" || "${PROJECT_ROOT}" == /workspace/* ]]; then
+  _SCRATCH_ENV_RUNTIME_ROOT="/workspace"
+  _SCRATCH_ENV_CACHE_DEFAULT="${_SCRATCH_ENV_RUNTIME_ROOT}/.cache"
+  _SCRATCH_ENV_RESULTS_DEFAULT="${_SCRATCH_ENV_RUNTIME_ROOT}/results"
+  _SCRATCH_ENV_TMP_DEFAULT="${_SCRATCH_ENV_RUNTIME_ROOT}/tmp"
+  _SCRATCH_ENV_PIP_DEFAULT="${_SCRATCH_ENV_CACHE_DEFAULT}/pip"
+else
+  _SCRATCH_ENV_RUNTIME_ROOT="/scratch/${_SCRATCH_ENV_USER}/benchmark-jasper"
+  export SCRATCH_ROOT="${SCRATCH_ROOT:-${_SCRATCH_ENV_RUNTIME_ROOT}}"
+  _SCRATCH_ENV_CACHE_DEFAULT="${_SCRATCH_ENV_RUNTIME_ROOT}/cache"
+  _SCRATCH_ENV_RESULTS_DEFAULT="${_SCRATCH_ENV_RUNTIME_ROOT}/results"
+  _SCRATCH_ENV_TMP_DEFAULT="${_SCRATCH_ENV_RUNTIME_ROOT}/tmp"
+  _SCRATCH_ENV_PIP_DEFAULT="${_SCRATCH_ENV_RUNTIME_ROOT}/pip"
+fi
+
+export BENCHMARK_RUNTIME_ROOT="${BENCHMARK_RUNTIME_ROOT:-${_SCRATCH_ENV_RUNTIME_ROOT}}"
+export BENCHMARK_CACHE_ROOT="${BENCHMARK_CACHE_ROOT:-${_SCRATCH_ENV_CACHE_DEFAULT}}"
+export BENCHMARK_RESULTS_ROOT="${BENCHMARK_RESULTS_ROOT:-${_SCRATCH_ENV_RESULTS_DEFAULT}}"
 export MEM0_DIR="${MEM0_DIR:-${BENCHMARK_CACHE_ROOT}/mem0}"
-export TMPDIR="${TMPDIR:-${SCRATCH_ROOT}/tmp}"
-export PIP_CACHE_DIR="${PIP_CACHE_DIR:-${SCRATCH_ROOT}/pip}"
+export TMPDIR="${TMPDIR:-${_SCRATCH_ENV_TMP_DEFAULT}}"
+export PIP_CACHE_DIR="${PIP_CACHE_DIR:-${_SCRATCH_ENV_PIP_DEFAULT}}"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-${BENCHMARK_CACHE_ROOT}/xdg}"
 
 export HF_HOME="${HF_HOME:-${BENCHMARK_CACHE_ROOT}/huggingface}"
@@ -45,12 +72,14 @@ _SCRATCH_ENV_DIRS=(
 )
 
 if ! mkdir -p "${_SCRATCH_ENV_DIRS[@]}"; then
-  echo "error: could not create scratch directories under ${SCRATCH_ROOT}" >&2
+  echo "error: could not create runtime directories under ${BENCHMARK_RUNTIME_ROOT}" >&2
   return 1 2>/dev/null || exit 1
 fi
 
 _SCRATCH_ENV_CACHE_LINK="${PROJECT_ROOT}/.cache"
-if [[ -L "${_SCRATCH_ENV_CACHE_LINK}" ]]; then
+if [[ "${BENCHMARK_CACHE_ROOT%/}" == "${_SCRATCH_ENV_CACHE_LINK%/}" ]]; then
+  mkdir -p "${_SCRATCH_ENV_CACHE_LINK}"
+elif [[ -L "${_SCRATCH_ENV_CACHE_LINK}" ]]; then
   ln -sfn "${BENCHMARK_CACHE_ROOT}" "${_SCRATCH_ENV_CACHE_LINK}"
 elif [[ -e "${_SCRATCH_ENV_CACHE_LINK}" ]]; then
   if rmdir "${_SCRATCH_ENV_CACHE_LINK}" 2>/dev/null; then
@@ -64,11 +93,16 @@ else
 fi
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-  echo "Scratch directories are prepared under ${SCRATCH_ROOT}."
+  echo "Runtime directories are prepared under ${BENCHMARK_RUNTIME_ROOT}."
   echo "Run 'source scripts/scratch_env.sh' to export these variables in the current shell."
 fi
 
 unset _SCRATCH_ENV_CACHE_LINK
+unset _SCRATCH_ENV_CACHE_DEFAULT
 unset _SCRATCH_ENV_DIRS
+unset _SCRATCH_ENV_PIP_DEFAULT
+unset _SCRATCH_ENV_RESULTS_DEFAULT
+unset _SCRATCH_ENV_RUNTIME_ROOT
 unset _SCRATCH_ENV_SCRIPT_DIR
+unset _SCRATCH_ENV_TMP_DEFAULT
 unset _SCRATCH_ENV_USER

@@ -7,6 +7,7 @@ import numpy as np
 
 from .jasper_vector_store import JasperVectorStore
 from .qdrant_vector_store import QdrantVectorStore
+from .runtime_paths import default_mem0_dir
 from .vector_types import SearchHit, SearchMetrics, VectorStoreConfig
 
 _MIRRORED_METADATA_KEYS = ("user_id", "sample_id", "turn_id", "session_id", "turn_index", "speaker", "timestamp", "role")
@@ -27,7 +28,7 @@ class Mem0JasperVectorStore(VectorStoreBase):
         *,
         collection_name: str = "memories",
         embedding_model_dims: int | None = 1536,
-        path: str = "/tmp/jasper",
+        path: str | Path | None = None,
         backend: str = "jasper",
         distance: str = "ip",
         n_neighbors: int = 64,
@@ -37,7 +38,10 @@ class Mem0JasperVectorStore(VectorStoreBase):
     ) -> None:
         self.collection_name = collection_name
         self.embedding_model_dims = embedding_model_dims
-        self.root = Path(path) / collection_name
+        if path is None:
+            self.root = default_mem0_dir() / collection_name
+        else:
+            self.root = Path(path) / collection_name
         self.config = VectorStoreConfig(
             backend=backend,
             distance=distance,

@@ -15,7 +15,7 @@ from vllm.logger import init_logger
 from vllm.v1.attention.backends.triton_attn import TritonAttentionMetadata
 from vllm.v1.core.sched.output import SchedulerOutput
 
-from .strict_gpu_registry import get_gpu_memory_store
+from .strict_gpu_registry import get_gpu_memory_store, update_namespace_diagnostics
 
 try:
     from vllm.v1.attention.backends.mla.common import MLACommonMetadata
@@ -67,6 +67,15 @@ class MemoryConnectorMetadata(KVConnectorMetadata):
         )
 
 
+@dataclass(frozen=True)
+class PrefixMatch:
+    matched: bool
+    aligned_tokens: int = 0
+    raw_memory_tokens: int = 0
+    miss_reason: str = ""
+    mismatch_index: int = -1
+
+
 def align_to_block_size(num_tokens: int, block_size: int) -> int:
     return (num_tokens // block_size) * block_size
 
@@ -84,11 +93,23 @@ def _extract_user_id(request: "Request", default_user_id: str | None = None) -> 
     if user_id:
         return str(user_id)
 
+    user_id = _extract_user_id_from_kv_transfer_params(getattr(request, "kv_transfer_params", None))
+    if user_id:
+        return user_id
+
     sampling_params = getattr(request, "sampling_params", None)
     if sampling_params is not None:
         user_id = getattr(sampling_params, "user", None)
         if user_id:
             return str(user_id)
+        extra_args = getattr(sampling_params, "extra_args", None)
+        if isinstance(extra_args, dict):
+            user_id = _extract_user_id_from_kv_transfer_params(extra_args.get("kv_transfer_params"))
+            if user_id:
+                return user_id
+            user_id = extra_args.get("user_id") or extra_args.get("user")
+            if user_id:
+                return str(user_id)
 
     metadata = getattr(request, "metadata", None)
     if metadata:
@@ -99,6 +120,24 @@ def _extract_user_id(request: "Request", default_user_id: str | None = None) -> 
     if default_user_id:
         return default_user_id
     return None
+
+
+def _extract_user_id_from_kv_transfer_params(params: Any) -> str | None:
+    if not isinstance(params, dict):
+        return None
+    user_id = params.get("user_id") or params.get("user")
+    if user_id:
+        return str(user_id)
+    return None
+
+
+def _first_mismatch_index(left: list[int], right: list[int]) -> int:
+    for index, (left_id, right_id) in enumerate(zip(left, right, strict=False)):
+        if left_id != right_id:
+            return index
+    if len(left) != len(right):
+        return min(len(left), len(right))
+    return -1
 
 
 def _is_mla_metadata(value: Any) -> bool:
@@ -132,6 +171,14 @@ class MemoryKVConnector(KVConnectorBase_V1):
         self._default_user_id = _extra_config(self._kv_transfer_config, "default_user_id")
         self._allow_prefix_scan = bool(_extra_config(self._kv_transfer_config, "allow_prefix_scan", False))
         self._requests_need_load: dict[str, tuple[str, int]] = {}
+        update_namespace_diagnostics(
+            namespace,
+            increments={"connector_init_count": 1},
+            values={
+                "connector_block_size": self._block_size,
+                "connector_last_role": str(role),
+            },
+        )
 
         if self._allow_prefix_scan:
             logger.warning(
@@ -155,17 +202,32 @@ class MemoryKVConnector(KVConnectorBase_V1):
         num_computed_tokens: int,
     ) -> tuple[int | None, bool]:
         prompt_token_ids = list(getattr(request, "prompt_token_ids", None) or [])
+        request_id = str(getattr(request, "request_id", "") or "")
+        user_id = _extract_user_id(request, self._default_user_id)
+        base_values = {
+            "connector_last_user_id": str(user_id or ""),
+            "connector_last_prompt_tokens": len(prompt_token_ids),
+            "connector_last_num_computed_tokens": int(num_computed_tokens),
+            "connector_last_request_id": request_id,
+            "connector_last_miss_reason": "",
+            "connector_last_mismatch_index": -1,
+        }
+        update_namespace_diagnostics(
+            self._strict_memory_namespace,
+            increments={"connector_match_attempts": 1},
+            values=base_values,
+        )
         if not prompt_token_ids:
+            self._record_match_miss("no_prompt_tokens", user_id=user_id)
             return 0, False
 
-        user_id = _extract_user_id(request, self._default_user_id)
         if user_id is not None:
             match = self._try_match_user(user_id, prompt_token_ids)
         elif self._allow_prefix_scan:
-            match = None
+            match = PrefixMatch(matched=False, miss_reason="no_user_id")
             for candidate_user_id in self._memory_store.get_all_user_ids():
                 match = self._try_match_user(candidate_user_id, prompt_token_ids)
-                if match is not None:
+                if match.matched:
                     user_id = candidate_user_id
                     logger.warning(
                         "Prefix scan matched strict GPU memory user %s for a request with no explicit user id.",
@@ -173,17 +235,44 @@ class MemoryKVConnector(KVConnectorBase_V1):
                     )
                     break
         else:
+            self._record_match_miss("no_user_id", user_id=user_id)
             return 0, False
 
-        if match is None or user_id is None:
+        if not match.matched or user_id is None:
+            self._record_match_miss(
+                match.miss_reason or "prefix_mismatch",
+                user_id=user_id,
+                raw_memory_tokens=match.raw_memory_tokens,
+                mismatch_index=match.mismatch_index,
+            )
             return 0, False
 
-        aligned_tokens, raw_memory_tokens = match
+        aligned_tokens = match.aligned_tokens
+        raw_memory_tokens = match.raw_memory_tokens
         new_tokens = aligned_tokens - num_computed_tokens
         if new_tokens <= 0:
+            self._record_match_miss(
+                "no_new_tokens",
+                user_id=user_id,
+                aligned_tokens=aligned_tokens,
+                raw_memory_tokens=raw_memory_tokens,
+                new_tokens=new_tokens,
+            )
             return 0, False
 
         request._memory_user_id = user_id  # type: ignore[attr-defined]
+        update_namespace_diagnostics(
+            self._strict_memory_namespace,
+            increments={"connector_match_hits": 1},
+            values={
+                "connector_last_user_id": str(user_id),
+                "connector_last_raw_memory_tokens": raw_memory_tokens,
+                "connector_last_aligned_tokens": aligned_tokens,
+                "connector_last_new_tokens": new_tokens,
+                "connector_last_miss_reason": "",
+                "connector_last_mismatch_index": -1,
+            },
+        )
         logger.info(
             "Strict GPU memory hit user=%s aligned_tokens=%d raw_tokens=%d new_tokens=%d",
             user_id,
@@ -193,22 +282,67 @@ class MemoryKVConnector(KVConnectorBase_V1):
         )
         return new_tokens, False
 
-    def _try_match_user(self, user_id: str, prompt_token_ids: list[int]) -> tuple[int, int] | None:
+    def _try_match_user(self, user_id: str, prompt_token_ids: list[int]) -> PrefixMatch:
         memory = self._memory_store.get_user_memory(user_id)
-        if memory is None or memory.token_ids is None:
-            return None
+        if memory is None:
+            return PrefixMatch(matched=False, miss_reason="memory_missing")
+        if memory.token_ids is None:
+            return PrefixMatch(matched=False, miss_reason="token_ids_missing")
 
         memory_token_ids = list(memory.token_ids)
         num_memory_tokens = len(memory_token_ids)
         if len(prompt_token_ids) <= num_memory_tokens:
-            return None
+            return PrefixMatch(
+                matched=False,
+                raw_memory_tokens=num_memory_tokens,
+                miss_reason="prompt_too_short",
+            )
         if prompt_token_ids[:num_memory_tokens] != memory_token_ids:
-            return None
+            return PrefixMatch(
+                matched=False,
+                raw_memory_tokens=num_memory_tokens,
+                miss_reason="prefix_mismatch",
+                mismatch_index=_first_mismatch_index(
+                    prompt_token_ids[:num_memory_tokens],
+                    memory_token_ids,
+                ),
+            )
 
         aligned_tokens = align_to_block_size(num_memory_tokens, self._block_size)
         if aligned_tokens <= 0:
-            return None
-        return aligned_tokens, num_memory_tokens
+            return PrefixMatch(
+                matched=False,
+                raw_memory_tokens=num_memory_tokens,
+                miss_reason="aligned_zero",
+            )
+        return PrefixMatch(
+            matched=True,
+            aligned_tokens=aligned_tokens,
+            raw_memory_tokens=num_memory_tokens,
+        )
+
+    def _record_match_miss(
+        self,
+        reason: str,
+        *,
+        user_id: str | None,
+        aligned_tokens: int = 0,
+        raw_memory_tokens: int = 0,
+        new_tokens: int = 0,
+        mismatch_index: int = -1,
+    ) -> None:
+        update_namespace_diagnostics(
+            self._strict_memory_namespace,
+            increments={"connector_match_misses": 1},
+            values={
+                "connector_last_user_id": str(user_id or ""),
+                "connector_last_miss_reason": reason,
+                "connector_last_aligned_tokens": int(aligned_tokens),
+                "connector_last_raw_memory_tokens": int(raw_memory_tokens),
+                "connector_last_new_tokens": int(new_tokens),
+                "connector_last_mismatch_index": int(mismatch_index),
+            },
+        )
 
     def update_state_after_alloc(
         self,
@@ -217,6 +351,14 @@ class MemoryKVConnector(KVConnectorBase_V1):
         num_external_tokens: int,
     ) -> None:
         del blocks
+        update_namespace_diagnostics(
+            self._strict_memory_namespace,
+            increments={"connector_update_state_calls": 1},
+            values={
+                "connector_last_request_id": str(getattr(request, "request_id", "") or ""),
+                "connector_last_new_tokens": int(num_external_tokens),
+            },
+        )
         if num_external_tokens <= 0:
             return
 
@@ -235,6 +377,10 @@ class MemoryKVConnector(KVConnectorBase_V1):
         )
 
     def build_connector_meta(self, scheduler_output: SchedulerOutput) -> KVConnectorMetadata:
+        update_namespace_diagnostics(
+            self._strict_memory_namespace,
+            increments={"connector_build_meta_calls": 1},
+        )
         meta = MemoryConnectorMetadata()
         handled_req_ids: list[str] = []
 
@@ -277,11 +423,19 @@ class MemoryKVConnector(KVConnectorBase_V1):
             self._requests_need_load.pop(req_id, None)
 
         if meta.loads:
+            update_namespace_diagnostics(
+                self._strict_memory_namespace,
+                increments={"connector_metadata_loads": len(meta.loads)},
+            )
             logger.info("Built strict GPU connector metadata for %d memory loads", len(meta.loads))
         return meta
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs: Any) -> None:
         del kwargs
+        update_namespace_diagnostics(
+            self._strict_memory_namespace,
+            increments={"connector_start_load_calls": 1},
+        )
         metadata = self._get_connector_metadata()
         if not isinstance(metadata, MemoryConnectorMetadata):
             raise TypeError(f"Unexpected connector metadata type: {type(metadata)!r}")
@@ -294,15 +448,31 @@ class MemoryKVConnector(KVConnectorBase_V1):
         for load in metadata.loads:
             memory = self._memory_store.get_user_memory(load.user_id)
             if memory is None:
+                update_namespace_diagnostics(
+                    self._strict_memory_namespace,
+                    increments={"connector_missing_memory_loads": 1},
+                )
                 logger.warning("Strict GPU memory for user %s was not found during load.", load.user_id)
                 continue
 
             first_tensor = next(iter(memory.kv_by_layer.values()), None)
             if first_tensor is None:
+                update_namespace_diagnostics(
+                    self._strict_memory_namespace,
+                    increments={"connector_missing_memory_loads": 1},
+                )
                 logger.warning("Strict GPU memory for user %s has no layer tensors.", load.user_id)
                 continue
 
             slot_mapping = load.slot_mapping.to(device=first_tensor.device, dtype=torch.long)
+            update_namespace_diagnostics(
+                self._strict_memory_namespace,
+                increments={"connector_injected_tokens": load.num_tokens},
+                values={
+                    "connector_last_user_id": load.user_id,
+                    "connector_last_new_tokens": load.num_tokens,
+                },
+            )
             logger.info("Injecting %d strict GPU memory tokens for user %s", load.num_tokens, load.user_id)
 
             for layer_name, layer in forward_context.no_compile_layers.items():
@@ -312,6 +482,10 @@ class MemoryKVConnector(KVConnectorBase_V1):
 
                 src_kv = memory.kv_by_layer.get(layer_name)
                 if src_kv is None:
+                    update_namespace_diagnostics(
+                        self._strict_memory_namespace,
+                        increments={"connector_missing_layer_loads": 1},
+                    )
                     logger.warning("Layer %s not found in strict GPU memory for user %s", layer_name, load.user_id)
                     continue
 

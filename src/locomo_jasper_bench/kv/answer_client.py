@@ -23,7 +23,14 @@ from .chunked_rope import (
     save_sample_kv_cache,
 )
 from .prompting import build_kv_equivalence_prompt_token_ids
-from .strict_gpu_registry import clear_namespace, namespace_stats, register_user_memory, remove_user_memory
+from .strict_gpu_registry import (
+    clear_namespace,
+    namespace_diagnostics,
+    namespace_stats,
+    register_user_memory,
+    remove_user_memory,
+    reset_namespace_diagnostics,
+)
 from .submodule import require_ai_memory_submodule
 
 logger = logging.getLogger(__name__)
@@ -143,6 +150,15 @@ class VLLMChunkedKVAnswerClient:
                 sample,
                 qa,
             )
+            memory_token_ids = list(composed.token_ids)
+            local_prefix_match = prompt.prompt_token_ids[: len(memory_token_ids)] == memory_token_ids
+            if not local_prefix_match:
+                raise RuntimeError(
+                    "Strict GPU KV prompt token prefix does not match the registered memory token ids "
+                    f"for sample_id={sample.sample_id} question_id={qa.question_id}."
+                )
+            block_size = _connector_block_size(namespace_diagnostics(self.namespace))
+            expected_aligned_tokens = _align_to_block_size(composed.num_tokens, block_size)
             metrics: dict[str, Any] = {
                 "kv_memory_tokens": composed.num_tokens,
                 "kv_compose_time_ms": composed.compose_time_ms,
@@ -150,12 +166,18 @@ class VLLMChunkedKVAnswerClient:
                 "kv_context_prefix_tokens_total": composed.context_prefix_tokens_total,
                 "kv_context_prefix_tokens_max": composed.context_prefix_tokens_max,
                 "kv_context_prefix_truncated_tokens": composed.context_prefix_truncated_tokens,
+                "kv_prompt_tokens": len(prompt.prompt_token_ids),
                 "kv_query_tokens": len(prompt.query_token_ids),
                 "kv_query_bos_stripped": int(prompt.stripped_query_bos),
+                "kv_local_prefix_match": int(local_prefix_match),
+                "kv_cache_block_size": block_size,
+                "kv_expected_aligned_tokens": expected_aligned_tokens,
+                "kv_uninjected_tail_tokens": composed.num_tokens - expected_aligned_tokens,
             }
             ttft_ms: float | None = None
             ttft_probe_ms = 0.0
             if self.config.measure_ttft:
+                reset_namespace_diagnostics(self.namespace)
                 _total_ttft_ms, engine_ttft_ms, ttft_probe_ms = self._measure_one_token_ttft(
                     prompt_token_ids=prompt.prompt_token_ids,
                     temperature=temperature,
@@ -164,17 +186,42 @@ class VLLMChunkedKVAnswerClient:
                 )
                 ttft_ms = engine_ttft_ms
                 metrics["kv_engine_time_to_first_token_ms"] = engine_ttft_ms
+                ttft_diagnostics = namespace_diagnostics(self.namespace)
+                metrics.update(_connector_metrics("kv_ttft_connector", ttft_diagnostics))
+                _log_connector_diagnostics(
+                    "TTFT probe",
+                    ttft_diagnostics,
+                    expected_aligned_tokens=expected_aligned_tokens,
+                )
+                _validate_strict_connector_phase(
+                    "TTFT probe",
+                    ttft_diagnostics,
+                    expected_aligned_tokens=expected_aligned_tokens,
+                )
 
-            sampling = self._sampling_cls(
+            sampling = self._sampling_params(
                 temperature=temperature,
                 top_p=top_p,
                 max_tokens=max_tokens,
             )
+            reset_namespace_diagnostics(self.namespace)
             generate_started = time.perf_counter()
             outputs = self._llm.generate(
                 [{"prompt_token_ids": prompt.prompt_token_ids}],
                 sampling,
                 use_tqdm=False,
+            )
+            answer_diagnostics = namespace_diagnostics(self.namespace)
+            metrics.update(_connector_metrics("kv_answer_connector", answer_diagnostics))
+            _log_connector_diagnostics(
+                "answer generation",
+                answer_diagnostics,
+                expected_aligned_tokens=expected_aligned_tokens,
+            )
+            _validate_strict_connector_phase(
+                "answer generation",
+                answer_diagnostics,
+                expected_aligned_tokens=expected_aligned_tokens,
             )
             finished = time.perf_counter()
             generate_ms = (finished - generate_started) * 1000
@@ -239,7 +286,7 @@ class VLLMChunkedKVAnswerClient:
         top_p: float,
         request_started: float,
     ) -> tuple[float, float, float]:
-        sampling = self._sampling_cls(
+        sampling = self._sampling_params(
             temperature=temperature,
             top_p=top_p,
             max_tokens=1,
@@ -259,6 +306,29 @@ class VLLMChunkedKVAnswerClient:
             (finished - engine_started) * 1000,
             (finished - engine_started) * 1000,
         )
+
+    def _sampling_params(
+        self,
+        *,
+        temperature: float,
+        top_p: float,
+        max_tokens: int,
+        min_tokens: int = 0,
+    ) -> Any:
+        kwargs: dict[str, Any] = {
+            "temperature": temperature,
+            "top_p": top_p,
+            "max_tokens": max_tokens,
+            "min_tokens": min_tokens,
+            "user": self.active_user_id,
+        }
+        try:
+            return self._sampling_cls(**kwargs)
+        except TypeError as exc:
+            if "user" not in str(exc):
+                raise
+            kwargs.pop("user", None)
+            return self._sampling_cls(**kwargs)
 
     def _sample_cache_dir_for(self, sample: ConversationSample) -> Path:
         return self.config.run_dir / "kv_chunk_cache" / _safe_path_component(sample.sample_id)
@@ -328,6 +398,107 @@ def _build_sample_kv_cache_worker(
 def _safe_path_component(value: str) -> str:
     safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value)
     return safe or "sample"
+
+
+def _align_to_block_size(num_tokens: int, block_size: int) -> int:
+    if block_size <= 0:
+        return 0
+    return (num_tokens // block_size) * block_size
+
+
+def _connector_block_size(diagnostics: dict[str, Any]) -> int:
+    block_size = int(diagnostics.get("connector_block_size") or 0)
+    return block_size if block_size > 0 else 16
+
+
+def _connector_metrics(prefix: str, diagnostics: dict[str, Any]) -> dict[str, Any]:
+    numeric_keys = {
+        "connector_init_count": "init_count",
+        "connector_match_attempts": "match_attempts",
+        "connector_match_hits": "hits",
+        "connector_match_misses": "misses",
+        "connector_update_state_calls": "update_state_calls",
+        "connector_build_meta_calls": "build_meta_calls",
+        "connector_metadata_loads": "metadata_loads",
+        "connector_start_load_calls": "start_load_calls",
+        "connector_injected_tokens": "injected_tokens",
+        "connector_missing_memory_loads": "missing_memory_loads",
+        "connector_missing_layer_loads": "missing_layer_loads",
+        "connector_block_size": "block_size",
+        "connector_last_mismatch_index": "last_mismatch_index",
+        "connector_last_prompt_tokens": "last_prompt_tokens",
+        "connector_last_raw_memory_tokens": "last_raw_memory_tokens",
+        "connector_last_aligned_tokens": "last_aligned_tokens",
+        "connector_last_new_tokens": "last_new_tokens",
+        "connector_last_num_computed_tokens": "last_num_computed_tokens",
+    }
+    metrics: dict[str, Any] = {}
+    for source_key, metric_key in numeric_keys.items():
+        metrics[f"{prefix}_{metric_key}"] = diagnostics.get(source_key, 0)
+    metrics[f"{prefix}_last_miss_reason"] = diagnostics.get("connector_last_miss_reason", "")
+    metrics[f"{prefix}_last_user_id"] = diagnostics.get("connector_last_user_id", "")
+    metrics[f"{prefix}_last_request_id"] = diagnostics.get("connector_last_request_id", "")
+    metrics[f"{prefix}_last_role"] = diagnostics.get("connector_last_role", "")
+    return metrics
+
+
+def _log_connector_diagnostics(
+    phase: str,
+    diagnostics: dict[str, Any],
+    *,
+    expected_aligned_tokens: int,
+) -> None:
+    logger.info(
+        "Strict GPU KV %s diagnostics: attempts=%s hits=%s misses=%s injected_tokens=%s "
+        "expected_aligned_tokens=%s miss_reason=%s mismatch_index=%s prompt_tokens=%s memory_tokens=%s user=%s",
+        phase,
+        diagnostics.get("connector_match_attempts", 0),
+        diagnostics.get("connector_match_hits", 0),
+        diagnostics.get("connector_match_misses", 0),
+        diagnostics.get("connector_injected_tokens", 0),
+        expected_aligned_tokens,
+        diagnostics.get("connector_last_miss_reason", ""),
+        diagnostics.get("connector_last_mismatch_index", -1),
+        diagnostics.get("connector_last_prompt_tokens", 0),
+        diagnostics.get("connector_last_raw_memory_tokens", 0),
+        diagnostics.get("connector_last_user_id", ""),
+    )
+
+
+def _validate_strict_connector_phase(
+    phase: str,
+    diagnostics: dict[str, Any],
+    *,
+    expected_aligned_tokens: int,
+) -> None:
+    if expected_aligned_tokens <= 0:
+        raise RuntimeError(
+            f"Strict GPU KV {phase} cannot inject memory because the block-aligned memory token count is "
+            f"{expected_aligned_tokens}. Increase retrieved memory tokens or check the vLLM block size."
+        )
+
+    attempts = int(diagnostics.get("connector_match_attempts") or 0)
+    hits = int(diagnostics.get("connector_match_hits") or 0)
+    injected_tokens = int(diagnostics.get("connector_injected_tokens") or 0)
+    if attempts <= 0:
+        raise RuntimeError(
+            f"Strict GPU KV connector was not consulted during {phase}. "
+            "vLLM is prefilling the full prompt instead of using injected KV."
+        )
+    if hits <= 0:
+        reason = diagnostics.get("connector_last_miss_reason") or "unknown"
+        mismatch_index = diagnostics.get("connector_last_mismatch_index", -1)
+        prompt_tokens = diagnostics.get("connector_last_prompt_tokens", 0)
+        raw_tokens = diagnostics.get("connector_last_raw_memory_tokens", 0)
+        raise RuntimeError(
+            f"Strict GPU KV connector did not match during {phase}: reason={reason} "
+            f"mismatch_index={mismatch_index} prompt_tokens={prompt_tokens} memory_tokens={raw_tokens}."
+        )
+    if injected_tokens < expected_aligned_tokens:
+        raise RuntimeError(
+            f"Strict GPU KV connector matched during {phase} but injected only {injected_tokens} tokens; "
+            f"expected at least {expected_aligned_tokens}."
+        )
 
 
 def build_strict_gpu_kv_transfer_config(

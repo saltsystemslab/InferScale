@@ -7,7 +7,6 @@ from loguru import logger
 from .clients import OpenAICompatibleChatClient
 from .clients_factory import RuntimeClients, build_clients
 from .config import BenchmarkConfig
-from .evaluation import QuestionEvaluator
 from .judging import (
     failed_judge_payload,
     format_accuracy,
@@ -16,16 +15,9 @@ from .judging import (
     record_label,
 )
 from .modes import result_mode
-from .prediction import (
-    PreparedQuestion,
-    PreparedSample,
-    planned_question_count,
-    run_kv_prediction_mode,
-    run_prediction_mode,
-    should_log_progress,
-)
+from .prediction import run_prediction_mode
 from .results import summarize_records, write_json
-from .run_files import read_json_or_default, read_jsonl, replace_jsonl, write_deferred_judging_outputs
+from .run_files import read_json_or_default, read_jsonl, write_deferred_judging_outputs
 from .system import collect_system_metadata
 
 
@@ -133,21 +125,3 @@ def judge_existing_run(config: BenchmarkConfig) -> dict[str, Any]:
         format_accuracy(summary.get("metrics", {}).get("accuracy")),
     )
     return summary
-
-
-# Backward-compatible private aliases for tests and ad hoc scripts that imported
-# helpers from runner.py before the cleanup.
-_run_prediction_mode = run_prediction_mode
-_run_kv_prediction_mode = run_kv_prediction_mode
-_planned_question_count = planned_question_count
-_should_log_progress = should_log_progress
-_result_mode = result_mode
-_format_accuracy = format_accuracy
-_failed_judge_payload = failed_judge_payload
-_judge_record = judge_record
-_is_judged = is_judged
-_record_label = record_label
-_read_jsonl = read_jsonl
-_replace_jsonl = replace_jsonl
-_write_deferred_judging_outputs = write_deferred_judging_outputs
-_read_json_or_default = read_json_or_default

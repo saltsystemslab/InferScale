@@ -73,7 +73,6 @@ class QuestionEvaluator:
             if answer_ttft_ms is not None:
                 query_to_first_token_ms = retrieval_metrics.total_time_ms + float(answer_ttft_ms)
                 metrics["query_to_first_token_ms"] = query_to_first_token_ms
-                metrics["retrieval_to_ttft_ms"] = query_to_first_token_ms
 
         return {
             "run_id": self.config.run_id,

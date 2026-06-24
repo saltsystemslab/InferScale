@@ -81,7 +81,9 @@ def register_mem0_jasper_provider() -> None:
     except ImportError as exc:
         raise RuntimeError("Install the mem0ai package to register the Jasper Mem0 provider.") from exc
 
-    VectorStoreFactory.provider_to_class["jasper"] = "locomo_jasper_bench.mem0_adapter.Mem0JasperVectorStore"
+    VectorStoreFactory.provider_to_class["jasper"] = (
+        "locomo_jasper_bench.retrieval.mem0_adapter.Mem0JasperVectorStore"
+    )
     _install_jasper_config_module()
     _patch_mem0_vector_config_registry(Mem0VectorStoreConfig)
 

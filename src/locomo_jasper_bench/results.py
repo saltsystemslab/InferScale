@@ -49,6 +49,7 @@ def summarize_records(
         "accuracy": _safe_div(correct, len(judged)),
         "time_to_first_token_ms": _numeric_summary(_metric_values(rows, "time_to_first_token_ms")),
         "query_to_first_token_ms": _numeric_summary(_metric_values(rows, "query_to_first_token_ms")),
+        "query_to_answer_ms": _numeric_summary(_metric_values(rows, "query_to_answer_ms")),
         "query_embedding_time_ms": _numeric_summary(_metric_values(rows, "query_embedding_time_ms")),
         "query_retrieval_time_ms": _numeric_summary(_metric_values(rows, "query_retrieval_time_ms")),
         "vector_db_query_time_ms": _numeric_summary(vector_query_times),

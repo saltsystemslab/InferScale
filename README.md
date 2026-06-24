@@ -137,7 +137,7 @@ locomo-jasper-bench \
   --run-id "${QDRANT_PREFIX_RUN_ID}"
 ```
 
-All three runs write query-start-to-first-token latency as `metrics.query_to_first_token_ms`.
+All three runs write query-start-to-answer-complete latency as `metrics.query_to_answer_ms`. This is a single stopwatch around query embedding, vector retrieval, prompt/KV composition, and answer generation. It does not include memory storage/index construction, KV precompute, vLLM startup, or judging.
 
 ## 6. Judge Accuracy
 
@@ -183,5 +183,6 @@ Primary summary metrics:
 
 - `metrics.accuracy`: judged answer quality.
 - `metrics.time_to_first_token_ms`: in-process vLLM one-token probe latency for the answer backend.
-- `metrics.query_to_first_token_ms`: query embedding, retrieval, and answer backend time to first token.
+- `metrics.query_to_first_token_ms`: query embedding and retrieval plus the existing one-token probe latency.
+- `metrics.query_to_answer_ms`: query embedding, retrieval, prompt/KV composition, and full answer generation measured with one stopwatch.
 - `metrics.vector_db_query_time_ms`: raw backend vector search latency.

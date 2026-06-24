@@ -24,6 +24,7 @@ class QuestionEvaluator:
         *,
         retrieval_metrics: RetrievalMetrics | None = None,
         ttft_started_at: float | None = None,
+        query_started_at: float | None = None,
     ) -> dict[str, Any]:
         kv_answer = getattr(self.clients.answer_client, "answer_with_retrieved_memory", None)
         if not callable(kv_answer):
@@ -37,7 +38,17 @@ class QuestionEvaluator:
             top_p=self.config.top_p,
             ttft_started_at=ttft_started_at,
         )
-        return self.record_answer(sample, qa, hits, answer, retrieval_metrics=retrieval_metrics)
+        extra_metrics = None
+        if query_started_at is not None:
+            extra_metrics = {"query_to_answer_ms": (time.perf_counter() - query_started_at) * 1000}
+        return self.record_answer(
+            sample,
+            qa,
+            hits,
+            answer,
+            retrieval_metrics=retrieval_metrics,
+            extra_metrics=extra_metrics,
+        )
 
     def record_answer(
         self,
@@ -47,6 +58,7 @@ class QuestionEvaluator:
         answer: Any,
         *,
         retrieval_metrics: RetrievalMetrics | None = None,
+        extra_metrics: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if self.config.skip_judge:
             judge_payload = skipped_judge_payload()
@@ -73,6 +85,8 @@ class QuestionEvaluator:
             if answer_ttft_ms is not None:
                 query_to_first_token_ms = retrieval_metrics.total_time_ms + float(answer_ttft_ms)
                 metrics["query_to_first_token_ms"] = query_to_first_token_ms
+        if extra_metrics:
+            metrics.update(extra_metrics)
 
         return {
             "run_id": self.config.run_id,

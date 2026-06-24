@@ -96,7 +96,7 @@ locomo-jasper-bench \
   --vector-backend jasper \
   --top-k 50 \
   --context-window 3 \
-  --kv-gpu-memory-utilization 0.60 \
+  --kv-gpu-memory-utilization 0.52 \
   --kv-max-model-len 32768 \
   --kv-max-position 32768 \
   --max-samples 10 \
@@ -112,7 +112,7 @@ locomo-jasper-bench \
   --answer-backend vllm-prefix \
   --vector-backend jasper \
   --top-k 50 \
-  --kv-gpu-memory-utilization 0.60 \
+  --kv-gpu-memory-utilization 0.52 \
   --kv-max-model-len 32768 \
   --kv-max-position 32768 \
   --max-samples 10 \
@@ -128,7 +128,7 @@ locomo-jasper-bench \
   --answer-backend vllm-prefix \
   --vector-backend qdrant \
   --top-k 50 \
-  --kv-gpu-memory-utilization 0.60 \
+  --kv-gpu-memory-utilization 0.52 \
   --kv-max-model-len 32768 \
   --kv-max-position 32768 \
   --max-samples 10 \

@@ -61,6 +61,7 @@ def build_mem0_config(
             "config": {
                 "collection_name": "memories",
                 "path": str(store_root),
+                "backend": vector_config.backend,
                 "distance": vector_config.distance,
                 "n_neighbors": vector_config.n_neighbors,
                 "alpha": vector_config.alpha,

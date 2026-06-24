@@ -13,13 +13,14 @@ from .evaluation import QuestionEvaluator
 from .judging import judge_label
 from .retrieval.memory_builder import SampleMemoryBuilder
 from .results import JsonlWriter
-from .vector_types import SearchHit
+from .vector_types import RetrievalMetrics, SearchHit
 
 
 @dataclass(slots=True)
 class PreparedQuestion:
     qa: QuestionAnswer
     hits: list[SearchHit]
+    retrieval_metrics: RetrievalMetrics
 
 
 @dataclass(slots=True)
@@ -86,8 +87,10 @@ def run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> 
         prepared_questions: list[PreparedQuestion] = []
         try:
             for qa in sample_questions:
-                hits = question_evaluator.search_mem0_memory(memory, qa.question)
-                prepared_questions.append(PreparedQuestion(qa=qa, hits=hits))
+                hits, retrieval_metrics = question_evaluator.retrieve_mem0_memory(memory, qa.question)
+                prepared_questions.append(
+                    PreparedQuestion(qa=qa, hits=hits, retrieval_metrics=retrieval_metrics)
+                )
         finally:
             memory_builder.log_embedding_cache_stats(memory, sample.sample_id)
             memory_builder.close(memory)
@@ -149,6 +152,7 @@ def run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> 
                         sample,
                         qa,
                         question.hits,
+                        retrieval_metrics=question.retrieval_metrics,
                         ttft_started_at=time.perf_counter(),
                     )
                     writer.write(record)

@@ -6,8 +6,9 @@ from typing import Any
 
 import numpy as np
 
-from ..vector_types import SearchHit, VectorStoreConfig
+from ..vector_types import SearchHit, SearchMetrics, VectorStoreConfig
 from .jasper_vector_store import JasperVectorStore
+from .qdrant_vector_store import QdrantVectorStore
 
 _MIRRORED_METADATA_KEYS = ("user_id", "sample_id", "turn_id", "session_id", "turn_index", "speaker", "timestamp", "role")
 
@@ -28,6 +29,7 @@ class Mem0JasperVectorStore(VectorStoreBase):
         collection_name: str = "memories",
         embedding_model_dims: int | None = 1536,
         path: str | Path | None = None,
+        backend: str = "jasper",
         distance: str = "ip",
         n_neighbors: int = 64,
         alpha: float = 1.0,
@@ -41,6 +43,7 @@ class Mem0JasperVectorStore(VectorStoreBase):
         else:
             self.root = Path(path) / collection_name
         self.config = VectorStoreConfig(
+            backend=backend,
             distance=distance,
             n_neighbors=n_neighbors,
             alpha=alpha,
@@ -48,6 +51,7 @@ class Mem0JasperVectorStore(VectorStoreBase):
             beam_width=beam_width,
         )
         self.store = self._create_store()
+        self.last_search_metrics = SearchMetrics(search_time_ms=0.0)
 
     def create_col(self, name: str | None = None, vector_size: int | None = None, distance: str | None = None) -> None:
         if name and name != self.collection_name:
@@ -75,7 +79,8 @@ class Mem0JasperVectorStore(VectorStoreBase):
     ) -> list[SearchHit]:
         requested_top_k = max(1, int(top_k or 5))
         query_vector = _first_vector(vectors)
-        hits = self.store.search(query_vector, top_k=requested_top_k)
+        hits, metrics = self.store.search(query_vector, top_k=requested_top_k)
+        self.last_search_metrics = metrics
         return [
             SearchHit(id=hit.id, payload=hit.payload, score=hit.score, distance=hit.distance, rank=rank)
             for rank, hit in enumerate(hits, start=1)
@@ -104,7 +109,7 @@ class Mem0JasperVectorStore(VectorStoreBase):
     def col_info(self) -> dict[str, Any]:
         return {
             "name": self.collection_name,
-            "backend": "jasper",
+            "backend": self.config.backend,
             "vectors": self.store.vector_count,
             "embedding_dim": self.store.dim,
             "path": str(self.root),
@@ -129,6 +134,8 @@ class Mem0JasperVectorStore(VectorStoreBase):
         self.store.close()
 
     def _create_store(self) -> Any:
+        if self.config.backend == "qdrant":
+            return QdrantVectorStore(self.root, self.config)
         return JasperVectorStore(self.root, self.config)
 
 

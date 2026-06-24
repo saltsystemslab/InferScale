@@ -15,6 +15,7 @@ DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 
 DistanceMetric = Literal["ip", "l2"]
 AnswerBackend = Literal["vllm-kv", "vllm-prefix"]
+VectorBackend = Literal["jasper", "qdrant"]
 
 
 def default_run_id() -> str:
@@ -58,6 +59,7 @@ class BenchmarkConfig:
     embedding_cache_enabled: bool = True
     embedding_cache_dir: Path = field(default_factory=default_embedding_cache_dir)
 
+    vector_backend: VectorBackend = "jasper"
     vector_distance: DistanceMetric = "ip"
     top_k: int = 20
     jasper_n_neighbors: int = 64
@@ -103,7 +105,7 @@ class BenchmarkConfig:
 def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     parser = argparse.ArgumentParser(
         prog="locomo-jasper-bench",
-        description="Run LoCoMo KV-cache benchmarks with Mem0 retrieval backed by Jasper.",
+        description="Run LoCoMo KV-cache benchmarks with Mem0 retrieval backed by Jasper or Qdrant.",
         allow_abbrev=False,
     )
     parser.add_argument("--dataset", dest="dataset_path", type=Path, default=Path("data/locomo10.json"))
@@ -128,6 +130,7 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     parser.add_argument("--embedding-cache-dir", type=Path, default=default_embedding_cache_dir())
     parser.add_argument("--no-embedding-cache", action="store_false", dest="embedding_cache_enabled")
 
+    parser.add_argument("--vector-backend", choices=["jasper", "qdrant"], default="jasper")
     parser.add_argument("--vector-distance", choices=["ip", "l2"], default="ip")
     parser.add_argument("--top-k", type=int, default=20)
     parser.add_argument("--jasper-n-neighbors", type=int, default=64)

@@ -125,6 +125,7 @@ def embed_mem0_query(memory: Any, query: str) -> Any:
 
 def _store_config(config: BenchmarkConfig) -> VectorStoreConfig:
     return VectorStoreConfig(
+        backend=config.vector_backend,
         distance=config.vector_distance,
         n_neighbors=config.jasper_n_neighbors,
         alpha=config.jasper_alpha,

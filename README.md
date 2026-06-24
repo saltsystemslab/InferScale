@@ -1,6 +1,6 @@
 # LoCoMo KV Cache Benchmarks
 
-This repository runs a focused LoCoMo comparison between two in-process vLLM answer backends:
+This repository runs a focused LoCoMo comparison between in-process vLLM answer backends:
 
 - `vllm-kv`: retrieved memories are composed as chunked-RoPE KV tensors and injected through the `ai-memory-code` GPU connector.
 - `vllm-prefix`: the same retrieved memory tokens are included as a normal vLLM prompt prefix.
@@ -80,16 +80,18 @@ Timed runs read from that cache and fail if an embedding is missing.
 
 ## 5. Run KV And Prefix
 
-Run answer generation with judging skipped. This keeps the GPU focused on the in-process answer backend; judge both result files afterward.
+Run answer generation with judging skipped. This keeps the GPU focused on the in-process answer backend; judge result files afterward.
 
 ```bash
 KV_RUN_ID="kv-gpu-jasper5-${RUN_STAMP}"
 PREFIX_RUN_ID="prefix-gpu-jasper5-${RUN_STAMP}"
+QDRANT_PREFIX_RUN_ID="prefix-qdrant5-${RUN_STAMP}"
 
 locomo-jasper-bench \
   --dataset data/locomo10.json \
   --results-dir "${BENCHMARK_RESULTS_ROOT}" \
   --answer-backend vllm-kv \
+  --vector-backend jasper \
   --top-k 50 \
   --context-window 3 \
   --kv-gpu-memory-utilization 0.60 \
@@ -106,6 +108,7 @@ locomo-jasper-bench \
   --dataset data/locomo10.json \
   --results-dir "${BENCHMARK_RESULTS_ROOT}" \
   --answer-backend vllm-prefix \
+  --vector-backend jasper \
   --top-k 50 \
   --kv-gpu-memory-utilization 0.60 \
   --kv-max-model-len 32768 \
@@ -116,7 +119,23 @@ locomo-jasper-bench \
   --run-id "${PREFIX_RUN_ID}"
 ```
 
-Both runs write a one-token vLLM probe as `metrics.time_to_first_token_ms`.
+```bash
+locomo-jasper-bench \
+  --dataset data/locomo10.json \
+  --results-dir "${BENCHMARK_RESULTS_ROOT}" \
+  --answer-backend vllm-prefix \
+  --vector-backend qdrant \
+  --top-k 50 \
+  --kv-gpu-memory-utilization 0.60 \
+  --kv-max-model-len 32768 \
+  --kv-max-position 32768 \
+  --max-samples 10 \
+  --log-every 1 \
+  --skip-judge \
+  --run-id "${QDRANT_PREFIX_RUN_ID}"
+```
+
+All three runs write query-start-to-first-token latency as `metrics.query_to_first_token_ms`.
 
 ## 6. Judge Accuracy
 
@@ -155,9 +174,12 @@ Read the primary metrics:
 ```bash
 cat "${BENCHMARK_RESULTS_ROOT}/${KV_RUN_ID}/summary.json"
 cat "${BENCHMARK_RESULTS_ROOT}/${PREFIX_RUN_ID}/summary.json"
+cat "${BENCHMARK_RESULTS_ROOT}/${QDRANT_PREFIX_RUN_ID}/summary.json"
 ```
 
 Primary summary metrics:
 
 - `metrics.accuracy`: judged answer quality.
 - `metrics.time_to_first_token_ms`: in-process vLLM one-token probe latency for the answer backend.
+- `metrics.query_to_first_token_ms`: query embedding, retrieval, and answer backend time to first token.
+- `metrics.vector_db_query_time_ms`: raw backend vector search latency.

@@ -13,6 +13,7 @@ dependencies = [
     "mem0ai[nlp]>=0.1.0",
     "numpy>=1.24",
     "openai>=1.30",
+    "qdrant-client>=1.17,<2",
 ]
 
 [project.optional-dependencies]

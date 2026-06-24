@@ -16,6 +16,7 @@ def collect_system_metadata() -> dict[str, Any]:
             "vllm": _package_version("vllm"),
             "openai": _package_version("openai"),
             "jasper": _package_version("jasper"),
+            "qdrant-client": _package_version("qdrant-client"),
         },
         "gpu": _gpu_metadata(),
         "jasper_commit": _jasper_commit(),

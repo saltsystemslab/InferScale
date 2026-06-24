@@ -187,13 +187,14 @@ class VLLMChunkedKVAnswerClient:
             }
             ttft_ms: float | None = None
             ttft_probe_ms = 0.0
-            _total_ttft_ms, engine_ttft_ms, ttft_probe_ms = self._measure_one_token_ttft(
+            total_ttft_ms, engine_ttft_ms, ttft_probe_ms = self._measure_one_token_ttft(
                 prompt_token_ids=prompt.prompt_token_ids,
                 temperature=temperature,
                 top_p=top_p,
                 request_started=request_started,
             )
             ttft_ms = engine_ttft_ms
+            metrics["answer_time_to_first_token_ms"] = total_ttft_ms
             metrics["kv_engine_time_to_first_token_ms"] = engine_ttft_ms
 
             sampling = self._sampling_cls(

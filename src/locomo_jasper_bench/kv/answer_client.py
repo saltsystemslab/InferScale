@@ -13,7 +13,7 @@ from ..vector_types import SearchHit
 from .chunked_rope import ChunkedRopeSampleComposer
 from .prompting import build_kv_equivalence_prompt_token_ids
 from .sample_cache import GpuSampleCacheStore
-from .strict_gpu_registry import clear_namespace, drop_namespace, namespace_stats, register_user_memory, remove_user_memory
+from .gpu_registry import clear_namespace, drop_namespace, namespace_stats, register_user_memory, remove_user_memory
 from .submodule import require_ai_memory_submodule
 from .vllm_runtime import build_strict_gpu_kv_transfer_config, force_vllm_inprocess_mode, synchronize_cuda
 

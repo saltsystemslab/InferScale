@@ -20,7 +20,7 @@ from .connector_metadata import (
     extra_config as _extra_config,
     extract_user_id as _extract_user_id,
 )
-from .strict_gpu_registry import get_gpu_memory_store
+from .gpu_registry import get_gpu_memory_store
 
 try:
     from vllm.v1.attention.backends.mla.common import MLACommonMetadata
@@ -60,7 +60,7 @@ class MemoryKVConnector(KVConnectorBase_V1):
         if memory_path is not None:
             raise RuntimeError(
                 "Strict GPU KV mode does not allow memory_path or disk-backed KV loading. "
-                "Register GPU tensors through locomo_jasper_bench.kv.strict_gpu_registry."
+                "Register GPU tensors through locomo_jasper_bench.kv.gpu_registry."
             )
 
         namespace = str(_extra_config(self._kv_transfer_config, "memory_namespace", "default"))

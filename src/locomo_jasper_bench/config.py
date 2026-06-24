@@ -7,6 +7,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
+from .runtime_paths import default_embedding_cache_dir as runtime_default_embedding_cache_dir
+from .runtime_paths import default_results_root
+
 
 DEFAULT_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 DEFAULT_JUDGE_BASE_URL = "http://localhost:8000/v1"
@@ -23,21 +26,11 @@ def default_run_id() -> str:
 
 
 def default_results_dir() -> Path:
-    if "BENCHMARK_RESULTS_ROOT" in os.environ:
-        return Path(os.environ["BENCHMARK_RESULTS_ROOT"])
-    if "SCRATCH_ROOT" in os.environ:
-        return Path(os.environ["SCRATCH_ROOT"]) / "results"
-    return Path("results")
+    return default_results_root()
 
 
 def default_embedding_cache_dir() -> Path:
-    if "BENCHMARK_CACHE_ROOT" in os.environ:
-        cache_root = Path(os.environ["BENCHMARK_CACHE_ROOT"])
-    elif "SCRATCH_ROOT" in os.environ:
-        cache_root = Path(os.environ["SCRATCH_ROOT"]) / "cache"
-    else:
-        cache_root = Path(".cache")
-    return cache_root / "embeddings"
+    return runtime_default_embedding_cache_dir()
 
 
 @dataclass(slots=True)

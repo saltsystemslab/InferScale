@@ -1,6 +1,6 @@
 # LoCoMo KV Cache Benchmarks
 
-This repository runs a focused LoCoMo comparison between in-process vLLM answer backends:
+This repository runs a focused LoCoMo comparison between in-process vLLM answer backends. On Runpod, runtime files are kept under `/workspace` so model downloads, caches, temp files, and results persist on the hosted partition.
 
 - `vllm-kv`: retrieved memories are composed as chunked-RoPE KV tensors and injected through the `ai-memory-code` GPU connector.
 - `vllm-prefix`: the same retrieved memory tokens are included as a normal vLLM prompt prefix.
@@ -14,16 +14,18 @@ cp .env.example .env
 Edit `.env` for your session. The common values are:
 
 - `VLLM_MODEL=meta-llama/Llama-3.1-8B-Instruct`
+- `BENCHMARK_RUNTIME_ROOT=/workspace`
+- `CUDA_MODULE=` for Runpod containers without environment modules
 - `OPENAI_API_KEY=...`
 - `HF_TOKEN=...` if the model is gated
 
-By default, runtime storage is scratch-backed under `${SCRATCH_ROOT:-/scratch/$USER/benchmark-jasper}`:
+By default, runtime storage is rooted at `${BENCHMARK_RUNTIME_ROOT:-/workspace}` on Runpod:
 
-- `${SCRATCH_ROOT}/cache` for embeddings, Mem0/Jasper files, model downloads, and build caches.
-- `${SCRATCH_ROOT}/results` for benchmark outputs.
-- `${SCRATCH_ROOT}/tmp` for temporary files.
+- `${BENCHMARK_RUNTIME_ROOT}/.cache` for embeddings, Mem0/Jasper files, model downloads, and build caches.
+- `${BENCHMARK_RUNTIME_ROOT}/results` for benchmark outputs.
+- `${BENCHMARK_RUNTIME_ROOT}/tmp` for temporary files.
 
-`source scripts/load_env.sh` prepares those directories and points the repo `.cache` entry at scratch. Set `BENCHMARK_USE_SCRATCH=0` only when you intentionally want project-local storage. Override individual paths directly if needed:
+`source scripts/load_env.sh` prepares those directories and points the repo `.cache` entry at the runtime cache.
 
 ```bash
 export BENCHMARK_CACHE_ROOT=/path/to/cache

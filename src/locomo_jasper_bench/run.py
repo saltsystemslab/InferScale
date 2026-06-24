@@ -5,6 +5,10 @@ import sys
 
 from loguru import logger
 
+from .runtime_paths import configure_runtime_environment
+
+configure_runtime_environment()
+
 from .config import parse_args
 from .runner import judge_existing_run, run_benchmark
 

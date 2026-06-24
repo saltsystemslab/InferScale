@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+from ..runtime_paths import default_mem0_dir
 from ..vector_types import SearchHit, SearchMetrics, VectorStoreConfig
 from .jasper_vector_store import JasperVectorStore
 from .qdrant_vector_store import QdrantVectorStore
@@ -39,7 +39,7 @@ class Mem0JasperVectorStore(VectorStoreBase):
         self.collection_name = collection_name
         self.embedding_model_dims = embedding_model_dims
         if path is None:
-            self.root = _default_mem0_dir() / collection_name
+            self.root = default_mem0_dir() / collection_name
         else:
             self.root = Path(path) / collection_name
         self.config = VectorStoreConfig(
@@ -146,18 +146,6 @@ def _first_vector(vectors: list[float] | list[list[float]]) -> np.ndarray:
     if array.ndim == 2 and array.shape[0] > 0:
         return array[0]
     raise ValueError("vectors must be a one-dimensional vector or a non-empty list of vectors")
-
-
-def _default_mem0_dir() -> Path:
-    if "MEM0_DIR" in os.environ:
-        return Path(os.environ["MEM0_DIR"])
-    if "BENCHMARK_CACHE_ROOT" in os.environ:
-        cache_root = Path(os.environ["BENCHMARK_CACHE_ROOT"])
-    elif "SCRATCH_ROOT" in os.environ:
-        cache_root = Path(os.environ["SCRATCH_ROOT"]) / "cache"
-    else:
-        cache_root = Path(".cache")
-    return cache_root / "mem0"
 
 
 def _normalize_distance(distance: str) -> str:

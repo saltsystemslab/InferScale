@@ -1,39 +1,32 @@
 from __future__ import annotations
 
-import json
-import time
-from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
-from .clients import ChatClient, OpenAICompatibleChatClient
+from .clients import OpenAICompatibleChatClient
+from .clients_factory import RuntimeClients, build_clients
 from .config import BenchmarkConfig
-from .data import ConversationSample, QuestionAnswer, load_locomo
-from .prompts import build_judge_messages, parse_judge_response
-from .results import JsonlWriter, summarize_records, write_json
+from .evaluation import QuestionEvaluator
+from .judging import (
+    failed_judge_payload,
+    format_accuracy,
+    is_judged,
+    judge_record,
+    record_label,
+)
+from .modes import result_mode
+from .prediction import (
+    PreparedQuestion,
+    PreparedSample,
+    planned_question_count,
+    run_kv_prediction_mode,
+    run_prediction_mode,
+    should_log_progress,
+)
+from .results import summarize_records, write_json
+from .run_files import read_json_or_default, read_jsonl, replace_jsonl, write_deferred_judging_outputs
 from .system import collect_system_metadata
-from .vector_types import SearchHit
-
-
-@dataclass(slots=True)
-class RuntimeClients:
-    answer_client: Any
-    judge_client: ChatClient | None
-
-
-@dataclass(slots=True)
-class PreparedQuestion:
-    qa: QuestionAnswer
-    hits: list[SearchHit]
-
-
-@dataclass(slots=True)
-class PreparedSample:
-    index: int
-    sample: ConversationSample
-    questions: list[PreparedQuestion]
 
 
 def run_benchmark(config: BenchmarkConfig, clients: RuntimeClients | None = None) -> dict[str, Any]:
@@ -52,7 +45,7 @@ def run_benchmark(config: BenchmarkConfig, clients: RuntimeClients | None = None
     write_json(config.run_dir / "system.json", system_metadata)
 
     try:
-        records = _run_prediction_mode(config, runtime_clients)
+        records = run_prediction_mode(config, runtime_clients)
     finally:
         if owns_clients:
             close_answer_client = getattr(runtime_clients.answer_client, "close", None)
@@ -62,7 +55,7 @@ def run_benchmark(config: BenchmarkConfig, clients: RuntimeClients | None = None
     summary = summarize_records(
         records,
         run_id=config.run_id,
-        mode=_result_mode(config),
+        mode=result_mode(config),
         config=config.to_jsonable(),
         system_metadata=system_metadata,
     )
@@ -72,35 +65,10 @@ def run_benchmark(config: BenchmarkConfig, clients: RuntimeClients | None = None
         config.run_id,
         summary["question_count"],
         summary["judged_count"],
-        _format_accuracy(summary.get("metrics", {}).get("accuracy")),
+        format_accuracy(summary.get("metrics", {}).get("accuracy")),
     )
     logger.info("Wrote results to {}", config.run_dir)
     return summary
-
-
-def build_clients(config: BenchmarkConfig) -> RuntimeClients:
-    logger.info(
-        "Configuring clients answer_backend={} judge={}",
-        config.answer_backend,
-        config.judge_base_url,
-    )
-    if config.answer_backend == "vllm-kv":
-        from .kv.answer_client import VLLMChunkedKVAnswerClient
-
-        answer_client = VLLMChunkedKVAnswerClient(config)
-    else:
-        from .kv.prefix_answer_client import VLLMPrefixPromptAnswerClient
-
-        answer_client = VLLMPrefixPromptAnswerClient(config)
-    if config.skip_judge:
-        judge_client = None
-    else:
-        judge_client = OpenAICompatibleChatClient(
-            base_url=config.judge_base_url,
-            api_key=config.judge_api_key,
-            model=config.judge_model,
-        )
-    return RuntimeClients(answer_client=answer_client, judge_client=judge_client)
 
 
 def judge_existing_run(config: BenchmarkConfig) -> dict[str, Any]:
@@ -109,9 +77,9 @@ def judge_existing_run(config: BenchmarkConfig) -> dict[str, Any]:
         raise FileNotFoundError(f"predictions file not found: {predictions_path}")
 
     logger.info("Judging existing run_id={} predictions={}", config.run_id, predictions_path)
-    records = _read_jsonl(predictions_path)
-    saved_config = _read_json_or_default(config.run_dir / "config.json", config.to_jsonable())
-    system_metadata = _read_json_or_default(config.run_dir / "system.json", {})
+    records = read_jsonl(predictions_path)
+    saved_config = read_json_or_default(config.run_dir / "config.json", config.to_jsonable())
+    system_metadata = read_json_or_default(config.run_dir / "system.json", {})
     judge_client = OpenAICompatibleChatClient(
         base_url=config.judge_base_url,
         api_key=config.judge_api_key,
@@ -121,13 +89,13 @@ def judge_existing_run(config: BenchmarkConfig) -> dict[str, Any]:
     judged_now = 0
     summary: dict[str, Any] | None = None
     for row_number, record in enumerate(records, start=1):
-        if _is_judged(record):
+        if is_judged(record):
             continue
         try:
-            judge_payload = _judge_record(config, judge_client, record)
+            judge_payload = judge_record(config, judge_client, record)
         except Exception as exc:
-            record["judge"] = _failed_judge_payload(exc)
-            _write_deferred_judging_outputs(
+            record["judge"] = failed_judge_payload(exc)
+            write_deferred_judging_outputs(
                 config,
                 predictions_path,
                 records,
@@ -135,13 +103,13 @@ def judge_existing_run(config: BenchmarkConfig) -> dict[str, Any]:
                 system_metadata=system_metadata,
             )
             raise RuntimeError(
-                f"Judge request failed for row {row_number}/{len(records)} {_record_label(record)}. "
+                f"Judge request failed for row {row_number}/{len(records)} {record_label(record)}. "
                 f"Saved progress to {predictions_path}; fix or restart the judge server, then rerun --judge-only. "
                 f"Original error: {type(exc).__name__}: {exc}"
             ) from exc
         record["judge"] = judge_payload
         judged_now += 1
-        summary = _write_deferred_judging_outputs(
+        summary = write_deferred_judging_outputs(
             config,
             predictions_path,
             records,
@@ -150,7 +118,7 @@ def judge_existing_run(config: BenchmarkConfig) -> dict[str, Any]:
         )
 
     if summary is None:
-        summary = _write_deferred_judging_outputs(
+        summary = write_deferred_judging_outputs(
             config,
             predictions_path,
             records,
@@ -162,384 +130,24 @@ def judge_existing_run(config: BenchmarkConfig) -> dict[str, Any]:
         config.run_id,
         judged_now,
         summary["judged_count"],
-        _format_accuracy(summary.get("metrics", {}).get("accuracy")),
+        format_accuracy(summary.get("metrics", {}).get("accuracy")),
     )
     return summary
 
 
-class QuestionEvaluator:
-    def __init__(self, config: BenchmarkConfig, clients: RuntimeClients) -> None:
-        self.config = config
-        self.clients = clients
-
-    def answer_from_hits(
-        self,
-        sample: ConversationSample,
-        qa: QuestionAnswer,
-        hits: list[SearchHit],
-        *,
-        ttft_started_at: float | None = None,
-    ) -> dict[str, Any]:
-        kv_answer = getattr(self.clients.answer_client, "answer_with_retrieved_memory", None)
-        if not callable(kv_answer):
-            raise RuntimeError(f"{self.config.answer_backend} answer backend cannot answer with retrieved memory.")
-        answer = kv_answer(
-            sample=sample,
-            qa=qa,
-            hits=hits,
-            max_tokens=self.config.max_answer_tokens,
-            temperature=self.config.temperature,
-            top_p=self.config.top_p,
-            ttft_started_at=ttft_started_at,
-        )
-        return self.record_answer(sample, qa, hits, answer)
-
-    def record_answer(
-        self,
-        sample: ConversationSample,
-        qa: QuestionAnswer,
-        hits: list[SearchHit],
-        answer: Any,
-    ) -> dict[str, Any]:
-        if self.config.skip_judge:
-            judge_payload = _skipped_judge_payload()
-        else:
-            if self.clients.judge_client is None:
-                raise RuntimeError("Judge client is not configured. Use --skip-judge to write unjudged predictions.")
-            judge_payload = _judge_qa(self.config, self.clients.judge_client, qa, answer.content)
-
-        return {
-            "run_id": self.config.run_id,
-            "mode": _result_mode(self.config),
-            "sample_id": sample.sample_id,
-            "question_id": qa.question_id,
-            "category": qa.category,
-            "question": qa.question,
-            "gold_answer": qa.answer,
-            "predicted_answer": answer.content,
-            "evidence": qa.evidence,
-            "retrieved_memories": [
-                {
-                    "id": hit.id,
-                    "rank": hit.rank,
-                    "score": hit.score,
-                    "distance": hit.distance,
-                    "memory": hit.payload.get("memory") or hit.payload.get("text") or "",
-                    "metadata": hit.payload.get("metadata", {}),
-                }
-                for hit in hits
-            ],
-            "judge": judge_payload,
-            "metrics": {
-                "time_to_first_token_ms": answer.ttft_ms,
-                **getattr(answer, "metrics", {}),
-            },
-        }
-
-    def _search_mem0_memory(self, memory: Any, query: str) -> list[SearchHit]:
-        from .memory_builder import embed_mem0_query
-
-        vector_store = getattr(memory, "vector_store", None)
-        search = getattr(vector_store, "search", None)
-        if not callable(search):
-            raise RuntimeError("Mem0 memory has no searchable vector_store.")
-
-        query_embedding = embed_mem0_query(memory, query)
-        return search(query=query, vectors=query_embedding, top_k=self.config.top_k)
-
-
-def _run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> list[dict[str, Any]]:
-    return _run_kv_prediction_mode(config, clients)
-
-
-def _run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> list[dict[str, Any]]:
-    from .memory_builder import SampleMemoryBuilder
-
-    logger.info("Loading LoCoMo dataset from {}", config.dataset_path)
-    samples = load_locomo(config.dataset_path, max_samples=config.max_samples)
-    planned_questions = _planned_question_count(samples, config.max_questions)
-    logger.info(
-        "Loaded {} samples for prepared vLLM backend={}; planned_questions={} max_samples={} max_questions={} context_window={}",
-        len(samples),
-        config.answer_backend,
-        planned_questions,
-        config.max_samples,
-        config.max_questions,
-        config.context_window,
-    )
-
-    prepare_sample = getattr(clients.answer_client, "prepare_sample", None)
-    close_sample = getattr(clients.answer_client, "close_sample", None)
-    start_llm = getattr(clients.answer_client, "start_llm", None)
-    if not callable(close_sample) or not callable(prepare_sample) or not callable(start_llm):
-        raise RuntimeError(f"{config.answer_backend} answer backend does not expose sample preparation methods.")
-    precompute_sample_cache = getattr(clients.answer_client, "precompute_sample_cache", None)
-    active_sample_gpu_cache = callable(precompute_sample_cache)
-
-    output_path = config.run_dir / "predictions.jsonl"
-    all_records: list[dict[str, Any]] = []
-    remaining_questions = config.max_questions
-    completed_questions = 0
-    memory_builder = SampleMemoryBuilder(config)
-    question_evaluator = QuestionEvaluator(config, clients)
-    prepared_samples: list[PreparedSample] = []
-
-    for sample_index, sample in enumerate(samples, start=1):
-        if remaining_questions is not None and remaining_questions <= 0:
-            break
-
-        sample_questions = sample.qa
-        if remaining_questions is not None:
-            sample_questions = sample_questions[:remaining_questions]
-        if not sample_questions:
-            continue
-
-        logger.info(
-            "KV sample {}/{} sample_id={} turns={} questions={} retrieval starting",
-            sample_index,
-            len(samples),
-            sample.sample_id,
-            len(sample.turns),
-            len(sample_questions),
-        )
-
-        memory = memory_builder.build(sample)
-        prepared_questions: list[PreparedQuestion] = []
-        try:
-            for qa in sample_questions:
-                hits = question_evaluator._search_mem0_memory(memory, qa.question)
-                prepared_questions.append(PreparedQuestion(qa=qa, hits=hits))
-        finally:
-            memory_builder.log_embedding_cache_stats(memory, sample.sample_id)
-            memory_builder.close(memory)
-
-        if remaining_questions is not None:
-            remaining_questions -= len(sample_questions)
-
-        if not prepared_questions:
-            continue
-
-        logger.info(
-            "KV sample {}/{} sample_id={} retrieval complete; vector indexes closed before encoder/vLLM load",
-            sample_index,
-            len(samples),
-            sample.sample_id,
-        )
-        prepared_samples.append(PreparedSample(index=sample_index, sample=sample, questions=prepared_questions))
-        if active_sample_gpu_cache:
-            precompute_sample_cache(sample)
-
-    if active_sample_gpu_cache:
-        logger.info(
-            "Precomputed GPU-resident KV caches for {} samples and {} questions before one vLLM startup",
-            len(prepared_samples),
-            sum(len(prepared.questions) for prepared in prepared_samples),
-        )
-    else:
-        logger.info(
-            "Prepared {} samples and {} questions before vLLM startup",
-            len(prepared_samples),
-            sum(len(prepared.questions) for prepared in prepared_samples),
-        )
-    if not prepared_samples:
-        with JsonlWriter(output_path):
-            pass
-        logger.info("Wrote 0 prepared vLLM prediction records to {}", output_path)
-        return all_records
-
-    start_llm()
-
-    with JsonlWriter(output_path) as writer:
-        for prepared in prepared_samples:
-            sample = prepared.sample
-            prepare_sample(sample, [(question.qa, question.hits) for question in prepared.questions])
-            try:
-                for question in prepared.questions:
-                    qa = question.qa
-                    next_question = completed_questions + 1
-                    if _should_log_progress(next_question, planned_questions, config.log_every):
-                        logger.info(
-                            "KV question {}/{} starting sample_id={} question_id={} category={}",
-                            next_question,
-                            planned_questions,
-                            sample.sample_id,
-                            qa.question_id,
-                            qa.category,
-                        )
-                    record = question_evaluator.answer_from_hits(
-                        sample,
-                        qa,
-                        question.hits,
-                        ttft_started_at=time.perf_counter(),
-                    )
-                    writer.write(record)
-                    all_records.append(record)
-                    completed_questions += 1
-                    if _should_log_progress(completed_questions, planned_questions, config.log_every):
-                        logger.info(
-                            "KV question {}/{} finished sample_id={} question_id={} judge={}",
-                            completed_questions,
-                            planned_questions,
-                            sample.sample_id,
-                            qa.question_id,
-                            _judge_label(record.get("judge", {}).get("correct")),
-                        )
-                logger.info(
-                    "KV sample {}/{} sample_id={} finished",
-                    prepared.index,
-                    len(samples),
-                    sample.sample_id,
-                )
-            finally:
-                close_sample()
-
-    logger.info("Wrote {} prepared vLLM prediction records to {}", len(all_records), output_path)
-    return all_records
-
-
-def _planned_question_count(samples: list[ConversationSample], max_questions: int | None) -> int:
-    total = sum(len(sample.qa) for sample in samples)
-    if max_questions is None:
-        return total
-    return min(total, max_questions)
-
-
-def _should_log_progress(index: int, total: int, interval: int) -> bool:
-    if interval <= 0 or total <= 0:
-        return False
-    return index == 1 or index == total or index % interval == 0
-
-
-def _judge_label(value: Any) -> str:
-    if value is True:
-        return "correct"
-    if value is False:
-        return "incorrect"
-    return "skipped"
-
-
-def _format_accuracy(value: Any) -> str:
-    if value is None:
-        return "n/a"
-    return f"{float(value):.4f}"
-
-
-def _result_mode(config: BenchmarkConfig) -> str:
-    return config.answer_backend
-
-
-def _skipped_judge_payload() -> dict[str, Any]:
-    return {"correct": None, "reason": "skipped", "raw": "", "status": "skipped"}
-
-
-def _failed_judge_payload(exc: Exception) -> dict[str, Any]:
-    return {
-        "correct": None,
-        "reason": f"{type(exc).__name__}: {exc}",
-        "raw": "",
-        "status": "error",
-    }
-
-
-def _judge_qa(
-    config: BenchmarkConfig,
-    judge_client: ChatClient,
-    qa: QuestionAnswer,
-    predicted_answer: str,
-) -> dict[str, Any]:
-    judge_messages = build_judge_messages(qa, predicted_answer)
-    judge = judge_client.chat(
-        judge_messages,
-        max_tokens=config.max_judge_tokens,
-        temperature=0.0,
-        top_p=1.0,
-    )
-    correct, reason = parse_judge_response(judge.content)
-    return {"correct": correct, "reason": reason, "raw": judge.content}
-
-
-def _judge_record(config: BenchmarkConfig, judge_client: ChatClient, record: dict[str, Any]) -> dict[str, Any]:
-    qa = QuestionAnswer(
-        sample_id=str(record.get("sample_id") or ""),
-        question_id=str(record.get("question_id") or ""),
-        question=str(record.get("question") or ""),
-        answer=str(record.get("gold_answer") or ""),
-        category=str(record.get("category") or ""),
-        evidence=record.get("evidence"),
-    )
-    return _judge_qa(config, judge_client, qa, str(record.get("predicted_answer") or ""))
-
-
-def _is_judged(record: dict[str, Any]) -> bool:
-    judge = record.get("judge")
-    return isinstance(judge, dict) and isinstance(judge.get("correct"), bool)
-
-
-def _record_label(record: dict[str, Any]) -> str:
-    return (
-        f"sample_id={record.get('sample_id') or ''} "
-        f"question_id={record.get('question_id') or ''} "
-        f"category={record.get('category') or ''}"
-    ).strip()
-
-
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-    rows = []
-    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-        if not line.strip():
-            continue
-        row = json.loads(line)
-        if not isinstance(row, dict):
-            raise ValueError(f"{path}:{line_number} is not a JSON object")
-        rows.append(row)
-    return rows
-
-
-def _replace_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
-    tmp_path = path.with_name(path.name + ".tmp")
-    with JsonlWriter(tmp_path) as writer:
-        for row in rows:
-            writer.write(row)
-    tmp_path.replace(path)
-
-
-def _write_deferred_judging_outputs(
-    config: BenchmarkConfig,
-    predictions_path: Path,
-    records: list[dict[str, Any]],
-    *,
-    saved_config: dict[str, Any],
-    system_metadata: dict[str, Any],
-) -> dict[str, Any]:
-    _replace_jsonl(predictions_path, records)
-    summary = summarize_records(
-        records,
-        run_id=config.run_id,
-        mode=_existing_run_mode(saved_config, records, config),
-        config=saved_config,
-        system_metadata=system_metadata,
-    )
-    write_json(config.run_dir / "summary.json", summary)
-    return summary
-
-
-def _read_json_or_default(path: Path, default: dict[str, Any]) -> dict[str, Any]:
-    if not path.exists():
-        return default
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        return default
-    return data
-
-
-def _existing_run_mode(
-    saved_config: dict[str, Any],
-    records: list[dict[str, Any]],
-    fallback_config: BenchmarkConfig,
-) -> str:
-    answer_backend = saved_config.get("answer_backend")
-    if isinstance(answer_backend, str) and answer_backend:
-        return answer_backend
-    if records and isinstance(records[0].get("mode"), str):
-        return str(records[0]["mode"])
-    return _result_mode(fallback_config)
+# Backward-compatible private aliases for tests and ad hoc scripts that imported
+# helpers from runner.py before the cleanup.
+_run_prediction_mode = run_prediction_mode
+_run_kv_prediction_mode = run_kv_prediction_mode
+_planned_question_count = planned_question_count
+_should_log_progress = should_log_progress
+_result_mode = result_mode
+_format_accuracy = format_accuracy
+_failed_judge_payload = failed_judge_payload
+_judge_record = judge_record
+_is_judged = is_judged
+_record_label = record_label
+_read_jsonl = read_jsonl
+_replace_jsonl = replace_jsonl
+_write_deferred_judging_outputs = write_deferred_judging_outputs
+_read_json_or_default = read_json_or_default

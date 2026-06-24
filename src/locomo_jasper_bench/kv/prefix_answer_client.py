@@ -10,6 +10,7 @@ from ..config import BenchmarkConfig
 from ..data import ConversationSample, QuestionAnswer
 from ..vector_types import SearchHit
 from .prompting import build_kv_equivalence_prompt_token_ids, build_memory_prompt_token_ids
+from .vllm_runtime import synchronize_cuda
 
 logger = logging.getLogger(__name__)
 
@@ -150,30 +151,20 @@ class VLLMPrefixPromptAnswerClient:
             max_tokens=1,
             min_tokens=1,
         )
-        _synchronize_cuda()
+        synchronize_cuda()
         engine_started = time.perf_counter()
         self._llm.generate(
             [{"prompt_token_ids": prompt_token_ids}],
             sampling,
             use_tqdm=False,
         )
-        _synchronize_cuda()
+        synchronize_cuda()
         finished = time.perf_counter()
         return (
             (finished - request_started) * 1000,
             (finished - engine_started) * 1000,
             (finished - engine_started) * 1000,
         )
-
-
-def _synchronize_cuda() -> None:
-    try:
-        import torch
-    except ImportError:
-        return
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-
 
 def _empty_cuda_cache() -> None:
     try:
@@ -182,3 +173,6 @@ def _empty_cuda_cache() -> None:
         return
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+
+_synchronize_cuda = synchronize_cuda

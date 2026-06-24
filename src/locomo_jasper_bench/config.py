@@ -70,7 +70,7 @@ class BenchmarkConfig:
     max_answer_tokens: int = 512
     max_judge_tokens: int = 4
 
-    kv_connector_module: str = "locomo_jasper_bench.kv.strict_gpu_connector"
+    kv_connector_module: str = "locomo_jasper_bench.kv.gpu_connector"
     context_window: int = 0
     kv_gpu_memory_utilization: float = 0.55
     kv_max_model_len: int = 32768
@@ -142,8 +142,8 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
 
     parser.add_argument(
         "--kv-connector-module",
-        default=os.environ.get("LOCOMO_KV_CONNECTOR_MODULE", "locomo_jasper_bench.kv.strict_gpu_connector"),
-        help="Import path for the strict GPU MemoryKVConnector module used by in-process vLLM.",
+        default=os.environ.get("LOCOMO_KV_CONNECTOR_MODULE", "locomo_jasper_bench.kv.gpu_connector"),
+        help="Import path for the GPU MemoryKVConnector module used by in-process vLLM.",
     )
     parser.add_argument(
         "--context-window",

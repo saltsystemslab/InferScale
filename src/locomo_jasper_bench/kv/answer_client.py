@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import gc
 import logging
-import os
-import sys
 import time
 import uuid
 from typing import Any
@@ -14,8 +12,10 @@ from ..data import ConversationSample, QuestionAnswer
 from ..vector_types import SearchHit
 from .chunked_rope import ChunkedRopeSampleComposer
 from .prompting import build_kv_equivalence_prompt_token_ids
+from .sample_cache import GpuSampleCacheStore
 from .strict_gpu_registry import clear_namespace, drop_namespace, namespace_stats, register_user_memory, remove_user_memory
 from .submodule import require_ai_memory_submodule
+from .vllm_runtime import build_strict_gpu_kv_transfer_config, force_vllm_inprocess_mode, synchronize_cuda
 
 logger = logging.getLogger(__name__)
 
@@ -31,11 +31,7 @@ class VLLMChunkedKVAnswerClient:
         self._llm: Any | None = None
         self._tokenizer: Any | None = None
         self._sampling_cls: Any | None = None
-        self._precomputed_composers: dict[int, ChunkedRopeSampleComposer] = {}
-        self._precomputed_sample_metrics: dict[int, dict[str, Any]] = {}
-        self._composer: ChunkedRopeSampleComposer | None = None
-        self._active_sample_id: int | None = None
-        self._sample_precompute_metrics: dict[str, Any] = {}
+        self._sample_caches = GpuSampleCacheStore()
 
     def precompute_sample_cache(self, sample: ConversationSample) -> None:
         force_vllm_inprocess_mode()
@@ -46,10 +42,10 @@ class VLLMChunkedKVAnswerClient:
             )
         require_ai_memory_submodule()
         sample_key = id(sample)
-        if self._active_sample_id == sample_key:
+        if self._sample_caches.active_sample_key == sample_key:
             self.close_sample()
         else:
-            self._release_precomputed_sample(sample_key)
+            self._sample_caches.release(sample_key)
         logger.info(
             "Precomputing GPU-resident KV cache sample_id=%s turns=%d context_window=%d",
             sample.sample_id,
@@ -87,8 +83,7 @@ class VLLMChunkedKVAnswerClient:
                 "kv_chunk_cache_residency_is_gpu": 1,
             }
         )
-        self._precomputed_composers[sample_key] = composer
-        self._precomputed_sample_metrics[sample_key] = sample_metrics
+        self._sample_caches.put(sample_key, composer, sample_metrics)
         logger.info(
             "Precomputed GPU-resident KV cache sample_id=%s chunks=%s tokens=%s layers=%s gpu_mb=%.1f devices=%s",
             sample.sample_id,
@@ -103,7 +98,7 @@ class VLLMChunkedKVAnswerClient:
         force_vllm_inprocess_mode()
         if self._llm is not None:
             return
-        if not self._precomputed_composers:
+        if not self._sample_caches:
             raise RuntimeError("At least one GPU-resident KV sample cache must be precomputed before starting vLLM.")
 
         from vllm import LLM, SamplingParams
@@ -137,14 +132,9 @@ class VLLMChunkedKVAnswerClient:
     ) -> None:
         del question_hits
         sample_key = id(sample)
-        composer = self._precomputed_composers.get(sample_key)
-        if composer is None:
-            raise RuntimeError(f"GPU-resident KV cache for sample_id={sample.sample_id} was not precomputed.")
-        if self._active_sample_id is not None and self._active_sample_id != sample_key:
+        if self._sample_caches.active_sample_key is not None and self._sample_caches.active_sample_key != sample_key:
             self.close_sample()
-        self._composer = composer
-        self._active_sample_id = sample_key
-        self._sample_precompute_metrics = dict(self._precomputed_sample_metrics.get(sample_key, {}))
+        self._sample_caches.prepare(sample_key, sample.sample_id)
         logger.info("Preparing GPU-resident KV sample_id=%s", sample.sample_id)
 
     def answer_with_retrieved_memory(
@@ -160,10 +150,10 @@ class VLLMChunkedKVAnswerClient:
     ) -> ChatResult:
         if self._llm is None or self._tokenizer is None or self._sampling_cls is None:
             raise RuntimeError("VLLMChunkedKVAnswerClient.prepare_sample() must be called before answering.")
-        composer = self._composer
+        composer = self._sample_caches.active_composer
         if composer is None:
             raise RuntimeError(f"Strict GPU KV cache sample_id={sample.sample_id} was not prepared.")
-        if self._active_sample_id != id(sample):
+        if self._sample_caches.active_sample_key != id(sample):
             raise RuntimeError(f"Strict GPU KV sample_id={sample.sample_id} is not the active prepared sample.")
 
         request_started = ttft_started_at if ttft_started_at is not None else time.perf_counter()
@@ -185,7 +175,7 @@ class VLLMChunkedKVAnswerClient:
                 qa,
             )
             metrics: dict[str, Any] = {
-                **self._sample_precompute_metrics,
+                **self._sample_caches.active_metrics,
                 "kv_memory_tokens": composed.num_tokens,
                 "kv_compose_time_ms": composed.compose_time_ms,
                 "kv_context_window": composed.context_window,
@@ -239,14 +229,7 @@ class VLLMChunkedKVAnswerClient:
             remove_user_memory(self.namespace, user_id)
 
     def close_sample(self) -> None:
-        sample_key = self._active_sample_id
-        if sample_key is not None:
-            self._release_precomputed_sample(sample_key)
-        elif self._composer is not None:
-            self._composer.close()
-            self._composer = None
-        self._active_sample_id = None
-        self._sample_precompute_metrics = {}
+        self._sample_caches.release_active()
         clear_namespace(self.namespace)
         gc.collect()
         try:
@@ -256,26 +239,8 @@ class VLLMChunkedKVAnswerClient:
         except ImportError:
             pass
 
-    def _release_precomputed_sample(self, sample_key: int) -> None:
-        composer = self._precomputed_composers.pop(sample_key, None)
-        self._precomputed_sample_metrics.pop(sample_key, None)
-        if composer is not None:
-            composer.close()
-        if self._active_sample_id == sample_key or self._composer is composer:
-            self._composer = None
-
-    def _release_all_sample_caches(self) -> None:
-        active_key = self._active_sample_id
-        if active_key is not None:
-            self._release_precomputed_sample(active_key)
-        for sample_key in list(self._precomputed_composers):
-            self._release_precomputed_sample(sample_key)
-        self._composer = None
-        self._active_sample_id = None
-        self._sample_precompute_metrics = {}
-
     def close(self) -> None:
-        self._release_all_sample_caches()
+        self._sample_caches.release_all()
         clear_namespace(self.namespace)
         if self._llm is not None:
             del self._llm
@@ -306,14 +271,14 @@ class VLLMChunkedKVAnswerClient:
             max_tokens=1,
             min_tokens=1,
         )
-        _synchronize_cuda()
+        synchronize_cuda()
         engine_started = time.perf_counter()
         self._llm.generate(
             [{"prompt_token_ids": prompt_token_ids}],
             sampling,
             use_tqdm=False,
         )
-        _synchronize_cuda()
+        synchronize_cuda()
         finished = time.perf_counter()
         return (
             (finished - request_started) * 1000,
@@ -322,52 +287,4 @@ class VLLMChunkedKVAnswerClient:
         )
 
 
-def build_strict_gpu_kv_transfer_config(
-    *,
-    connector_module: str,
-    namespace: str,
-    default_user_id: str = "default",
-) -> dict[str, Any]:
-    return {
-        "kv_connector": "MemoryKVConnector",
-        "kv_role": "kv_both",
-        "kv_connector_module_path": connector_module,
-        "kv_connector_extra_config": {
-            "memory_namespace": namespace,
-            "default_user_id": default_user_id,
-        },
-    }
-
-
-def force_vllm_inprocess_mode() -> None:
-    """Force vLLM V1 offline LLM execution into this process.
-
-    The strict GPU connector reads from a process-local registry populated by
-    the benchmark process. If vLLM starts an EngineCore subprocess, that
-    registry is not shared with the connector.
-    """
-    current = os.environ.get("VLLM_ENABLE_V1_MULTIPROCESSING")
-    if _env_truthy(current):
-        logger.warning(
-            "Overriding VLLM_ENABLE_V1_MULTIPROCESSING=%s because strict GPU KV mode requires "
-            "vLLM's offline engine to share this process.",
-            current,
-        )
-    os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
-
-    loaded_envs = sys.modules.get("vllm.envs")
-    if loaded_envs is not None and hasattr(loaded_envs, "VLLM_ENABLE_V1_MULTIPROCESSING"):
-        setattr(loaded_envs, "VLLM_ENABLE_V1_MULTIPROCESSING", False)
-
-
-def _env_truthy(value: str | None) -> bool:
-    return value is not None and value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _synchronize_cuda() -> None:
-    try:
-        import torch
-    except ImportError:
-        return
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
+_synchronize_cuda = synchronize_cuda

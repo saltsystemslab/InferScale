@@ -71,7 +71,7 @@ RUN_STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 locomo-jasper-bench \
   --dataset data/locomo10.json \
   --results-dir "${BENCHMARK_RESULTS_ROOT}" \
-  --max-samples 20 \
+  --max-samples 10 \
   --preembed-only \
   --run-id "preembed-20samples-${RUN_STAMP}"
 ```
@@ -92,23 +92,25 @@ locomo-jasper-bench \
   --answer-backend vllm-kv \
   --top-k 50 \
   --context-window 3 \
-  --kv-gpu-memory-utilization 0.50 \
+  --kv-gpu-memory-utilization 0.60 \
   --kv-max-model-len 32768 \
   --kv-max-position 32768 \
-  --max-samples 20 \
+  --max-samples 10 \
   --log-every 1 \
   --skip-judge \
   --run-id "${KV_RUN_ID}"
+```
 
+```bash
 locomo-jasper-bench \
   --dataset data/locomo10.json \
   --results-dir "${BENCHMARK_RESULTS_ROOT}" \
   --answer-backend vllm-prefix \
   --top-k 50 \
-  --kv-gpu-memory-utilization 0.50 \
+  --kv-gpu-memory-utilization 0.60 \
   --kv-max-model-len 32768 \
   --kv-max-position 32768 \
-  --max-samples 20 \
+  --max-samples 10 \
   --log-every 1 \
   --skip-judge \
   --run-id "${PREFIX_RUN_ID}"
@@ -128,15 +130,13 @@ bash scripts/serve_vllm.sh
 Then judge each run from another shell (or use tmux: `tmux new -s locomo` and create a new window with `Ctrl-b c`):
 
 ```bash
-for RUN_ID in "${KV_RUN_ID}" "${PREFIX_RUN_ID}"; do
-  locomo-jasper-bench \
-    --results-dir "${BENCHMARK_RESULTS_ROOT}" \
-    --run-id "${RUN_ID}" \
-    --judge-only \
-    --judge-base-url "${JUDGE_BASE_URL}" \
-    --judge-api-key "${JUDGE_API_KEY}" \
-    --judge-model "${JUDGE_MODEL}"
-done
+locomo-jasper-bench \
+  --results-dir "${BENCHMARK_RESULTS_ROOT}" \
+  --run-id "${RUN_ID}" \
+  --judge-only \
+  --judge-base-url "${JUDGE_BASE_URL}" \
+  --judge-api-key "${JUDGE_API_KEY}" \
+  --judge-model "${JUDGE_MODEL}"
 ```
 
 `--judge-only` fills only rows that are still unjudged, preserves already judged rows, and regenerates `summary.json`.

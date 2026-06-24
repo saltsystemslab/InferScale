@@ -1,6 +1,6 @@
 # LoCoMo KV Cache Benchmarks
 
-This repository runs a focused LoCoMo comparison between in-process vLLM answer backends:
+This repository runs a LoCoMo benchmark comparison between in-process vLLM answer backends:
 
 - `vllm-kv`: retrieved memories are composed as chunked-RoPE KV tensors and injected through the `ai-memory-code` GPU connector.
 - `vllm-prefix`: the same retrieved memory tokens are included as a normal vLLM prompt prefix.
@@ -94,7 +94,7 @@ locomo-jasper-bench \
   --vector-backend jasper \
   --top-k 50 \
   --context-window 3 \
-  --kv-gpu-memory-utilization 0.60 \
+  --kv-gpu-memory-utilization 0.52 \
   --kv-max-model-len 32768 \
   --kv-max-position 32768 \
   --max-samples 10 \
@@ -110,7 +110,7 @@ locomo-jasper-bench \
   --answer-backend vllm-prefix \
   --vector-backend jasper \
   --top-k 50 \
-  --kv-gpu-memory-utilization 0.60 \
+  --kv-gpu-memory-utilization 0.52 \
   --kv-max-model-len 32768 \
   --kv-max-position 32768 \
   --max-samples 10 \
@@ -126,7 +126,7 @@ locomo-jasper-bench \
   --answer-backend vllm-prefix \
   --vector-backend qdrant \
   --top-k 50 \
-  --kv-gpu-memory-utilization 0.60 \
+  --kv-gpu-memory-utilization 0.52 \
   --kv-max-model-len 32768 \
   --kv-max-position 32768 \
   --max-samples 10 \
@@ -135,7 +135,7 @@ locomo-jasper-bench \
   --run-id "${QDRANT_PREFIX_RUN_ID}"
 ```
 
-All three runs write query-start-to-first-token latency as `metrics.query_to_first_token_ms`.
+All three runs write query-start-to-answer-complete latency as `metrics.query_to_answer_ms`. This is a single stopwatch around query embedding, vector retrieval, prompt/KV composition, and answer generation. It does not include memory storage/index construction, KV precompute, vLLM startup, or judging.
 
 ## 6. Judge Accuracy
 
@@ -181,5 +181,6 @@ Primary summary metrics:
 
 - `metrics.accuracy`: judged answer quality.
 - `metrics.time_to_first_token_ms`: in-process vLLM one-token probe latency for the answer backend.
-- `metrics.query_to_first_token_ms`: query embedding, retrieval, and answer backend time to first token.
+- `metrics.query_to_first_token_ms`: query embedding and retrieval plus the existing one-token probe latency.
+- `metrics.query_to_answer_ms`: query embedding, retrieval, prompt/KV composition, and full answer generation measured with one stopwatch.
 - `metrics.vector_db_query_time_ms`: raw backend vector search latency.

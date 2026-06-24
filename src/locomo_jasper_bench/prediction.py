@@ -13,21 +13,13 @@ from .evaluation import QuestionEvaluator
 from .judging import judge_label
 from .retrieval.memory_builder import SampleMemoryBuilder
 from .results import JsonlWriter
-from .vector_types import RetrievalMetrics, SearchHit
-
-
-@dataclass(slots=True)
-class PreparedQuestion:
-    qa: QuestionAnswer
-    hits: list[SearchHit]
-    retrieval_metrics: RetrievalMetrics
 
 
 @dataclass(slots=True)
 class PreparedSample:
     index: int
     sample: ConversationSample
-    questions: list[PreparedQuestion]
+    questions: list[QuestionAnswer]
 
 
 def run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> list[dict[str, Any]]:
@@ -75,7 +67,7 @@ def run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> 
             continue
 
         logger.info(
-            "KV sample {}/{} sample_id={} turns={} questions={} retrieval starting",
+            "KV sample {}/{} sample_id={} turns={} questions={} preparation starting",
             sample_index,
             len(samples),
             sample.sample_id,
@@ -83,31 +75,19 @@ def run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> 
             len(sample_questions),
         )
 
-        memory = memory_builder.build(sample)
-        prepared_questions: list[PreparedQuestion] = []
-        try:
-            for qa in sample_questions:
-                hits, retrieval_metrics = question_evaluator.retrieve_mem0_memory(memory, qa.question)
-                prepared_questions.append(
-                    PreparedQuestion(qa=qa, hits=hits, retrieval_metrics=retrieval_metrics)
-                )
-        finally:
-            memory_builder.log_embedding_cache_stats(memory, sample.sample_id)
-            memory_builder.close(memory)
-
         if remaining_questions is not None:
             remaining_questions -= len(sample_questions)
 
-        if not prepared_questions:
+        if not sample_questions:
             continue
 
         logger.info(
-            "KV sample {}/{} sample_id={} retrieval complete; vector indexes closed before encoder/vLLM load",
+            "KV sample {}/{} sample_id={} selected; query retrieval deferred until answer timing",
             sample_index,
             len(samples),
             sample.sample_id,
         )
-        prepared_samples.append(PreparedSample(index=sample_index, sample=sample, questions=prepared_questions))
+        prepared_samples.append(PreparedSample(index=sample_index, sample=sample, questions=list(sample_questions)))
         if active_sample_gpu_cache:
             precompute_sample_cache(sample)
 
@@ -134,10 +114,10 @@ def run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> 
     with JsonlWriter(output_path) as writer:
         for prepared in prepared_samples:
             sample = prepared.sample
-            prepare_sample(sample, [(question.qa, question.hits) for question in prepared.questions])
+            memory = memory_builder.build(sample)
             try:
-                for question in prepared.questions:
-                    qa = question.qa
+                prepare_sample(sample, [])
+                for qa in prepared.questions:
                     next_question = completed_questions + 1
                     if should_log_progress(next_question, planned_questions, config.log_every):
                         logger.info(
@@ -148,12 +128,15 @@ def run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> 
                             qa.question_id,
                             qa.category,
                         )
+                    query_started_at = time.perf_counter()
+                    hits, retrieval_metrics = question_evaluator.retrieve_mem0_memory(memory, qa.question)
                     record = question_evaluator.answer_from_hits(
                         sample,
                         qa,
-                        question.hits,
-                        retrieval_metrics=question.retrieval_metrics,
+                        hits,
+                        retrieval_metrics=retrieval_metrics,
                         ttft_started_at=time.perf_counter(),
+                        query_started_at=query_started_at,
                     )
                     writer.write(record)
                     all_records.append(record)
@@ -174,6 +157,8 @@ def run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> 
                     sample.sample_id,
                 )
             finally:
+                memory_builder.log_embedding_cache_stats(memory, sample.sample_id)
+                memory_builder.close(memory)
                 close_sample()
 
     logger.info("Wrote {} prepared vLLM prediction records to {}", len(all_records), output_path)

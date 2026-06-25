@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..data import ConversationSample, Turn, format_turn_for_memory
+from .tokenization import encode_text_no_special
 from .types import ContextEncodingPlan
 
 
@@ -20,7 +21,7 @@ def build_turn_context_encoding_plan(
         raise ValueError("max_input_tokens must be >= 1.")
 
     target_text = format_memory_turn(turn)
-    target_token_ids = _encode_text_no_special(tokenizer, target_text)
+    target_token_ids = encode_text_no_special(tokenizer, target_text)
     if not target_token_ids:
         raise RuntimeError(f"Memory chunk tokenized to zero tokens: {turn.id}")
     if len(target_token_ids) > max_input_tokens:
@@ -31,7 +32,7 @@ def build_turn_context_encoding_plan(
 
     context_token_ids: list[int] = []
     for context_turn in previous_session_context_turns(sample, turn, context_window):
-        context_token_ids.extend(_encode_text_no_special(tokenizer, format_memory_turn(context_turn)))
+        context_token_ids.extend(encode_text_no_special(tokenizer, format_memory_turn(context_turn)))
 
     raw_context_prefix_tokens = len(context_token_ids)
     overflow = len(context_token_ids) + len(target_token_ids) - max_input_tokens
@@ -68,10 +69,3 @@ def previous_session_context_turns(sample: ConversationSample, turn: Turn, conte
 
 def format_memory_turn(turn: Turn) -> str:
     return format_turn_for_memory(turn).strip() + "\n"
-
-
-def _encode_text_no_special(tokenizer: Any, text: str) -> list[int]:
-    encode = getattr(tokenizer, "encode", None)
-    if not callable(encode):
-        raise RuntimeError("Tokenizer has no encode method.")
-    return list(encode(text, add_special_tokens=False))

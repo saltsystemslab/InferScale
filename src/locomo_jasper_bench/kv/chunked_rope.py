@@ -9,6 +9,7 @@ from ..vector_types import SearchHit
 from .context import build_turn_context_encoding_plan, format_memory_turn, previous_session_context_turns
 from .prompting import MEMORY_PREFIX_TEXT, selected_turn_ids
 from .submodule import require_ai_memory_submodule
+from .tokenization import encode_text_no_special
 from .types import ComposedMemory, ContextEncodingPlan, EncodedChunk
 
 logger = logging.getLogger(__name__)
@@ -198,7 +199,6 @@ class ChunkedRopeSampleComposer:
             max_input_tokens=self.max_position,
         )
         return EncodedChunk(
-            turn_id=turn.id,
             token_ids=plan.target_token_ids,
             kv_by_layer=_detach_kv_by_layer_to_device(
                 _encode_token_chunk_pre_rope(
@@ -209,20 +209,17 @@ class ChunkedRopeSampleComposer:
                 ),
                 self.device,
             ),
-            text=plan.target_text,
             context_window=self.context_window,
             context_prefix_tokens=len(plan.context_token_ids),
             raw_context_prefix_tokens=plan.raw_context_prefix_tokens,
             context_prefix_truncated_tokens=plan.context_prefix_truncated_tokens,
-            encoding_input_tokens=len(plan.input_token_ids),
         )
 
     def _encode_text_chunk(self, turn_id: str, text: str) -> EncodedChunk:
-        token_ids = self.tokenizer.encode(text, add_special_tokens=False)
+        token_ids = encode_text_no_special(self.tokenizer, text)
         if not token_ids:
             raise RuntimeError(f"Memory chunk tokenized to zero tokens: {turn_id}")
         return EncodedChunk(
-            turn_id=turn_id,
             token_ids=token_ids,
             kv_by_layer=_detach_kv_by_layer_to_device(
                 _encode_token_chunk_pre_rope(
@@ -233,8 +230,6 @@ class ChunkedRopeSampleComposer:
                 ),
                 self.device,
             ),
-            text=text,
-            encoding_input_tokens=len(token_ids),
         )
 
     def _compose_chunks(self, chunks: list[EncodedChunk]) -> dict[str, Any]:

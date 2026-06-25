@@ -6,6 +6,7 @@ from typing import Any
 from ..data import ConversationSample, QuestionAnswer, Turn, format_turn_for_memory
 from ..prompts import RETRIEVAL_ANSWER_SYSTEM_PROMPT
 from ..vector_types import SearchHit
+from .tokenization import encode_text_no_special
 
 MEMORY_PREFIX_TEXT = "Retrieved memory context:\n"
 
@@ -62,9 +63,9 @@ def build_memory_prompt_token_ids(
     if missing:
         raise RuntimeError("Retrieved memory chunks were not found in the sample: " + ", ".join(missing[:5]))
 
-    token_ids = _encode_text_no_special(tokenizer, MEMORY_PREFIX_TEXT)
+    token_ids = encode_text_no_special(tokenizer, MEMORY_PREFIX_TEXT)
     for turn_id in turn_ids:
-        token_ids.extend(_encode_text_no_special(tokenizer, format_kv_memory_turn(turns_by_id[turn_id])))
+        token_ids.extend(encode_text_no_special(tokenizer, format_kv_memory_turn(turns_by_id[turn_id])))
     return MemoryPromptTokens(token_ids=token_ids, selected_turn_ids=turn_ids)
 
 
@@ -150,10 +151,3 @@ def tokenize_messages(tokenizer: Any, messages: list[dict[str, str]]) -> list[in
     if not callable(encode):
         raise RuntimeError("Tokenizer has neither apply_chat_template nor encode.")
     return list(encode(text))
-
-
-def _encode_text_no_special(tokenizer: Any, text: str) -> list[int]:
-    encode = getattr(tokenizer, "encode", None)
-    if not callable(encode):
-        raise RuntimeError("Tokenizer has no encode method.")
-    return list(encode(text, add_special_tokens=False))

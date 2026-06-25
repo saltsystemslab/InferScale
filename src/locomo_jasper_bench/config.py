@@ -125,7 +125,7 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
 
     parser.add_argument("--vector-backend", choices=["jasper", "qdrant"], default="jasper")
     parser.add_argument("--vector-distance", choices=["ip", "l2"], default="ip")
-    parser.add_argument("--top-k", type=int, default=20)
+    parser.add_argument("--top-k", type=int, default=50)
     parser.add_argument("--jasper-n-neighbors", type=int, default=64)
     parser.add_argument("--jasper-alpha", type=float, default=1.0)
     parser.add_argument("--jasper-workspace-budget", default="10GB")
@@ -144,7 +144,7 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     parser.add_argument(
         "--context-window",
         type=int,
-        default=int(os.environ.get("LOCOMO_KV_CONTEXT_WINDOW", "0")),
+        default=int(os.environ.get("LOCOMO_KV_CONTEXT_WINDOW", "3")),
         help=(
             "Number of previous LoCoMo sessions to include as prefix context when "
             "pre-RoPE encoding each selected KV memory turn. 0 encodes each turn in isolation."
@@ -153,7 +153,7 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     parser.add_argument(
         "--kv-gpu-memory-utilization",
         type=float,
-        default=float(os.environ.get("LOCOMO_KV_GPU_MEMORY_UTILIZATION", "0.55")),
+        default=float(os.environ.get("LOCOMO_KV_GPU_MEMORY_UTILIZATION", "0.52")),
     )
     parser.add_argument(
         "--kv-max-model-len",

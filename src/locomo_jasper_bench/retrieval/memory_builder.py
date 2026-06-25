@@ -120,7 +120,11 @@ def memory_embedder(memory: Any) -> Any:
 
 
 def embed_mem0_query(memory: Any, query: str) -> Any:
-    return memory_embedder(memory).embed(query, "search")
+    embedder = memory_embedder(memory)
+    embed_array = getattr(embedder, "embed_array", None)
+    if callable(embed_array):
+        return embed_array(query, "search")
+    return embedder.embed(query, "search")
 
 
 def _store_config(config: BenchmarkConfig) -> VectorStoreConfig:

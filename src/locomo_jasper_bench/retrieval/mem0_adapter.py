@@ -73,7 +73,7 @@ class Mem0JasperVectorStore(VectorStoreBase):
     def search(
         self,
         query: str,
-        vectors: list[float] | list[list[float]],
+        vectors: np.ndarray | list[float] | list[list[float]],
         top_k: int = 5,
         **_: Any,
     ) -> list[SearchHit]:
@@ -81,10 +81,7 @@ class Mem0JasperVectorStore(VectorStoreBase):
         query_vector = _first_vector(vectors)
         hits, metrics = self.store.search(query_vector, top_k=requested_top_k)
         self.last_search_metrics = metrics
-        return [
-            SearchHit(id=hit.id, payload=hit.payload, score=hit.score, distance=hit.distance, rank=rank)
-            for rank, hit in enumerate(hits, start=1)
-        ]
+        return hits
 
     def delete(self, vector_id: str) -> None:
         raise NotImplementedError("Mem0JasperVectorStore.delete is not used by this benchmark.")
@@ -139,8 +136,11 @@ class Mem0JasperVectorStore(VectorStoreBase):
         return JasperVectorStore(self.root, self.config)
 
 
-def _first_vector(vectors: list[float] | list[list[float]]) -> np.ndarray:
-    array = np.asarray(vectors, dtype=np.float32)
+def _first_vector(vectors: np.ndarray | list[float] | list[list[float]]) -> np.ndarray:
+    if isinstance(vectors, np.ndarray):
+        array = vectors if vectors.dtype == np.float32 else vectors.astype(np.float32, copy=False)
+    else:
+        array = np.asarray(vectors, dtype=np.float32)
     if array.ndim == 1:
         return array
     if array.ndim == 2 and array.shape[0] > 0:

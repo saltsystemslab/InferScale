@@ -42,12 +42,23 @@ class CachedEmbedder:
                 )
             return self._wrapped.embed(text, *args, **kwargs)
 
+        return self.embed_array(text, *args, **kwargs).tolist()
+
+    def embed_array(self, text: Any, *args: Any, **kwargs: Any) -> np.ndarray:
+        if not isinstance(text, str):
+            if self.mode == "read":
+                raise CachedEmbeddingMissingError(
+                    "Benchmark embedding cache is read-only and cannot serve non-string embedding input. "
+                    "Run with --no-embedding-cache only for debugging."
+                )
+            return np.asarray(self._wrapped.embed(text, *args, **kwargs), dtype=np.float32)
+
         purpose = _embedding_purpose(args, kwargs)
         path = self._cache_path(text, purpose)
         if path.exists():
             try:
                 self.hits += 1
-                return np.load(path).astype(np.float32, copy=False).tolist()
+                return np.load(path).astype(np.float32, copy=False)
             except Exception as exc:
                 self.hits -= 1
                 if self.mode == "read":
@@ -68,7 +79,7 @@ class CachedEmbedder:
         vector = self._wrapped.embed(text, *args, **kwargs)
         array = np.asarray(vector, dtype=np.float32)
         self._write_array(path, array)
-        return array.tolist()
+        return array
 
     def stats(self) -> dict[str, Any]:
         return {

@@ -12,6 +12,7 @@ from .runtime_paths import default_results_root
 
 
 DEFAULT_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
+DEFAULT_JUDGE_MODEL = "Gemma-2-9B-Instruct"
 DEFAULT_JUDGE_BASE_URL = "http://localhost:8000/v1"
 DEFAULT_JUDGE_API_KEY = "token-abc123"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
@@ -42,7 +43,7 @@ class BenchmarkConfig:
     model: str = DEFAULT_MODEL
     answer_backend: AnswerBackend = "vllm-kv"
 
-    judge_model: str = DEFAULT_MODEL
+    judge_model: str = DEFAULT_JUDGE_MODEL
     judge_base_url: str = DEFAULT_JUDGE_BASE_URL
     judge_api_key: str = DEFAULT_JUDGE_API_KEY
 
@@ -113,7 +114,7 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
         help="Use in-process vLLM KV injection or the same-token prefix prompt baseline.",
     )
 
-    parser.add_argument("--judge-model", default=os.environ.get("JUDGE_MODEL", DEFAULT_MODEL))
+    parser.add_argument("--judge-model", default=os.environ.get("JUDGE_MODEL", DEFAULT_JUDGE_MODEL))
     parser.add_argument("--judge-base-url", default=os.environ.get("JUDGE_BASE_URL", DEFAULT_JUDGE_BASE_URL))
     parser.add_argument("--judge-api-key", default=os.environ.get("JUDGE_API_KEY", DEFAULT_JUDGE_API_KEY))
 

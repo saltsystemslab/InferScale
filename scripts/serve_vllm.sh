@@ -6,8 +6,8 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/load_env.sh
 source "${SCRIPT_DIR}/load_env.sh"
 
-MODEL="${LOCOMO_VLLM_MODEL:-meta-llama/Llama-3.1-8B-Instruct}"
-API_KEY="${LOCOMO_VLLM_API_KEY:-token-abc123}"
+MODEL="${JUDGE_MODEL:-${LOCOMO_VLLM_MODEL:-Gemma-2-9B-Instruct}}"
+API_KEY="${JUDGE_API_KEY:-${LOCOMO_VLLM_API_KEY:-token-abc123}}"
 TP="${LOCOMO_VLLM_TP:-1}"
 GPU_MEMORY_UTILIZATION="${LOCOMO_VLLM_GPU_MEMORY_UTILIZATION:-0.80}"
 MAX_MODEL_LEN="${LOCOMO_VLLM_MAX_MODEL_LEN:-32768}"

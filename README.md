@@ -15,6 +15,7 @@ Edit `.env` for your session. The common values are:
 
 - `LOCOMO_VLLM_MODEL=meta-llama/Llama-3.1-8B-Instruct`
 - `BENCHMARK_RUNTIME_ROOT=/workspace`
+- `JUDGE_MODEL=Gemma-2-9B-Instruct`
 - `CUDA_MODULE=` for Runpod containers without environment modules
 - `OPENAI_API_KEY=...`
 - `HF_TOKEN=...` if the model is gated
@@ -170,6 +171,15 @@ Each run writes to `${BENCHMARK_RESULTS_ROOT}/<run-id>/`:
 - `system.json`
 - `predictions.jsonl`
 - `summary.json`
+- `query_metrics.csv`
+- `sample_setup_metrics.csv`
+- `plots/tokens_vs_ttft.png`
+- `plots/tokens_vs_query_to_first_token.png`
+- `plots/tokens_vs_query_to_answer.png`
+- `plots/tokens_vs_accuracy_binned.png`
+- `plots/tokens_vs_accuracy_binned.csv`
+
+`query_metrics.csv` is derived from `predictions.jsonl` after normal generation and after `--judge-only`. It uses `metrics.kv_memory_tokens` as the retrieved memory token count and computes total input prompt tokens as `metrics.
 
 Read the primary metrics:
 
@@ -185,4 +195,5 @@ Primary summary metrics:
 - `metrics.time_to_first_token_ms`: in-process vLLM time to first token from the real answer generation.
 - `metrics.query_to_first_token_ms`: query embedding, retrieval, prompt/KV composition, and vLLM time to first token.
 - `metrics.query_to_answer_ms`: query embedding, retrieval, prompt/KV composition, and full answer generation measured with one stopwatch.
+- `metrics.sample_setup_time_ms`: per-sample setup before the first query, including memory/index construction, KV precompute when applicable, and sample activation.
 - `metrics.vector_db_query_time_ms`: raw backend vector search latency.

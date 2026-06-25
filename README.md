@@ -83,9 +83,9 @@ Timed runs read from that cache and fail if an embedding is missing.
 Run answer generation with judging skipped. This keeps the GPU focused on the in-process answer backend; judge result files afterward.
 
 ```bash
-KV_RUN_ID="kv-gpu-jasper5-${RUN_STAMP}"
-PREFIX_RUN_ID="prefix-gpu-jasper5-${RUN_STAMP}"
-QDRANT_PREFIX_RUN_ID="prefix-qdrant5-${RUN_STAMP}"
+KV_RUN_ID="kv-gpu-jasper10-${RUN_STAMP}"
+PREFIX_RUN_ID="prefix-gpu-jasper10-${RUN_STAMP}"
+QDRANT_PREFIX_RUN_ID="prefix-qdrant10-${RUN_STAMP}"
 
 locomo-jasper-bench \
   --dataset data/locomo10.json \

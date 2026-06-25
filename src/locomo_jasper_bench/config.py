@@ -61,7 +61,7 @@ class BenchmarkConfig:
 
     vector_backend: VectorBackend = "jasper"
     vector_distance: DistanceMetric = "ip"
-    top_k: int = 20
+    top_k: int = 50
     jasper_n_neighbors: int = 64
     jasper_alpha: float = 1.0
     jasper_workspace_budget: str = "10GB"
@@ -73,8 +73,8 @@ class BenchmarkConfig:
     max_judge_tokens: int = 4
 
     kv_connector_module: str = "locomo_jasper_bench.kv.gpu_connector"
-    context_window: int = 0
-    kv_gpu_memory_utilization: float = 0.55
+    context_window: int = 3
+    kv_gpu_memory_utilization: float = 0.52
     kv_max_model_len: int = 32768
     kv_max_position: int = 32768
     kv_dtype: str = "bfloat16"

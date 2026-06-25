@@ -182,7 +182,7 @@ cat "${BENCHMARK_RESULTS_ROOT}/${QDRANT_PREFIX_RUN_ID}/summary.json"
 Primary summary metrics:
 
 - `metrics.accuracy`: judged answer quality.
-- `metrics.time_to_first_token_ms`: in-process vLLM one-token probe latency for the answer backend.
-- `metrics.query_to_first_token_ms`: query embedding and retrieval plus the existing one-token probe latency.
+- `metrics.time_to_first_token_ms`: in-process vLLM time to first token from the real answer generation.
+- `metrics.query_to_first_token_ms`: query embedding, retrieval, prompt/KV composition, and vLLM time to first token.
 - `metrics.query_to_answer_ms`: query embedding, retrieval, prompt/KV composition, and full answer generation measured with one stopwatch.
 - `metrics.vector_db_query_time_ms`: raw backend vector search latency.

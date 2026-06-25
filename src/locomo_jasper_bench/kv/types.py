@@ -6,15 +6,12 @@ from typing import Any
 
 @dataclass(slots=True)
 class EncodedChunk:
-    turn_id: str
     token_ids: list[int]
     kv_by_layer: dict[str, Any]
-    text: str
     context_window: int = 0
     context_prefix_tokens: int = 0
     raw_context_prefix_tokens: int = 0
     context_prefix_truncated_tokens: int = 0
-    encoding_input_tokens: int = 0
 
 
 @dataclass(slots=True, frozen=True)

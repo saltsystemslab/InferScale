@@ -67,6 +67,7 @@ class VLLMPrefixPromptAnswerClient:
         temperature: float,
         top_p: float,
         ttft_started_at: float | None = None,
+        query_started_at: float | None = None,
     ) -> ChatResult:
         if self._llm is None or self._tokenizer is None or self._sampling_cls is None:
             raise RuntimeError("VLLMPrefixPromptAnswerClient.prepare_sample() must be called before answering.")
@@ -118,6 +119,8 @@ class VLLMPrefixPromptAnswerClient:
                 "answer_total_time_ms": max(0.0, (finished - request_started) * 1000 - ttft_probe_ms),
             }
         )
+        if query_started_at is not None:
+            metrics["query_to_answer_ms"] = max(0.0, (finished - query_started_at) * 1000 - ttft_probe_ms)
         return ChatResult(
             content=outputs[0].outputs[0].text.strip(),
             ttft_ms=ttft_ms,

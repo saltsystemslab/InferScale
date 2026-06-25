@@ -105,7 +105,7 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     parser.add_argument("--results-dir", type=Path, default=default_results_dir())
     parser.add_argument("--run-id", default=default_run_id())
 
-    parser.add_argument("--model", default=os.environ.get("VLLM_MODEL", DEFAULT_MODEL))
+    parser.add_argument("--model", default=os.environ.get("LOCOMO_VLLM_MODEL", DEFAULT_MODEL))
     parser.add_argument(
         "--answer-backend",
         choices=["vllm-kv", "vllm-prefix"],

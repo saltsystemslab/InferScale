@@ -11,6 +11,7 @@ from ..data import ConversationSample, QuestionAnswer
 from ..vector_types import SearchHit
 from .prompting import build_kv_equivalence_prompt_token_ids, build_memory_prompt_token_ids
 from .vllm_metrics import request_timing_from_output
+from .vllm_runtime import sanitize_repo_vllm_env_for_import
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ class VLLMPrefixPromptAnswerClient:
         if self._llm is not None:
             return
 
+        sanitize_repo_vllm_env_for_import()
         from vllm import LLM, SamplingParams
 
         try:

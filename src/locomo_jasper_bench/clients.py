@@ -69,6 +69,6 @@ def _raise_context_limit_error(exc: Exception) -> None:
     limit_terms = ("too long", "maximum", "max", "limit", "length")
     if any(term in text for term in context_terms) and any(term in text for term in limit_terms):
         raise RuntimeError(
-            "The vLLM server rejected the prompt as too long. Increase VLLM_MAX_MODEL_LEN before starting "
-            "scripts/serve_vllm.sh."
+            "The vLLM server rejected the prompt as too long. Increase LOCOMO_VLLM_MAX_MODEL_LEN before "
+            "starting scripts/serve_vllm.sh."
         ) from exc

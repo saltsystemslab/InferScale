@@ -7,6 +7,17 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+_REPO_OWNED_VLLM_ENV_TO_CLEAR = (
+    "VLLM_MODEL",
+    "VLLM_API_KEY",
+    "VLLM_TP",
+    "VLLM_GPU_MEMORY_UTILIZATION",
+    "VLLM_MAX_MODEL_LEN",
+    "VLLM_DTYPE",
+    "VLLM_QUANTIZATION",
+    "VLLM_BASE_URL",
+)
+
 
 def build_strict_gpu_kv_transfer_config(
     *,
@@ -27,6 +38,7 @@ def build_strict_gpu_kv_transfer_config(
 
 def force_vllm_inprocess_mode() -> None:
     """Force vLLM V1 offline LLM execution into this process."""
+    sanitize_repo_vllm_env_for_import()
     current = os.environ.get("VLLM_ENABLE_V1_MULTIPROCESSING")
     if _env_truthy(current):
         logger.warning(
@@ -39,6 +51,12 @@ def force_vllm_inprocess_mode() -> None:
     loaded_envs = sys.modules.get("vllm.envs")
     if loaded_envs is not None and hasattr(loaded_envs, "VLLM_ENABLE_V1_MULTIPROCESSING"):
         setattr(loaded_envs, "VLLM_ENABLE_V1_MULTIPROCESSING", False)
+
+
+def sanitize_repo_vllm_env_for_import() -> None:
+    """Clear repo convenience env vars that newer vLLM treats as unknown."""
+    for name in _REPO_OWNED_VLLM_ENV_TO_CLEAR:
+        os.environ.pop(name, None)
 
 
 def synchronize_cuda() -> None:

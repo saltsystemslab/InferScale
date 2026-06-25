@@ -79,7 +79,7 @@ fi
 
 python -m pip install -c "${CONSTRAINTS_FILE}" torch torchvision torchaudio --index-url "${PYTORCH_INDEX}"
 python -m pip install -c "${CONSTRAINTS_FILE}" -e ".[dev,jasper]"
-python -m pip install -c "${CONSTRAINTS_FILE}" vllm --extra-index-url "${PYTORCH_INDEX}"
+python -m pip install -c "${CONSTRAINTS_FILE}" vllm accelerate --extra-index-url "${PYTORCH_INDEX}"
 
 cmake -S jasperpy -B jasperpy/build \
   -DJASPER_BUILD_FFI=ON \
@@ -91,11 +91,13 @@ python -m pip install -e jasperpy/python
 
 python - <<'PY'
 import locomo_jasper_bench
+import accelerate
 import torch
 import transformers
 import vllm
 
 print("locomo_jasper_bench:", locomo_jasper_bench.__version__)
+print("accelerate:", accelerate.__version__)
 print("torch:", torch.__version__)
 print("torch cuda:", torch.version.cuda)
 print("transformers:", transformers.__version__)

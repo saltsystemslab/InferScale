@@ -15,7 +15,8 @@ from .prompting import build_kv_equivalence_prompt_token_ids
 from .sample_cache import GpuSampleCacheStore
 from .gpu_registry import clear_namespace, drop_namespace, namespace_stats, register_user_memory, remove_user_memory
 from .submodule import require_ai_memory_submodule
-from .vllm_runtime import build_strict_gpu_kv_transfer_config, force_vllm_inprocess_mode, synchronize_cuda
+from .vllm_metrics import request_timing_from_output
+from .vllm_runtime import build_strict_gpu_kv_transfer_config, force_vllm_inprocess_mode
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +148,7 @@ class VLLMChunkedKVAnswerClient:
         temperature: float,
         top_p: float,
         ttft_started_at: float | None = None,
+        query_started_at: float | None = None,
     ) -> ChatResult:
         if self._llm is None or self._tokenizer is None or self._sampling_cls is None:
             raise RuntimeError("VLLMChunkedKVAnswerClient.prepare_sample() must be called before answering.")
@@ -185,18 +187,6 @@ class VLLMChunkedKVAnswerClient:
                 "kv_query_tokens": len(prompt.query_token_ids),
                 "kv_query_bos_stripped": int(prompt.stripped_query_bos),
             }
-            ttft_ms: float | None = None
-            ttft_probe_ms = 0.0
-            total_ttft_ms, engine_ttft_ms, ttft_probe_ms = self._measure_one_token_ttft(
-                prompt_token_ids=prompt.prompt_token_ids,
-                temperature=temperature,
-                top_p=top_p,
-                request_started=request_started,
-            )
-            ttft_ms = engine_ttft_ms
-            metrics["answer_time_to_first_token_ms"] = total_ttft_ms
-            metrics["kv_engine_time_to_first_token_ms"] = engine_ttft_ms
-
             sampling = self._sampling_cls(
                 temperature=temperature,
                 top_p=top_p,
@@ -210,7 +200,16 @@ class VLLMChunkedKVAnswerClient:
             )
             finished = time.perf_counter()
             generate_ms = (finished - generate_started) * 1000
-            total_ms = max(0.0, (finished - request_started) * 1000 - ttft_probe_ms)
+            total_ms = max(0.0, (finished - request_started) * 1000)
+            if query_started_at is not None:
+                metrics["query_to_answer_ms"] = max(0.0, (finished - query_started_at) * 1000)
+            timing = request_timing_from_output(outputs[0])
+            ttft_ms = timing.time_to_first_token_ms
+            if ttft_ms is not None:
+                metrics["kv_engine_time_to_first_token_ms"] = ttft_ms
+                metrics["answer_time_to_first_token_ms"] = max(0.0, (generate_started - request_started) * 1000) + ttft_ms
+                if query_started_at is not None:
+                    metrics["query_to_first_token_ms"] = max(0.0, (generate_started - query_started_at) * 1000) + ttft_ms
             text = outputs[0].outputs[0].text.strip()
             stats = namespace_stats(self.namespace)
             metrics.update(
@@ -257,35 +256,3 @@ class VLLMChunkedKVAnswerClient:
             torch.cuda.ipc_collect()
         except Exception:
             pass
-
-    def _measure_one_token_ttft(
-        self,
-        *,
-        prompt_token_ids: list[int],
-        temperature: float,
-        top_p: float,
-        request_started: float,
-    ) -> tuple[float, float, float]:
-        sampling = self._sampling_cls(
-            temperature=temperature,
-            top_p=top_p,
-            max_tokens=1,
-            min_tokens=1,
-        )
-        synchronize_cuda()
-        engine_started = time.perf_counter()
-        self._llm.generate(
-            [{"prompt_token_ids": prompt_token_ids}],
-            sampling,
-            use_tqdm=False,
-        )
-        synchronize_cuda()
-        finished = time.perf_counter()
-        return (
-            (finished - request_started) * 1000,
-            (finished - engine_started) * 1000,
-            (finished - engine_started) * 1000,
-        )
-
-
-_synchronize_cuda = synchronize_cuda

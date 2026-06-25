@@ -1,9 +1,5 @@
-torch==2.8.0
-torchvision==0.23.0
-torchaudio==2.8.0
-vllm==0.10.2
-transformers==4.56.1
-# vLLM 0.10.2 uses prometheus-fastapi-instrumentator, which crashes on
-# FastAPI 0.116.x route objects with:
-# AttributeError: '_IncludedRouter' object has no attribute 'path'
-fastapi==0.115.14
+torch==2.10.0
+torchvision==0.25.0
+torchaudio==2.10.0
+vllm==0.19.1
+transformers==5.5.1

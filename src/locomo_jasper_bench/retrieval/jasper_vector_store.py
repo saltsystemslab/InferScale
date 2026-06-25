@@ -39,7 +39,7 @@ class JasperVectorStore:
         payloads: Iterable[dict[str, Any]],
         ids: Iterable[str] | None = None,
     ) -> list[str]:
-        vector_list = [np.asarray(vector, dtype=np.float32) for vector in vectors]
+        vector_list = [_as_float32_vector(vector) for vector in vectors]
         payload_list = list(payloads)
         if len(vector_list) != len(payload_list):
             raise ValueError("vectors and payloads must have the same length")
@@ -50,7 +50,7 @@ class JasperVectorStore:
         if len(id_list) != len(vector_list):
             raise ValueError("ids and vectors must have the same length")
 
-        matrix = np.vstack(vector_list).astype(np.float32, copy=False)
+        matrix = np.vstack(vector_list)
         if self._vectors is None:
             self._vectors = matrix
             start_ord = 0
@@ -58,7 +58,7 @@ class JasperVectorStore:
             if matrix.shape[1] != self._vectors.shape[1]:
                 raise ValueError(f"vector dim {matrix.shape[1]} does not match store dim {self._vectors.shape[1]}")
             start_ord = int(self._vectors.shape[0])
-            self._vectors = np.vstack([self._vectors, matrix]).astype(np.float32, copy=False)
+            self._vectors = np.vstack([self._vectors, matrix])
 
         for offset, (item_id, payload) in enumerate(zip(id_list, payload_list)):
             item_id = str(item_id)
@@ -76,9 +76,7 @@ class JasperVectorStore:
     def search(self, query_vector: np.ndarray | list[float], top_k: int) -> tuple[list[SearchHit], SearchMetrics]:
         if self._vectors is None or self._vectors.size == 0:
             return [], SearchMetrics(0.0)
-        query = np.asarray(query_vector, dtype=np.float32)
-        if query.ndim != 1:
-            raise ValueError("query_vector must be one-dimensional")
+        query = _as_float32_vector(query_vector, name="query_vector")
         if query.shape[0] != self._vectors.shape[1]:
             raise ValueError(f"query dim {query.shape[0]} does not match store dim {self._vectors.shape[1]}")
         top_k = max(1, min(top_k, self.vector_count))
@@ -128,10 +126,10 @@ class JasperVectorStore:
             synchronize()
         search_time_ms = (time.perf_counter() - started) * 1000
 
-        index_values = indices[0].detach().cpu().numpy().astype(np.int64)
-        distance_values = distances[0].detach().cpu().numpy().astype(np.float32)
+        index_values = indices[0].detach().cpu().numpy()
+        distance_values = distances[0].detach().cpu().numpy()
         hits: list[SearchHit] = []
-        for ordinal, distance in zip(index_values.tolist(), distance_values.tolist()):
+        for ordinal, distance in zip(index_values, distance_values):
             row = self._payload_by_ordinal(int(ordinal))
             if row is None:
                 continue
@@ -150,3 +148,20 @@ class JasperVectorStore:
 
     def _payload_by_ordinal(self, ordinal: int) -> tuple[str, dict[str, Any]] | None:
         return self._payloads_by_ordinal.get(ordinal)
+
+
+def _as_float32_vector(vector: np.ndarray | list[float], *, name: str = "vector") -> np.ndarray:
+    array = _as_float32_array(vector)
+    if array.ndim == 2 and array.shape[0] == 1:
+        array = array[0]
+    if array.ndim != 1:
+        raise ValueError(f"{name} must be one-dimensional")
+    if not array.flags.c_contiguous:
+        return np.ascontiguousarray(array, dtype=np.float32)
+    return array
+
+
+def _as_float32_array(value: Any) -> np.ndarray:
+    if isinstance(value, np.ndarray) and value.dtype == np.float32 and value.flags.c_contiguous:
+        return value
+    return np.ascontiguousarray(value, dtype=np.float32)

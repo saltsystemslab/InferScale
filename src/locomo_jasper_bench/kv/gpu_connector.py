@@ -22,12 +22,9 @@ from .connector_metadata import (
 )
 from .gpu_registry import get_gpu_memory_store
 
-try:
-    from vllm.v1.attention.backends.mla.common import MLACommonMetadata
-except ImportError:  # pragma: no cover - depends on installed vLLM build
-    _MLA_METADATA_TYPES: tuple[type[Any], ...] = ()
-else:
-    _MLA_METADATA_TYPES = (MLACommonMetadata,)
+from vllm.model_executor.layers.attention.mla_attention import MLACommonMetadata
+
+_MLA_METADATA_TYPES = (MLACommonMetadata,)
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
@@ -191,8 +188,9 @@ class MemoryKVConnector(KVConnectorBase_V1):
             handled_req_ids.append(req_id)
 
         cached_reqs = scheduler_output.scheduled_cached_reqs
+        resumed_req_ids = set(cached_reqs.resumed_req_ids)
         for index, req_id in enumerate(cached_reqs.req_ids):
-            if not cached_reqs.resumed_from_preemption[index] or req_id not in self._requests_need_load:
+            if req_id not in resumed_req_ids or req_id not in self._requests_need_load:
                 continue
 
             new_block_ids = cached_reqs.new_block_ids[index]
@@ -252,7 +250,7 @@ class MemoryKVConnector(KVConnectorBase_V1):
                     logger.warning("Layer %s not found in strict GPU memory for user %s", layer_name, load.user_id)
                     continue
 
-                kv_cache_layer = kv_cache_attr
+                kv_cache_layer = kv_cache_attr[forward_context.virtual_engine]
                 self._inject_kv_into_layer(
                     dst_kv_cache_layer=kv_cache_layer,
                     src_kv_cache=self._truncate_kv(src_kv, load.num_tokens),

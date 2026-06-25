@@ -255,7 +255,7 @@ def _compose_encoded_chunks(
     cos_table: Any,
     sin_table: Any,
 ) -> dict[str, Any]:
-    from rope_inject import rotate_chunk_at_virtual_position
+    from rope_inject import rotate_pre_rope_k
     import torch
 
     layer_names = list(chunks[0].kv_by_layer.keys())
@@ -265,30 +265,27 @@ def _compose_encoded_chunks(
         raise RuntimeError(
             f"Composed memory has {total_tokens} tokens, exceeding kv_max_position={max_position}."
         )
+    if total_tokens > cos_table.shape[0] or total_tokens > sin_table.shape[0]:
+        raise ValueError(
+            f"Composed memory has {total_tokens} tokens, exceeding precomputed RoPE table size "
+            f"cos={cos_table.shape[0]} sin={sin_table.shape[0]}."
+        )
 
     for layer_name in layer_names:
-        rotated_keys = []
-        values = []
-        virtual_pos = 0
-        for chunk in chunks:
-            chunk_kv = _copy_layer_kv_to_device(chunk.kv_by_layer[layer_name], device)
-            k_pre = chunk_kv[0]
-            v = chunk_kv[1]
-            token_count = k_pre.shape[0]
-
-            k_pre_t = k_pre.transpose(0, 1).contiguous()
-            k_rot_t = rotate_chunk_at_virtual_position(
-                k_pre_chunk=k_pre_t,
-                virtual_start=virtual_pos,
-                cos_table=cos_table,
-                sin_table=sin_table,
-            )
-            rotated_keys.append(k_rot_t.transpose(0, 1).contiguous())
-            values.append(v)
-            virtual_pos += token_count
+        layer_chunks = [
+            _copy_layer_kv_to_device(chunk.kv_by_layer[layer_name], device)
+            for chunk in chunks
+        ]
+        k_pre = torch.cat([chunk_kv[0] for chunk_kv in layer_chunks], dim=0)
+        values = torch.cat([chunk_kv[1] for chunk_kv in layer_chunks], dim=0)
+        k_rot = rotate_pre_rope_k(
+            k_pre.transpose(0, 1).contiguous(),
+            cos_table[:total_tokens],
+            sin_table[:total_tokens],
+        ).transpose(0, 1).contiguous()
 
         composed[layer_name] = torch.stack(
-            [torch.cat(rotated_keys, dim=0), torch.cat(values, dim=0)],
+            [k_rot, values],
             dim=0,
         )
     return composed

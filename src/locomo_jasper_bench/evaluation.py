@@ -63,10 +63,9 @@ class QuestionEvaluator:
                 raise RuntimeError("Judge client is not configured. Use --skip-judge to write unjudged predictions.")
             judge_payload = judge_qa(self.config, self.clients.judge_client, qa, answer.content)
 
-        metrics: dict[str, Any] = {
-            "time_to_first_token_ms": answer.ttft_ms,
-            **getattr(answer, "metrics", {}),
-        }
+        metrics: dict[str, Any] = {**getattr(answer, "metrics", {})}
+        if answer.ttft_ms is not None:
+            metrics["time_to_first_token_ms"] = answer.ttft_ms
         if retrieval_metrics is not None:
             metrics.update(
                 {
@@ -75,12 +74,6 @@ class QuestionEvaluator:
                     "query_retrieval_time_ms": retrieval_metrics.total_time_ms,
                 }
             )
-            answer_ttft_ms = metrics.get("answer_time_to_first_token_ms")
-            if answer_ttft_ms is None:
-                answer_ttft_ms = answer.ttft_ms
-            if answer_ttft_ms is not None:
-                query_to_first_token_ms = retrieval_metrics.total_time_ms + float(answer_ttft_ms)
-                metrics["query_to_first_token_ms"] = query_to_first_token_ms
         return {
             "run_id": self.config.run_id,
             "mode": result_mode(self.config),

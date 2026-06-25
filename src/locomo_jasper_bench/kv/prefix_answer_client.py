@@ -10,7 +10,7 @@ from ..config import BenchmarkConfig
 from ..data import ConversationSample, QuestionAnswer
 from ..vector_types import SearchHit
 from .prompting import build_kv_equivalence_prompt_token_ids, build_memory_prompt_token_ids
-from .vllm_runtime import synchronize_cuda
+from .vllm_metrics import request_timing_from_output
 
 logger = logging.getLogger(__name__)
 
@@ -89,18 +89,6 @@ class VLLMPrefixPromptAnswerClient:
             "kv_selected_turn_ids": memory.selected_turn_ids,
         }
 
-        ttft_ms: float | None = None
-        ttft_probe_ms = 0.0
-        total_ttft_ms, engine_ttft_ms, ttft_probe_ms = self._measure_one_token_ttft(
-            prompt_token_ids=prompt.prompt_token_ids,
-            temperature=temperature,
-            top_p=top_p,
-            request_started=request_started,
-        )
-        ttft_ms = engine_ttft_ms
-        metrics["answer_time_to_first_token_ms"] = total_ttft_ms
-        metrics["prefix_engine_time_to_first_token_ms"] = engine_ttft_ms
-
         sampling = self._sampling_cls(
             temperature=temperature,
             top_p=top_p,
@@ -116,11 +104,18 @@ class VLLMPrefixPromptAnswerClient:
         metrics.update(
             {
                 "answer_generate_time_ms": (finished - generate_started) * 1000,
-                "answer_total_time_ms": max(0.0, (finished - request_started) * 1000 - ttft_probe_ms),
+                "answer_total_time_ms": max(0.0, (finished - request_started) * 1000),
             }
         )
         if query_started_at is not None:
-            metrics["query_to_answer_ms"] = max(0.0, (finished - query_started_at) * 1000 - ttft_probe_ms)
+            metrics["query_to_answer_ms"] = max(0.0, (finished - query_started_at) * 1000)
+        timing = request_timing_from_output(outputs[0])
+        ttft_ms = timing.time_to_first_token_ms
+        if ttft_ms is not None:
+            metrics["prefix_engine_time_to_first_token_ms"] = ttft_ms
+            metrics["answer_time_to_first_token_ms"] = max(0.0, (generate_started - request_started) * 1000) + ttft_ms
+            if query_started_at is not None:
+                metrics["query_to_first_token_ms"] = max(0.0, (generate_started - query_started_at) * 1000) + ttft_ms
         return ChatResult(
             content=outputs[0].outputs[0].text.strip(),
             ttft_ms=ttft_ms,
@@ -141,34 +136,6 @@ class VLLMPrefixPromptAnswerClient:
         gc.collect()
         _empty_cuda_cache()
 
-    def _measure_one_token_ttft(
-        self,
-        *,
-        prompt_token_ids: list[int],
-        temperature: float,
-        top_p: float,
-        request_started: float,
-    ) -> tuple[float, float, float]:
-        sampling = self._sampling_cls(
-            temperature=temperature,
-            top_p=top_p,
-            max_tokens=1,
-            min_tokens=1,
-        )
-        synchronize_cuda()
-        engine_started = time.perf_counter()
-        self._llm.generate(
-            [{"prompt_token_ids": prompt_token_ids}],
-            sampling,
-            use_tqdm=False,
-        )
-        synchronize_cuda()
-        finished = time.perf_counter()
-        return (
-            (finished - request_started) * 1000,
-            (finished - engine_started) * 1000,
-            (finished - engine_started) * 1000,
-        )
 
 def _empty_cuda_cache() -> None:
     try:
@@ -177,6 +144,3 @@ def _empty_cuda_cache() -> None:
         return
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-
-
-_synchronize_cuda = synchronize_cuda

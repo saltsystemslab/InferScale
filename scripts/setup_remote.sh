@@ -56,6 +56,18 @@ if [[ "${CUDA_VERSION}" != 12.8* ]]; then
   echo "warning: CUDA 12.8 was not detected; RTX/B200 Blackwell needs CUDA >=12.8 and this script pins cu128 wheels." >&2
 fi
 
+PYTHON_VERSION="$(python3 - <<'PY'
+import sys
+print(f"{sys.version_info.major}.{sys.version_info.minor}")
+PY
+)"
+PYTHON_MAJOR="${PYTHON_VERSION%%.*}"
+PYTHON_MINOR="${PYTHON_VERSION#*.}"
+if (( PYTHON_MAJOR < 3 || (PYTHON_MAJOR == 3 && PYTHON_MINOR < 10) || PYTHON_MAJOR > 3 || (PYTHON_MAJOR == 3 && PYTHON_MINOR >= 14) )); then
+  echo "error: vLLM 0.19.1 requires Python >=3.10,<3.14; found Python ${PYTHON_VERSION}." >&2
+  exit 1
+fi
+
 python3 -m venv "${VENV_DIR}"
 . "${VENV_DIR}/bin/activate"
 
@@ -81,10 +93,12 @@ python -m pip install -e jasperpy/python
 python - <<'PY'
 import locomo_jasper_bench
 import torch
+import transformers
 import vllm
 
 print("locomo_jasper_bench:", locomo_jasper_bench.__version__)
 print("torch:", torch.__version__)
 print("torch cuda:", torch.version.cuda)
+print("transformers:", transformers.__version__)
 print("vllm:", vllm.__version__)
 PY

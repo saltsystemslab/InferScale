@@ -11,6 +11,7 @@ from .config import BenchmarkConfig
 from .data import ConversationSample, QuestionAnswer, load_locomo
 from .evaluation import QuestionEvaluator
 from .judging import judge_label
+from .modes import result_mode
 from .retrieval.memory_builder import SampleMemoryBuilder
 from .results import JsonlWriter
 
@@ -22,11 +23,17 @@ class PreparedSample:
     questions: list[QuestionAnswer]
 
 
-def run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> list[dict[str, Any]]:
+@dataclass(slots=True)
+class PredictionResult:
+    records: list[dict[str, Any]]
+    sample_setup_metrics: list[dict[str, Any]]
+
+
+def run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> PredictionResult:
     return run_kv_prediction_mode(config, clients)
 
 
-def run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> list[dict[str, Any]]:
+def run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> PredictionResult:
     logger.info("Loading LoCoMo dataset from {}", config.dataset_path)
     samples = load_locomo(config.dataset_path, max_samples=config.max_samples)
     planned_questions = planned_question_count(samples, config.max_questions)
@@ -55,6 +62,8 @@ def run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> 
     memory_builder = SampleMemoryBuilder(config)
     question_evaluator = QuestionEvaluator(config, clients)
     prepared_samples: list[PreparedSample] = []
+    sample_setup_by_key: dict[int, dict[str, Any]] = {}
+    sample_setup_rows: list[dict[str, Any]] = []
 
     for sample_index, sample in enumerate(samples, start=1):
         if remaining_questions is not None and remaining_questions <= 0:
@@ -88,8 +97,11 @@ def run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> 
             sample.sample_id,
         )
         prepared_samples.append(PreparedSample(index=sample_index, sample=sample, questions=list(sample_questions)))
+        setup_row = _base_sample_setup_row(config, sample, len(sample_questions))
         if active_sample_gpu_cache:
-            precompute_sample_cache(sample)
+            kv_metrics = precompute_sample_cache(sample) or {}
+            setup_row["kv_precompute_time_ms"] = _number(kv_metrics.get("kv_precompute_time_ms"))
+        sample_setup_by_key[id(sample)] = setup_row
 
     if active_sample_gpu_cache:
         logger.info(
@@ -107,16 +119,22 @@ def run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> 
         with JsonlWriter(output_path):
             pass
         logger.info("Wrote 0 prepared vLLM prediction records to {}", output_path)
-        return all_records
+        return PredictionResult(records=all_records, sample_setup_metrics=sample_setup_rows)
 
     start_llm()
 
     with JsonlWriter(output_path) as writer:
         for prepared in prepared_samples:
             sample = prepared.sample
-            memory = memory_builder.build(sample)
+            setup_row = sample_setup_by_key[id(sample)]
+            memory, memory_metrics = memory_builder.build_with_metrics(sample)
+            setup_row.update(memory_metrics)
             try:
+                prepare_started = time.perf_counter()
                 prepare_sample(sample)
+                setup_row["answer_prepare_sample_time_ms"] = (time.perf_counter() - prepare_started) * 1000
+                setup_row["sample_setup_time_ms"] = _setup_total_ms(setup_row)
+                sample_setup_rows.append(dict(setup_row))
                 for qa in prepared.questions:
                     next_question = completed_questions + 1
                     if should_log_progress(next_question, planned_questions, config.log_every):
@@ -162,7 +180,50 @@ def run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> 
                 close_sample()
 
     logger.info("Wrote {} prepared vLLM prediction records to {}", len(all_records), output_path)
-    return all_records
+    return PredictionResult(records=all_records, sample_setup_metrics=sample_setup_rows)
+
+
+def _base_sample_setup_row(
+    config: BenchmarkConfig,
+    sample: ConversationSample,
+    question_count: int,
+) -> dict[str, Any]:
+    return {
+        "run_id": config.run_id,
+        "mode": result_mode(config),
+        "sample_id": sample.sample_id,
+        "question_count": question_count,
+        "turn_count": len(sample.turns),
+        "vector_backend": config.vector_backend,
+        "memory_create_time_ms": None,
+        "embedding_memory_build_time_ms": None,
+        "vector_index_build_time_ms": None,
+        "memory_setup_time_ms": None,
+        "kv_precompute_time_ms": None,
+        "answer_prepare_sample_time_ms": None,
+        "sample_setup_time_ms": None,
+    }
+
+
+def _setup_total_ms(row: dict[str, Any]) -> float:
+    return sum(
+        value
+        for value in (
+            _number(row.get("memory_setup_time_ms")),
+            _number(row.get("kv_precompute_time_ms")),
+            _number(row.get("answer_prepare_sample_time_ms")),
+        )
+        if value is not None
+    )
+
+
+def _number(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def planned_question_count(samples: list[ConversationSample], max_questions: int | None) -> int:

@@ -6,6 +6,7 @@ from typing import Any
 
 from .config import BenchmarkConfig
 from .modes import existing_run_mode
+from .reporting import write_query_reports
 from .results import JsonlWriter, summarize_records, write_json
 
 
@@ -36,6 +37,8 @@ def write_deferred_judging_outputs(
     *,
     saved_config: dict[str, Any],
     system_metadata: dict[str, Any],
+    sample_setup_metrics: list[dict[str, Any]] | None = None,
+    write_reports: bool = True,
 ) -> dict[str, Any]:
     replace_jsonl(predictions_path, records)
     summary = summarize_records(
@@ -44,8 +47,11 @@ def write_deferred_judging_outputs(
         mode=existing_run_mode(saved_config, records, config),
         config=saved_config,
         system_metadata=system_metadata,
+        sample_setup_metrics=sample_setup_metrics,
     )
     write_json(config.run_dir / "summary.json", summary)
+    if write_reports:
+        write_query_reports(config.run_dir, records)
     return summary
 
 

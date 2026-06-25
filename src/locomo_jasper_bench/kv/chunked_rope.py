@@ -278,6 +278,7 @@ def _compose_encoded_chunks(
         ]
         k_pre = torch.cat([chunk_kv[0] for chunk_kv in layer_chunks], dim=0)
         values = torch.cat([chunk_kv[1] for chunk_kv in layer_chunks], dim=0)
+        k_rot = rotate_pre_rope_k(
             k_pre.transpose(0, 1).contiguous(),
             cos_table[:total_tokens],
             sin_table[:total_tokens],

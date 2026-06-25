@@ -6,6 +6,17 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
+SETUP_METRIC_KEYS = (
+    "memory_create_time_ms",
+    "embedding_memory_build_time_ms",
+    "vector_index_build_time_ms",
+    "memory_setup_time_ms",
+    "kv_precompute_time_ms",
+    "answer_prepare_sample_time_ms",
+    "sample_setup_time_ms",
+)
+
+
 class JsonlWriter(AbstractContextManager["JsonlWriter"]):
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
@@ -37,8 +48,10 @@ def summarize_records(
     mode: str,
     config: dict[str, Any],
     system_metadata: dict[str, Any],
+    sample_setup_metrics: Iterable[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     rows = list(records)
+    setup_rows = list(sample_setup_metrics or [])
     judged = [row for row in rows if row.get("judge", {}).get("correct") is not None]
     correct = sum(1 for row in judged if row.get("judge", {}).get("correct") is True)
     vector_query_times = _number_values(_metric_values(rows, "vector_db_query_time_ms"))
@@ -76,6 +89,12 @@ def summarize_records(
         summary = _numeric_summary(_metric_values(rows, key))
         if summary["count"]:
             metrics[key] = summary
+    if setup_rows:
+        metrics["sample_setup_count"] = len(setup_rows)
+        for key in SETUP_METRIC_KEYS:
+            summary = _numeric_summary(_setup_metric_values(setup_rows, key))
+            if summary["count"]:
+                metrics[key] = summary
 
     return {
         "run_id": run_id,
@@ -94,6 +113,12 @@ def _metric_values(rows: list[dict[str, Any]], key: str) -> Iterable[Any]:
         metrics = row.get("metrics")
         if isinstance(metrics, dict) and key in metrics:
             yield metrics.get(key)
+
+
+def _setup_metric_values(rows: list[dict[str, Any]], key: str) -> Iterable[Any]:
+    for row in rows:
+        if isinstance(row, dict) and key in row:
+            yield row.get(key)
 
 
 def _number_values(values: Iterable[Any]) -> list[float]:

@@ -44,7 +44,7 @@ class VLLMChunkedKVAnswerClient:
         self._sampling_cls: Any | None = None
         self._sample_caches = GpuSampleCacheStore()
 
-    def precompute_sample_cache(self, sample: ConversationSample) -> None:
+    def precompute_sample_cache(self, sample: ConversationSample) -> dict[str, Any]:
         force_vllm_inprocess_mode()
         if self._llm is not None:
             raise RuntimeError(
@@ -104,6 +104,7 @@ class VLLMChunkedKVAnswerClient:
             sample_metrics.get("kv_precomputed_gpu_mb", 0.0),
             sample_metrics.get("kv_precomputed_devices", ""),
         )
+        return dict(sample_metrics)
 
     def start_llm(self) -> None:
         force_vllm_inprocess_mode()

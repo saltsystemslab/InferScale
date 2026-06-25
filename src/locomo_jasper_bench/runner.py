@@ -16,6 +16,7 @@ from .judging import (
 )
 from .modes import result_mode
 from .prediction import run_prediction_mode
+from .reporting import read_sample_setup_report, write_query_reports, write_sample_setup_report
 from .results import summarize_records, write_json
 from .run_files import read_json_or_default, read_jsonl, write_deferred_judging_outputs
 from .system import collect_system_metadata
@@ -37,7 +38,9 @@ def run_benchmark(config: BenchmarkConfig, clients: RuntimeClients | None = None
     write_json(config.run_dir / "system.json", system_metadata)
 
     try:
-        records = run_prediction_mode(config, runtime_clients)
+        prediction_result = run_prediction_mode(config, runtime_clients)
+        records = prediction_result.records
+        sample_setup_metrics = prediction_result.sample_setup_metrics
     finally:
         if owns_clients:
             close_answer_client = getattr(runtime_clients.answer_client, "close", None)
@@ -50,8 +53,11 @@ def run_benchmark(config: BenchmarkConfig, clients: RuntimeClients | None = None
         mode=result_mode(config),
         config=config.to_jsonable(),
         system_metadata=system_metadata,
+        sample_setup_metrics=sample_setup_metrics,
     )
     write_json(config.run_dir / "summary.json", summary)
+    write_sample_setup_report(config.run_dir, sample_setup_metrics)
+    write_query_reports(config.run_dir, records)
     logger.info(
         "Finished benchmark run_id={} questions={} judged={} accuracy={}",
         config.run_id,
@@ -72,6 +78,7 @@ def judge_existing_run(config: BenchmarkConfig) -> dict[str, Any]:
     records = read_jsonl(predictions_path)
     saved_config = read_json_or_default(config.run_dir / "config.json", config.to_jsonable())
     system_metadata = read_json_or_default(config.run_dir / "system.json", {})
+    sample_setup_metrics = read_sample_setup_report(config.run_dir)
     judge_client = OpenAICompatibleChatClient(
         base_url=config.judge_base_url,
         api_key=config.judge_api_key,
@@ -79,7 +86,6 @@ def judge_existing_run(config: BenchmarkConfig) -> dict[str, Any]:
     )
 
     judged_now = 0
-    summary: dict[str, Any] | None = None
     for row_number, record in enumerate(records, start=1):
         if is_judged(record):
             continue
@@ -93,6 +99,8 @@ def judge_existing_run(config: BenchmarkConfig) -> dict[str, Any]:
                 records,
                 saved_config=saved_config,
                 system_metadata=system_metadata,
+                sample_setup_metrics=sample_setup_metrics,
+                write_reports=False,
             )
             raise RuntimeError(
                 f"Judge request failed for row {row_number}/{len(records)} {record_label(record)}. "
@@ -101,22 +109,25 @@ def judge_existing_run(config: BenchmarkConfig) -> dict[str, Any]:
             ) from exc
         record["judge"] = judge_payload
         judged_now += 1
-        summary = write_deferred_judging_outputs(
+        write_deferred_judging_outputs(
             config,
             predictions_path,
             records,
             saved_config=saved_config,
             system_metadata=system_metadata,
+            sample_setup_metrics=sample_setup_metrics,
+            write_reports=False,
         )
 
-    if summary is None:
-        summary = write_deferred_judging_outputs(
-            config,
-            predictions_path,
-            records,
-            saved_config=saved_config,
-            system_metadata=system_metadata,
-        )
+    summary = write_deferred_judging_outputs(
+        config,
+        predictions_path,
+        records,
+        saved_config=saved_config,
+        system_metadata=system_metadata,
+        sample_setup_metrics=sample_setup_metrics,
+        write_reports=True,
+    )
     logger.info(
         "Finished deferred judging run_id={} judged_now={} judged={} accuracy={}",
         config.run_id,

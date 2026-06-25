@@ -6,7 +6,7 @@ from loguru import logger
 
 from ..config import BenchmarkConfig
 from ..data import ConversationSample, load_locomo
-from ..memory_builder import SampleMemoryBuilder, memory_embedder
+from ..retrieval.memory_builder import SampleMemoryBuilder, memory_embedder
 from ..results import write_json
 
 

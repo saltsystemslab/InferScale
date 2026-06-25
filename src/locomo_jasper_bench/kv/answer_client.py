@@ -111,6 +111,7 @@ class VLLMChunkedKVAnswerClient:
                 dtype=self.config.kv_dtype,
                 trust_remote_code=True,
                 enable_prefix_caching=False,
+                disable_log_stats=False,
                 swap_space=0,
                 cpu_offload_gb=0,
                 gpu_memory_utilization=self.config.kv_gpu_memory_utilization,

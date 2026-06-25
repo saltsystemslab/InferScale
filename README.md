@@ -139,6 +139,8 @@ locomo-jasper-bench \
 
 All three runs write query-start-to-answer-complete latency as `metrics.query_to_answer_ms`. This is a single stopwatch around query embedding, vector retrieval, prompt/KV composition, and answer generation. It does not include memory storage/index construction, KV precompute, vLLM startup, or judging.
 
+TTFT metrics come from vLLM request timing on the real answer `generate()` call. They are populated only when vLLM returns usable per-request metrics on `RequestOutput.metrics`; no one-token probe or synthetic fallback is used.
+
 ## 6. Judge Accuracy
 
 If the judge will run on the same GPU, start it after both answer runs finish:
@@ -182,7 +184,7 @@ cat "${BENCHMARK_RESULTS_ROOT}/${QDRANT_PREFIX_RUN_ID}/summary.json"
 Primary summary metrics:
 
 - `metrics.accuracy`: judged answer quality.
-- `metrics.time_to_first_token_ms`: in-process vLLM time to first token from the real answer generation.
-- `metrics.query_to_first_token_ms`: query embedding, retrieval, prompt/KV composition, and vLLM time to first token.
+- `metrics.time_to_first_token_ms`: in-process vLLM time to first token from the real answer generation, when vLLM exposes request timing metrics.
+- `metrics.query_to_first_token_ms`: query-start-to-generate-start wall time plus vLLM time to first token, when vLLM exposes request timing metrics.
 - `metrics.query_to_answer_ms`: query embedding, retrieval, prompt/KV composition, and full answer generation measured with one stopwatch.
 - `metrics.vector_db_query_time_ms`: raw backend vector search latency.

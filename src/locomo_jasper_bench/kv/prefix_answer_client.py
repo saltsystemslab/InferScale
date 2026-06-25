@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import gc
 import logging
 import time
 from typing import Any
@@ -11,7 +10,11 @@ from ..data import ConversationSample, QuestionAnswer
 from ..vector_types import SearchHit
 from .prompting import build_kv_equivalence_prompt_token_ids, build_memory_prompt_token_ids
 from .vllm_metrics import request_timing_from_output
-from .vllm_runtime import sanitize_repo_vllm_env_for_import
+from .vllm_runtime import (
+    common_vllm_kwargs,
+    empty_cuda_cache,
+    sanitize_repo_vllm_env_for_import,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,27 +38,13 @@ class VLLMPrefixPromptAnswerClient:
 
         try:
             self._sampling_cls = SamplingParams
-            self._llm = LLM(
-                model=self.config.model,
-                dtype=self.config.kv_dtype,
-                trust_remote_code=True,
-                enable_prefix_caching=False,
-                disable_log_stats=False,
-                swap_space=0,
-                cpu_offload_gb=0,
-                gpu_memory_utilization=self.config.kv_gpu_memory_utilization,
-                max_model_len=self.config.kv_max_model_len,
-            )
+            self._llm = LLM(**common_vllm_kwargs(self.config))
             self._tokenizer = self._llm.get_tokenizer()
         except Exception:
             self.close()
             raise
 
-    def prepare_sample(
-        self,
-        sample: ConversationSample,
-        question_hits: list[tuple[QuestionAnswer, list[SearchHit]]] | list[list[SearchHit]],
-    ) -> None:
+    def prepare_sample(self, sample: ConversationSample) -> None:
         self.close_sample()
         logger.info("Preparing vLLM prefix prompt sample_id=%s", sample.sample_id)
         self._active_sample_id = id(sample)
@@ -127,7 +116,6 @@ class VLLMPrefixPromptAnswerClient:
 
     def close_sample(self) -> None:
         self._active_sample_id = None
-        gc.collect()
 
     def close(self) -> None:
         self.close_sample()
@@ -136,14 +124,4 @@ class VLLMPrefixPromptAnswerClient:
         self._llm = None
         self._tokenizer = None
         self._sampling_cls = None
-        gc.collect()
-        _empty_cuda_cache()
-
-
-def _empty_cuda_cache() -> None:
-    try:
-        import torch
-    except ImportError:
-        return
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+        empty_cuda_cache()

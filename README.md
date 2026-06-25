@@ -2,7 +2,7 @@
 
 This repository runs a LoCoMo benchmark comparison between in-process vLLM answer backends:
 
-- `vllm-kv`: retrieved memories are composed as chunked-RoPE KV tensors and injected through the `ai-memory-code` GPU connector.
+- `vllm-kv`: retrieved memories are encoded with the `ai-memory-code` chunked-RoPE helpers, then injected through the top-level GPU KV connector.
 - `vllm-prefix`: the same retrieved memory tokens are included as a normal vLLM prompt prefix.
 
 ## 1. Configure
@@ -14,7 +14,6 @@ cp .env.example .env
 Edit `.env` for your session. The common values are:
 
 - `LOCOMO_VLLM_MODEL=meta-llama/Llama-3.1-8B-Instruct`
-- `BENCHMARK_RUNTIME_ROOT=/workspace`
 - `CUDA_MODULE=` for Runpod containers without environment modules
 - `OPENAI_API_KEY=...`
 - `HF_TOKEN=...` if the model is gated
@@ -75,7 +74,7 @@ locomo-jasper-bench \
   --results-dir "${BENCHMARK_RESULTS_ROOT}" \
   --max-samples 10 \
   --preembed-only \
-  --run-id "preembed-20samples-${RUN_STAMP}"
+  --run-id "preembed-10samples-${RUN_STAMP}"
 ```
 
 Timed runs read from that cache and fail if an embedding is missing.

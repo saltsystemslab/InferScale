@@ -116,7 +116,7 @@ def run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> 
             sample = prepared.sample
             memory = memory_builder.build(sample)
             try:
-                prepare_sample(sample, [])
+                prepare_sample(sample)
                 for qa in prepared.questions:
                     next_question = completed_questions + 1
                     if should_log_progress(next_question, planned_questions, config.log_every):

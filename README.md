@@ -13,7 +13,9 @@ cp .env.example .env
 
 Edit `.env` for your session. The common values are:
 
-- `VLLM_MODEL=meta-llama/Llama-3.1-8B-Instruct`
+- `LOCOMO_VLLM_MODEL=meta-llama/Llama-3.1-8B-Instruct`
+- `BENCHMARK_RUNTIME_ROOT=/workspace`
+- `CUDA_MODULE=` for Runpod containers without environment modules
 - `OPENAI_API_KEY=...`
 - `HF_TOKEN=...` if the model is gated
 

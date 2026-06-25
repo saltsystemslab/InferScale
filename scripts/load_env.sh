@@ -29,6 +29,8 @@ if [[ -f "${_LOAD_ENV_FILE}" ]]; then
   fi
 fi
 
+unset VLLM_MODEL VLLM_API_KEY VLLM_TP VLLM_GPU_MEMORY_UTILIZATION VLLM_MAX_MODEL_LEN VLLM_DTYPE VLLM_QUANTIZATION VLLM_BASE_URL
+
 if [[ "${BENCHMARK_USE_SCRATCH:-1}" != "0" ]]; then
   # shellcheck source=scripts/scratch_env.sh
   source "${_LOAD_ENV_SCRIPT_DIR}/scratch_env.sh"

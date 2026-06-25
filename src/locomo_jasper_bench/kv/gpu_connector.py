@@ -252,7 +252,7 @@ class MemoryKVConnector(KVConnectorBase_V1):
                     logger.warning("Layer %s not found in strict GPU memory for user %s", layer_name, load.user_id)
                     continue
 
-                kv_cache_layer = kv_cache_attr[forward_context.virtual_engine]
+                kv_cache_layer = kv_cache_attr
                 self._inject_kv_into_layer(
                     dst_kv_cache_layer=kv_cache_layer,
                     src_kv_cache=self._truncate_kv(src_kv, load.num_tokens),

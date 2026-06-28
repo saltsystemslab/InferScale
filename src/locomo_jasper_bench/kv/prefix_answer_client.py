@@ -67,7 +67,12 @@ class VLLMPrefixPromptAnswerClient:
             raise RuntimeError(f"vllm-prefix sample_id={sample.sample_id} is not the active prepared sample.")
 
         request_started = ttft_started_at if ttft_started_at is not None else time.perf_counter()
-        memory = build_memory_prompt_token_ids(self._tokenizer, sample, hits)
+        memory = build_memory_prompt_token_ids(
+            self._tokenizer,
+            sample,
+            hits,
+            memory_order=self.config.prefix_memory_order,
+        )
         prompt = build_kv_equivalence_prompt_token_ids(
             self._tokenizer,
             memory.token_ids,
@@ -78,7 +83,9 @@ class VLLMPrefixPromptAnswerClient:
             "kv_memory_tokens": len(prompt.memory_token_ids),
             "kv_query_tokens": len(prompt.query_token_ids),
             "kv_query_bos_stripped": int(prompt.stripped_query_bos),
+            "kv_retrieval_turn_ids": memory.retrieval_turn_ids,
             "kv_selected_turn_ids": memory.selected_turn_ids,
+            "kv_memory_order": memory.memory_order,
         }
 
         sampling = self._sampling_cls(

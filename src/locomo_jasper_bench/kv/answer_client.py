@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import gc
 import logging
 import time
 import uuid
@@ -11,12 +10,23 @@ from ..config import BenchmarkConfig
 from ..data import ConversationSample, QuestionAnswer
 from ..vector_types import SearchHit
 from .chunked_rope import ChunkedRopeSampleComposer
+from .gpu_registry import (
+    clear_namespace,
+    drop_namespace,
+    namespace_stats,
+    register_user_memory,
+    remove_user_memory,
+)
 from .prompting import build_kv_equivalence_prompt_token_ids
 from .sample_cache import GpuSampleCacheStore
-from .gpu_registry import clear_namespace, drop_namespace, namespace_stats, register_user_memory, remove_user_memory
 from .submodule import require_ai_memory_submodule
 from .vllm_metrics import request_timing_from_output
-from .vllm_runtime import build_strict_gpu_kv_transfer_config, force_vllm_inprocess_mode
+from .vllm_runtime import (
+    build_strict_gpu_kv_transfer_config,
+    common_vllm_kwargs,
+    empty_cuda_cache,
+    force_vllm_inprocess_mode,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -108,15 +118,7 @@ class VLLMChunkedKVAnswerClient:
         try:
             self._sampling_cls = SamplingParams
             self._llm = LLM(
-                model=self.config.model,
-                dtype=self.config.kv_dtype,
-                trust_remote_code=True,
-                enable_prefix_caching=False,
-                disable_log_stats=False,
-                swap_space=0,
-                cpu_offload_gb=0,
-                gpu_memory_utilization=self.config.kv_gpu_memory_utilization,
-                max_model_len=self.config.kv_max_model_len,
+                **common_vllm_kwargs(self.config),
                 kv_transfer_config=build_strict_gpu_kv_transfer_config(
                     connector_module=self.config.kv_connector_module,
                     namespace=self.namespace,
@@ -128,12 +130,7 @@ class VLLMChunkedKVAnswerClient:
             self.close()
             raise
 
-    def prepare_sample(
-        self,
-        sample: ConversationSample,
-        question_hits: list[tuple[QuestionAnswer, list[SearchHit]]] | list[list[SearchHit]],
-    ) -> None:
-        del question_hits
+    def prepare_sample(self, sample: ConversationSample) -> None:
         sample_key = id(sample)
         if self._sample_caches.active_sample_key is not None and self._sample_caches.active_sample_key != sample_key:
             self.close_sample()
@@ -233,13 +230,7 @@ class VLLMChunkedKVAnswerClient:
     def close_sample(self) -> None:
         self._sample_caches.release_active()
         clear_namespace(self.namespace)
-        gc.collect()
-        try:
-            import torch
-
-            torch.cuda.empty_cache()
-        except ImportError:
-            pass
+        empty_cuda_cache()
 
     def close(self) -> None:
         self._sample_caches.release_all()
@@ -250,11 +241,4 @@ class VLLMChunkedKVAnswerClient:
         self._tokenizer = None
         self._sampling_cls = None
         drop_namespace(self.namespace)
-        gc.collect()
-        try:
-            import torch
-
-            torch.cuda.empty_cache()
-            torch.cuda.ipc_collect()
-        except Exception:
-            pass
+        empty_cuda_cache(collect_ipc=True)

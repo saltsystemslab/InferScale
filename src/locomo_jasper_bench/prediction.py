@@ -131,7 +131,7 @@ def run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> 
             setup_row.update(memory_metrics)
             try:
                 prepare_started = time.perf_counter()
-                prepare_sample(sample, [])
+                prepare_sample(sample)
                 setup_row["answer_prepare_sample_time_ms"] = (time.perf_counter() - prepare_started) * 1000
                 setup_row["sample_setup_time_ms"] = _setup_total_ms(setup_row)
                 sample_setup_rows.append(dict(setup_row))

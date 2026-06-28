@@ -1,8 +1,8 @@
 # LoCoMo KV Cache Benchmarks
 
-This repository runs a focused LoCoMo comparison between in-process vLLM answer backends. On Runpod, runtime files are kept under `/workspace` so model downloads, caches, temp files, and results persist on the hosted partition.
+This repository runs a LoCoMo benchmark comparison between in-process vLLM answer backends. On Runpod, runtime files are kept under `/workspace` so model downloads, caches, temp files, and results persist on the hosted partition.
 
-- `vllm-kv`: retrieved memories are composed as chunked-RoPE KV tensors and injected through the `ai-memory-code` GPU connector.
+- `vllm-kv`: retrieved memories are encoded with the `ai-memory-code` chunked-RoPE helpers, then injected through the top-level GPU KV connector.
 - `vllm-prefix`: the same retrieved memory tokens are included as a normal vLLM prompt prefix.
 
 ## 1. Configure
@@ -76,7 +76,7 @@ locomo-jasper-bench \
   --results-dir "${BENCHMARK_RESULTS_ROOT}" \
   --max-samples 10 \
   --preembed-only \
-  --run-id "preembed-20samples-${RUN_STAMP}"
+  --run-id "preembed-10samples-${RUN_STAMP}"
 ```
 
 Timed runs read from that cache and fail if an embedding is missing.
@@ -140,6 +140,8 @@ locomo-jasper-bench \
 
 All three runs write query-start-to-answer-complete latency as `metrics.query_to_answer_ms`. This is a single stopwatch around query embedding, vector retrieval, prompt/KV composition, and answer generation. It does not include memory storage/index construction, KV precompute, vLLM startup, or judging.
 
+TTFT metrics come from vLLM request timing on the real answer `generate()` call. They are populated only when vLLM returns usable per-request metrics on `RequestOutput.metrics`; no one-token probe or synthetic fallback is used.
+
 ## 6. Judge Accuracy
 
 If the judge will run on the same GPU, start it after both answer runs finish:
@@ -192,8 +194,8 @@ cat "${BENCHMARK_RESULTS_ROOT}/${QDRANT_PREFIX_RUN_ID}/summary.json"
 Primary summary metrics:
 
 - `metrics.accuracy`: judged answer quality.
-- `metrics.time_to_first_token_ms`: in-process vLLM time to first token from the real answer generation.
-- `metrics.query_to_first_token_ms`: query embedding, retrieval, prompt/KV composition, and vLLM time to first token.
+- `metrics.time_to_first_token_ms`: in-process vLLM time to first token from the real answer generation, when vLLM exposes request timing metrics.
+- `metrics.query_to_first_token_ms`: query-start-to-generate-start wall time plus vLLM time to first token, when vLLM exposes request timing metrics.
 - `metrics.query_to_answer_ms`: query embedding, retrieval, prompt/KV composition, and full answer generation measured with one stopwatch.
 - `metrics.sample_setup_time_ms`: per-sample setup before the first query, including memory/index construction, KV precompute when applicable, and sample activation.
 - `metrics.vector_db_query_time_ms`: raw backend vector search latency.

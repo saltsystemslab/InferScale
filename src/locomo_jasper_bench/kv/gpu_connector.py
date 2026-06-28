@@ -58,10 +58,9 @@ class MemoryKVConnector(KVConnectorBase_V1):
             raise RuntimeError(
                 "Strict GPU KV mode does not allow memory_path or disk-backed KV loading. "
                 "Register GPU tensors through locomo_jasper_bench.kv.gpu_registry."
-            )
+        )
 
         namespace = str(_extra_config(self._kv_transfer_config, "memory_namespace", "default"))
-        self._strict_memory_namespace = namespace
         self._memory_store = get_gpu_memory_store(namespace)
         self._default_user_id = _extra_config(self._kv_transfer_config, "default_user_id")
         self._allow_prefix_scan = bool(_extra_config(self._kv_transfer_config, "allow_prefix_scan", False))
@@ -78,10 +77,6 @@ class MemoryKVConnector(KVConnectorBase_V1):
             namespace,
             self._block_size,
         )
-
-    @property
-    def memory_store(self) -> Any:
-        return self._memory_store
 
     def get_num_new_matched_tokens(
         self,

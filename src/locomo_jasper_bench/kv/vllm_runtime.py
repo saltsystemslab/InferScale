@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import logging
 import os
 import sys
@@ -59,13 +60,34 @@ def sanitize_repo_vllm_env_for_import() -> None:
         os.environ.pop(name, None)
 
 
-def synchronize_cuda() -> None:
+def common_vllm_kwargs(config: Any) -> dict[str, Any]:
+    return {
+        "model": config.model,
+        "dtype": config.kv_dtype,
+        "trust_remote_code": True,
+        "enable_prefix_caching": False,
+        "disable_log_stats": False,
+        "swap_space": 0,
+        "cpu_offload_gb": 0,
+        "gpu_memory_utilization": config.kv_gpu_memory_utilization,
+        "max_model_len": config.kv_max_model_len,
+    }
+
+
+def empty_cuda_cache(*, collect_ipc: bool = False) -> None:
+    gc.collect()
     try:
         import torch
-    except ImportError:
+    except Exception:
         return
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
+    try:
+        if not torch.cuda.is_available():
+            return
+        torch.cuda.empty_cache()
+        if collect_ipc:
+            torch.cuda.ipc_collect()
+    except Exception:
+        return
 
 
 def _env_truthy(value: str | None) -> bool:

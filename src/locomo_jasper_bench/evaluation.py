@@ -120,13 +120,6 @@ class QuestionEvaluator:
             total_time_ms=total_time_ms,
         )
 
-    def search_mem0_memory(self, memory: Any, query: str) -> list[SearchHit]:
-        hits, _metrics = self.retrieve_mem0_memory(memory, query)
-        return hits
-
-    def _search_mem0_memory(self, memory: Any, query: str) -> list[SearchHit]:
-        return self.search_mem0_memory(memory, query)
-
     def _mem0_store_search_metrics(self, memory: Any) -> SearchMetrics:
         vector_store = getattr(memory, "vector_store", None)
         metrics = getattr(vector_store, "last_search_metrics", None)

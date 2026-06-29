@@ -17,6 +17,7 @@ JUDGE_SYSTEM_PROMPT = (
 
 def build_judge_messages(qa: QuestionAnswer, predicted_answer: str) -> list[dict[str, str]]:
     user = (
+        f"{JUDGE_SYSTEM_PROMPT}\n\n"
         f"Question: {qa.question}\n"
         f"Reference answer: {qa.answer}\n"
         f"Predicted answer: {predicted_answer}\n\n"
@@ -24,10 +25,7 @@ def build_judge_messages(qa: QuestionAnswer, predicted_answer: str) -> list[dict
         "Return false for contradictions, unsupported answers, or missing key facts. "
         "Output only true or false. Do not return JSON, punctuation, or an explanation."
     )
-    return [
-        {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
-        {"role": "user", "content": user},
-    ]
+    return [{"role": "user", "content": user}]
 
 
 def parse_judge_response(text: str) -> tuple[bool | None, str]:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from ..data import ConversationSample, Turn, format_turn_for_memory
@@ -14,6 +15,7 @@ def build_turn_context_encoding_plan(
     *,
     context_window: int,
     max_input_tokens: int,
+    turn_token_ids: Mapping[str, list[int]] | None = None,
 ) -> ContextEncodingPlan:
     if context_window < 0:
         raise ValueError("context_window must be >= 0.")
@@ -21,7 +23,7 @@ def build_turn_context_encoding_plan(
         raise ValueError("max_input_tokens must be >= 1.")
 
     target_text = format_memory_turn(turn)
-    target_token_ids = encode_text_no_special(tokenizer, target_text)
+    target_token_ids = _turn_token_ids(tokenizer, turn, target_text, turn_token_ids)
     if not target_token_ids:
         raise RuntimeError(f"Memory chunk tokenized to zero tokens: {turn.id}")
     if len(target_token_ids) > max_input_tokens:
@@ -32,7 +34,14 @@ def build_turn_context_encoding_plan(
 
     context_token_ids: list[int] = []
     for context_turn in previous_session_context_turns(sample, turn, context_window):
-        context_token_ids.extend(encode_text_no_special(tokenizer, format_memory_turn(context_turn)))
+        context_token_ids.extend(
+            _turn_token_ids(
+                tokenizer,
+                context_turn,
+                format_memory_turn(context_turn),
+                turn_token_ids,
+            )
+        )
 
     raw_context_prefix_tokens = len(context_token_ids)
     overflow = len(context_token_ids) + len(target_token_ids) - max_input_tokens
@@ -56,7 +65,9 @@ def build_turn_context_encoding_plan(
     )
 
 
-def previous_session_context_turns(sample: ConversationSample, turn: Turn, context_window: int) -> list[Turn]:
+def previous_session_context_turns(
+    sample: ConversationSample, turn: Turn, context_window: int
+) -> list[Turn]:
     if context_window <= 0:
         return []
     first_session_index = turn.session_index - context_window
@@ -69,3 +80,14 @@ def previous_session_context_turns(sample: ConversationSample, turn: Turn, conte
 
 def format_memory_turn(turn: Turn) -> str:
     return format_turn_for_memory(turn).strip() + "\n"
+
+
+def _turn_token_ids(
+    tokenizer: Any,
+    turn: Turn,
+    text: str,
+    turn_token_ids: Mapping[str, list[int]] | None,
+) -> list[int]:
+    if turn_token_ids is not None and turn.id in turn_token_ids:
+        return list(turn_token_ids[turn.id])
+    return encode_text_no_special(tokenizer, text)

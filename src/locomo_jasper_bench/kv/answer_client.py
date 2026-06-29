@@ -19,7 +19,6 @@ from .gpu_registry import (
 )
 from .prompting import build_kv_equivalence_prompt_token_ids
 from .sample_cache import GpuSampleCacheStore
-from .ai_memory_code import require_ai_memory_code
 from .vllm_metrics import request_timing_from_output
 from .vllm_runtime import (
     build_strict_gpu_kv_transfer_config,
@@ -51,7 +50,6 @@ class VLLMChunkedKVAnswerClient:
                 "GPU-resident KV precompute must run before vLLM is started. "
                 "Precompute all needed samples before starting the single vLLM instance."
             )
-        require_ai_memory_code()
         sample_key = id(sample)
         if self._sample_caches.active_sample_key == sample_key:
             self.close_sample()
@@ -111,7 +109,9 @@ class VLLMChunkedKVAnswerClient:
         if self._llm is not None:
             return
         if not self._sample_caches:
-            raise RuntimeError("At least one GPU-resident KV sample cache must be precomputed before starting vLLM.")
+            raise RuntimeError(
+                "At least one GPU-resident KV sample cache must be precomputed before starting vLLM."
+            )
 
         from vllm import LLM, SamplingParams
 
@@ -132,7 +132,10 @@ class VLLMChunkedKVAnswerClient:
 
     def prepare_sample(self, sample: ConversationSample) -> None:
         sample_key = id(sample)
-        if self._sample_caches.active_sample_key is not None and self._sample_caches.active_sample_key != sample_key:
+        if (
+            self._sample_caches.active_sample_key is not None
+            and self._sample_caches.active_sample_key != sample_key
+        ):
             self.close_sample()
         self._sample_caches.prepare(sample_key, sample.sample_id)
         logger.info("Preparing GPU-resident KV sample_id=%s", sample.sample_id)
@@ -150,14 +153,22 @@ class VLLMChunkedKVAnswerClient:
         query_started_at: float | None = None,
     ) -> ChatResult:
         if self._llm is None or self._tokenizer is None or self._sampling_cls is None:
-            raise RuntimeError("VLLMChunkedKVAnswerClient.prepare_sample() must be called before answering.")
+            raise RuntimeError(
+                "VLLMChunkedKVAnswerClient.prepare_sample() must be called before answering."
+            )
         composer = self._sample_caches.active_composer
         if composer is None:
-            raise RuntimeError(f"Strict GPU KV cache sample_id={sample.sample_id} was not prepared.")
+            raise RuntimeError(
+                f"Strict GPU KV cache sample_id={sample.sample_id} was not prepared."
+            )
         if self._sample_caches.active_sample_key != id(sample):
-            raise RuntimeError(f"Strict GPU KV sample_id={sample.sample_id} is not the active prepared sample.")
+            raise RuntimeError(
+                f"Strict GPU KV sample_id={sample.sample_id} is not the active prepared sample."
+            )
 
-        request_started = ttft_started_at if ttft_started_at is not None else time.perf_counter()
+        request_started = (
+            ttft_started_at if ttft_started_at is not None else time.perf_counter()
+        )
         composed = composer.compose(hits)
         user_id = self.active_user_id
         register_user_memory(
@@ -166,7 +177,6 @@ class VLLMChunkedKVAnswerClient:
             kv_by_layer=composed.kv_by_layer,
             num_tokens=composed.num_tokens,
             token_ids=composed.token_ids,
-            memory_text="strict-gpu chunked-rope top-k",
         )
         try:
             prompt = build_kv_equivalence_prompt_token_ids(
@@ -201,14 +211,20 @@ class VLLMChunkedKVAnswerClient:
             generate_ms = (finished - generate_started) * 1000
             total_ms = max(0.0, (finished - request_started) * 1000)
             if query_started_at is not None:
-                metrics["query_to_answer_ms"] = max(0.0, (finished - query_started_at) * 1000)
+                metrics["query_to_answer_ms"] = max(
+                    0.0, (finished - query_started_at) * 1000
+                )
             timing = request_timing_from_output(outputs[0])
             ttft_ms = timing.time_to_first_token_ms
             if ttft_ms is not None:
                 metrics["kv_engine_time_to_first_token_ms"] = ttft_ms
-                metrics["answer_time_to_first_token_ms"] = max(0.0, (generate_started - request_started) * 1000) + ttft_ms
+                metrics["answer_time_to_first_token_ms"] = (
+                    max(0.0, (generate_started - request_started) * 1000) + ttft_ms
+                )
                 if query_started_at is not None:
-                    metrics["query_to_first_token_ms"] = max(0.0, (generate_started - query_started_at) * 1000) + ttft_ms
+                    metrics["query_to_first_token_ms"] = (
+                        max(0.0, (generate_started - query_started_at) * 1000) + ttft_ms
+                    )
             text = outputs[0].outputs[0].text.strip()
             stats = namespace_stats(self.namespace)
             metrics.update(

@@ -63,14 +63,8 @@ class MemoryKVConnector(KVConnectorBase_V1):
         namespace = str(_extra_config(self._kv_transfer_config, "memory_namespace", "default"))
         self._memory_store = get_gpu_memory_store(namespace)
         self._default_user_id = _extra_config(self._kv_transfer_config, "default_user_id")
-        self._allow_prefix_scan = bool(_extra_config(self._kv_transfer_config, "allow_prefix_scan", False))
         self._requests_need_load: dict[str, tuple[str, int]] = {}
 
-        if self._allow_prefix_scan:
-            logger.warning(
-                "allow_prefix_scan=True scans all strict GPU memory users for unmatched requests. "
-                "This is unsafe for benchmark comparisons unless explicitly intended."
-            )
         logger.info(
             "Strict MemoryKVConnector initialized role=%s namespace=%s block_size=%d",
             role,
@@ -88,23 +82,11 @@ class MemoryKVConnector(KVConnectorBase_V1):
             return 0, False
 
         user_id = _extract_user_id(request, self._default_user_id)
-        if user_id is not None:
-            match = self._try_match_user(user_id, prompt_token_ids)
-        elif self._allow_prefix_scan:
-            match = None
-            for candidate_user_id in self._memory_store.get_all_user_ids():
-                match = self._try_match_user(candidate_user_id, prompt_token_ids)
-                if match is not None:
-                    user_id = candidate_user_id
-                    logger.warning(
-                        "Prefix scan matched strict GPU memory user %s for a request with no explicit user id.",
-                        candidate_user_id,
-                    )
-                    break
-        else:
+        if user_id is None:
             return 0, False
+        match = self._try_match_user(user_id, prompt_token_ids)
 
-        if match is None or user_id is None:
+        if match is None:
             return 0, False
 
         aligned_tokens, raw_memory_tokens = match

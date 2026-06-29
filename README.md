@@ -2,7 +2,7 @@
 
 This repository runs a LoCoMo benchmark comparison between in-process vLLM answer backends:
 
-- `vllm-kv`: retrieved memories are encoded with the `src/ai-memory-code` chunked-RoPE helpers, then injected through the top-level GPU KV connector.
+- `vllm-kv`: retrieved memories are encoded with the package's chunked-RoPE helpers, then injected through the top-level GPU KV connector.
 - `vllm-prefix`: the same retrieved memory tokens are included as a normal vLLM prompt prefix.
 
 ## 1. Configure

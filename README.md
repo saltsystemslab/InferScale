@@ -2,7 +2,7 @@
 
 This repository runs a LoCoMo benchmark comparison between in-process vLLM answer backends:
 
-- `vllm-kv`: retrieved memories are encoded with the `ai-memory-code` chunked-RoPE helpers, then injected through the top-level GPU KV connector.
+- `vllm-kv`: retrieved memories are encoded with the vendored `src/ai-memory-code` chunked-RoPE helpers, then injected through the top-level GPU KV connector.
 - `vllm-prefix`: the same retrieved memory tokens are included as a normal vLLM prompt prefix.
 
 ## 1. Configure
@@ -44,7 +44,7 @@ source scripts/load_env.sh
 bash scripts/setup_remote.sh
 ```
 
-The setup script initializes the `ai-memory-code` submodule and installs the benchmark, Jasper, vLLM, and CUDA wheel constraints.
+The setup script initializes the Jasper submodule and installs the benchmark, Jasper, vLLM, and CUDA wheel constraints. The `ai-memory-code` pieces used by the KV path are vendored under `src/ai-memory-code`.
 
 Activate the environment before running benchmark commands:
 

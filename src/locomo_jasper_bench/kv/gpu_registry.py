@@ -14,8 +14,8 @@ def get_gpu_memory_store(namespace: str = "default") -> Any:
             gpu_memory_store_cls = load_gpu_memory_store_class()
         except (ImportError, RuntimeError) as exc:
             raise RuntimeError(
-                "Could not load ai-memory-code GPUMemoryStore. Ensure the submodule exists "
-                "and the remote environment has torch/vLLM dependencies installed."
+                "Could not load vendored ai-memory-code GPUMemoryStore. Ensure src/ai-memory-code "
+                "contains the required files and the remote environment has torch/vLLM dependencies installed."
             ) from exc
         _STORES[namespace] = gpu_memory_store_cls()
     return _STORES[namespace]

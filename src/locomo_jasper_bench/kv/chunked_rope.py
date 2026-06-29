@@ -8,7 +8,7 @@ from ..data import ConversationSample, Turn
 from ..vector_types import SearchHit
 from .context import build_turn_context_encoding_plan, format_memory_turn, previous_session_context_turns
 from .prompting import MEMORY_PREFIX_TEXT, selected_turn_ids
-from .submodule import require_ai_memory_submodule
+from .ai_memory_code import require_ai_memory_code
 from .tokenization import encode_text_no_special
 from .types import ComposedMemory, ContextEncodingPlan, EncodedChunk
 
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 def torch_dtype(dtype_name: str) -> Any:
-    require_ai_memory_submodule()
+    require_ai_memory_code()
     import torch
 
     normalized = dtype_name.lower()
@@ -41,7 +41,7 @@ class ChunkedRopeSampleComposer:
         max_position: int,
         context_window: int = 0,
     ) -> None:
-        require_ai_memory_submodule()
+        require_ai_memory_code()
         import torch
         from encode_memories_pre_rope import PreRoPEMemoryEncoder
         from rope_inject import extract_cos_sin_from_model

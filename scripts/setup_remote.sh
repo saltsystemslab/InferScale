@@ -21,7 +21,7 @@ if [[ "${FRESH_REMOTE_BUILD:-0}" == "1" ]]; then
 fi
 
 if [[ "${SKIP_SUBMODULE_INIT:-0}" != "1" ]]; then
-  git submodule update --init --recursive
+  git submodule update --init --recursive jasperpy
 fi
 
 if [[ "${BENCHMARK_USE_SCRATCH:-1}" != "0" ]]; then

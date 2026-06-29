@@ -19,7 +19,7 @@ from .gpu_registry import (
 )
 from .prompting import build_kv_equivalence_prompt_token_ids
 from .sample_cache import GpuSampleCacheStore
-from .submodule import require_ai_memory_submodule
+from .ai_memory_code import require_ai_memory_code
 from .vllm_metrics import request_timing_from_output
 from .vllm_runtime import (
     build_strict_gpu_kv_transfer_config,
@@ -51,7 +51,7 @@ class VLLMChunkedKVAnswerClient:
                 "GPU-resident KV precompute must run before vLLM is started. "
                 "Precompute all needed samples before starting the single vLLM instance."
             )
-        require_ai_memory_submodule()
+        require_ai_memory_code()
         sample_key = id(sample)
         if self._sample_caches.active_sample_key == sample_key:
             self.close_sample()

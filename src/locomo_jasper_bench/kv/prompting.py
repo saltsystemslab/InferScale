@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from ..data import ConversationSample, QuestionAnswer, Turn, format_turn_for_memory
 from ..prompts import RETRIEVAL_ANSWER_SYSTEM_PROMPT
@@ -9,6 +9,7 @@ from ..vector_types import SearchHit
 from .tokenization import encode_text_no_special
 
 MEMORY_PREFIX_TEXT = "Retrieved memory context:\n"
+PrefixMemoryOrder = Literal["retrieval", "turn-index"]
 
 
 @dataclass(slots=True, frozen=True)
@@ -23,6 +24,8 @@ class KvPromptTokens:
     query_token_ids: list[int]
     prompt_token_ids: list[int]
     stripped_query_bos: bool
+    retrieval_turn_ids: list[str]
+    memory_order: str
 
 
 def hit_turn_id(hit: SearchHit) -> str | None:
@@ -45,6 +48,29 @@ def selected_turn_ids(hits: list[SearchHit]) -> list[str]:
     return ids
 
 
+def ordered_memory_turn_ids(
+    sample: ConversationSample,
+    hits: list[SearchHit],
+    *,
+    memory_order: PrefixMemoryOrder = "retrieval",
+) -> tuple[list[str], list[str]]:
+    retrieval_turn_ids = selected_turn_ids(hits)
+    if not retrieval_turn_ids:
+        raise RuntimeError("Cannot compose KV-equivalence prompt because retrieval returned no turn ids.")
+
+    turns_by_id = {turn.id: turn for turn in sample.turns}
+    missing = [turn_id for turn_id in retrieval_turn_ids if turn_id not in turns_by_id]
+    if missing:
+        raise RuntimeError("Retrieved memory chunks were not found in the sample: " + ", ".join(missing[:5]))
+
+    if memory_order == "retrieval":
+        return retrieval_turn_ids, retrieval_turn_ids
+    if memory_order == "turn-index":
+        turn_positions = {turn.id: index for index, turn in enumerate(sample.turns)}
+        return retrieval_turn_ids, sorted(retrieval_turn_ids, key=lambda turn_id: turn_positions[turn_id])
+    raise ValueError(f"Unsupported prefix memory order: {memory_order!r}")
+
+
 def format_kv_memory_turn(turn: Turn) -> str:
     return format_turn_for_memory(turn).strip() + "\n"
 
@@ -53,20 +79,20 @@ def build_memory_prompt_token_ids(
     tokenizer: Any,
     sample: ConversationSample,
     hits: list[SearchHit],
+    *,
+    memory_order: PrefixMemoryOrder = "retrieval",
 ) -> MemoryPromptTokens:
-    turn_ids = selected_turn_ids(hits)
-    if not turn_ids:
-        raise RuntimeError("Cannot compose KV-equivalence prompt because retrieval returned no turn ids.")
-
+    retrieval_turn_ids, turn_ids = ordered_memory_turn_ids(sample, hits, memory_order=memory_order)
     turns_by_id = {turn.id: turn for turn in sample.turns}
-    missing = [turn_id for turn_id in turn_ids if turn_id not in turns_by_id]
-    if missing:
-        raise RuntimeError("Retrieved memory chunks were not found in the sample: " + ", ".join(missing[:5]))
-
     token_ids = encode_text_no_special(tokenizer, MEMORY_PREFIX_TEXT)
     for turn_id in turn_ids:
         token_ids.extend(encode_text_no_special(tokenizer, format_kv_memory_turn(turns_by_id[turn_id])))
-    return MemoryPromptTokens(token_ids=token_ids, selected_turn_ids=turn_ids)
+    return MemoryPromptTokens(
+        token_ids=token_ids,
+        selected_turn_ids=turn_ids,
+        retrieval_turn_ids=retrieval_turn_ids,
+        memory_order=memory_order,
+    )
 
 
 def build_kv_query_token_ids(

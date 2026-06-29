@@ -148,7 +148,7 @@ If the judge will run on the same GPU, start it after both answer runs finish:
 
 ```bash
 source .venv/bin/activate
-bash scripts/serve_vllm.sh
+LOCOMO_VLLM_MAX_MODEL_LEN=8192 bash scripts/serve_vllm.sh
 ```
 
 Then judge each run from another shell (or use tmux: `tmux new -s locomo` and create a new window with `Ctrl-b c`):

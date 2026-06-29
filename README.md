@@ -178,7 +178,7 @@ Each run writes to `${BENCHMARK_RESULTS_ROOT}/<run-id>/`:
 - `plots/tokens_vs_accuracy_binned.png`
 - `plots/tokens_vs_accuracy_binned.csv`
 
-`query_metrics.csv` is derived from `predictions.jsonl` after normal generation and after `--judge-only`. It uses `metrics.kv_memory_tokens` as the retrieved memory token count and computes total input prompt tokens as `metrics.
+`query_metrics.csv` is derived from `predictions.jsonl` after normal generation and after `--judge-only`. It uses `metrics.kv_memory_tokens` as the retrieved memory token count and computes total input prompt tokens as `memory + query tokens`.
 
 Read the primary metrics:
 

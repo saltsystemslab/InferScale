@@ -16,6 +16,8 @@ PrefixMemoryOrder = Literal["retrieval", "turn-index"]
 class MemoryPromptTokens:
     token_ids: list[int]
     selected_turn_ids: list[str]
+    retrieval_turn_ids: list[str]
+    memory_order: str
 
 
 @dataclass(slots=True, frozen=True)
@@ -24,8 +26,6 @@ class KvPromptTokens:
     query_token_ids: list[int]
     prompt_token_ids: list[int]
     stripped_query_bos: bool
-    retrieval_turn_ids: list[str]
-    memory_order: str
 
 
 def hit_turn_id(hit: SearchHit) -> str | None:

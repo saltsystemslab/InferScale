@@ -6,7 +6,31 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/load_env.sh
 source "${SCRIPT_DIR}/load_env.sh"
 
-MODEL="${JUDGE_MODEL:-${LOCOMO_VLLM_MODEL:-Gemma-2-9B-Instruct}}"
+DEFAULT_MODEL_LLAMA="meta-llama/Llama-3.1-8B-Instruct"
+DEFAULT_MODEL_MISTRAL="mistralai/Mistral-7B-Instruct-v0.3"
+DEFAULT_MODEL_QWEN="Qwen/Qwen2.5-7B-Instruct"
+
+resolve_model_name() {
+  local raw="$1"
+  local normalized
+  normalized="$(printf '%s' "${raw}" | tr '[:upper:]' '[:lower:]')"
+  case "${normalized}" in
+    llama|llama3|llama3.1|llama-3.1|llama-3.1-8b-instruct)
+      printf '%s\n' "${MODEL_LLAMA:-${LOCOMO_MODEL_LLAMA:-${DEFAULT_MODEL_LLAMA}}}"
+      ;;
+    mistral|mistral-7b|mistral-7b-instruct-v0.3)
+      printf '%s\n' "${MODEL_MISTRAL:-${LOCOMO_MODEL_MISTRAL:-${DEFAULT_MODEL_MISTRAL}}}"
+      ;;
+    qwen|qwen2.5|qwen2.5-7b|qwen2.5-7b-instruct)
+      printf '%s\n' "${MODEL_QWEN:-${LOCOMO_MODEL_QWEN:-${DEFAULT_MODEL_QWEN}}}"
+      ;;
+    *)
+      printf '%s\n' "${raw}"
+      ;;
+  esac
+}
+
+MODEL="$(resolve_model_name "${JUDGE_MODEL:-${LOCOMO_VLLM_MODEL:-Gemma-2-9B-Instruct}}")"
 API_KEY="${JUDGE_API_KEY:-${LOCOMO_VLLM_API_KEY:-token-abc123}}"
 TP="${LOCOMO_VLLM_TP:-1}"
 GPU_MEMORY_UTILIZATION="${LOCOMO_VLLM_GPU_MEMORY_UTILIZATION:-0.80}"

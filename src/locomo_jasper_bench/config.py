@@ -11,15 +11,70 @@ from .runtime_paths import default_embedding_cache_dir as runtime_default_embedd
 from .runtime_paths import default_results_root
 
 
-DEFAULT_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
+DEFAULT_LLAMA_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
+DEFAULT_MISTRAL_MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
+DEFAULT_QWEN_MODEL = "Qwen/Qwen2.5-7B-Instruct"
+DEFAULT_MODEL = DEFAULT_LLAMA_MODEL
 DEFAULT_JUDGE_MODEL = "Gemma-2-9B-Instruct"
 DEFAULT_JUDGE_BASE_URL = "http://localhost:8000/v1"
 DEFAULT_JUDGE_API_KEY = "token-abc123"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 
+ANSWER_MODEL_DEFAULTS = {
+    "llama": DEFAULT_LLAMA_MODEL,
+    "mistral": DEFAULT_MISTRAL_MODEL,
+    "qwen": DEFAULT_QWEN_MODEL,
+}
+ANSWER_MODEL_ENV_VARS = {
+    "llama": ("LOCOMO_MODEL_LLAMA", "MODEL_LLAMA"),
+    "mistral": ("LOCOMO_MODEL_MISTRAL", "MODEL_MISTRAL"),
+    "qwen": ("LOCOMO_MODEL_QWEN", "MODEL_QWEN"),
+}
+ANSWER_MODEL_NAME_ALIASES = {
+    "llama": "llama",
+    "llama3": "llama",
+    "llama3.1": "llama",
+    "llama-3.1": "llama",
+    "llama-3.1-8b-instruct": "llama",
+    "mistral": "mistral",
+    "mistral-7b": "mistral",
+    "mistral-7b-instruct-v0.3": "mistral",
+    "qwen": "qwen",
+    "qwen2.5": "qwen",
+    "qwen2.5-7b": "qwen",
+    "qwen2.5-7b-instruct": "qwen",
+}
+
 DistanceMetric = Literal["ip", "l2"]
 AnswerBackend = Literal["vllm-kv", "vllm-prefix"]
 VectorBackend = Literal["jasper", "qdrant"]
+
+
+def configured_answer_models() -> dict[str, str]:
+    models: dict[str, str] = {}
+    for name, default in ANSWER_MODEL_DEFAULTS.items():
+        models[name] = next(
+            (
+                value
+                for env_var in ANSWER_MODEL_ENV_VARS[name]
+                if (value := os.environ.get(env_var))
+            ),
+            default,
+        )
+    return models
+
+
+def answer_model_aliases() -> dict[str, str]:
+    configured = configured_answer_models()
+    return {
+        alias: configured[model_name]
+        for alias, model_name in ANSWER_MODEL_NAME_ALIASES.items()
+    }
+
+
+def resolve_answer_model(model: str) -> str:
+    stripped = model.strip()
+    return answer_model_aliases().get(stripped.lower(), stripped)
 
 
 def default_run_id() -> str:
@@ -106,7 +161,16 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     parser.add_argument("--results-dir", type=Path, default=default_results_dir())
     parser.add_argument("--run-id", default=default_run_id())
 
-    parser.add_argument("--model", default=os.environ.get("LOCOMO_VLLM_MODEL", DEFAULT_MODEL))
+    parser.add_argument(
+        "--model",
+        "--answer-model",
+        dest="model",
+        default=os.environ.get("LOCOMO_VLLM_MODEL", DEFAULT_MODEL),
+        help=(
+            "Answer model HF id, local path, or configured alias. "
+            "Built-in aliases: llama, mistral, qwen."
+        ),
+    )
     parser.add_argument(
         "--answer-backend",
         choices=["vllm-kv", "vllm-prefix"],
@@ -194,4 +258,5 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
         parser.error("--answer-backend must be vllm-kv or vllm-prefix.")
     if ns.context_window < 0:
         parser.error("--context-window must be >= 0.")
+    ns.model = resolve_answer_model(ns.model)
     return BenchmarkConfig(**vars(ns))

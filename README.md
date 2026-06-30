@@ -13,7 +13,10 @@ cp .env.example .env
 
 Edit `.env` for your session. The common values are:
 
-- `LOCOMO_VLLM_MODEL=meta-llama/Llama-3.1-8B-Instruct`
+- `MODEL_LLAMA=meta-llama/Llama-3.1-8B-Instruct`
+- `MODEL_MISTRAL=mistralai/Mistral-7B-Instruct-v0.3`
+- `MODEL_QWEN=Qwen/Qwen2.5-7B-Instruct`
+- `LOCOMO_VLLM_MODEL=llama`
 - `BENCHMARK_RUNTIME_ROOT=/workspace`
 - `JUDGE_MODEL=Gemma-2-9B-Instruct`
 - `CUDA_MODULE=` for Runpod containers without environment modules
@@ -38,6 +41,10 @@ Load the environment in each shell that will run project commands:
 ```bash
 source scripts/load_env.sh
 ```
+
+The answer-model CLI accepts a Hugging Face id, a local model path, or one of
+the configured aliases: `llama`, `mistral`, `qwen`. The Qwen alias resolves to
+`Qwen/Qwen2.5-7B-Instruct`.
 
 ## 2. Install
 
@@ -86,13 +93,15 @@ Timed runs read from that cache and fail if an embedding is missing.
 Run answer generation with judging skipped. This keeps the GPU focused on the in-process answer backend; judge result files afterward.
 
 ```bash
-KV_RUN_ID="kv-gpu-jasper10-${RUN_STAMP}"
-PREFIX_RUN_ID="prefix-gpu-jasper10-${RUN_STAMP}"
-QDRANT_PREFIX_RUN_ID="prefix-qdrant10-${RUN_STAMP}"
+ANSWER_MODEL="${ANSWER_MODEL:-llama}"
+KV_RUN_ID="${ANSWER_MODEL}-kv-gpu-jasper10-${RUN_STAMP}"
+PREFIX_RUN_ID="${ANSWER_MODEL}-prefix-gpu-jasper10-${RUN_STAMP}"
+QDRANT_PREFIX_RUN_ID="${ANSWER_MODEL}-prefix-qdrant10-${RUN_STAMP}"
 
 locomo-jasper-bench \
   --dataset data/locomo10.json \
   --results-dir "${BENCHMARK_RESULTS_ROOT}" \
+  --answer-model "${ANSWER_MODEL}" \
   --answer-backend vllm-kv \
   --vector-backend jasper \
   --top-k 50 \
@@ -110,6 +119,7 @@ locomo-jasper-bench \
 locomo-jasper-bench \
   --dataset data/locomo10.json \
   --results-dir "${BENCHMARK_RESULTS_ROOT}" \
+  --answer-model "${ANSWER_MODEL}" \
   --answer-backend vllm-prefix \
   --vector-backend jasper \
   --top-k 50 \
@@ -126,6 +136,7 @@ locomo-jasper-bench \
 locomo-jasper-bench \
   --dataset data/locomo10.json \
   --results-dir "${BENCHMARK_RESULTS_ROOT}" \
+  --answer-model "${ANSWER_MODEL}" \
   --answer-backend vllm-prefix \
   --vector-backend qdrant \
   --top-k 50 \

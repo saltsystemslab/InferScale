@@ -9,7 +9,7 @@ from ..vector_types import SearchHit
 from .tokenization import encode_text_no_special
 
 MEMORY_PREFIX_TEXT = "Retrieved memory context:\n"
-MemoryOrder = Literal["retrieval", "turn-index"]
+MemoryOrder = Literal["retrieval", "turn-index", "rank-zigzag"]
 
 
 @dataclass(slots=True, frozen=True)
@@ -68,7 +68,15 @@ def ordered_memory_turn_ids(
     if memory_order == "turn-index":
         turn_positions = {turn.id: index for index, turn in enumerate(sample.turns)}
         return retrieval_turn_ids, sorted(retrieval_turn_ids, key=lambda turn_id: turn_positions[turn_id])
+    if memory_order == "rank-zigzag":
+        return retrieval_turn_ids, rank_zigzag_turn_ids(retrieval_turn_ids)
     raise ValueError(f"Unsupported memory order: {memory_order!r}")
+
+
+def rank_zigzag_turn_ids(turn_ids: list[str]) -> list[str]:
+    front = turn_ids[1::2]
+    back = list(reversed(turn_ids[::2]))
+    return front + back
 
 
 def format_kv_memory_turn(turn: Turn) -> str:

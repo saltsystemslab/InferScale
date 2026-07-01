@@ -17,7 +17,7 @@ DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 DistanceMetric = Literal["ip", "l2"]
 AnswerBackend = Literal["vllm-kv", "vllm-prefix"]
 VectorBackend = Literal["jasper", "qdrant"]
-MemoryOrder = Literal["retrieval", "turn-index", "rank-zigzag"]
+MemoryOrder = Literal["retrieval", "turn-index", "rank-zigzag", "retrieval-reversed"]
 
 
 def default_run_id() -> str:
@@ -124,17 +124,17 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     )
     parser.add_argument(
         "--memory-order",
-        choices=["retrieval", "turn-index", "rank-zigzag"],
+        choices=["retrieval", "turn-index", "rank-zigzag", "retrieval-reversed"],
         default=None,
         help=(
             "Memory injection order for vllm-kv and vllm-prefix: retrieval rank, chronological "
-            "LoCoMo turn order, or alternating retrieval-rank ends."
+            "LoCoMo turn order, alternating retrieval-rank ends, or reversed retrieval rank."
         ),
     )
     parser.add_argument(
         "--prefix-memory-order",
         dest="legacy_prefix_memory_order",
-        choices=["retrieval", "turn-index", "rank-zigzag"],
+        choices=["retrieval", "turn-index", "rank-zigzag", "retrieval-reversed"],
         default=None,
         help="Deprecated alias for --memory-order.",
     )
@@ -227,8 +227,8 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
         or "retrieval"
     )
     del ns.legacy_prefix_memory_order
-    if ns.memory_order not in {"retrieval", "turn-index", "rank-zigzag"}:
-        parser.error("--memory-order must be retrieval, turn-index, or rank-zigzag.")
+    if ns.memory_order not in {"retrieval", "turn-index", "rank-zigzag", "retrieval-reversed"}:
+        parser.error("--memory-order must be retrieval, turn-index, rank-zigzag, or retrieval-reversed.")
     if ns.context_window < 0:
         parser.error("--context-window must be >= 0.")
     return BenchmarkConfig(**vars(ns))

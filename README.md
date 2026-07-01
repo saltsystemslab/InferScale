@@ -105,7 +105,7 @@ locomo-jasper-bench \
   --run-id "${KV_RUN_ID}"
 ```
 
-Add `--memory-order turn-index` to either `vllm-kv` or `vllm-prefix` runs to inject the retrieved memories in chronological sample order. Use `--memory-order rank-zigzag` to place rank 1 closest to the question, rank 2 first, rank 3 second-to-last, rank 4 second, and so on. The default `retrieval` order preserves vector-search rank order. These modes reorder only the selected retrieved memories; they do not change retrieval membership.
+Add `--memory-order turn-index` to either `vllm-kv` or `vllm-prefix` runs to inject the retrieved memories in chronological sample order. Use `--memory-order rank-zigzag` to place rank 1 closest to the question, rank 2 first, rank 3 second-to-last, rank 4 second, and so on. Use `--memory-order retrieval-reversed` to put the highest-ranked hit closest to the question while otherwise preserving retrieval membership. The default `retrieval` order preserves vector-search rank order. These modes reorder only the selected retrieved memories; they do not change retrieval membership.
 
 ```bash
 locomo-jasper-bench \

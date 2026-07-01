@@ -6,17 +6,16 @@ from typing import Any
 
 from ..data import ConversationSample, Turn
 from ..vector_types import SearchHit
-from .context import build_turn_context_encoding_plan, format_memory_turn, previous_session_context_turns
+from .context import build_turn_context_encoding_plan, format_memory_turn
 from .prompting import MEMORY_PREFIX_TEXT, selected_turn_ids
-from .submodule import require_ai_memory_submodule
+from .rope import extract_cos_sin_from_model
 from .tokenization import encode_text_no_special
-from .types import ComposedMemory, ContextEncodingPlan, EncodedChunk
+from .types import ComposedMemory, EncodedChunk
 
 logger = logging.getLogger(__name__)
 
 
 def torch_dtype(dtype_name: str) -> Any:
-    require_ai_memory_submodule()
     import torch
 
     normalized = dtype_name.lower()
@@ -41,10 +40,7 @@ class ChunkedRopeSampleComposer:
         max_position: int,
         context_window: int = 0,
     ) -> None:
-        require_ai_memory_submodule()
         import torch
-        from encode_memories_pre_rope import PreRoPEMemoryEncoder
-        from rope_inject import extract_cos_sin_from_model
 
         if not torch.cuda.is_available():
             raise RuntimeError("KV injection requires a CUDA device.")
@@ -55,16 +51,11 @@ class ChunkedRopeSampleComposer:
         self.device = device
         self.max_position = max_position
         self.context_window = context_window
-        self.encoder = PreRoPEMemoryEncoder(
-            model_name=model,
+        self.tokenizer, self.hf_model = _load_hf_model_and_tokenizer(
+            model=model,
             dtype=torch_dtype(dtype),
             device=device,
         )
-        self.encoder.load_model()
-        self.tokenizer = self.encoder._tokenizer
-        self.hf_model = self.encoder._model
-        if self.tokenizer is None or self.hf_model is None:
-            raise RuntimeError("Pre-RoPE encoder did not load a model/tokenizer.")
 
         cfg = self.hf_model.config
         self.head_dim = cfg.hidden_size // cfg.num_attention_heads
@@ -75,9 +66,11 @@ class ChunkedRopeSampleComposer:
             self.head_dim,
         )
         self.chunks: dict[str, EncodedChunk] = {}
+        self._turn_token_ids: dict[str, list[int]] = {}
         self.prefix_chunk = self._encode_text_chunk("__prefix__", MEMORY_PREFIX_TEXT)
 
     def encode_sample(self, sample: ConversationSample, turn_ids: set[str] | None = None) -> None:
+        self._turn_token_ids = _encode_sample_turn_tokens(self.tokenizer, sample)
         turns = sample.turns
         if turn_ids is not None:
             turns = [turn for turn in sample.turns if turn.id in turn_ids]
@@ -167,7 +160,7 @@ class ChunkedRopeSampleComposer:
         import gc
         import torch
 
-        for attr in ("encoder", "hf_model", "tokenizer"):
+        for attr in ("hf_model", "tokenizer"):
             if hasattr(self, attr):
                 try:
                     setattr(self, attr, None)
@@ -181,7 +174,7 @@ class ChunkedRopeSampleComposer:
         import torch
 
         self.release_encoder()
-        for attr in ("encoder", "hf_model", "tokenizer", "cos_table", "sin_table", "chunks", "prefix_chunk"):
+        for attr in ("hf_model", "tokenizer", "cos_table", "sin_table", "chunks", "prefix_chunk", "_turn_token_ids"):
             if hasattr(self, attr):
                 try:
                     setattr(self, attr, None)
@@ -197,6 +190,7 @@ class ChunkedRopeSampleComposer:
             turn,
             context_window=self.context_window,
             max_input_tokens=self.max_position,
+            turn_token_ids=self._turn_token_ids,
         )
         return EncodedChunk(
             token_ids=plan.target_token_ids,
@@ -250,8 +244,8 @@ def _compose_encoded_chunks(
     cos_table: Any,
     sin_table: Any,
 ) -> dict[str, Any]:
-    from rope_inject import rotate_pre_rope_k
     import torch
+    from .rope import rotate_pre_rope_k
 
     layer_names = list(chunks[0].kv_by_layer.keys())
     composed: dict[str, Any] = {}
@@ -294,7 +288,7 @@ def _encode_token_chunk_pre_rope(
     slice_end: int,
 ) -> dict[str, Any]:
     import torch
-    from encode_memories_pre_rope import capture_pre_rope
+    from .rope import capture_pre_rope
 
     if slice_start < 0 or slice_end < slice_start or slice_end > len(token_ids):
         raise ValueError("Invalid KV slice bounds for pre-RoPE encoding.")
@@ -311,6 +305,11 @@ def _encode_token_chunk_pre_rope(
         post_pairs = list(zip(post_rope_kv.key_cache, post_rope_kv.value_cache))
     else:
         post_pairs = list(post_rope_kv)
+
+    if len(capture.layers) != len(post_pairs):
+        raise RuntimeError(
+            f"RoPE capture saw {len(capture.layers)} layers but model has {len(post_pairs)}."
+        )
 
     kv_by_layer = {}
     for layer_idx, (_, value_post) in enumerate(post_pairs):
@@ -344,3 +343,40 @@ def _detach_tensor_to_device(tensor: Any, device: str) -> Any:
 
 def _copy_layer_kv_to_device(layer_kv: Any, device: str) -> Any:
     return layer_kv.to(device=device, non_blocking=True)
+
+
+def _load_hf_model_and_tokenizer(
+    *, model: str, dtype: Any, device: str
+) -> tuple[Any, Any]:
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    logger.info("Loading pre-RoPE encoder model=%s device=%s", model, device)
+    started = time.perf_counter()
+    tokenizer = AutoTokenizer.from_pretrained(model)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+
+    hf_model = AutoModelForCausalLM.from_pretrained(
+        model,
+        dtype=dtype,
+        device_map={"": device},
+    )
+    hf_model.eval()
+    logger.info(
+        "Loaded pre-RoPE encoder model=%s in %.1fs gpu_gb=%.1f",
+        model,
+        time.perf_counter() - started,
+        torch.cuda.memory_allocated() / 1e9,
+    )
+    return tokenizer, hf_model
+
+
+def _encode_sample_turn_tokens(
+    tokenizer: Any, sample: ConversationSample
+) -> dict[str, list[int]]:
+    return {
+        turn.id: encode_text_no_special(tokenizer, format_memory_turn(turn))
+        for turn in sample.turns
+    }

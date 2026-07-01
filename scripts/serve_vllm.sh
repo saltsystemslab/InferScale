@@ -34,7 +34,7 @@ MODEL="$(resolve_model_name "${JUDGE_MODEL:-${LOCOMO_VLLM_MODEL:-Gemma-2-9B-Inst
 API_KEY="${JUDGE_API_KEY:-${LOCOMO_VLLM_API_KEY:-token-abc123}}"
 TP="${LOCOMO_VLLM_TP:-1}"
 GPU_MEMORY_UTILIZATION="${LOCOMO_VLLM_GPU_MEMORY_UTILIZATION:-0.80}"
-MAX_MODEL_LEN="${LOCOMO_VLLM_MAX_MODEL_LEN:-32768}"
+JUDGE_MAX_MODEL_LEN="${JUDGE_MAX_MODEL_LEN:-8192}"
 DTYPE="${LOCOMO_VLLM_DTYPE:-auto}"
 QUANTIZATION="${LOCOMO_VLLM_QUANTIZATION:-}"
 
@@ -101,7 +101,7 @@ exec vllm serve "${MODEL}" \
   "${QUANTIZATION_ARGS[@]}" \
   --trust-remote-code \
   --dtype "${DTYPE}" \
-  --max-model-len "${MAX_MODEL_LEN}" \
+  --max-model-len "${JUDGE_MAX_MODEL_LEN}" \
   --tensor-parallel-size "${TP}" \
   --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
   --api-key "${API_KEY}"

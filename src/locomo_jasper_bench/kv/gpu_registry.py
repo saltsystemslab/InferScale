@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .gpu_memory_store_loader import load_gpu_memory_store_class
+from .gpu_memory_store import GPUMemoryStore
 
 _STORES: dict[str, Any] = {}
 
@@ -10,14 +10,7 @@ _STORES: dict[str, Any] = {}
 def get_gpu_memory_store(namespace: str = "default") -> Any:
     """Return the process-local GPU memory store for a connector namespace."""
     if namespace not in _STORES:
-        try:
-            gpu_memory_store_cls = load_gpu_memory_store_class()
-        except (ImportError, RuntimeError) as exc:
-            raise RuntimeError(
-                "Could not load ai-memory-code GPUMemoryStore. Ensure the submodule exists "
-                "and the remote environment has torch/vLLM dependencies installed."
-            ) from exc
-        _STORES[namespace] = gpu_memory_store_cls()
+        _STORES[namespace] = GPUMemoryStore()
     return _STORES[namespace]
 
 
@@ -28,14 +21,12 @@ def register_user_memory(
     kv_by_layer: dict[str, Any],
     num_tokens: int,
     token_ids: list[int],
-    memory_text: str = "",
 ) -> None:
     get_gpu_memory_store(namespace).add_user_memory(
         user_id=user_id,
         kv_by_layer=kv_by_layer,
         num_tokens=num_tokens,
         token_ids=token_ids,
-        memory_text=memory_text,
     )
 
 

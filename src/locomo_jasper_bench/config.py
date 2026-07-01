@@ -220,17 +220,6 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
         type=float,
         default=float(os.environ.get("LOCOMO_KV_GPU_MEMORY_UTILIZATION", "0.52")),
     )
-    parser.add_argument(
-        "--kv-max-model-len",
-        type=int,
-        default=int(os.environ.get("LOCOMO_KV_MAX_MODEL_LEN", "32768")),
-    )
-    parser.add_argument(
-        "--kv-max-position",
-        type=int,
-        default=int(os.environ.get("LOCOMO_KV_MAX_POSITION", "32768")),
-        help="Maximum RoPE virtual position for top-k memory composition.",
-    )
     parser.add_argument("--kv-dtype", default=os.environ.get("LOCOMO_KV_DTYPE", "bfloat16"))
     parser.add_argument("--kv-device", default=os.environ.get("LOCOMO_KV_DEVICE", "cuda:0"))
 

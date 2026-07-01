@@ -13,6 +13,11 @@ PYTORCH_INDEX="${PYTORCH_INDEX:-https://download.pytorch.org/whl/cu128}"
 JASPER_CUDA_ARCHITECTURES="${JASPER_CUDA_ARCHITECTURES:-native}"
 CONSTRAINTS_FILE="${CONSTRAINTS_FILE:-constraints-cu128.txt}"
 VENV_DIR="${VENV_DIR:-.venv}"
+LOCOMO_DATASET_PATH="${LOCOMO_DATASET_PATH:-data/locomo10.json}"
+LOCOMO_DATASET_URL="${LOCOMO_DATASET_URL:-}"
+if [[ -z "${LOCOMO_DATASET_URL}" ]]; then
+  LOCOMO_DATASET_URL="https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json"
+fi
 
 if [[ "${FRESH_REMOTE_BUILD:-0}" == "1" ]]; then
   rm -rf "${VENV_DIR}" .cache tmp jasperpy/build jasperpy/python/jasper/lib/*.so
@@ -22,7 +27,7 @@ if [[ "${FRESH_REMOTE_BUILD:-0}" == "1" ]]; then
 fi
 
 if [[ "${SKIP_SUBMODULE_INIT:-0}" != "1" ]]; then
-  git submodule update --init --recursive
+  git submodule update --init --recursive jasperpy
 fi
 
 if [[ "${BENCHMARK_USE_SCRATCH:-1}" != "0" ]]; then
@@ -32,6 +37,14 @@ else
 fi
 echo "Using benchmark cache root: ${BENCHMARK_CACHE_ROOT}"
 echo "Using benchmark results root: ${BENCHMARK_RESULTS_ROOT}"
+
+if [[ ! -f "${LOCOMO_DATASET_PATH}" ]]; then
+  echo "Downloading LoCoMo dataset to ${LOCOMO_DATASET_PATH}"
+  mkdir -p "$(dirname -- "${LOCOMO_DATASET_PATH}")"
+  curl -fL "${LOCOMO_DATASET_URL}" -o "${LOCOMO_DATASET_PATH}"
+else
+  echo "Using existing LoCoMo dataset: ${LOCOMO_DATASET_PATH}"
+fi
 
 if [[ -n "${CUDA_MODULE}" ]]; then
   if ! command -v module >/dev/null 2>&1 && [[ -r /etc/profile.d/modules.sh ]]; then
@@ -53,7 +66,8 @@ else
 fi
 
 if [[ "${CUDA_VERSION}" != 12.8* ]]; then
-  echo "warning: CUDA 12.8 was not detected; RTX/B200 Blackwell needs CUDA >=12.8 and this script pins cu128 wheels." >&2
+  echo "warning: CUDA 12.8 was not detected; RTX/B200 Blackwell needs CUDA >=12.8." >&2
+  echo "warning: This script pins cu128 wheels." >&2
 fi
 
 PYTHON_VERSION="$(python3 - <<'PY'
@@ -63,7 +77,12 @@ PY
 )"
 PYTHON_MAJOR="${PYTHON_VERSION%%.*}"
 PYTHON_MINOR="${PYTHON_VERSION#*.}"
-if (( PYTHON_MAJOR < 3 || (PYTHON_MAJOR == 3 && PYTHON_MINOR < 10) || PYTHON_MAJOR > 3 || (PYTHON_MAJOR == 3 && PYTHON_MINOR >= 14) )); then
+if ((
+  PYTHON_MAJOR < 3 ||
+  (PYTHON_MAJOR == 3 && PYTHON_MINOR < 10) ||
+  PYTHON_MAJOR > 3 ||
+  (PYTHON_MAJOR == 3 && PYTHON_MINOR >= 14)
+)); then
   echo "error: vLLM 0.19.1 requires Python >=3.10,<3.14; found Python ${PYTHON_VERSION}." >&2
   exit 1
 fi
@@ -104,3 +123,11 @@ print("torch cuda:", torch.version.cuda)
 print("transformers:", transformers.__version__)
 print("vllm:", vllm.__version__)
 PY
+
+PREEMBED_RUN_ID="${PREEMBED_RUN_ID:-setup-preembed-$(date -u +%Y%m%dT%H%M%SZ)}"
+locomo-jasper-bench \
+  --dataset "${LOCOMO_DATASET_PATH}" \
+  --results-dir "${BENCHMARK_RESULTS_ROOT}" \
+  --max-samples 10 \
+  --preembed-only \
+  --run-id "${PREEMBED_RUN_ID}"

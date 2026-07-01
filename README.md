@@ -2,7 +2,7 @@
 
 This repository runs a LoCoMo benchmark comparison between in-process vLLM answer backends. On Runpod, runtime files are kept under `/workspace` so model downloads, caches, temp files, and results persist on the hosted partition.
 
-- `vllm-kv`: retrieved memories are encoded with the `ai-memory-code` chunked-RoPE helpers, then injected through the top-level GPU KV connector.
+- `vllm-kv`: retrieved memories are encoded with the package's chunked-RoPE helpers, then injected through the top-level GPU KV connector.
 - `vllm-prefix`: the same retrieved memory tokens are included as a normal vLLM prompt prefix.
 
 ## 1. Configure
@@ -52,7 +52,7 @@ the configured aliases: `llama`, `mistral`, `qwen`. The Qwen alias resolves to
 bash scripts/setup_remote.sh
 ```
 
-The setup script initializes the `ai-memory-code` submodule and installs the benchmark, Jasper, vLLM, and CUDA wheel constraints.
+The setup script initializes Jasper, installs the benchmark, Jasper, vLLM, and CUDA wheel constraints, downloads LoCoMo to `data/locomo10.json` when needed, and precomputes embeddings into `${BENCHMARK_CACHE_ROOT}/embeddings`. Pre-embedding is required and setup fails if embedding credentials or network access are missing.
 
 Activate the environment before running benchmark commands:
 
@@ -60,39 +60,14 @@ Activate the environment before running benchmark commands:
 source .venv/bin/activate
 ```
 
-## 3. Data
-
-Place LoCoMo at `data/locomo10.json`:
-
-```bash
-mkdir -p data
-curl -L \
-  https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json \
-  -o data/locomo10.json
-```
-
-## 4. Precompute Embeddings
-
-Embeddings are cached under `${BENCHMARK_CACHE_ROOT}/embeddings`, keyed by model, purpose, and exact text. Precompute before timed runs so embedding calls are outside the benchmark:
-
-```bash
-RUN_STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-
-locomo-jasper-bench \
-  --dataset data/locomo10.json \
-  --results-dir "${BENCHMARK_RESULTS_ROOT}" \
-  --max-samples 10 \
-  --preembed-only \
-  --run-id "preembed-10samples-${RUN_STAMP}"
-```
-
 Timed runs read from that cache and fail if an embedding is missing.
 
-## 5. Run KV And Prefix
+## 3. Run KV And Prefix
 
 Run answer generation with judging skipped. This keeps the GPU focused on the in-process answer backend; judge result files afterward.
 
 ```bash
+RUN_STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 ANSWER_MODEL="${ANSWER_MODEL:-llama}"
 KV_RUN_ID="${ANSWER_MODEL}-kv-gpu-jasper10-${RUN_STAMP}"
 PREFIX_RUN_ID="${ANSWER_MODEL}-prefix-gpu-jasper10-${RUN_STAMP}"
@@ -107,8 +82,6 @@ locomo-jasper-bench \
   --top-k 50 \
   --context-window 3 \
   --kv-gpu-memory-utilization 0.52 \
-  --kv-max-model-len 32768 \
-  --kv-max-position 32768 \
   --max-samples 10 \
   --log-every 1 \
   --skip-judge \
@@ -124,8 +97,6 @@ locomo-jasper-bench \
   --vector-backend jasper \
   --top-k 50 \
   --kv-gpu-memory-utilization 0.52 \
-  --kv-max-model-len 32768 \
-  --kv-max-position 32768 \
   --max-samples 10 \
   --log-every 1 \
   --skip-judge \
@@ -141,8 +112,6 @@ locomo-jasper-bench \
   --vector-backend qdrant \
   --top-k 50 \
   --kv-gpu-memory-utilization 0.52 \
-  --kv-max-model-len 32768 \
-  --kv-max-position 32768 \
   --max-samples 10 \
   --log-every 1 \
   --skip-judge \
@@ -153,13 +122,13 @@ All three runs write query-start-to-answer-complete latency as `metrics.query_to
 
 TTFT metrics come from vLLM request timing on the real answer `generate()` call. They are populated only when vLLM returns usable per-request metrics on `RequestOutput.metrics`; no one-token probe or synthetic fallback is used.
 
-## 6. Judge Accuracy
+## 4. Judge Accuracy
 
 If the judge will run on the same GPU, start it after both answer runs finish:
 
 ```bash
 source .venv/bin/activate
-LOCOMO_VLLM_MAX_MODEL_LEN=8192 bash scripts/serve_vllm.sh
+bash scripts/serve_vllm.sh
 ```
 
 Then judge each run from another shell (or use tmux: `tmux new -s locomo` and create a new window with `Ctrl-b c`):
@@ -176,7 +145,7 @@ locomo-jasper-bench \
 
 `--judge-only` fills only rows that are still unjudged, preserves already judged rows, and regenerates `summary.json`.
 
-## 7. Compare Results
+## 5. Compare Results
 
 Each run writes to `${BENCHMARK_RESULTS_ROOT}/<run-id>/`:
 
@@ -192,7 +161,7 @@ Each run writes to `${BENCHMARK_RESULTS_ROOT}/<run-id>/`:
 - `plots/tokens_vs_accuracy_binned.png`
 - `plots/tokens_vs_accuracy_binned.csv`
 
-`query_metrics.csv` is derived from `predictions.jsonl` after normal generation and after `--judge-only`. It uses `metrics.kv_memory_tokens` as the retrieved memory token count and computes total input prompt tokens as `metrics.
+`query_metrics.csv` is derived from `predictions.jsonl` after normal generation and after `--judge-only`. It uses `metrics.kv_memory_tokens` as the retrieved memory token count and computes total input prompt tokens as `memory + query tokens`.
 
 Read the primary metrics:
 

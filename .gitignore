@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 .cache/
 .env
+/ai-memory-code/
 tmp/
 *.egg-info/
 build/

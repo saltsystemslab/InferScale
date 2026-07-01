@@ -19,7 +19,6 @@ from .gpu_registry import (
 )
 from .prompting import build_kv_equivalence_prompt_token_ids
 from .sample_cache import GpuSampleCacheStore
-from .submodule import require_ai_memory_submodule
 from .vllm_metrics import request_timing_from_output
 from .vllm_runtime import (
     build_strict_gpu_kv_transfer_config,
@@ -51,7 +50,6 @@ class VLLMChunkedKVAnswerClient:
                 "GPU-resident KV precompute must run before vLLM is started. "
                 "Precompute all needed samples before starting the single vLLM instance."
             )
-        require_ai_memory_submodule()
         sample_key = id(sample)
         if self._sample_caches.active_sample_key == sample_key:
             self.close_sample()
@@ -166,7 +164,6 @@ class VLLMChunkedKVAnswerClient:
             kv_by_layer=composed.kv_by_layer,
             num_tokens=composed.num_tokens,
             token_ids=composed.token_ids,
-            memory_text="strict-gpu chunked-rope top-k",
         )
         try:
             prompt = build_kv_equivalence_prompt_token_ids(
@@ -206,9 +203,13 @@ class VLLMChunkedKVAnswerClient:
             ttft_ms = timing.time_to_first_token_ms
             if ttft_ms is not None:
                 metrics["kv_engine_time_to_first_token_ms"] = ttft_ms
-                metrics["answer_time_to_first_token_ms"] = max(0.0, (generate_started - request_started) * 1000) + ttft_ms
+                metrics["answer_time_to_first_token_ms"] = (
+                    max(0.0, (generate_started - request_started) * 1000) + ttft_ms
+                )
                 if query_started_at is not None:
-                    metrics["query_to_first_token_ms"] = max(0.0, (generate_started - query_started_at) * 1000) + ttft_ms
+                    metrics["query_to_first_token_ms"] = (
+                        max(0.0, (generate_started - query_started_at) * 1000) + ttft_ms
+                    )
             text = outputs[0].outputs[0].text.strip()
             stats = namespace_stats(self.namespace)
             metrics.update(

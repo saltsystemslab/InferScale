@@ -33,7 +33,9 @@ class ComposedMemory:
     token_ids: list[int]
     num_tokens: int
     compose_time_ms: float
+    retrieval_turn_ids: list[str]
     selected_turn_ids: list[str]
+    memory_order: str
     context_window: int
     context_prefix_tokens_total: int
     context_prefix_tokens_max: int

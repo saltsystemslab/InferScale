@@ -7,7 +7,7 @@ from typing import Any
 from ..data import ConversationSample, Turn
 from ..vector_types import SearchHit
 from .context import build_turn_context_encoding_plan, format_memory_turn, previous_session_context_turns
-from .prompting import MEMORY_PREFIX_TEXT, selected_turn_ids
+from .prompting import MEMORY_PREFIX_TEXT, MemoryOrder, ordered_memory_turn_ids
 from .submodule import require_ai_memory_submodule
 from .tokenization import encode_text_no_special
 from .types import ComposedMemory, ContextEncodingPlan, EncodedChunk
@@ -91,11 +91,15 @@ class ChunkedRopeSampleComposer:
             self.chunks[turn.id] = self._encode_turn_chunk(sample, turn)
         logger.info("Pre-RoPE encoded %d chunks for sample_id=%s", len(self.chunks), sample.sample_id)
 
-    def compose(self, hits: list[SearchHit]) -> ComposedMemory:
+    def compose(
+        self,
+        sample: ConversationSample,
+        hits: list[SearchHit],
+        *,
+        memory_order: MemoryOrder = "retrieval",
+    ) -> ComposedMemory:
         started = time.perf_counter()
-        turn_ids = selected_turn_ids(hits)
-        if not turn_ids:
-            raise RuntimeError("Cannot compose KV memory because retrieval returned no turn ids.")
+        retrieval_turn_ids, turn_ids = ordered_memory_turn_ids(sample, hits, memory_order=memory_order)
 
         selected = []
         missing = []
@@ -125,7 +129,9 @@ class ChunkedRopeSampleComposer:
             token_ids=token_ids,
             num_tokens=len(token_ids),
             compose_time_ms=(time.perf_counter() - started) * 1000,
+            retrieval_turn_ids=retrieval_turn_ids,
             selected_turn_ids=turn_ids,
+            memory_order=memory_order,
             context_window=self.context_window,
             context_prefix_tokens_total=sum(selected_context_tokens),
             context_prefix_tokens_max=max(selected_context_tokens, default=0),

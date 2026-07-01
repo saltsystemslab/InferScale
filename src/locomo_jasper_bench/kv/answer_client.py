@@ -158,7 +158,7 @@ class VLLMChunkedKVAnswerClient:
             raise RuntimeError(f"Strict GPU KV sample_id={sample.sample_id} is not the active prepared sample.")
 
         request_started = ttft_started_at if ttft_started_at is not None else time.perf_counter()
-        composed = composer.compose(hits)
+        composed = composer.compose(sample, hits, memory_order=self.config.memory_order)
         user_id = self.active_user_id
         register_user_memory(
             self.namespace,
@@ -216,7 +216,9 @@ class VLLMChunkedKVAnswerClient:
                     "answer_generate_time_ms": generate_ms,
                     "answer_total_time_ms": total_ms,
                     "kv_store_gpu_mb": stats.get("total_gpu_mb", 0.0),
+                    "kv_retrieval_turn_ids": composed.retrieval_turn_ids,
                     "kv_selected_turn_ids": composed.selected_turn_ids,
+                    "kv_memory_order": composed.memory_order,
                 }
             )
             return ChatResult(

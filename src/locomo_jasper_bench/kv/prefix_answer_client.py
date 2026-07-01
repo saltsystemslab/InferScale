@@ -71,7 +71,7 @@ class VLLMPrefixPromptAnswerClient:
             self._tokenizer,
             sample,
             hits,
-            memory_order=self.config.prefix_memory_order,
+            memory_order=self.config.memory_order,
         )
         prompt = build_kv_equivalence_prompt_token_ids(
             self._tokenizer,

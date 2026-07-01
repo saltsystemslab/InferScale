@@ -9,7 +9,7 @@ from ..vector_types import SearchHit
 from .tokenization import encode_text_no_special
 
 MEMORY_PREFIX_TEXT = "Retrieved memory context:\n"
-PrefixMemoryOrder = Literal["retrieval", "turn-index"]
+MemoryOrder = Literal["retrieval", "turn-index"]
 
 
 @dataclass(slots=True, frozen=True)
@@ -52,11 +52,11 @@ def ordered_memory_turn_ids(
     sample: ConversationSample,
     hits: list[SearchHit],
     *,
-    memory_order: PrefixMemoryOrder = "retrieval",
+    memory_order: MemoryOrder = "retrieval",
 ) -> tuple[list[str], list[str]]:
     retrieval_turn_ids = selected_turn_ids(hits)
     if not retrieval_turn_ids:
-        raise RuntimeError("Cannot compose KV-equivalence prompt because retrieval returned no turn ids.")
+        raise RuntimeError("Cannot compose memory because retrieval returned no turn ids.")
 
     turns_by_id = {turn.id: turn for turn in sample.turns}
     missing = [turn_id for turn_id in retrieval_turn_ids if turn_id not in turns_by_id]
@@ -68,7 +68,7 @@ def ordered_memory_turn_ids(
     if memory_order == "turn-index":
         turn_positions = {turn.id: index for index, turn in enumerate(sample.turns)}
         return retrieval_turn_ids, sorted(retrieval_turn_ids, key=lambda turn_id: turn_positions[turn_id])
-    raise ValueError(f"Unsupported prefix memory order: {memory_order!r}")
+    raise ValueError(f"Unsupported memory order: {memory_order!r}")
 
 
 def format_kv_memory_turn(turn: Turn) -> str:
@@ -80,7 +80,7 @@ def build_memory_prompt_token_ids(
     sample: ConversationSample,
     hits: list[SearchHit],
     *,
-    memory_order: PrefixMemoryOrder = "retrieval",
+    memory_order: MemoryOrder = "retrieval",
 ) -> MemoryPromptTokens:
     retrieval_turn_ids, turn_ids = ordered_memory_turn_ids(sample, hits, memory_order=memory_order)
     turns_by_id = {turn.id: turn for turn in sample.turns}

@@ -17,7 +17,7 @@ DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 DistanceMetric = Literal["ip", "l2"]
 AnswerBackend = Literal["vllm-kv", "vllm-prefix"]
 VectorBackend = Literal["jasper", "qdrant"]
-PrefixMemoryOrder = Literal["retrieval", "turn-index"]
+MemoryOrder = Literal["retrieval", "turn-index"]
 
 
 def default_run_id() -> str:
@@ -50,7 +50,7 @@ class BenchmarkConfig:
 
     model: str = DEFAULT_MODEL
     answer_backend: AnswerBackend = "vllm-kv"
-    prefix_memory_order: PrefixMemoryOrder = "retrieval"
+    memory_order: MemoryOrder = "retrieval"
 
     judge_model: str = DEFAULT_JUDGE_MODEL
     judge_base_url: str = DEFAULT_JUDGE_BASE_URL
@@ -123,10 +123,17 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
         help="Use in-process vLLM KV injection or the same-token prefix prompt baseline.",
     )
     parser.add_argument(
-        "--prefix-memory-order",
+        "--memory-order",
         choices=["retrieval", "turn-index"],
-        default=os.environ.get("LOCOMO_PREFIX_MEMORY_ORDER", "retrieval"),
-        help="Memory injection order for vllm-prefix: retrieval rank or chronological LoCoMo turn_index.",
+        default=None,
+        help="Memory injection order for vllm-kv and vllm-prefix: retrieval rank or chronological LoCoMo turn order.",
+    )
+    parser.add_argument(
+        "--prefix-memory-order",
+        dest="legacy_prefix_memory_order",
+        choices=["retrieval", "turn-index"],
+        default=None,
+        help="Deprecated alias for --memory-order.",
     )
 
     parser.add_argument("--judge-model", default=os.environ.get("JUDGE_MODEL", DEFAULT_JUDGE_MODEL))
@@ -207,10 +214,18 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     ns = parser.parse_args(argv)
     if ns.answer_backend not in {"vllm-kv", "vllm-prefix"}:
         parser.error("--answer-backend must be vllm-kv or vllm-prefix.")
-    if ns.prefix_memory_order not in {"retrieval", "turn-index"}:
-        parser.error("--prefix-memory-order must be retrieval or turn-index.")
-    if ns.prefix_memory_order == "turn-index" and ns.answer_backend != "vllm-prefix":
-        parser.error("--prefix-memory-order turn-index is only supported with --answer-backend vllm-prefix.")
+    if ns.memory_order and ns.legacy_prefix_memory_order and ns.memory_order != ns.legacy_prefix_memory_order:
+        parser.error("--memory-order and --prefix-memory-order must match when both are provided.")
+    ns.memory_order = (
+        ns.memory_order
+        or ns.legacy_prefix_memory_order
+        or os.environ.get("LOCOMO_MEMORY_ORDER")
+        or os.environ.get("LOCOMO_PREFIX_MEMORY_ORDER")
+        or "retrieval"
+    )
+    del ns.legacy_prefix_memory_order
+    if ns.memory_order not in {"retrieval", "turn-index"}:
+        parser.error("--memory-order must be retrieval or turn-index.")
     if ns.context_window < 0:
         parser.error("--context-window must be >= 0.")
     return BenchmarkConfig(**vars(ns))

@@ -105,6 +105,8 @@ locomo-jasper-bench \
   --run-id "${KV_RUN_ID}"
 ```
 
+Add `--memory-order turn-index` to either `vllm-kv` or `vllm-prefix` runs to inject the retrieved memories in chronological sample order. The default `retrieval` order preserves vector-search rank order. `turn-index` reorders only the selected retrieved memories; it does not change retrieval membership.
+
 ```bash
 locomo-jasper-bench \
   --dataset data/locomo10.json \

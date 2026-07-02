@@ -6,7 +6,6 @@ from .data import QuestionAnswer, is_adversarial_category
 RETRIEVAL_ANSWER_SYSTEM_PROMPT = (
     "You answer questions about a long conversation. Use the retrieved memory context when it is relevant. "
     "Be concise and do not invent details that are not supported by the context. "
-    "If the answer cannot be determined from the retrieved memory, say you don't have enough information to answer."
 )
 
 JUDGE_SYSTEM_PROMPT = (
@@ -26,6 +25,7 @@ def build_judge_messages(qa: QuestionAnswer, predicted_answer: str) -> list[dict
     if is_adversarial_category(qa.category):
         return _build_adversarial_judge_messages(qa, predicted_answer)
     user = (
+        f"{JUDGE_SYSTEM_PROMPT}\n\n"
         f"Question: {qa.question}\n"
         f"Reference answer: {qa.answer}\n"
         f"Predicted answer: {predicted_answer}\n\n"
@@ -34,13 +34,13 @@ def build_judge_messages(qa: QuestionAnswer, predicted_answer: str) -> list[dict
         "Output only true or false. Do not return JSON, punctuation, or an explanation."
     )
     return [
-        {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
         {"role": "user", "content": user},
     ]
 
 
 def _build_adversarial_judge_messages(qa: QuestionAnswer, predicted_answer: str) -> list[dict[str, str]]:
     user = (
+        f"{JUDGE_ADVERSARIAL_SYSTEM_PROMPT}\n\n"
         f"Question: {qa.question}\n"
         f"Predicted answer: {predicted_answer}\n\n"
         "The question is adversarial: the conversation does not contain the answer, so the correct "
@@ -51,7 +51,6 @@ def _build_adversarial_judge_messages(qa: QuestionAnswer, predicted_answer: str)
         "Output only true or false. Do not return JSON, punctuation, or an explanation."
     )
     return [
-        {"role": "system", "content": JUDGE_ADVERSARIAL_SYSTEM_PROMPT},
         {"role": "user", "content": user},
     ]
 

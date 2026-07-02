@@ -25,10 +25,12 @@ def build_clients(config: BenchmarkConfig) -> RuntimeClients:
         from .kv.answer_client import VLLMChunkedKVAnswerClient
 
         answer_client = VLLMChunkedKVAnswerClient(config)
-    else:
+    elif config.answer_backend == "vllm-prefix":
         from .kv.prefix_answer_client import VLLMPrefixPromptAnswerClient
 
         answer_client = VLLMPrefixPromptAnswerClient(config)
+    else:
+        raise ValueError(f"Unsupported answer backend: {config.answer_backend!r}")
     if config.skip_judge:
         judge_client = None
     else:

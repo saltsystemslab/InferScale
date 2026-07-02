@@ -14,8 +14,8 @@ class GpuSampleCacheStore:
     """Owns precomputed GPU-resident sample KV caches for one answer client."""
 
     def __init__(self) -> None:
-        self._entries: dict[int, GpuSampleCacheEntry] = {}
-        self.active_sample_key: int | None = None
+        self._entries: dict[str, GpuSampleCacheEntry] = {}
+        self.active_sample_key: str | None = None
         self.active_composer: Any | None = None
         self.active_metrics: dict[str, Any] = {}
 
@@ -25,11 +25,11 @@ class GpuSampleCacheStore:
     def __len__(self) -> int:
         return len(self._entries)
 
-    def put(self, sample_key: int, composer: Any, metrics: dict[str, Any]) -> None:
+    def put(self, sample_key: str, composer: Any, metrics: dict[str, Any]) -> None:
         self.release(sample_key)
         self._entries[sample_key] = GpuSampleCacheEntry(composer=composer, metrics=dict(metrics))
 
-    def prepare(self, sample_key: int, sample_id: str) -> GpuSampleCacheEntry:
+    def prepare(self, sample_key: str, sample_id: str) -> GpuSampleCacheEntry:
         if self.active_sample_key is not None and self.active_sample_key != sample_key:
             self.release_active()
 
@@ -42,7 +42,7 @@ class GpuSampleCacheStore:
         self.active_metrics = dict(entry.metrics)
         return entry
 
-    def release(self, sample_key: int) -> None:
+    def release(self, sample_key: str) -> None:
         entry = self._entries.pop(sample_key, None)
         if entry is not None:
             _close(entry.composer)

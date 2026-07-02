@@ -1,16 +1,21 @@
 from __future__ import annotations
 
-import time
 import logging
+import time
 from typing import Any
 
 from ..data import ConversationSample, Turn
 from ..vector_types import SearchHit
-from .context import build_turn_context_encoding_plan, format_memory_turn, previous_session_context_turns
-from .prompting import MEMORY_PREFIX_TEXT, MemoryOrder, ordered_memory_turn_ids
+from .context import build_turn_context_encoding_plan
+from .prompting import (
+    MEMORY_SYSTEM_TEXT,
+    MemoryOrder,
+    memory_frame_prefix_token_ids,
+    ordered_memory_turn_ids,
+)
 from .submodule import require_ai_memory_submodule
 from .tokenization import encode_text_no_special
-from .types import ComposedMemory, ContextEncodingPlan, EncodedChunk
+from .types import ComposedMemory, EncodedChunk
 
 logger = logging.getLogger(__name__)
 
@@ -29,18 +34,10 @@ def torch_dtype(dtype_name: str) -> Any:
     raise ValueError(f"Unsupported KV dtype: {dtype_name!r}")
 
 
-class ChunkedRopeSampleComposer:
-    """GPU-resident pre-RoPE chunk encoder and top-k composer for one sample."""
+class SharedPreRopeEncoder:
+    """One HF pre-RoPE encoder (model, tokenizer, RoPE tables) shared across samples."""
 
-    def __init__(
-        self,
-        *,
-        model: str,
-        dtype: str,
-        device: str,
-        max_position: int,
-        context_window: int = 0,
-    ) -> None:
+    def __init__(self, *, model: str, dtype: str, device: str, max_position: int) -> None:
         require_ai_memory_submodule()
         import torch
         from encode_memories_pre_rope import PreRoPEMemoryEncoder
@@ -48,34 +45,72 @@ class ChunkedRopeSampleComposer:
 
         if not torch.cuda.is_available():
             raise RuntimeError("KV injection requires a CUDA device.")
-        if context_window < 0:
-            raise ValueError("context_window must be >= 0.")
 
         self.model = model
         self.device = device
         self.max_position = max_position
-        self.context_window = context_window
-        self.encoder = PreRoPEMemoryEncoder(
+        started = time.perf_counter()
+        self._encoder = PreRoPEMemoryEncoder(
             model_name=model,
             dtype=torch_dtype(dtype),
             device=device,
         )
-        self.encoder.load_model()
-        self.tokenizer = self.encoder._tokenizer
-        self.hf_model = self.encoder._model
+        self._encoder.load_model()
+        self.tokenizer = self._encoder._tokenizer
+        self.hf_model = self._encoder._model
         if self.tokenizer is None or self.hf_model is None:
             raise RuntimeError("Pre-RoPE encoder did not load a model/tokenizer.")
 
         cfg = self.hf_model.config
-        self.head_dim = cfg.hidden_size // cfg.num_attention_heads
+        self.head_dim = getattr(cfg, "head_dim", None) or cfg.hidden_size // cfg.num_attention_heads
         positions = torch.arange(max_position, device=device)
         self.cos_table, self.sin_table = extract_cos_sin_from_model(
             self.hf_model,
             positions,
             self.head_dim,
         )
+        logger.info(
+            "Loaded shared pre-RoPE encoder model=%s device=%s in %.1fs gpu_gb=%.1f",
+            model,
+            device,
+            time.perf_counter() - started,
+            torch.cuda.memory_allocated() / 1e9,
+        )
+
+    def release_weights(self) -> None:
+        """Free encoder weights before vLLM starts; keep cos/sin tables for composition."""
+        import gc
+        import torch
+
+        self._encoder = None
+        self.hf_model = None
+        self.tokenizer = None
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    def close(self) -> None:
+        self.release_weights()
+        self.cos_table = None
+        self.sin_table = None
+
+
+class ChunkedRopeSampleComposer:
+    """GPU-resident pre-RoPE chunk store and top-k composer for one sample."""
+
+    def __init__(self, *, encoder: SharedPreRopeEncoder, context_window: int = 0) -> None:
+        if context_window < 0:
+            raise ValueError("context_window must be >= 0.")
+
+        self.encoder = encoder
+        self.device = encoder.device
+        self.max_position = encoder.max_position
+        self.context_window = context_window
         self.chunks: dict[str, EncodedChunk] = {}
-        self.prefix_chunk = self._encode_text_chunk("__prefix__", MEMORY_PREFIX_TEXT)
+
+        tokenizer, _ = self._require_encode_ready()
+        prefix_token_ids = memory_frame_prefix_token_ids(tokenizer)
+        prefix_token_ids.extend(encode_text_no_special(tokenizer, MEMORY_SYSTEM_TEXT))
+        self.prefix_chunk: EncodedChunk | None = self._encode_token_ids_chunk("__prefix__", prefix_token_ids)
 
     def encode_sample(self, sample: ConversationSample, turn_ids: set[str] | None = None) -> None:
         turns = sample.turns
@@ -99,6 +134,10 @@ class ChunkedRopeSampleComposer:
         memory_order: MemoryOrder = "retrieval",
     ) -> ComposedMemory:
         started = time.perf_counter()
+        if self.encoder.cos_table is None or self.encoder.sin_table is None:
+            raise RuntimeError("Pre-RoPE encoder was closed; cannot compose memory.")
+        if self.prefix_chunk is None:
+            raise RuntimeError("Composer was closed; cannot compose memory.")
         retrieval_turn_ids, turn_ids = ordered_memory_turn_ids(sample, hits, memory_order=memory_order)
 
         selected = []
@@ -115,14 +154,16 @@ class ChunkedRopeSampleComposer:
             )
 
         chunks = [self.prefix_chunk, *selected]
-        kv_by_layer = self._compose_chunks(chunks)
+        kv_by_layer = _compose_encoded_chunks(
+            chunks,
+            device=self.device,
+            max_position=self.max_position,
+            cos_table=self.encoder.cos_table,
+            sin_table=self.encoder.sin_table,
+        )
         token_ids: list[int] = []
         for chunk in chunks:
             token_ids.extend(chunk.token_ids)
-        if len(token_ids) > self.max_position:
-            raise RuntimeError(
-                f"Composed memory has {len(token_ids)} tokens, exceeding kv_max_position={self.max_position}."
-            )
         selected_context_tokens = [chunk.context_prefix_tokens for chunk in selected]
         return ComposedMemory(
             kv_by_layer=kv_by_layer,
@@ -139,11 +180,9 @@ class ChunkedRopeSampleComposer:
         )
 
     def cache_stats(self) -> dict[str, Any]:
-        chunks = []
-        prefix_chunk = getattr(self, "prefix_chunk", None)
-        if prefix_chunk is not None:
-            chunks.append(prefix_chunk)
-        chunks.extend(getattr(self, "chunks", {}).values())
+        chunks = list(self.chunks.values())
+        if self.prefix_chunk is not None:
+            chunks.insert(0, self.prefix_chunk)
 
         total_bytes = 0
         total_tokens = 0
@@ -160,7 +199,7 @@ class ChunkedRopeSampleComposer:
 
         return {
             "kv_chunk_cache_residency": "gpu",
-            "kv_precomputed_chunks": max(0, len(chunks) - 1),
+            "kv_precomputed_chunks": len(self.chunks),
             "kv_precomputed_chunks_with_prefix": len(chunks),
             "kv_precomputed_tokens": total_tokens,
             "kv_precomputed_layers": layer_count,
@@ -168,37 +207,29 @@ class ChunkedRopeSampleComposer:
             "kv_precomputed_devices": ",".join(sorted(devices)),
         }
 
-    def release_encoder(self) -> None:
-        """Unload HF encoder weights while keeping encoded GPU chunks resident."""
-        import gc
-        import torch
-
-        for attr in ("encoder", "hf_model", "tokenizer"):
-            if hasattr(self, attr):
-                try:
-                    setattr(self, attr, None)
-                except Exception:
-                    pass
-        gc.collect()
-        torch.cuda.empty_cache()
-
     def close(self) -> None:
+        """Free this sample's encoded chunks. The shared encoder is owned by the client."""
         import gc
         import torch
 
-        self.release_encoder()
-        for attr in ("encoder", "hf_model", "tokenizer", "cos_table", "sin_table", "chunks", "prefix_chunk"):
-            if hasattr(self, attr):
-                try:
-                    setattr(self, attr, None)
-                except Exception:
-                    pass
+        self.chunks.clear()
+        self.prefix_chunk = None
         gc.collect()
         torch.cuda.empty_cache()
+
+    def _require_encode_ready(self) -> tuple[Any, Any]:
+        tokenizer = self.encoder.tokenizer
+        hf_model = self.encoder.hf_model
+        if tokenizer is None or hf_model is None:
+            raise RuntimeError(
+                "Pre-RoPE encoder weights were released. Encode all samples before starting vLLM."
+            )
+        return tokenizer, hf_model
 
     def _encode_turn_chunk(self, sample: ConversationSample, turn: Turn) -> EncodedChunk:
+        tokenizer, hf_model = self._require_encode_ready()
         plan = build_turn_context_encoding_plan(
-            self.tokenizer,
+            tokenizer,
             sample,
             turn,
             context_window=self.context_window,
@@ -208,7 +239,7 @@ class ChunkedRopeSampleComposer:
             token_ids=plan.target_token_ids,
             kv_by_layer=_detach_kv_by_layer_to_device(
                 _encode_token_chunk_pre_rope(
-                    self.hf_model,
+                    hf_model,
                     plan.input_token_ids,
                     slice_start=plan.slice_start,
                     slice_end=plan.slice_end,
@@ -221,30 +252,21 @@ class ChunkedRopeSampleComposer:
             context_prefix_truncated_tokens=plan.context_prefix_truncated_tokens,
         )
 
-    def _encode_text_chunk(self, turn_id: str, text: str) -> EncodedChunk:
-        token_ids = encode_text_no_special(self.tokenizer, text)
+    def _encode_token_ids_chunk(self, chunk_id: str, token_ids: list[int]) -> EncodedChunk:
+        _, hf_model = self._require_encode_ready()
         if not token_ids:
-            raise RuntimeError(f"Memory chunk tokenized to zero tokens: {turn_id}")
+            raise RuntimeError(f"Memory chunk tokenized to zero tokens: {chunk_id}")
         return EncodedChunk(
-            token_ids=token_ids,
+            token_ids=list(token_ids),
             kv_by_layer=_detach_kv_by_layer_to_device(
                 _encode_token_chunk_pre_rope(
-                    self.hf_model,
+                    hf_model,
                     token_ids,
                     slice_start=0,
                     slice_end=len(token_ids),
                 ),
                 self.device,
             ),
-        )
-
-    def _compose_chunks(self, chunks: list[EncodedChunk]) -> dict[str, Any]:
-        return _compose_encoded_chunks(
-            chunks,
-            device=self.device,
-            max_position=self.max_position,
-            cos_table=self.cos_table,
-            sin_table=self.sin_table,
         )
 
 
@@ -256,7 +278,6 @@ def _compose_encoded_chunks(
     cos_table: Any,
     sin_table: Any,
 ) -> dict[str, Any]:
-    from rope_inject import rotate_pre_rope_k
     import torch
 
     layer_names = list(chunks[0].kv_by_layer.keys())
@@ -272,6 +293,12 @@ def _compose_encoded_chunks(
             f"cos={cos_table.shape[0]} sin={sin_table.shape[0]}."
         )
 
+    first_kv = next(iter(chunks[0].kv_by_layer.values()))
+    # [tokens, 1, head_dim] broadcasts over the kv-head axis of [tokens, heads, head_dim],
+    # so K rotates in its stored layout without transpose round-trips.
+    cos = cos_table[:total_tokens].unsqueeze(1).to(dtype=first_kv.dtype, device=device)
+    sin = sin_table[:total_tokens].unsqueeze(1).to(dtype=first_kv.dtype, device=device)
+
     for layer_name in layer_names:
         layer_chunks = [
             _copy_layer_kv_to_device(chunk.kv_by_layer[layer_name], device)
@@ -279,17 +306,20 @@ def _compose_encoded_chunks(
         ]
         k_pre = torch.cat([chunk_kv[0] for chunk_kv in layer_chunks], dim=0)
         values = torch.cat([chunk_kv[1] for chunk_kv in layer_chunks], dim=0)
-        k_rot = rotate_pre_rope_k(
-            k_pre.transpose(0, 1).contiguous(),
-            cos_table[:total_tokens],
-            sin_table[:total_tokens],
-        ).transpose(0, 1).contiguous()
+        k_rot = (k_pre * cos) + (_rotate_half(k_pre) * sin)
 
         composed[layer_name] = torch.stack(
             [k_rot, values],
             dim=0,
         )
     return composed
+
+
+def _rotate_half(value: Any) -> Any:
+    import torch
+
+    half = value.shape[-1] // 2
+    return torch.cat([-value[..., half:], value[..., :half]], dim=-1)
 
 
 def _encode_token_chunk_pre_rope(
@@ -317,6 +347,11 @@ def _encode_token_chunk_pre_rope(
         post_pairs = list(zip(post_rope_kv.key_cache, post_rope_kv.value_cache))
     else:
         post_pairs = list(post_rope_kv)
+
+    if len(capture.layers) != len(post_pairs):
+        raise RuntimeError(
+            f"RoPE capture saw {len(capture.layers)} layers but model has {len(post_pairs)}."
+        )
 
     kv_by_layer = {}
     for layer_idx, (_, value_post) in enumerate(post_pairs):

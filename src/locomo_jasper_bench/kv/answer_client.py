@@ -9,7 +9,7 @@ from ..clients import ChatResult
 from ..config import BenchmarkConfig
 from ..data import ConversationSample, QuestionAnswer
 from ..vector_types import SearchHit
-from .chunked_rope import ChunkedRopeSampleComposer
+from .chunked_rope import ChunkedRopeSampleComposer, SharedPreRopeEncoder
 from .gpu_registry import (
     clear_namespace,
     drop_namespace,
@@ -43,6 +43,7 @@ class VLLMChunkedKVAnswerClient:
         self._tokenizer: Any | None = None
         self._sampling_cls: Any | None = None
         self._sample_caches = GpuSampleCacheStore()
+        self._encoder: SharedPreRopeEncoder | None = None
 
     def precompute_sample_cache(self, sample: ConversationSample) -> dict[str, Any]:
         force_vllm_inprocess_mode()
@@ -52,7 +53,7 @@ class VLLMChunkedKVAnswerClient:
                 "Precompute all needed samples before starting the single vLLM instance."
             )
         require_ai_memory_submodule()
-        sample_key = id(sample)
+        sample_key = sample.sample_id
         if self._sample_caches.active_sample_key == sample_key:
             self.close_sample()
         else:
@@ -67,14 +68,10 @@ class VLLMChunkedKVAnswerClient:
         composer: ChunkedRopeSampleComposer | None = None
         try:
             composer = ChunkedRopeSampleComposer(
-                model=self.config.model,
-                dtype=self.config.kv_dtype,
-                device=self.config.kv_device,
-                max_position=self.config.kv_max_position,
+                encoder=self._ensure_encoder(),
                 context_window=self.config.context_window,
             )
             composer.encode_sample(sample)
-            composer.release_encoder()
         except RuntimeError as exc:
             if composer is not None:
                 composer.close()
@@ -106,12 +103,24 @@ class VLLMChunkedKVAnswerClient:
         )
         return dict(sample_metrics)
 
+    def _ensure_encoder(self) -> SharedPreRopeEncoder:
+        if self._encoder is None:
+            self._encoder = SharedPreRopeEncoder(
+                model=self.config.model,
+                dtype=self.config.kv_dtype,
+                device=self.config.kv_device,
+                max_position=self.config.kv_max_position,
+            )
+        return self._encoder
+
     def start_llm(self) -> None:
         force_vllm_inprocess_mode()
         if self._llm is not None:
             return
         if not self._sample_caches:
             raise RuntimeError("At least one GPU-resident KV sample cache must be precomputed before starting vLLM.")
+        if self._encoder is not None:
+            self._encoder.release_weights()
 
         from vllm import LLM, SamplingParams
 
@@ -131,7 +140,7 @@ class VLLMChunkedKVAnswerClient:
             raise
 
     def prepare_sample(self, sample: ConversationSample) -> None:
-        sample_key = id(sample)
+        sample_key = sample.sample_id
         if self._sample_caches.active_sample_key is not None and self._sample_caches.active_sample_key != sample_key:
             self.close_sample()
         self._sample_caches.prepare(sample_key, sample.sample_id)
@@ -154,7 +163,7 @@ class VLLMChunkedKVAnswerClient:
         composer = self._sample_caches.active_composer
         if composer is None:
             raise RuntimeError(f"Strict GPU KV cache sample_id={sample.sample_id} was not prepared.")
-        if self._sample_caches.active_sample_key != id(sample):
+        if self._sample_caches.active_sample_key != sample.sample_id:
             raise RuntimeError(f"Strict GPU KV sample_id={sample.sample_id} is not the active prepared sample.")
 
         request_started = ttft_started_at if ttft_started_at is not None else time.perf_counter()
@@ -237,6 +246,9 @@ class VLLMChunkedKVAnswerClient:
     def close(self) -> None:
         self._sample_caches.release_all()
         clear_namespace(self.namespace)
+        if self._encoder is not None:
+            self._encoder.close()
+            self._encoder = None
         if self._llm is not None:
             del self._llm
             self._llm = None

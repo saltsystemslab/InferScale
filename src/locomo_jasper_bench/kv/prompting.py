@@ -3,13 +3,28 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from ..data import ConversationSample, QuestionAnswer, Turn, format_turn_for_memory
+from ..data import ConversationSample, QuestionAnswer
 from ..prompts import RETRIEVAL_ANSWER_SYSTEM_PROMPT
 from ..vector_types import SearchHit
+from .context import format_memory_turn
 from .tokenization import encode_text_no_special
 
 MEMORY_PREFIX_TEXT = "Retrieved memory context:\n"
+MEMORY_SYSTEM_TEXT = (
+    RETRIEVAL_ANSWER_SYSTEM_PROMPT
+    + " Relevant retrieved memory is available before the current question.\n\n"
+    + MEMORY_PREFIX_TEXT
+)
 MemoryOrder = Literal["retrieval", "turn-index", "rank-zigzag", "retrieval-reversed"]
+
+# Two system bodies with no shared words, used to locate the chat template's
+# scaffolding empirically: tokens common to both templated conversations are
+# scaffolding, tokens that differ belong to the varying system body.
+_PROBE_SYSTEM_BODY_A = "alpha oak river seven"
+_PROBE_SYSTEM_BODY_B = "zeta glass mountain"
+_PROBE_USER_TEXT = "probe question"
+
+_MEMORY_FRAME_CACHE: dict[int, list[int]] = {}
 
 
 @dataclass(slots=True, frozen=True)
@@ -81,8 +96,27 @@ def rank_zigzag_turn_ids(turn_ids: list[str]) -> list[str]:
     return front + back
 
 
-def format_kv_memory_turn(turn: Turn) -> str:
-    return format_turn_for_memory(turn).strip() + "\n"
+def memory_frame_prefix_token_ids(tokenizer: Any) -> list[int]:
+    """Chat-template tokens that precede the system message content (BOS, headers).
+
+    The memory block is injected at positions [0, N), so it must carry the
+    scaffolding that normally opens a prompt. Derived empirically as the
+    longest common prefix of two templated conversations that differ only in
+    the system body; assumes the template renders the system message first.
+    Without a chat template, falls back to a bare BOS.
+    """
+    cache_key = id(tokenizer)
+    cached = _MEMORY_FRAME_CACHE.get(cache_key)
+    if cached is None:
+        if _chat_template(tokenizer) is None:
+            bos_token_id = getattr(tokenizer, "bos_token_id", None)
+            cached = [bos_token_id] if bos_token_id is not None else []
+        else:
+            tokens_a = _templated_tokens(tokenizer, _PROBE_SYSTEM_BODY_A, _PROBE_USER_TEXT)
+            tokens_b = _templated_tokens(tokenizer, _PROBE_SYSTEM_BODY_B, _PROBE_USER_TEXT)
+            cached = tokens_a[: _common_prefix_len(tokens_a, tokens_b)]
+        _MEMORY_FRAME_CACHE[cache_key] = cached
+    return list(cached)
 
 
 def build_memory_prompt_token_ids(
@@ -94,9 +128,10 @@ def build_memory_prompt_token_ids(
 ) -> MemoryPromptTokens:
     retrieval_turn_ids, turn_ids = ordered_memory_turn_ids(sample, hits, memory_order=memory_order)
     turns_by_id = {turn.id: turn for turn in sample.turns}
-    token_ids = encode_text_no_special(tokenizer, MEMORY_PREFIX_TEXT)
+    token_ids = memory_frame_prefix_token_ids(tokenizer)
+    token_ids.extend(encode_text_no_special(tokenizer, MEMORY_SYSTEM_TEXT))
     for turn_id in turn_ids:
-        token_ids.extend(encode_text_no_special(tokenizer, format_kv_memory_turn(turns_by_id[turn_id])))
+        token_ids.extend(encode_text_no_special(tokenizer, format_memory_turn(turns_by_id[turn_id])))
     return MemoryPromptTokens(
         token_ids=token_ids,
         selected_turn_ids=turn_ids,
@@ -110,27 +145,26 @@ def build_kv_query_token_ids(
     sample: ConversationSample,
     qa: QuestionAnswer,
 ) -> list[int]:
-    return tokenize_messages(tokenizer, build_kv_query_messages(sample, qa))
+    """Tokens that follow the memory block: system-role close, user turn, generation prompt.
+
+    Derived as the longest common suffix of two templated conversations that
+    differ only in the system body, so `memory + query` concatenates to exactly
+    the sequence the chat template produces for (system=memory, user=question).
+    """
+    user_text = kv_user_message_text(sample, qa)
+    if _chat_template(tokenizer) is None:
+        return tokenize_messages(tokenizer, [{"role": "user", "content": user_text}])
+    tokens_a = _templated_tokens(tokenizer, _PROBE_SYSTEM_BODY_A, user_text)
+    tokens_b = _templated_tokens(tokenizer, _PROBE_SYSTEM_BODY_B, user_text)
+    return tokens_a[len(tokens_a) - _common_suffix_len(tokens_a, tokens_b):]
 
 
-def build_kv_query_messages(sample: ConversationSample, qa: QuestionAnswer) -> list[dict[str, str]]:
-    return [
-        {
-            "role": "system",
-            "content": (
-                RETRIEVAL_ANSWER_SYSTEM_PROMPT
-                + " Relevant retrieved memory is available before the current question."
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                f"Conversation id: {sample.sample_id}\n\n"
-                f"Question: {qa.question}\n\n"
-                "Answer:"
-            ),
-        },
-    ]
+def kv_user_message_text(sample: ConversationSample, qa: QuestionAnswer) -> str:
+    return (
+        f"Conversation id: {sample.sample_id}\n\n"
+        f"Question: {qa.question}\n\n"
+        "Answer:"
+    )
 
 
 def build_kv_equivalence_prompt_token_ids(
@@ -187,3 +221,38 @@ def tokenize_messages(tokenizer: Any, messages: list[dict[str, str]]) -> list[in
     if not callable(encode):
         raise RuntimeError("Tokenizer has neither apply_chat_template nor encode.")
     return list(encode(text))
+
+
+def _chat_template(tokenizer: Any) -> Any:
+    if not callable(getattr(tokenizer, "apply_chat_template", None)):
+        return None
+    return getattr(tokenizer, "chat_template", None)
+
+
+def _templated_tokens(tokenizer: Any, system_body: str, user_text: str) -> list[int]:
+    return list(
+        tokenizer.apply_chat_template(
+            [
+                {"role": "system", "content": system_body},
+                {"role": "user", "content": user_text},
+            ],
+            tokenize=True,
+            add_generation_prompt=True,
+        )
+    )
+
+
+def _common_prefix_len(a: list[int], b: list[int]) -> int:
+    limit = min(len(a), len(b))
+    for index in range(limit):
+        if a[index] != b[index]:
+            return index
+    return limit
+
+
+def _common_suffix_len(a: list[int], b: list[int]) -> int:
+    limit = min(len(a), len(b))
+    for offset in range(1, limit + 1):
+        if a[-offset] != b[-offset]:
+            return offset - 1
+    return limit

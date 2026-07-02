@@ -5,6 +5,8 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any, Iterable
 
+from .data import is_adversarial_category
+
 
 SETUP_METRIC_KEYS = (
     "memory_create_time_ms",
@@ -52,14 +54,23 @@ def summarize_records(
 ) -> dict[str, Any]:
     rows = list(records)
     setup_rows = list(sample_setup_metrics or [])
-    judged = [row for row in rows if row.get("judge", {}).get("correct") is not None]
-    correct = sum(1 for row in judged if row.get("judge", {}).get("correct") is True)
+    judged = [row for row in rows if _judge_verdict(row) is not None]
+    # Headline accuracy follows the LoCoMo convention: adversarial (category-5)
+    # questions are scored separately and excluded from the overall number.
+    scored = [row for row in judged if not is_adversarial_category(row.get("category") or "")]
+    scored_correct = sum(1 for row in scored if _judge_verdict(row) is True)
+    adversarial_rows = [row for row in rows if is_adversarial_category(row.get("category") or "")]
+    adversarial_judged = [row for row in adversarial_rows if _judge_verdict(row) is not None]
+    adversarial_correct = sum(1 for row in adversarial_judged if _judge_verdict(row) is True)
+    total_correct = sum(1 for row in judged if _judge_verdict(row) is True)
     vector_query_times = _number_values(_metric_values(rows, "vector_db_query_time_ms"))
     vector_query_total_ms = sum(vector_query_times)
     vector_query_count = len(vector_query_times)
 
     metrics = {
-        "accuracy": _safe_div(correct, len(judged)),
+        "accuracy": _safe_div(scored_correct, len(scored)),
+        "accuracy_by_category": _accuracy_by_category(judged),
+        "judge_unparsed_count": _judge_unparsed_count(rows),
         "time_to_first_token_ms": _numeric_summary(_metric_values(rows, "time_to_first_token_ms")),
         "query_to_first_token_ms": _numeric_summary(_metric_values(rows, "query_to_first_token_ms")),
         "query_to_answer_ms": _numeric_summary(_metric_values(rows, "query_to_answer_ms")),
@@ -100,12 +111,58 @@ def summarize_records(
         "run_id": run_id,
         "mode": mode,
         "question_count": len(rows),
-        "judged_count": len(judged),
-        "correct_count": correct,
+        "scored_question_count": len(
+            [row for row in rows if not is_adversarial_category(row.get("category") or "")]
+        ),
+        "judged_count": len(scored),
+        "correct_count": scored_correct,
+        "total_judged_count": len(judged),
+        "total_correct_count": total_correct,
+        "adversarial_question_count": len(adversarial_rows),
+        "adversarial_judged_count": len(adversarial_judged),
+        "adversarial_correct_count": adversarial_correct,
         "metrics": metrics,
         "config": config,
         "system": system_metadata,
     }
+
+
+def _judge_verdict(row: dict[str, Any]) -> bool | None:
+    judge = row.get("judge")
+    if isinstance(judge, dict):
+        verdict = judge.get("correct")
+        if isinstance(verdict, bool):
+            return verdict
+    return None
+
+
+def _accuracy_by_category(judged_rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    buckets: dict[str, dict[str, int]] = {}
+    for row in judged_rows:
+        category = str(row.get("category") or "unknown")
+        bucket = buckets.setdefault(category, {"judged": 0, "correct": 0})
+        bucket["judged"] += 1
+        if _judge_verdict(row) is True:
+            bucket["correct"] += 1
+    return {
+        category: {
+            "judged": bucket["judged"],
+            "correct": bucket["correct"],
+            "accuracy": _safe_div(bucket["correct"], bucket["judged"]),
+        }
+        for category, bucket in sorted(buckets.items())
+    }
+
+
+def _judge_unparsed_count(rows: list[dict[str, Any]]) -> int:
+    count = 0
+    for row in rows:
+        judge = row.get("judge")
+        if not isinstance(judge, dict) or _judge_verdict(row) is not None:
+            continue
+        if judge.get("status") == "unparsed" or judge.get("raw"):
+            count += 1
+    return count
 
 
 def _metric_values(rows: list[dict[str, Any]], key: str) -> Iterable[Any]:
@@ -122,7 +179,16 @@ def _setup_metric_values(rows: list[dict[str, Any]], key: str) -> Iterable[Any]:
 
 
 def _number_values(values: Iterable[Any]) -> list[float]:
-    return [float(value) for value in values if value is not None]
+    return [number for number in (coerce_number(value) for value in values) if number is not None]
+
+
+def coerce_number(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _numeric_summary(values: Iterable[Any]) -> dict[str, float | int | None]:

@@ -22,10 +22,6 @@ from .connector_metadata import (
 )
 from .gpu_registry import get_gpu_memory_store
 
-from vllm.model_executor.layers.attention.mla_attention import MLACommonMetadata
-
-_MLA_METADATA_TYPES = (MLACommonMetadata,)
-
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
     from vllm.forward_context import ForwardContext
@@ -36,7 +32,7 @@ logger = init_logger(__name__)
 
 
 def _is_mla_metadata(value: Any) -> bool:
-    return bool(_MLA_METADATA_TYPES) and isinstance(value, _MLA_METADATA_TYPES)
+    return "MLA" in type(value).__name__
 
 
 class MemoryKVConnector(KVConnectorBase_V1):
@@ -106,6 +102,13 @@ class MemoryKVConnector(KVConnectorBase_V1):
 
         if match is None or user_id is None:
             return 0, False
+
+        if num_computed_tokens > 0:
+            raise RuntimeError(
+                "Strict GPU KV injection assumes no locally cached prompt tokens "
+                f"(num_computed_tokens={num_computed_tokens}); block/row bookkeeping would "
+                "inject the wrong positions. Keep enable_prefix_caching=False for the answer engine."
+            )
 
         aligned_tokens, raw_memory_tokens = match
         new_tokens = aligned_tokens - num_computed_tokens
@@ -224,13 +227,17 @@ class MemoryKVConnector(KVConnectorBase_V1):
         for load in metadata.loads:
             memory = self._memory_store.get_user_memory(load.user_id)
             if memory is None:
-                logger.warning("Strict GPU memory for user %s was not found during load.", load.user_id)
-                continue
+                # The scheduler already marked these tokens as externally computed;
+                # skipping the load would leave uninitialized KV and silently wrong output.
+                raise RuntimeError(
+                    f"Strict GPU memory for user {load.user_id} was not found during load."
+                )
 
             first_tensor = next(iter(memory.kv_by_layer.values()), None)
             if first_tensor is None:
-                logger.warning("Strict GPU memory for user %s has no layer tensors.", load.user_id)
-                continue
+                raise RuntimeError(
+                    f"Strict GPU memory for user {load.user_id} has no layer tensors."
+                )
 
             slot_mapping = load.slot_mapping.to(device=first_tensor.device, dtype=torch.long)
             logger.info("Injecting %d strict GPU memory tokens for user %s", load.num_tokens, load.user_id)
@@ -242,8 +249,10 @@ class MemoryKVConnector(KVConnectorBase_V1):
 
                 src_kv = memory.kv_by_layer.get(layer_name)
                 if src_kv is None:
-                    logger.warning("Layer %s not found in strict GPU memory for user %s", layer_name, load.user_id)
-                    continue
+                    raise RuntimeError(
+                        f"Layer {layer_name} not found in strict GPU memory for user {load.user_id}; "
+                        "the injected KV cache would be incomplete for committed tokens."
+                    )
 
                 kv_cache_layer = kv_cache_attr
                 self._inject_kv_into_layer(
@@ -275,14 +284,10 @@ class MemoryKVConnector(KVConnectorBase_V1):
             layer_meta = attn_metadata
 
         if _is_mla_metadata(layer_meta):
-            pages = dst_kv_cache_layer.shape[0]
-            page_size = dst_kv_cache_layer.shape[1]
-            dst_flat = dst_kv_cache_layer.reshape(pages * page_size, -1)
-            dst_flat[slot_mapping] = src_kv_cache.to(
-                dtype=dst_kv_cache_layer.dtype,
-                device=dst_kv_cache_layer.device,
+            raise RuntimeError(
+                f"MLA attention is not supported by the strict GPU KV connector (layer {layer_name}); "
+                "the composed [2, tokens, heads, head_dim] memory format does not match MLA caches."
             )
-            return
 
         if isinstance(layer_meta, TritonAttentionMetadata):
             logger.debug("Injecting strict GPU KV for Triton attention layer %s", layer_name)

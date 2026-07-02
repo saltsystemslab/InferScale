@@ -9,7 +9,7 @@ from typing import Literal
 
 
 DEFAULT_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
-DEFAULT_JUDGE_MODEL = "Gemma-2-9B-Instruct"
+DEFAULT_JUDGE_MODEL = "google/gemma-2-9b-it"
 DEFAULT_JUDGE_BASE_URL = "http://localhost:8000/v1"
 DEFAULT_JUDGE_API_KEY = "token-abc123"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
@@ -106,20 +106,22 @@ class BenchmarkConfig:
 
 
 def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
+    # Single source of truth for CLI defaults so they cannot drift from the dataclass.
+    defaults = BenchmarkConfig()
     parser = argparse.ArgumentParser(
         prog="locomo-jasper-bench",
         description="Run LoCoMo KV-cache benchmarks with Mem0 retrieval backed by Jasper or Qdrant.",
         allow_abbrev=False,
     )
-    parser.add_argument("--dataset", dest="dataset_path", type=Path, default=Path("data/locomo10.json"))
-    parser.add_argument("--results-dir", type=Path, default=default_results_dir())
-    parser.add_argument("--run-id", default=default_run_id())
+    parser.add_argument("--dataset", dest="dataset_path", type=Path, default=defaults.dataset_path)
+    parser.add_argument("--results-dir", type=Path, default=defaults.results_dir)
+    parser.add_argument("--run-id", default=defaults.run_id)
 
-    parser.add_argument("--model", default=os.environ.get("LOCOMO_VLLM_MODEL", DEFAULT_MODEL))
+    parser.add_argument("--model", default=os.environ.get("LOCOMO_VLLM_MODEL", defaults.model))
     parser.add_argument(
         "--answer-backend",
         choices=["vllm-kv", "vllm-prefix"],
-        default=os.environ.get("LOCOMO_ANSWER_BACKEND", "vllm-kv"),
+        default=os.environ.get("LOCOMO_ANSWER_BACKEND", defaults.answer_backend),
         help="Use in-process vLLM KV injection or the same-token prefix prompt baseline.",
     )
     parser.add_argument(
@@ -139,38 +141,38 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
         help="Deprecated alias for --memory-order.",
     )
 
-    parser.add_argument("--judge-model", default=os.environ.get("JUDGE_MODEL", DEFAULT_JUDGE_MODEL))
-    parser.add_argument("--judge-base-url", default=os.environ.get("JUDGE_BASE_URL", DEFAULT_JUDGE_BASE_URL))
-    parser.add_argument("--judge-api-key", default=os.environ.get("JUDGE_API_KEY", DEFAULT_JUDGE_API_KEY))
+    parser.add_argument("--judge-model", default=os.environ.get("JUDGE_MODEL", defaults.judge_model))
+    parser.add_argument("--judge-base-url", default=os.environ.get("JUDGE_BASE_URL", defaults.judge_base_url))
+    parser.add_argument("--judge-api-key", default=os.environ.get("JUDGE_API_KEY", defaults.judge_api_key))
 
-    parser.add_argument("--embedding-model", default=os.environ.get("OPENAI_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL))
+    parser.add_argument("--embedding-model", default=os.environ.get("OPENAI_EMBEDDING_MODEL", defaults.embedding_model))
     parser.add_argument("--embedding-base-url", default=os.environ.get("OPENAI_BASE_URL"))
     parser.add_argument("--embedding-api-key", default=os.environ.get("OPENAI_API_KEY"))
-    parser.add_argument("--embedding-cache-dir", type=Path, default=default_embedding_cache_dir())
+    parser.add_argument("--embedding-cache-dir", type=Path, default=defaults.embedding_cache_dir)
     parser.add_argument("--no-embedding-cache", action="store_false", dest="embedding_cache_enabled")
 
-    parser.add_argument("--vector-backend", choices=["jasper", "qdrant"], default="jasper")
-    parser.add_argument("--vector-distance", choices=["ip", "l2"], default="ip")
-    parser.add_argument("--top-k", type=int, default=50)
-    parser.add_argument("--jasper-n-neighbors", type=int, default=64)
-    parser.add_argument("--jasper-alpha", type=float, default=1.0)
-    parser.add_argument("--jasper-workspace-budget", default="10GB")
-    parser.add_argument("--jasper-beam-width", type=int, default=64)
+    parser.add_argument("--vector-backend", choices=["jasper", "qdrant"], default=defaults.vector_backend)
+    parser.add_argument("--vector-distance", choices=["ip", "l2"], default=defaults.vector_distance)
+    parser.add_argument("--top-k", type=int, default=defaults.top_k)
+    parser.add_argument("--jasper-n-neighbors", type=int, default=defaults.jasper_n_neighbors)
+    parser.add_argument("--jasper-alpha", type=float, default=defaults.jasper_alpha)
+    parser.add_argument("--jasper-workspace-budget", default=defaults.jasper_workspace_budget)
+    parser.add_argument("--jasper-beam-width", type=int, default=defaults.jasper_beam_width)
 
-    parser.add_argument("--temperature", type=float, default=0.0)
-    parser.add_argument("--top-p", type=float, default=1.0)
-    parser.add_argument("--max-answer-tokens", type=int, default=512)
-    parser.add_argument("--max-judge-tokens", type=int, default=4)
+    parser.add_argument("--temperature", type=float, default=defaults.temperature)
+    parser.add_argument("--top-p", type=float, default=defaults.top_p)
+    parser.add_argument("--max-answer-tokens", type=int, default=defaults.max_answer_tokens)
+    parser.add_argument("--max-judge-tokens", type=int, default=defaults.max_judge_tokens)
 
     parser.add_argument(
         "--kv-connector-module",
-        default=os.environ.get("LOCOMO_KV_CONNECTOR_MODULE", "locomo_jasper_bench.kv.gpu_connector"),
+        default=os.environ.get("LOCOMO_KV_CONNECTOR_MODULE", defaults.kv_connector_module),
         help="Import path for the GPU MemoryKVConnector module used by in-process vLLM.",
     )
     parser.add_argument(
         "--context-window",
         type=int,
-        default=int(os.environ.get("LOCOMO_KV_CONTEXT_WINDOW", "3")),
+        default=int(os.environ.get("LOCOMO_KV_CONTEXT_WINDOW", defaults.context_window)),
         help=(
             "Number of previous LoCoMo sessions to include as prefix context when "
             "pre-RoPE encoding each selected KV memory turn. 0 encodes each turn in isolation."
@@ -179,25 +181,25 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     parser.add_argument(
         "--kv-gpu-memory-utilization",
         type=float,
-        default=float(os.environ.get("LOCOMO_KV_GPU_MEMORY_UTILIZATION", "0.52")),
+        default=float(os.environ.get("LOCOMO_KV_GPU_MEMORY_UTILIZATION", defaults.kv_gpu_memory_utilization)),
     )
     parser.add_argument(
         "--kv-max-model-len",
         type=int,
-        default=int(os.environ.get("LOCOMO_KV_MAX_MODEL_LEN", "32768")),
+        default=int(os.environ.get("LOCOMO_KV_MAX_MODEL_LEN", defaults.kv_max_model_len)),
     )
     parser.add_argument(
         "--kv-max-position",
         type=int,
-        default=int(os.environ.get("LOCOMO_KV_MAX_POSITION", "32768")),
+        default=int(os.environ.get("LOCOMO_KV_MAX_POSITION", defaults.kv_max_position)),
         help="Maximum RoPE virtual position for top-k memory composition.",
     )
-    parser.add_argument("--kv-dtype", default=os.environ.get("LOCOMO_KV_DTYPE", "bfloat16"))
-    parser.add_argument("--kv-device", default=os.environ.get("LOCOMO_KV_DEVICE", "cuda:0"))
+    parser.add_argument("--kv-dtype", default=os.environ.get("LOCOMO_KV_DTYPE", defaults.kv_dtype))
+    parser.add_argument("--kv-device", default=os.environ.get("LOCOMO_KV_DEVICE", defaults.kv_device))
 
     parser.add_argument("--max-samples", type=int)
     parser.add_argument("--max-questions", type=int)
-    parser.add_argument("--log-every", type=int, default=int(os.environ.get("LOCOMO_LOG_EVERY", "5")))
+    parser.add_argument("--log-every", type=int, default=int(os.environ.get("LOCOMO_LOG_EVERY", defaults.log_every)))
     parser.add_argument(
         "--preembed-only",
         action="store_true",

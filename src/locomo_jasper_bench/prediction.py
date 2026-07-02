@@ -21,6 +21,7 @@ class PreparedSample:
     index: int
     sample: ConversationSample
     questions: list[QuestionAnswer]
+    setup_row: dict[str, Any]
 
 
 @dataclass(slots=True)
@@ -62,7 +63,6 @@ def run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> 
     memory_builder = SampleMemoryBuilder(config)
     question_evaluator = QuestionEvaluator(config, clients)
     prepared_samples: list[PreparedSample] = []
-    sample_setup_by_key: dict[int, dict[str, Any]] = {}
     sample_setup_rows: list[dict[str, Any]] = []
 
     for sample_index, sample in enumerate(samples, start=1):
@@ -87,21 +87,24 @@ def run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> 
         if remaining_questions is not None:
             remaining_questions -= len(sample_questions)
 
-        if not sample_questions:
-            continue
-
         logger.info(
             "KV sample {}/{} sample_id={} selected; query retrieval deferred until answer timing",
             sample_index,
             len(samples),
             sample.sample_id,
         )
-        prepared_samples.append(PreparedSample(index=sample_index, sample=sample, questions=list(sample_questions)))
         setup_row = _base_sample_setup_row(config, sample, len(sample_questions))
         if active_sample_gpu_cache:
             kv_metrics = precompute_sample_cache(sample) or {}
             setup_row["kv_precompute_time_ms"] = _number(kv_metrics.get("kv_precompute_time_ms"))
-        sample_setup_by_key[id(sample)] = setup_row
+        prepared_samples.append(
+            PreparedSample(
+                index=sample_index,
+                sample=sample,
+                questions=list(sample_questions),
+                setup_row=setup_row,
+            )
+        )
 
     if active_sample_gpu_cache:
         logger.info(
@@ -126,7 +129,7 @@ def run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> 
     with JsonlWriter(output_path) as writer:
         for prepared in prepared_samples:
             sample = prepared.sample
-            setup_row = sample_setup_by_key[id(sample)]
+            setup_row = prepared.setup_row
             memory, memory_metrics = memory_builder.build_with_metrics(sample)
             setup_row.update(memory_metrics)
             try:

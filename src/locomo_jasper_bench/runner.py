@@ -21,6 +21,10 @@ from .results import summarize_records, write_json
 from .run_files import read_json_or_default, read_jsonl, write_deferred_judging_outputs
 from .system import collect_system_metadata
 
+# Deferred judging rewrites the full predictions file on save; batching keeps
+# resumability without O(records^2) file I/O.
+_JUDGE_SAVE_EVERY = 25
+
 
 def run_benchmark(config: BenchmarkConfig, clients: RuntimeClients | None = None) -> dict[str, Any]:
     logger.info(
@@ -109,15 +113,16 @@ def judge_existing_run(config: BenchmarkConfig) -> dict[str, Any]:
             ) from exc
         record["judge"] = judge_payload
         judged_now += 1
-        write_deferred_judging_outputs(
-            config,
-            predictions_path,
-            records,
-            saved_config=saved_config,
-            system_metadata=system_metadata,
-            sample_setup_metrics=sample_setup_metrics,
-            write_reports=False,
-        )
+        if judged_now % _JUDGE_SAVE_EVERY == 0:
+            write_deferred_judging_outputs(
+                config,
+                predictions_path,
+                records,
+                saved_config=saved_config,
+                system_metadata=system_metadata,
+                sample_setup_metrics=sample_setup_metrics,
+                write_reports=False,
+            )
 
     summary = write_deferred_judging_outputs(
         config,

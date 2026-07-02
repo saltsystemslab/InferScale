@@ -7,6 +7,8 @@ from typing import Any, Iterable
 
 from loguru import logger
 
+from .results import coerce_number as _number
+
 QUERY_METRICS_COLUMNS = [
     "run_id",
     "mode",
@@ -350,15 +352,6 @@ def _wilson_interval(correct: int, total: int, *, z: float = 1.96) -> tuple[floa
     center = (p + z**2 / (2 * total)) / denominator
     margin = z * math.sqrt((p * (1 - p) + z**2 / (4 * total)) / total) / denominator
     return max(0.0, center - margin), min(1.0, center + margin)
-
-
-def _number(value: Any) -> float | None:
-    if value is None or isinstance(value, bool):
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
 
 
 def _csv_value(value: Any) -> Any:

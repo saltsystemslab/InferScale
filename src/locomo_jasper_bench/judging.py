@@ -35,7 +35,12 @@ def judge_qa(
         top_p=1.0,
     )
     correct, reason = parse_judge_response(judge.content)
-    return {"correct": correct, "reason": reason, "raw": judge.content}
+    return {
+        "correct": correct,
+        "reason": reason,
+        "raw": judge.content,
+        "status": "ok" if correct is not None else "unparsed",
+    }
 
 
 def judge_record(config: BenchmarkConfig, judge_client: ChatClient, record: dict[str, Any]) -> dict[str, Any]:

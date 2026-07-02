@@ -38,6 +38,11 @@ class QuestionAnswer:
     raw: dict[str, Any] | None = None
 
 
+def is_adversarial_category(category: Any) -> bool:
+    """LoCoMo category-5 questions are adversarial: unanswerable from the conversation."""
+    return str(category).strip().lower() in {"5", "adversarial"}
+
+
 @dataclass(slots=True)
 class ConversationSample:
     sample_id: str
@@ -174,7 +179,17 @@ def _extract_qa(sample_id: str, record: dict[str, Any]) -> Iterable[QuestionAnsw
         if not isinstance(item, dict):
             continue
         question = str(item.get("question") or item.get("query") or "").strip()
-        answer = item.get("answer", item.get("gold_answer", ""))
+        # Category-5 (adversarial) items carry the trap answer in adversarial_answer;
+        # it is stored for visibility but judged with the abstention prompt, never as
+        # a correctness reference.
+        answer = next(
+            (
+                value
+                for key in ("answer", "gold_answer", "adversarial_answer")
+                if (value := item.get(key)) is not None
+            ),
+            "",
+        )
         if isinstance(answer, list):
             answer_text = "; ".join(str(part) for part in answer)
         else:

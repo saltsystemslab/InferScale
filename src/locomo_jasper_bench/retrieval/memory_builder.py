@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from loguru import logger
 
-from .config import BenchmarkConfig
-from .data import ConversationSample, format_turn_for_memory
-from .embedding.cache import CacheMode, CachedEmbedder
+from ..config import BenchmarkConfig
+from ..data import ConversationSample, format_turn_for_memory
+from ..embedding.cache import CacheMode, CachedEmbedder
+from ..vector_types import VectorStoreConfig
 from .mem0_provider import create_mem0_memory
-from .vector_types import VectorStoreConfig
 
 
 class SampleMemoryBuilder:
@@ -17,7 +18,13 @@ class SampleMemoryBuilder:
         self.embedding_cache_mode = embedding_cache_mode
 
     def build(self, sample: ConversationSample, *, finalize_index: bool = True) -> Any:
+        memory, _ = self.build_with_metrics(sample, finalize_index=finalize_index)
+        return memory
+
+    def build_with_metrics(self, sample: ConversationSample, *, finalize_index: bool = True) -> tuple[Any, dict[str, Any]]:
         store_root = self.config.run_dir / "mem0" / sample.sample_id
+        total_started = time.perf_counter()
+        create_started = time.perf_counter()
         memory = create_mem0_memory(
             store_root=store_root,
             vector_config=_store_config(self.config),
@@ -26,7 +33,9 @@ class SampleMemoryBuilder:
             embedding_base_url=self.config.embedding_base_url,
         )
         self._install_embedding_cache(memory)
+        memory_create_time_ms = (time.perf_counter() - create_started) * 1000
 
+        build_started = time.perf_counter()
         for turn in sample.turns:
             text = format_turn_for_memory(turn)
             metadata = {
@@ -49,12 +58,22 @@ class SampleMemoryBuilder:
             len(sample.turns),
             sample.sample_id,
         )
+        embedding_memory_build_time_ms = (time.perf_counter() - build_started) * 1000
 
+        vector_index_build_time_ms = None
         if finalize_index:
-            logger.info("Building {} index for sample_id={}", self.config.vector_backend, sample.sample_id)
+            logger.info("Building vector index for sample_id={} backend={}", sample.sample_id, self.config.vector_backend)
+            index_started = time.perf_counter()
             self._finalize(memory)
+            vector_index_build_time_ms = (time.perf_counter() - index_started) * 1000
             logger.info("Index ready sample_id={} backend={}", sample.sample_id, self.config.vector_backend)
-        return memory
+        metrics = {
+            "memory_create_time_ms": memory_create_time_ms,
+            "embedding_memory_build_time_ms": embedding_memory_build_time_ms,
+            "vector_index_build_time_ms": vector_index_build_time_ms,
+            "memory_setup_time_ms": (time.perf_counter() - total_started) * 1000,
+        }
+        return memory, metrics
 
     def log_embedding_cache_stats(self, memory: Any, sample_id: str) -> None:
         stats = self.embedding_cache_stats(memory)
@@ -120,7 +139,11 @@ def memory_embedder(memory: Any) -> Any:
 
 
 def embed_mem0_query(memory: Any, query: str) -> Any:
-    return memory_embedder(memory).embed(query, "search")
+    embedder = memory_embedder(memory)
+    embed_array = getattr(embedder, "embed_array", None)
+    if callable(embed_array):
+        return embed_array(query, "search")
+    return embedder.embed(query, "search")
 
 
 def _store_config(config: BenchmarkConfig) -> VectorStoreConfig:

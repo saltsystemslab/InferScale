@@ -5,7 +5,8 @@ import types
 from pathlib import Path
 from typing import Any
 
-from .vector_types import VectorStoreConfig
+from ..runtime_paths import default_mem0_dir_string
+from ..vector_types import VectorStoreConfig
 
 
 def create_mem0_memory(
@@ -80,7 +81,9 @@ def register_mem0_jasper_provider() -> None:
     except ImportError as exc:
         raise RuntimeError("Install the mem0ai package to register the Jasper Mem0 provider.") from exc
 
-    VectorStoreFactory.provider_to_class["jasper"] = "locomo_jasper_bench.mem0_adapter.Mem0JasperVectorStore"
+    VectorStoreFactory.provider_to_class["jasper"] = (
+        "locomo_jasper_bench.retrieval.mem0_adapter.Mem0JasperVectorStore"
+    )
     _install_jasper_config_module()
     _patch_mem0_vector_config_registry(Mem0VectorStoreConfig)
 
@@ -94,8 +97,10 @@ def _install_jasper_config_module() -> None:
     class JasperConfig(BaseModel):
         collection_name: str = Field("memories", description="Name of the collection")
         embedding_model_dims: int | None = Field(1536, description="Dimensions of the embedding model")
-        path: str = Field("/tmp/jasper", description="Path for the Jasper vector store")
-        backend: str = Field("jasper", description="JasperVectorStore backend")
+        path: str = Field(
+            default_factory=default_mem0_dir_string,
+            description="Path for the Jasper vector store",
+        )
         distance: str = Field("ip", description="Distance metric")
         n_neighbors: int = Field(64, description="Jasper graph neighbor count")
         alpha: float = Field(1.0, description="Jasper graph alpha")

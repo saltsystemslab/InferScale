@@ -5,9 +5,10 @@ from typing import Any
 
 import numpy as np
 
+from ..runtime_paths import default_mem0_dir
+from ..vector_types import SearchHit, SearchMetrics, VectorStoreConfig
 from .jasper_vector_store import JasperVectorStore
 from .qdrant_vector_store import QdrantVectorStore
-from .vector_types import SearchHit, SearchMetrics, VectorStoreConfig
 
 _MIRRORED_METADATA_KEYS = ("user_id", "sample_id", "turn_id", "session_id", "turn_index", "speaker", "timestamp", "role")
 
@@ -27,7 +28,7 @@ class Mem0JasperVectorStore(VectorStoreBase):
         *,
         collection_name: str = "memories",
         embedding_model_dims: int | None = 1536,
-        path: str = "/tmp/jasper",
+        path: str | Path | None = None,
         backend: str = "jasper",
         distance: str = "ip",
         n_neighbors: int = 64,
@@ -37,7 +38,10 @@ class Mem0JasperVectorStore(VectorStoreBase):
     ) -> None:
         self.collection_name = collection_name
         self.embedding_model_dims = embedding_model_dims
-        self.root = Path(path) / collection_name
+        if path is None:
+            self.root = default_mem0_dir() / collection_name
+        else:
+            self.root = Path(path) / collection_name
         self.config = VectorStoreConfig(
             backend=backend,
             distance=distance,
@@ -69,7 +73,7 @@ class Mem0JasperVectorStore(VectorStoreBase):
     def search(
         self,
         query: str,
-        vectors: list[float] | list[list[float]],
+        vectors: np.ndarray | list[float] | list[list[float]],
         top_k: int = 5,
         **_: Any,
     ) -> list[SearchHit]:
@@ -77,10 +81,7 @@ class Mem0JasperVectorStore(VectorStoreBase):
         query_vector = _first_vector(vectors)
         hits, metrics = self.store.search(query_vector, top_k=requested_top_k)
         self.last_search_metrics = metrics
-        return [
-            SearchHit(id=hit.id, payload=hit.payload, score=hit.score, distance=hit.score, rank=rank)
-            for rank, hit in enumerate(hits, start=1)
-        ]
+        return hits
 
     def delete(self, vector_id: str) -> None:
         raise NotImplementedError("Mem0JasperVectorStore.delete is not used by this benchmark.")
@@ -135,8 +136,11 @@ class Mem0JasperVectorStore(VectorStoreBase):
         return JasperVectorStore(self.root, self.config)
 
 
-def _first_vector(vectors: list[float] | list[list[float]]) -> np.ndarray:
-    array = np.asarray(vectors, dtype=np.float32)
+def _first_vector(vectors: np.ndarray | list[float] | list[list[float]]) -> np.ndarray:
+    if isinstance(vectors, np.ndarray):
+        array = vectors if vectors.dtype == np.float32 else vectors.astype(np.float32, copy=False)
+    else:
+        array = np.asarray(vectors, dtype=np.float32)
     if array.ndim == 1:
         return array
     if array.ndim == 2 and array.shape[0] > 0:

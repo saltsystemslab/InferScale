@@ -1,32 +1,50 @@
-# LoCoMo vLLM Jasper Benchmark
+# LoCoMo KV Cache Benchmarks
 
-This repository contains code to run LoCoMo against a local vLLM server with Mem0 retrieval backed by a vector database such as Jasper or Qdrant. Runtime files are kept under `/scratch/$USER/benchmark-jasper` so the repo does not run out of space.
+This repository runs a LoCoMo benchmark comparison between in-process vLLM answer backends. On Runpod, runtime files are kept under `/workspace` so model downloads, caches, temp files, and results persist on the hosted partition.
+
+- `vllm-kv`: retrieved memories are encoded with the package's chunked-RoPE helpers, then injected through the top-level GPU KV connector.
+- `vllm-prefix`: the same retrieved memory tokens are included as a normal vLLM prompt prefix.
 
 ## 1. Configure
 
-From the repo root on the remote machine:
-
 ```bash
-cd /projects/SaltSystemsLab/<PATH_TO_REPO>/benchmark-jasper
 cp .env.example .env
 ```
 
 Edit `.env` for your session. The common values are:
 
-- `SCRATCH_ROOT=/scratch/$USER/benchmark-jasper`
-- `CUDA_MODULE=cuda/12.8`
-- `VLLM_MODEL=meta-llama/Llama-3.1-8B-Instruct`
-- `VLLM_API_KEY=token-abc123`
+- `MODEL_LLAMA=meta-llama/Llama-3.1-8B-Instruct`
+- `MODEL_MISTRAL=mistralai/Mistral-7B-Instruct-v0.3`
+- `MODEL_QWEN=Qwen/Qwen2.5-7B-Instruct`
+- `LOCOMO_VLLM_MODEL=llama`
+- `BENCHMARK_RUNTIME_ROOT=/workspace`
+- `JUDGE_MODEL=Gemma-2-9B-Instruct`
+- `CUDA_MODULE=` for Runpod containers without environment modules
 - `OPENAI_API_KEY=...`
-- `HF_TOKEN=...` (optional)
+- `HF_TOKEN=...` if the model is gated
 
-Load the environment in any shell that will run project commands:
+By default, runtime storage is rooted at `${BENCHMARK_RUNTIME_ROOT:-/workspace}` on Runpod:
+
+- `${BENCHMARK_RUNTIME_ROOT}/.cache` for embeddings, Mem0/Jasper files, model downloads, and build caches.
+- `${BENCHMARK_RUNTIME_ROOT}/results` for benchmark outputs.
+- `${BENCHMARK_RUNTIME_ROOT}/tmp` for temporary files.
+
+`source scripts/load_env.sh` prepares those directories and points the repo `.cache` entry at the runtime cache.
+
+```bash
+export BENCHMARK_CACHE_ROOT=/path/to/cache
+export BENCHMARK_RESULTS_ROOT=/path/to/results
+```
+
+Load the environment in each shell that will run project commands:
 
 ```bash
 source scripts/load_env.sh
 ```
 
-`scripts/load_env.sh` reads `.env`, prepares scratch-backed cache/result/temp directories, and refreshes `.cache` as a symlink to `${SCRATCH_ROOT}/cache`. Set `BENCHMARK_USE_SCRATCH=0` in `.env` only if you intentionally want local repo cache/result directories.
+The answer-model CLI accepts a Hugging Face id, a local model path, or one of
+the configured aliases: `llama`, `mistral`, `qwen`. The Qwen alias resolves to
+`Qwen/Qwen2.5-7B-Instruct`.
 
 ## 2. Install
 
@@ -34,95 +52,100 @@ source scripts/load_env.sh
 bash scripts/setup_remote.sh
 ```
 
-## 3. Start vLLM
+The setup script initializes Jasper, installs the benchmark, Jasper, vLLM, and CUDA wheel constraints, downloads LoCoMo to `data/locomo10.json` when needed, and precomputes embeddings into `${BENCHMARK_CACHE_ROOT}/embeddings`. Pre-embedding is required and setup fails if embedding credentials or network access are missing.
 
-Use tmux so the server keeps running while the benchmark runs in another window:
+Activate the environment before running benchmark commands:
 
 ```bash
-tmux new -s locomo
+source .venv/bin/activate
 ```
 
-In window 1:
+Timed runs read from that cache and fail if an embedding is missing.
+
+## 3. Run KV And Prefix
+
+Run answer generation with judging skipped. This keeps the GPU focused on the in-process answer backend; judge result files afterward.
+
+```bash
+RUN_STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+ANSWER_MODEL="${ANSWER_MODEL:-llama}"
+KV_RUN_ID="${ANSWER_MODEL}-kv-gpu-jasper10-${RUN_STAMP}"
+PREFIX_RUN_ID="${ANSWER_MODEL}-prefix-gpu-jasper10-${RUN_STAMP}"
+QDRANT_PREFIX_RUN_ID="${ANSWER_MODEL}-prefix-qdrant10-${RUN_STAMP}"
+
+locomo-jasper-bench \
+  --dataset data/locomo10.json \
+  --results-dir "${BENCHMARK_RESULTS_ROOT}" \
+  --answer-model "${ANSWER_MODEL}" \
+  --answer-backend vllm-kv \
+  --vector-backend jasper \
+  --top-k 50 \
+  --context-window 3 \
+  --kv-gpu-memory-utilization 0.52 \
+  --max-samples 10 \
+  --log-every 1 \
+  --skip-judge \
+  --run-id "${KV_RUN_ID}"
+```
+
+```bash
+locomo-jasper-bench \
+  --dataset data/locomo10.json \
+  --results-dir "${BENCHMARK_RESULTS_ROOT}" \
+  --answer-model "${ANSWER_MODEL}" \
+  --answer-backend vllm-prefix \
+  --vector-backend jasper \
+  --top-k 50 \
+  --kv-gpu-memory-utilization 0.52 \
+  --max-samples 10 \
+  --log-every 1 \
+  --skip-judge \
+  --run-id "${PREFIX_RUN_ID}"
+```
+
+```bash
+locomo-jasper-bench \
+  --dataset data/locomo10.json \
+  --results-dir "${BENCHMARK_RESULTS_ROOT}" \
+  --answer-model "${ANSWER_MODEL}" \
+  --answer-backend vllm-prefix \
+  --vector-backend qdrant \
+  --top-k 50 \
+  --kv-gpu-memory-utilization 0.52 \
+  --max-samples 10 \
+  --log-every 1 \
+  --skip-judge \
+  --run-id "${QDRANT_PREFIX_RUN_ID}"
+```
+
+All three runs write query-start-to-answer-complete latency as `metrics.query_to_answer_ms`. This is a single stopwatch around query embedding, vector retrieval, prompt/KV composition, and answer generation. It does not include memory storage/index construction, KV precompute, vLLM startup, or judging.
+
+TTFT metrics come from vLLM request timing on the real answer `generate()` call. They are populated only when vLLM returns usable per-request metrics on `RequestOutput.metrics`; no one-token probe or synthetic fallback is used.
+
+## 4. Judge Accuracy
+
+If the judge will run on the same GPU, start it after both answer runs finish:
 
 ```bash
 source .venv/bin/activate
 bash scripts/serve_vllm.sh
 ```
 
-Create window 2 with `Ctrl-b c`, then check the server:
+Then judge each run from another shell (or use tmux: `tmux new -s locomo` and create a new window with `Ctrl-b c`):
 
 ```bash
-source .venv/bin/activate
-
-curl --noproxy '*' \
-  -H "Authorization: Bearer ${VLLM_API_KEY}" \
-  "${VLLM_BASE_URL}/models"
-```
-
-## 4. Data
-
-Place LoCoMo at `data/locomo10.json`:
-
-```bash
-mkdir -p data
-curl -L \
-  https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json \
-  -o data/locomo10.json
-```
-
-## 5. Precompute Embeddings
-
-Embeddings are cached under `${BENCHMARK_CACHE_ROOT}/embeddings`, keyed by model, purpose, and exact text. Precompute before timed runs so OpenAI embedding calls are outside the measured benchmark:
-
-```bash
-RUN_STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-
 locomo-jasper-bench \
-  --dataset data/locomo10.json \
   --results-dir "${BENCHMARK_RESULTS_ROOT}" \
-  --max-samples 20 \
-  --preembed-only \
-  --run-id preembed-20samples-${RUN_STAMP}
+  --run-id "${RUN_ID}" \
+  --judge-only \
+  --judge-base-url "${JUDGE_BASE_URL}" \
+  --judge-api-key "${JUDGE_API_KEY}" \
+  --judge-model "${JUDGE_MODEL}"
 ```
 
-Timed runs read from that cache and fail if an embedding is missing.
+`--judge-only` fills only rows that are still unjudged, preserves already judged rows, and regenerates `summary.json`.
 
-## 6. Compare Qdrant And Jasper
-
-Run both back to back with the same sample count, model, `top_k`, and streaming setting:
-
-```bash
-RUN_STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-
-locomo-jasper-bench \
-  --dataset data/locomo10.json \
-  --results-dir "${BENCHMARK_RESULTS_ROOT}" \
-  --vector-backend qdrant \
-  --top-k 50 \
-  --max-samples 20 \
-  --stream \
-  --log-every "${LOCOMO_LOG_EVERY:-10}" \
-  --run-id qdrant-20samples-${RUN_STAMP}
-
-locomo-jasper-bench \
-  --dataset data/locomo10.json \
-  --results-dir "${BENCHMARK_RESULTS_ROOT}" \
-  --vector-backend jasper \
-  --jasper-alpha 1.0 \
-  --top-k 50 \
-  --max-samples 20 \
-  --stream \
-  --log-every "${LOCOMO_LOG_EVERY:-10}" \
-  --run-id jasper-20samples-${RUN_STAMP}
-```
-
-For a quick smoke comparison, add this to each command:
-
-```bash
---max-samples 1 --max-questions 3 --log-every 1
-```
-
-## 7. Results
+## 5. Compare Results
 
 Each run writes to `${BENCHMARK_RESULTS_ROOT}/<run-id>/`:
 
@@ -130,17 +153,29 @@ Each run writes to `${BENCHMARK_RESULTS_ROOT}/<run-id>/`:
 - `system.json`
 - `predictions.jsonl`
 - `summary.json`
+- `query_metrics.csv`
+- `sample_setup_metrics.csv`
+- `plots/tokens_vs_ttft.png`
+- `plots/tokens_vs_query_to_first_token.png`
+- `plots/tokens_vs_query_to_answer.png`
+- `plots/tokens_vs_accuracy_binned.png`
+- `plots/tokens_vs_accuracy_binned.csv`
 
-Read summaries:
+`query_metrics.csv` is derived from `predictions.jsonl` after normal generation and after `--judge-only`. It uses `metrics.kv_memory_tokens` as the retrieved memory token count and computes total input prompt tokens as `memory + query tokens`.
+
+Read the primary metrics:
 
 ```bash
-cat "${BENCHMARK_RESULTS_ROOT}/qdrant-20samples-${RUN_STAMP}/summary.json"
-cat "${BENCHMARK_RESULTS_ROOT}/jasper-20samples-${RUN_STAMP}/summary.json"
+cat "${BENCHMARK_RESULTS_ROOT}/${KV_RUN_ID}/summary.json"
+cat "${BENCHMARK_RESULTS_ROOT}/${PREFIX_RUN_ID}/summary.json"
+cat "${BENCHMARK_RESULTS_ROOT}/${QDRANT_PREFIX_RUN_ID}/summary.json"
 ```
 
-Primary metrics:
+Primary summary metrics:
 
 - `metrics.accuracy`: judged answer quality.
-- `metrics.time_to_first_token_ms`: time to first answer token; populated when using `--stream`.
-- `metrics.vector_db_query_time_ms`: raw backend vector query time.
-- `metrics.vector_db_queries_per_sec`: vector DB query throughput.
+- `metrics.time_to_first_token_ms`: in-process vLLM time to first token from the real answer generation, when vLLM exposes request timing metrics.
+- `metrics.query_to_first_token_ms`: query-start-to-generate-start wall time plus vLLM time to first token, when vLLM exposes request timing metrics.
+- `metrics.query_to_answer_ms`: query embedding, retrieval, prompt/KV composition, and full answer generation measured with one stopwatch.
+- `metrics.sample_setup_time_ms`: per-sample setup before the first query, including memory/index construction, KV precompute when applicable, and sample activation.
+- `metrics.vector_db_query_time_ms`: raw backend vector search latency.

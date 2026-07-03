@@ -1,6 +1,6 @@
-torch==2.8.0
-torchvision==0.23.0
-torchaudio==2.8.0
-vllm==0.10.2
-transformers==4.56.1
-qdrant-client==1.17.1
+torch==2.10.0
+torchvision==0.25.0
+torchaudio==2.10.0
+vllm==0.19.1
+transformers==4.56.0
+accelerate==1.14.0

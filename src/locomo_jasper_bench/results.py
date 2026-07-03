@@ -6,6 +6,17 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
+SETUP_METRIC_KEYS = (
+    "memory_create_time_ms",
+    "embedding_memory_build_time_ms",
+    "vector_index_build_time_ms",
+    "memory_setup_time_ms",
+    "kv_precompute_time_ms",
+    "answer_prepare_sample_time_ms",
+    "sample_setup_time_ms",
+)
+
+
 class JsonlWriter(AbstractContextManager["JsonlWriter"]):
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
@@ -37,13 +48,53 @@ def summarize_records(
     mode: str,
     config: dict[str, Any],
     system_metadata: dict[str, Any],
+    sample_setup_metrics: Iterable[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     rows = list(records)
+    setup_rows = list(sample_setup_metrics or [])
     judged = [row for row in rows if row.get("judge", {}).get("correct") is not None]
     correct = sum(1 for row in judged if row.get("judge", {}).get("correct") is True)
     vector_query_times = _number_values(_metric_values(rows, "vector_db_query_time_ms"))
     vector_query_total_ms = sum(vector_query_times)
     vector_query_count = len(vector_query_times)
+
+    metrics = {
+        "accuracy": _safe_div(correct, len(judged)),
+        "time_to_first_token_ms": _numeric_summary(_metric_values(rows, "time_to_first_token_ms")),
+        "query_to_first_token_ms": _numeric_summary(_metric_values(rows, "query_to_first_token_ms")),
+        "query_to_answer_ms": _numeric_summary(_metric_values(rows, "query_to_answer_ms")),
+        "query_embedding_time_ms": _numeric_summary(_metric_values(rows, "query_embedding_time_ms")),
+        "query_retrieval_time_ms": _numeric_summary(_metric_values(rows, "query_retrieval_time_ms")),
+        "vector_db_query_time_ms": _numeric_summary(vector_query_times),
+        "vector_db_query_count": vector_query_count,
+        "vector_db_query_time_total_ms": vector_query_total_ms,
+        "vector_db_queries_per_sec": _queries_per_second(vector_query_count, vector_query_total_ms),
+    }
+    for key in (
+        "kv_memory_tokens",
+        "kv_compose_time_ms",
+        "answer_generate_time_ms",
+        "answer_total_time_ms",
+        "answer_time_to_first_token_ms",
+        "kv_engine_time_to_first_token_ms",
+        "kv_query_tokens",
+        "kv_query_bos_stripped",
+        "kv_context_window",
+        "kv_context_prefix_tokens_total",
+        "kv_context_prefix_tokens_max",
+        "kv_context_prefix_truncated_tokens",
+        "kv_store_gpu_mb",
+        "prefix_engine_time_to_first_token_ms",
+    ):
+        summary = _numeric_summary(_metric_values(rows, key))
+        if summary["count"]:
+            metrics[key] = summary
+    if setup_rows:
+        metrics["sample_setup_count"] = len(setup_rows)
+        for key in SETUP_METRIC_KEYS:
+            summary = _numeric_summary(_setup_metric_values(setup_rows, key))
+            if summary["count"]:
+                metrics[key] = summary
 
     return {
         "run_id": run_id,
@@ -51,14 +102,7 @@ def summarize_records(
         "question_count": len(rows),
         "judged_count": len(judged),
         "correct_count": correct,
-        "metrics": {
-            "accuracy": _safe_div(correct, len(judged)),
-            "time_to_first_token_ms": _numeric_summary(_metric_values(rows, "time_to_first_token_ms")),
-            "vector_db_query_time_ms": _numeric_summary(vector_query_times),
-            "vector_db_query_count": vector_query_count,
-            "vector_db_query_time_total_ms": vector_query_total_ms,
-            "vector_db_queries_per_sec": _queries_per_second(vector_query_count, vector_query_total_ms),
-        },
+        "metrics": metrics,
         "config": config,
         "system": system_metadata,
     }
@@ -69,6 +113,12 @@ def _metric_values(rows: list[dict[str, Any]], key: str) -> Iterable[Any]:
         metrics = row.get("metrics")
         if isinstance(metrics, dict) and key in metrics:
             yield metrics.get(key)
+
+
+def _setup_metric_values(rows: list[dict[str, Any]], key: str) -> Iterable[Any]:
+    for row in rows:
+        if isinstance(row, dict) and key in row:
+            yield row.get(key)
 
 
 def _number_values(values: Iterable[Any]) -> list[float]:

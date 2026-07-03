@@ -20,6 +20,13 @@ class SearchMetrics:
 
 
 @dataclass(slots=True)
+class RetrievalMetrics:
+    embedding_time_ms: float
+    search_time_ms: float
+    total_time_ms: float
+
+
+@dataclass(slots=True)
 class SearchHit:
     id: str
     payload: dict[str, Any]

@@ -6,21 +6,48 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/load_env.sh
 source "${SCRIPT_DIR}/load_env.sh"
 
-MODEL="${VLLM_MODEL:-meta-llama/Llama-3.1-8B-Instruct}"
-API_KEY="${VLLM_API_KEY:-token-abc123}"
-TP="${VLLM_TP:-1}"
-GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-0.80}"
-MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-32768}"
-DTYPE="${VLLM_DTYPE:-auto}"
-QUANTIZATION="${VLLM_QUANTIZATION:-}"
+DEFAULT_MODEL_LLAMA="meta-llama/Llama-3.1-8B-Instruct"
+DEFAULT_MODEL_MISTRAL="mistralai/Mistral-7B-Instruct-v0.3"
+DEFAULT_MODEL_QWEN="Qwen/Qwen2.5-7B-Instruct"
+
+resolve_model_name() {
+  local raw="$1"
+  local normalized
+  normalized="$(printf '%s' "${raw}" | tr '[:upper:]' '[:lower:]')"
+  case "${normalized}" in
+    llama|llama3|llama3.1|llama-3.1|llama-3.1-8b-instruct)
+      printf '%s\n' "${MODEL_LLAMA:-${LOCOMO_MODEL_LLAMA:-${DEFAULT_MODEL_LLAMA}}}"
+      ;;
+    mistral|mistral-7b|mistral-7b-instruct-v0.3)
+      printf '%s\n' "${MODEL_MISTRAL:-${LOCOMO_MODEL_MISTRAL:-${DEFAULT_MODEL_MISTRAL}}}"
+      ;;
+    qwen|qwen2.5|qwen2.5-7b|qwen2.5-7b-instruct)
+      printf '%s\n' "${MODEL_QWEN:-${LOCOMO_MODEL_QWEN:-${DEFAULT_MODEL_QWEN}}}"
+      ;;
+    *)
+      printf '%s\n' "${raw}"
+      ;;
+  esac
+}
+
+MODEL="$(resolve_model_name "${JUDGE_MODEL:-${LOCOMO_VLLM_MODEL:-Gemma-2-9B-Instruct}}")"
+API_KEY="${JUDGE_API_KEY:-${LOCOMO_VLLM_API_KEY:-token-abc123}}"
+TP="${LOCOMO_VLLM_TP:-1}"
+GPU_MEMORY_UTILIZATION="${LOCOMO_VLLM_GPU_MEMORY_UTILIZATION:-0.80}"
+JUDGE_MAX_MODEL_LEN="${JUDGE_MAX_MODEL_LEN:-8192}"
+DTYPE="${LOCOMO_VLLM_DTYPE:-auto}"
+QUANTIZATION="${LOCOMO_VLLM_QUANTIZATION:-}"
 
 export VLLM_NO_USAGE_STATS="${VLLM_NO_USAGE_STATS:-1}"
 export VLLM_USE_FLASHINFER_SAMPLER="${VLLM_USE_FLASHINFER_SAMPLER:-0}"
 if [[ -z "${FLASHINFER_WORKSPACE_BASE:-}" ]]; then
-  if [[ "${BENCHMARK_CACHE_ROOT}" == */.cache ]]; then
-    export FLASHINFER_WORKSPACE_BASE="${BENCHMARK_CACHE_ROOT%/.cache}"
+  CACHE_ROOT="${BENCHMARK_CACHE_ROOT:-.cache}"
+  if [[ "${CACHE_ROOT}" == ".cache" ]]; then
+    export FLASHINFER_WORKSPACE_BASE="."
+  elif [[ "${CACHE_ROOT}" == */.cache ]]; then
+    export FLASHINFER_WORKSPACE_BASE="${CACHE_ROOT%/.cache}"
   else
-    export FLASHINFER_WORKSPACE_BASE="${BENCHMARK_CACHE_ROOT}"
+    export FLASHINFER_WORKSPACE_BASE="${CACHE_ROOT}"
   fi
 else
   export FLASHINFER_WORKSPACE_BASE
@@ -68,13 +95,13 @@ if [[ -n "${QUANTIZATION}" ]]; then
   QUANTIZATION_ARGS=(--quantization "${QUANTIZATION}")
 fi
 
-unset VLLM_MODEL VLLM_API_KEY VLLM_TP VLLM_GPU_MEMORY_UTILIZATION VLLM_MAX_MODEL_LEN VLLM_DTYPE VLLM_QUANTIZATION
+unset VLLM_MODEL VLLM_API_KEY VLLM_TP VLLM_GPU_MEMORY_UTILIZATION VLLM_MAX_MODEL_LEN VLLM_DTYPE VLLM_QUANTIZATION VLLM_BASE_URL
 
 exec vllm serve "${MODEL}" \
   "${QUANTIZATION_ARGS[@]}" \
   --trust-remote-code \
   --dtype "${DTYPE}" \
-  --max-model-len "${MAX_MODEL_LEN}" \
+  --max-model-len "${JUDGE_MAX_MODEL_LEN}" \
   --tensor-parallel-size "${TP}" \
   --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
   --api-key "${API_KEY}"

@@ -7,7 +7,7 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from .vector_types import SearchHit, SearchMetrics, VectorStoreConfig
+from ..vector_types import SearchHit, SearchMetrics, VectorStoreConfig
 
 
 class QdrantVectorStore:
@@ -83,44 +83,23 @@ class QdrantVectorStore:
         if self.dim is not None and query.shape[0] != self.dim:
             raise ValueError(f"query dim {query.shape[0]} does not match store dim {self.dim}")
         top_k = max(1, min(top_k, self.vector_count))
-        query_list = query.tolist()
 
         started = time.perf_counter()
         result = self._client.query_points(
             collection_name=self._collection_name,
-            query=query_list,
+            query=query.tolist(),
             limit=top_k,
-            with_payload=False,
+            with_payload=True,
         )
         elapsed_ms = (time.perf_counter() - started) * 1000
         points = getattr(result, "points", result)
-        payloads_by_point_id = self._payloads_for_points(points)
-        hits = [
-            self._hit_from_point(point, rank, payloads_by_point_id.get(str(getattr(point, "id", None))))
-            for rank, point in enumerate(points, start=1)
-        ]
+        hits = [self._hit_from_point(point, rank) for rank, point in enumerate(points, start=1)]
         return hits, SearchMetrics(elapsed_ms)
 
     def close(self) -> None:
         close = getattr(self._client, "close", None)
         if callable(close):
             close()
-
-    def _payloads_for_points(self, points: list[Any]) -> dict[str, Any]:
-        point_ids = [getattr(point, "id", None) for point in points]
-        point_ids = [point_id for point_id in point_ids if point_id is not None]
-        if not point_ids:
-            return {}
-        try:
-            retrieved = self._client.retrieve(
-                collection_name=self._collection_name,
-                ids=point_ids,
-                with_payload=True,
-                with_vectors=False,
-            )
-        except Exception:
-            return {}
-        return {str(getattr(point, "id", None)): getattr(point, "payload", None) for point in retrieved}
 
     def _create_client(self) -> Any:
         try:
@@ -150,6 +129,7 @@ class QdrantVectorStore:
             if self._dim != dim:
                 raise ValueError(f"vector dim {dim} does not match store dim {self._dim}")
             return
+
         models = self._models()
         distance = models.Distance.DOT if self.config.distance == "ip" else models.Distance.EUCLID
         if self._collection_exists():
@@ -170,10 +150,9 @@ class QdrantVectorStore:
             return False
         return True
 
-    def _hit_from_point(self, point: Any, rank: int, raw_payload: Any | None = None) -> SearchHit:
+    def _hit_from_point(self, point: Any, rank: int) -> SearchHit:
+        raw_payload = getattr(point, "payload", None)
         raw_score = float(getattr(point, "score", 0.0) or 0.0)
-        if raw_payload is None:
-            raw_payload = getattr(point, "payload", None)
         item_id = self._original_id(getattr(point, "id", None), raw_payload)
         payload = self._payload_from_qdrant(raw_payload)
         if self.config.distance == "ip":

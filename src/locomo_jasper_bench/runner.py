@@ -4,8 +4,7 @@ from typing import Any
 
 from loguru import logger
 
-from .clients import OpenAICompatibleChatClient
-from .clients_factory import RuntimeClients, build_clients
+from .clients_factory import RuntimeClients, build_clients, build_judge_client
 from .config import BenchmarkConfig
 from .judging import (
     failed_judge_payload,
@@ -79,11 +78,9 @@ def judge_existing_run(config: BenchmarkConfig) -> dict[str, Any]:
     saved_config = read_json_or_default(config.run_dir / "config.json", config.to_jsonable())
     system_metadata = read_json_or_default(config.run_dir / "system.json", {})
     sample_setup_metrics = read_sample_setup_report(config.run_dir)
-    judge_client = OpenAICompatibleChatClient(
-        base_url=config.judge_base_url,
-        api_key=config.judge_api_key,
-        model=config.judge_model,
-    )
+    judge_client = build_judge_client(config)
+    if judge_client is None:
+        raise RuntimeError("--judge-only requires --judge vllm or --judge openai.")
 
     judged_now = 0
     for row_number, record in enumerate(records, start=1):
@@ -92,7 +89,7 @@ def judge_existing_run(config: BenchmarkConfig) -> dict[str, Any]:
         try:
             judge_payload = judge_record(config, judge_client, record)
         except Exception as exc:
-            record["judge"] = failed_judge_payload(exc)
+            record["judge"] = failed_judge_payload(exc, config)
             write_deferred_judging_outputs(
                 config,
                 predictions_path,

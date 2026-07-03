@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,9 +16,11 @@ DEFAULT_LLAMA_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 DEFAULT_MISTRAL_MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
 DEFAULT_QWEN_MODEL = "Qwen/Qwen2.5-7B-Instruct"
 DEFAULT_MODEL = DEFAULT_LLAMA_MODEL
+DEFAULT_JUDGE_PROVIDER = "vllm"
 DEFAULT_JUDGE_MODEL = "Gemma-2-9B-Instruct"
 DEFAULT_JUDGE_BASE_URL = "http://localhost:8000/v1"
 DEFAULT_JUDGE_API_KEY = "token-abc123"
+DEFAULT_OPENAI_JUDGE_MODEL = "gpt-5.5"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 
 ANSWER_MODEL_DEFAULTS = {
@@ -47,6 +50,7 @@ ANSWER_MODEL_NAME_ALIASES = {
 
 DistanceMetric = Literal["ip", "l2"]
 AnswerBackend = Literal["vllm-kv", "vllm-prefix"]
+JudgeProvider = Literal["vllm", "openai", "none"]
 VectorBackend = Literal["jasper", "qdrant"]
 
 
@@ -89,6 +93,14 @@ def default_embedding_cache_dir() -> Path:
     return runtime_default_embedding_cache_dir()
 
 
+def _env_or_default(name: str, default: str) -> str:
+    return os.environ.get(name) or default
+
+
+def _arg_present(argv: list[str], option: str) -> bool:
+    return option in argv or any(value.startswith(f"{option}=") for value in argv)
+
+
 @dataclass(slots=True)
 class BenchmarkConfig:
     dataset_path: Path = Path("data/locomo10.json")
@@ -98,9 +110,10 @@ class BenchmarkConfig:
     model: str = DEFAULT_MODEL
     answer_backend: AnswerBackend = "vllm-kv"
 
+    judge_provider: JudgeProvider = DEFAULT_JUDGE_PROVIDER
     judge_model: str = DEFAULT_JUDGE_MODEL
-    judge_base_url: str = DEFAULT_JUDGE_BASE_URL
-    judge_api_key: str = DEFAULT_JUDGE_API_KEY
+    judge_base_url: str | None = DEFAULT_JUDGE_BASE_URL
+    judge_api_key: str | None = DEFAULT_JUDGE_API_KEY
 
     embedding_model: str = DEFAULT_EMBEDDING_MODEL
     embedding_base_url: str | None = None
@@ -152,6 +165,7 @@ class BenchmarkConfig:
 
 
 def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(
         prog="locomo-jasper-bench",
         description="Run LoCoMo KV-cache benchmarks with Mem0 retrieval backed by Jasper or Qdrant.",
@@ -178,9 +192,16 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
         help="Use in-process vLLM KV injection or the same-token prefix prompt baseline.",
     )
 
-    parser.add_argument("--judge-model", default=os.environ.get("JUDGE_MODEL", DEFAULT_JUDGE_MODEL))
-    parser.add_argument("--judge-base-url", default=os.environ.get("JUDGE_BASE_URL", DEFAULT_JUDGE_BASE_URL))
-    parser.add_argument("--judge-api-key", default=os.environ.get("JUDGE_API_KEY", DEFAULT_JUDGE_API_KEY))
+    parser.add_argument(
+        "--judge",
+        dest="judge_provider",
+        choices=["vllm", "openai", "none"],
+        default=None,
+        help="Judge provider to use: local OpenAI-compatible vLLM, OpenAI Responses API, or none.",
+    )
+    parser.add_argument("--judge-model")
+    parser.add_argument("--judge-base-url")
+    parser.add_argument("--judge-api-key")
 
     parser.add_argument("--embedding-model", default=os.environ.get("OPENAI_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL))
     parser.add_argument("--embedding-base-url", default=os.environ.get("OPENAI_BASE_URL"))
@@ -242,10 +263,61 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
         help="Judge missing results in an existing run directory and regenerate summary.json.",
     )
 
-    ns = parser.parse_args(argv)
+    ns = parser.parse_args(raw_argv)
     if ns.answer_backend not in {"vllm-kv", "vllm-prefix"}:
         parser.error("--answer-backend must be vllm-kv or vllm-prefix.")
     if ns.context_window < 0:
         parser.error("--context-window must be >= 0.")
+    if ns.skip_judge and ns.judge_provider is not None:
+        parser.error("--skip-judge cannot be combined with --judge.")
+    try:
+        ns.judge_provider = _resolve_judge_provider(ns.judge_provider, skip_judge=ns.skip_judge)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if ns.judge_provider == "none":
+        ns.skip_judge = True
+    if ns.judge_only and ns.judge_provider == "none":
+        parser.error("--judge-only requires --judge vllm or --judge openai.")
+    _resolve_judge_connection(ns, explicit_argv=raw_argv)
     ns.model = resolve_answer_model(ns.model)
     return BenchmarkConfig(**vars(ns))
+
+
+def _resolve_judge_provider(value: str | None, *, skip_judge: bool) -> JudgeProvider:
+    if skip_judge:
+        return "none"
+    resolved = value or os.environ.get("JUDGE_PROVIDER") or DEFAULT_JUDGE_PROVIDER
+    if resolved not in {"vllm", "openai", "none"}:
+        raise ValueError(f"JUDGE_PROVIDER must be vllm, openai, or none, got {resolved!r}.")
+    return resolved  # type: ignore[return-value]
+
+
+def _resolve_judge_connection(ns: argparse.Namespace, *, explicit_argv: list[str]) -> None:
+    explicit_model = _arg_present(explicit_argv, "--judge-model")
+    explicit_base_url = _arg_present(explicit_argv, "--judge-base-url")
+    explicit_api_key = _arg_present(explicit_argv, "--judge-api-key")
+
+    if ns.judge_provider == "openai":
+        ns.judge_model = ns.judge_model if explicit_model else _env_or_default(
+            "OPENAI_JUDGE_MODEL",
+            DEFAULT_OPENAI_JUDGE_MODEL,
+        )
+        ns.judge_base_url = ns.judge_base_url if explicit_base_url else os.environ.get("OPENAI_BASE_URL")
+        ns.judge_api_key = ns.judge_api_key if explicit_api_key else os.environ.get("OPENAI_API_KEY")
+        return
+
+    if ns.judge_provider == "vllm":
+        ns.judge_model = ns.judge_model if explicit_model else _env_or_default("JUDGE_MODEL", DEFAULT_JUDGE_MODEL)
+        ns.judge_base_url = ns.judge_base_url if explicit_base_url else _env_or_default(
+            "JUDGE_BASE_URL",
+            DEFAULT_JUDGE_BASE_URL,
+        )
+        ns.judge_api_key = ns.judge_api_key if explicit_api_key else _env_or_default(
+            "JUDGE_API_KEY",
+            DEFAULT_JUDGE_API_KEY,
+        )
+        return
+
+    ns.judge_model = ns.judge_model or ""
+    ns.judge_base_url = ns.judge_base_url
+    ns.judge_api_key = ns.judge_api_key

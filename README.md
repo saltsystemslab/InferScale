@@ -18,9 +18,11 @@ Edit `.env` for your session. The common values are:
 - `MODEL_QWEN=Qwen/Qwen2.5-7B-Instruct`
 - `LOCOMO_VLLM_MODEL=llama`
 - `BENCHMARK_RUNTIME_ROOT=/workspace`
-- `JUDGE_MODEL=Gemma-2-9B-Instruct`
+- `JUDGE_PROVIDER=vllm`
+- `JUDGE_MODEL=google/gemma-2-9b-it`
+- `OPENAI_JUDGE_MODEL=gpt-5.5`
 - `CUDA_MODULE=` for Runpod containers without environment modules
-- `OPENAI_API_KEY=...`
+- `OPENAI_API_KEY=...` for embeddings and OpenAI judging
 - `HF_TOKEN=...` if the model is gated
 
 By default, runtime storage is rooted at `${BENCHMARK_RUNTIME_ROOT:-/workspace}` on Runpod:
@@ -124,23 +126,38 @@ TTFT metrics come from vLLM request timing on the real answer `generate()` call.
 
 ## 4. Judge Accuracy
 
-If the judge will run on the same GPU, start it after both answer runs finish:
+The CLI selects a judge with `--judge vllm|openai|none`.
+`--skip-judge` is still accepted as an alias for `--judge none`.
+
+For local Gemma/vLLM judging on the same GPU, start the judge after answer runs finish:
 
 ```bash
 source .venv/bin/activate
 bash scripts/serve_vllm.sh
 ```
 
-Then judge each run from another shell (or use tmux: `tmux new -s locomo` and create a new window with `Ctrl-b c`):
+Then judge each run from another shell:
 
 ```bash
 locomo-jasper-bench \
   --results-dir "${BENCHMARK_RESULTS_ROOT}" \
   --run-id "${RUN_ID}" \
   --judge-only \
+  --judge vllm \
   --judge-base-url "${JUDGE_BASE_URL}" \
   --judge-api-key "${JUDGE_API_KEY}" \
   --judge-model "${JUDGE_MODEL}"
+```
+
+OpenAI judging uses `OPENAI_API_KEY` and `OPENAI_JUDGE_MODEL`, and it does not require `scripts/serve_vllm.sh`.
+
+```bash
+locomo-jasper-bench \
+  --results-dir "${BENCHMARK_RESULTS_ROOT}" \
+  --run-id "${RUN_ID}" \
+  --judge-only \
+  --judge openai \
+  --judge-model "${OPENAI_JUDGE_MODEL:-gpt-5.5}"
 ```
 
 `--judge-only` fills only rows that are still unjudged, preserves already judged rows, and regenerates `summary.json`.

@@ -57,7 +57,7 @@ class QuestionEvaluator:
         retrieval_metrics: RetrievalMetrics | None = None,
     ) -> dict[str, Any]:
         if self.config.skip_judge:
-            judge_payload = skipped_judge_payload()
+            judge_payload = skipped_judge_payload(self.config)
         else:
             if self.clients.judge_client is None:
                 raise RuntimeError("Judge client is not configured. Use --skip-judge to write unjudged predictions.")

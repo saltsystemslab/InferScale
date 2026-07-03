@@ -59,8 +59,106 @@ class OpenAICompatibleChatClient:
         except Exception as exc:
             _raise_context_limit_error(exc)
             raise
-        content = response.choices[0].message.content or ""
+        content = _normalize_message_content(response.choices[0].message.content)
         return ChatResult(content=content)
+
+
+class OpenAIResponsesJudgeClient:
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model: str,
+        base_url: str | None = None,
+        client: Any | None = None,
+    ) -> None:
+        if client is None:
+            try:
+                from openai import OpenAI
+            except ImportError as exc:
+                raise RuntimeError("Install openai>=2.44,<3 to use --judge openai.") from exc
+
+            kwargs: dict[str, Any] = {"api_key": api_key}
+            if base_url:
+                kwargs["base_url"] = base_url
+            client = OpenAI(**kwargs)
+
+        self._client = client
+        self._model = model
+
+    def chat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        max_tokens: int,
+        temperature: float,
+        top_p: float,
+    ) -> ChatResult:
+        del temperature, top_p
+        response = self._client.responses.create(
+            model=self._model,
+            input=messages,
+            max_output_tokens=max(32, max_tokens),
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": "judge_verdict",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "correct": {"type": "boolean"},
+                        },
+                        "required": ["correct"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+        )
+        return ChatResult(content=_responses_output_text(response))
+
+
+def _normalize_message_content(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            text = _content_part_text(item)
+            if text:
+                parts.append(text)
+        return "".join(parts)
+    return str(content)
+
+
+def _content_part_text(item: Any) -> str:
+    if isinstance(item, str):
+        return item
+    if isinstance(item, dict):
+        value = item.get("text", item.get("content"))
+        return _normalize_message_content(value)
+    value = getattr(item, "text", None)
+    if value is None:
+        value = getattr(item, "content", None)
+    return _normalize_message_content(value)
+
+
+def _responses_output_text(response: Any) -> str:
+    output_text = getattr(response, "output_text", None)
+    if isinstance(output_text, str):
+        return output_text
+    output = getattr(response, "output", None)
+    if isinstance(output, list):
+        parts: list[str] = []
+        for item in output:
+            content = getattr(item, "content", None)
+            if isinstance(item, dict):
+                content = item.get("content")
+            parts.append(_normalize_message_content(content))
+        return "".join(parts)
+    return ""
 
 
 def _raise_context_limit_error(exc: Exception) -> None:

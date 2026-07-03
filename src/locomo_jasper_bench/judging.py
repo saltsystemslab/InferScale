@@ -8,16 +8,23 @@ from .data import QuestionAnswer
 from .prompts import build_judge_messages, parse_judge_response
 
 
-def skipped_judge_payload() -> dict[str, Any]:
-    return {"correct": None, "reason": "skipped", "raw": "", "status": "skipped"}
+def skipped_judge_payload(config: BenchmarkConfig | None = None) -> dict[str, Any]:
+    return {
+        "correct": None,
+        "reason": "skipped",
+        "raw": "",
+        "status": "skipped",
+        **_judge_metadata(config),
+    }
 
 
-def failed_judge_payload(exc: Exception) -> dict[str, Any]:
+def failed_judge_payload(exc: Exception, config: BenchmarkConfig | None = None) -> dict[str, Any]:
     return {
         "correct": None,
         "reason": f"{type(exc).__name__}: {exc}",
         "raw": "",
         "status": "error",
+        **_judge_metadata(config),
     }
 
 
@@ -27,7 +34,11 @@ def judge_qa(
     qa: QuestionAnswer,
     predicted_answer: str,
 ) -> dict[str, Any]:
-    judge_messages = build_judge_messages(qa, predicted_answer)
+    judge_messages = build_judge_messages(
+        qa,
+        predicted_answer,
+        structured=config.judge_provider == "openai",
+    )
     judge = judge_client.chat(
         judge_messages,
         max_tokens=config.max_judge_tokens,
@@ -35,7 +46,13 @@ def judge_qa(
         top_p=1.0,
     )
     correct, reason = parse_judge_response(judge.content)
-    return {"correct": correct, "reason": reason, "raw": judge.content}
+    return {
+        "correct": correct,
+        "reason": reason,
+        "raw": judge.content,
+        "status": "ok" if isinstance(correct, bool) else "unparsed",
+        **_judge_metadata(config),
+    }
 
 
 def judge_record(config: BenchmarkConfig, judge_client: ChatClient, record: dict[str, Any]) -> dict[str, Any]:
@@ -75,3 +92,12 @@ def format_accuracy(value: Any) -> str:
     if value is None:
         return "n/a"
     return f"{float(value):.4f}"
+
+
+def _judge_metadata(config: BenchmarkConfig | None) -> dict[str, str]:
+    if config is None:
+        return {}
+    return {
+        "provider": config.judge_provider,
+        "model": config.judge_model,
+    }

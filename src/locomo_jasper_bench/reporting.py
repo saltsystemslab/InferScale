@@ -23,7 +23,7 @@ QUERY_METRICS_COLUMNS = [
     "query_to_answer_ms",
     "judge_correct",
     "retrieved_count",
-    "selected_turn_count",
+    "selected_session_count",
 ]
 
 ACCURACY_BIN_COLUMNS = [
@@ -42,6 +42,7 @@ SAMPLE_SETUP_COLUMNS = [
     "mode",
     "sample_id",
     "question_count",
+    "session_count",
     "turn_count",
     "vector_backend",
     "memory_create_time_ms",
@@ -148,7 +149,7 @@ def query_metric_rows(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]
                 judge_correct = 0
 
         retrieved = record.get("retrieved_memories")
-        selected_turn_ids = metrics.get("kv_selected_turn_ids")
+        selected_session_ids = metrics.get("kv_selected_session_ids")
         rows.append(
             {
                 "run_id": record.get("run_id"),
@@ -164,7 +165,7 @@ def query_metric_rows(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]
                 "query_to_answer_ms": _number(metrics.get("query_to_answer_ms")),
                 "judge_correct": judge_correct,
                 "retrieved_count": len(retrieved) if isinstance(retrieved, list) else None,
-                "selected_turn_count": len(selected_turn_ids) if isinstance(selected_turn_ids, list) else None,
+                "selected_session_count": len(selected_session_ids) if isinstance(selected_session_ids, list) else None,
             }
         )
     return rows

@@ -4,8 +4,10 @@ from .data import QuestionAnswer, is_adversarial_category
 
 
 RETRIEVAL_ANSWER_SYSTEM_PROMPT = (
-    "You answer questions about a long conversation. Use the retrieved memory context when it is relevant. "
-    "Be concise and do not invent details that are not supported by the context. "
+    "You are a helpful assistant that remembers details from past conversations. "
+    "Answer questions based on the conversation history provided. "
+    "If the answer cannot be determined from the conversation, say "
+    "\"I don't have enough information to answer that.\""
 )
 
 JUDGE_SYSTEM_PROMPT = (

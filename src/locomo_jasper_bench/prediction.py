@@ -76,10 +76,11 @@ def run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> 
             continue
 
         logger.info(
-            "KV sample {}/{} sample_id={} turns={} questions={} preparation starting",
+            "KV sample {}/{} sample_id={} sessions={} turns={} questions={} preparation starting",
             sample_index,
             len(samples),
             sample.sample_id,
+            len(sample.sessions),
             len(sample.turns),
             len(sample_questions),
         )
@@ -196,6 +197,7 @@ def _base_sample_setup_row(
         "mode": result_mode(config),
         "sample_id": sample.sample_id,
         "question_count": question_count,
+        "session_count": len(sample.sessions),
         "turn_count": len(sample.turns),
         "vector_backend": config.vector_backend,
         "memory_create_time_ms": None,

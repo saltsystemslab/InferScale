@@ -17,7 +17,7 @@ DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 DistanceMetric = Literal["ip", "l2"]
 AnswerBackend = Literal["vllm-kv", "vllm-prefix"]
 VectorBackend = Literal["jasper", "qdrant"]
-MemoryOrder = Literal["retrieval", "turn-index", "rank-zigzag", "retrieval-reversed"]
+MemoryOrder = Literal["retrieval", "session-index", "turn-index", "rank-zigzag", "retrieval-reversed"]
 
 
 def default_run_id() -> str:
@@ -50,7 +50,7 @@ class BenchmarkConfig:
 
     model: str = DEFAULT_MODEL
     answer_backend: AnswerBackend = "vllm-kv"
-    memory_order: MemoryOrder = "retrieval"
+    memory_order: MemoryOrder = "session-index"
 
     judge_model: str = DEFAULT_JUDGE_MODEL
     judge_base_url: str = DEFAULT_JUDGE_BASE_URL
@@ -64,7 +64,7 @@ class BenchmarkConfig:
 
     vector_backend: VectorBackend = "jasper"
     vector_distance: DistanceMetric = "ip"
-    top_k: int = 50
+    top_k: int = 10
     jasper_n_neighbors: int = 64
     jasper_alpha: float = 1.0
     jasper_workspace_budget: str = "10GB"
@@ -76,7 +76,7 @@ class BenchmarkConfig:
     max_judge_tokens: int = 4
 
     kv_connector_module: str = "locomo_jasper_bench.kv.gpu_connector"
-    context_window: int = 3
+    context_window: int = 0
     kv_gpu_memory_utilization: float = 0.52
     kv_max_model_len: int = 32768
     kv_max_position: int = 32768
@@ -126,17 +126,18 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     )
     parser.add_argument(
         "--memory-order",
-        choices=["retrieval", "turn-index", "rank-zigzag", "retrieval-reversed"],
+        choices=["retrieval", "session-index", "turn-index", "rank-zigzag", "retrieval-reversed"],
         default=None,
         help=(
             "Memory injection order for vllm-kv and vllm-prefix: retrieval rank, chronological "
-            "LoCoMo turn order, alternating retrieval-rank ends, or reversed retrieval rank."
+            "LoCoMo session order, alternating retrieval-rank ends, or reversed retrieval rank. "
+            "turn-index is accepted as a legacy alias for session-index."
         ),
     )
     parser.add_argument(
         "--prefix-memory-order",
         dest="legacy_prefix_memory_order",
-        choices=["retrieval", "turn-index", "rank-zigzag", "retrieval-reversed"],
+        choices=["retrieval", "session-index", "turn-index", "rank-zigzag", "retrieval-reversed"],
         default=None,
         help="Deprecated alias for --memory-order.",
     )
@@ -175,7 +176,9 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
         default=int(os.environ.get("LOCOMO_KV_CONTEXT_WINDOW", defaults.context_window)),
         help=(
             "Number of previous LoCoMo sessions to include as prefix context when "
-            "pre-RoPE encoding each selected KV memory turn. 0 encodes each turn in isolation."
+            "pre-RoPE encoding each selected KV memory session. The context is discarded "
+            "after the HF forward pass, leaving only the selected session KV. 0 encodes each "
+            "session in isolation."
         ),
     )
     parser.add_argument(
@@ -203,7 +206,7 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     parser.add_argument(
         "--preembed-only",
         action="store_true",
-        help="Precompute LoCoMo turn and question embeddings into the cache, then exit.",
+        help="Precompute LoCoMo session and question embeddings into the cache, then exit.",
     )
     parser.add_argument(
         "--skip-judge",
@@ -226,11 +229,13 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
         or ns.legacy_prefix_memory_order
         or os.environ.get("LOCOMO_MEMORY_ORDER")
         or os.environ.get("LOCOMO_PREFIX_MEMORY_ORDER")
-        or "retrieval"
+        or defaults.memory_order
     )
     del ns.legacy_prefix_memory_order
-    if ns.memory_order not in {"retrieval", "turn-index", "rank-zigzag", "retrieval-reversed"}:
-        parser.error("--memory-order must be retrieval, turn-index, rank-zigzag, or retrieval-reversed.")
+    if ns.memory_order not in {"retrieval", "session-index", "turn-index", "rank-zigzag", "retrieval-reversed"}:
+        parser.error(
+            "--memory-order must be retrieval, session-index, turn-index, rank-zigzag, or retrieval-reversed."
+        )
     if ns.context_window < 0:
         parser.error("--context-window must be >= 0.")
     return BenchmarkConfig(**vars(ns))

@@ -83,8 +83,8 @@ class VLLMPrefixPromptAnswerClient:
             "kv_memory_tokens": len(prompt.memory_token_ids),
             "kv_query_tokens": len(prompt.query_token_ids),
             "kv_query_bos_stripped": int(prompt.stripped_query_bos),
-            "kv_retrieval_turn_ids": memory.retrieval_turn_ids,
-            "kv_selected_turn_ids": memory.selected_turn_ids,
+            "kv_retrieval_session_ids": memory.retrieval_session_ids,
+            "kv_selected_session_ids": memory.selected_session_ids,
             "kv_memory_order": memory.memory_order,
         }
 

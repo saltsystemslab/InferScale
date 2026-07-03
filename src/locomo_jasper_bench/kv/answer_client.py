@@ -59,8 +59,9 @@ class VLLMChunkedKVAnswerClient:
         else:
             self._sample_caches.release(sample_key)
         logger.info(
-            "Precomputing GPU-resident KV cache sample_id=%s turns=%d context_window=%d",
+            "Precomputing GPU-resident KV cache sample_id=%s sessions=%d turns=%d context_window=%d",
             sample.sample_id,
+            len(sample.sessions),
             len(sample.turns),
             self.config.context_window,
         )
@@ -225,8 +226,8 @@ class VLLMChunkedKVAnswerClient:
                     "answer_generate_time_ms": generate_ms,
                     "answer_total_time_ms": total_ms,
                     "kv_store_gpu_mb": stats.get("total_gpu_mb", 0.0),
-                    "kv_retrieval_turn_ids": composed.retrieval_turn_ids,
-                    "kv_selected_turn_ids": composed.selected_turn_ids,
+                    "kv_retrieval_session_ids": composed.retrieval_session_ids,
+                    "kv_selected_session_ids": composed.selected_session_ids,
                     "kv_memory_order": composed.memory_order,
                 }
             )

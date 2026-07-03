@@ -16,7 +16,7 @@ class EncodedChunk:
 
 @dataclass(slots=True, frozen=True)
 class ContextEncodingPlan:
-    turn_id: str
+    chunk_id: str
     target_text: str
     target_token_ids: list[int]
     context_token_ids: list[int]
@@ -33,8 +33,8 @@ class ComposedMemory:
     token_ids: list[int]
     num_tokens: int
     compose_time_ms: float
-    retrieval_turn_ids: list[str]
-    selected_turn_ids: list[str]
+    retrieval_session_ids: list[str]
+    selected_session_ids: list[str]
     memory_order: str
     context_window: int
     context_prefix_tokens_total: int

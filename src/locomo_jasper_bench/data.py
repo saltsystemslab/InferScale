@@ -28,6 +28,19 @@ class Turn:
 
 
 @dataclass(slots=True)
+class SessionChunk:
+    sample_id: str
+    session_id: str
+    session_index: int
+    timestamp: str | None
+    turns: list[Turn]
+
+    @property
+    def id(self) -> str:
+        return f"{self.sample_id}:{self.session_id}"
+
+
+@dataclass(slots=True)
 class QuestionAnswer:
     sample_id: str
     question_id: str
@@ -46,6 +59,7 @@ def is_adversarial_category(category: Any) -> bool:
 @dataclass(slots=True)
 class ConversationSample:
     sample_id: str
+    sessions: list[SessionChunk]
     turns: list[Turn]
     qa: list[QuestionAnswer]
     raw: dict[str, Any]
@@ -73,9 +87,31 @@ def load_locomo(path: str | Path, max_samples: int | None = None) -> list[Conver
             or f"sample-{index}"
         )
         turns = list(_extract_turns(sample_id, record))
+        sessions = build_session_chunks(sample_id, turns)
         qa = list(_extract_qa(sample_id, record))
-        samples.append(ConversationSample(sample_id=sample_id, turns=turns, qa=qa, raw=record))
+        samples.append(ConversationSample(sample_id=sample_id, sessions=sessions, turns=turns, qa=qa, raw=record))
     return samples
+
+
+def build_session_chunks(sample_id: str, turns: list[Turn]) -> list[SessionChunk]:
+    grouped: dict[str, list[Turn]] = {}
+    for turn in turns:
+        grouped.setdefault(turn.session_id, []).append(turn)
+
+    sessions: list[SessionChunk] = []
+    for session_id, session_turns in grouped.items():
+        ordered_turns = sorted(session_turns, key=lambda turn: turn.turn_index)
+        first = ordered_turns[0]
+        sessions.append(
+            SessionChunk(
+                sample_id=sample_id,
+                session_id=session_id,
+                session_index=first.session_index,
+                timestamp=first.timestamp,
+                turns=ordered_turns,
+            )
+        )
+    return sorted(sessions, key=lambda session: session.session_index)
 
 
 def format_turn_for_memory(turn: Turn) -> str:
@@ -88,6 +124,24 @@ def format_turn_for_memory(turn: Turn) -> str:
     if turn.image_caption:
         parts.append(f"Image caption: {turn.image_caption.strip()}")
     return " ".join(part for part in parts if part)
+
+
+def format_session_for_memory(session: SessionChunk) -> str:
+    lines = []
+    if session.timestamp:
+        lines.append(f"[{session.timestamp}]")
+    for turn in session.turns:
+        parts = []
+        if turn.speaker:
+            parts.append(f"{turn.speaker}:")
+        if turn.text:
+            parts.append(turn.text.strip())
+        if turn.image_caption:
+            parts.append(f"Image caption: {turn.image_caption.strip()}")
+        line = " ".join(part for part in parts if part).strip()
+        if line:
+            lines.append(line)
+    return "\n".join(lines)
 
 
 def _extract_turns(sample_id: str, record: dict[str, Any]) -> Iterable[Turn]:
@@ -179,13 +233,12 @@ def _extract_qa(sample_id: str, record: dict[str, Any]) -> Iterable[QuestionAnsw
         if not isinstance(item, dict):
             continue
         question = str(item.get("question") or item.get("query") or "").strip()
-        # Category-5 (adversarial) items carry the trap answer in adversarial_answer;
-        # it is stored for visibility but judged with the abstention prompt, never as
-        # a correctness reference.
+        # Category-5 (adversarial) items carry the trap answer in adversarial_answer.
+        # Keep that trap in raw, but do not expose it as the gold answer.
         answer = next(
             (
                 value
-                for key in ("answer", "gold_answer", "adversarial_answer")
+                for key in ("answer", "gold_answer")
                 if (value := item.get(key)) is not None
             ),
             "",

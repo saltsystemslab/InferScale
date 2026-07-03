@@ -4,17 +4,16 @@ import logging
 import time
 from typing import Any
 
-from ..data import ConversationSample, Turn
+from ..data import ConversationSample, SessionChunk
 from ..vector_types import SearchHit
-from .context import build_turn_context_encoding_plan
+from .context import build_session_context_encoding_plan
 from .prompting import (
-    MEMORY_SYSTEM_TEXT,
     MemoryOrder,
     memory_frame_prefix_token_ids,
-    ordered_memory_turn_ids,
+    memory_frame_suffix_token_ids,
+    ordered_memory_session_ids,
 )
 from .submodule import require_ai_memory_submodule
-from .tokenization import encode_text_no_special
 from .types import ComposedMemory, EncodedChunk
 
 logger = logging.getLogger(__name__)
@@ -109,21 +108,30 @@ class ChunkedRopeSampleComposer:
 
         tokenizer, _ = self._require_encode_ready()
         prefix_token_ids = memory_frame_prefix_token_ids(tokenizer)
-        prefix_token_ids.extend(encode_text_no_special(tokenizer, MEMORY_SYSTEM_TEXT))
         self.prefix_chunk: EncodedChunk | None = self._encode_token_ids_chunk("__prefix__", prefix_token_ids)
+        suffix_token_ids = memory_frame_suffix_token_ids(tokenizer)
+        self.suffix_chunk: EncodedChunk | None = (
+            self._encode_token_ids_chunk("__suffix__", suffix_token_ids)
+            if suffix_token_ids
+            else None
+        )
 
-    def encode_sample(self, sample: ConversationSample, turn_ids: set[str] | None = None) -> None:
-        turns = sample.turns
-        if turn_ids is not None:
-            turns = [turn for turn in sample.turns if turn.id in turn_ids]
+    def encode_sample(self, sample: ConversationSample, session_ids: set[str] | None = None) -> None:
+        sessions = sample.sessions
+        if session_ids is not None:
+            sessions = [
+                session
+                for session in sample.sessions
+                if session.id in session_ids or session.session_id in session_ids
+            ]
         logger.info(
-            "Pre-RoPE encoding %d memory chunks for sample_id=%s context_window=%d",
-            len(turns),
+            "Pre-RoPE encoding %d session memory chunks for sample_id=%s context_window=%d",
+            len(sessions),
             sample.sample_id,
             self.context_window,
         )
-        for turn in turns:
-            self.chunks[turn.id] = self._encode_turn_chunk(sample, turn)
+        for session in sessions:
+            self.chunks[session.id] = self._encode_session_chunk(sample, session)
         logger.info("Pre-RoPE encoded %d chunks for sample_id=%s", len(self.chunks), sample.sample_id)
 
     def compose(
@@ -138,14 +146,25 @@ class ChunkedRopeSampleComposer:
             raise RuntimeError("Pre-RoPE encoder was closed; cannot compose memory.")
         if self.prefix_chunk is None:
             raise RuntimeError("Composer was closed; cannot compose memory.")
-        retrieval_turn_ids, turn_ids = ordered_memory_turn_ids(sample, hits, memory_order=memory_order)
+        retrieval_session_ids, session_ids = ordered_memory_session_ids(sample, hits, memory_order=memory_order)
 
         selected = []
         missing = []
-        for turn_id in turn_ids:
-            chunk = self.chunks.get(turn_id)
+        for session_id in session_ids:
+            chunk = self.chunks.get(session_id)
             if chunk is None:
-                missing.append(turn_id)
+                session = next(
+                    (
+                        candidate
+                        for candidate in sample.sessions
+                        if candidate.session_id == session_id or candidate.id == session_id
+                    ),
+                    None,
+                )
+                if session is not None:
+                    chunk = self.chunks.get(session.id)
+            if chunk is None:
+                missing.append(session_id)
             else:
                 selected.append(chunk)
         if missing:
@@ -154,6 +173,8 @@ class ChunkedRopeSampleComposer:
             )
 
         chunks = [self.prefix_chunk, *selected]
+        if self.suffix_chunk is not None:
+            chunks.append(self.suffix_chunk)
         kv_by_layer = _compose_encoded_chunks(
             chunks,
             device=self.device,
@@ -170,8 +191,8 @@ class ChunkedRopeSampleComposer:
             token_ids=token_ids,
             num_tokens=len(token_ids),
             compose_time_ms=(time.perf_counter() - started) * 1000,
-            retrieval_turn_ids=retrieval_turn_ids,
-            selected_turn_ids=turn_ids,
+            retrieval_session_ids=retrieval_session_ids,
+            selected_session_ids=session_ids,
             memory_order=memory_order,
             context_window=self.context_window,
             context_prefix_tokens_total=sum(selected_context_tokens),
@@ -183,6 +204,8 @@ class ChunkedRopeSampleComposer:
         chunks = list(self.chunks.values())
         if self.prefix_chunk is not None:
             chunks.insert(0, self.prefix_chunk)
+        if self.suffix_chunk is not None:
+            chunks.append(self.suffix_chunk)
 
         total_bytes = 0
         total_tokens = 0
@@ -214,6 +237,7 @@ class ChunkedRopeSampleComposer:
 
         self.chunks.clear()
         self.prefix_chunk = None
+        self.suffix_chunk = None
         gc.collect()
         torch.cuda.empty_cache()
 
@@ -226,12 +250,12 @@ class ChunkedRopeSampleComposer:
             )
         return tokenizer, hf_model
 
-    def _encode_turn_chunk(self, sample: ConversationSample, turn: Turn) -> EncodedChunk:
+    def _encode_session_chunk(self, sample: ConversationSample, session: SessionChunk) -> EncodedChunk:
         tokenizer, hf_model = self._require_encode_ready()
-        plan = build_turn_context_encoding_plan(
+        plan = build_session_context_encoding_plan(
             tokenizer,
             sample,
-            turn,
+            session,
             context_window=self.context_window,
             max_input_tokens=self.max_position,
         )

@@ -6,32 +6,28 @@ from typing import Any, Literal
 from ..data import ConversationSample, QuestionAnswer
 from ..prompts import RETRIEVAL_ANSWER_SYSTEM_PROMPT
 from ..vector_types import SearchHit
-from .context import format_memory_turn
+from .context import format_memory_session
 from .tokenization import encode_text_no_special
 
-MEMORY_PREFIX_TEXT = "Retrieved memory context:\n"
-MEMORY_SYSTEM_TEXT = (
-    RETRIEVAL_ANSWER_SYSTEM_PROMPT
-    + " Relevant retrieved memory is available before the current question.\n\n"
-    + MEMORY_PREFIX_TEXT
-)
-MemoryOrder = Literal["retrieval", "turn-index", "rank-zigzag", "retrieval-reversed"]
+MEMORY_CONTEXT_INTRO = "The following is a conversation history between two people:\n\n"
+MEMORY_SYSTEM_TEXT = RETRIEVAL_ANSWER_SYSTEM_PROMPT + "\n\n" + MEMORY_CONTEXT_INTRO
+MemoryOrder = Literal[
+    "retrieval",
+    "session-index",
+    "turn-index",
+    "rank-zigzag",
+    "retrieval-reversed",
+]
 
-# Two system bodies with no shared words, used to locate the chat template's
-# scaffolding empirically: tokens common to both templated conversations are
-# scaffolding, tokens that differ belong to the varying system body.
-_PROBE_SYSTEM_BODY_A = "alpha oak river seven"
-_PROBE_SYSTEM_BODY_B = "zeta glass mountain"
-_PROBE_USER_TEXT = "probe question"
-
-_MEMORY_FRAME_CACHE: dict[int, list[int]] = {}
+_SENTINEL = "QZWXVUTSRPONMLK"
+_MEMORY_FRAME_CACHE: dict[int, tuple[list[int], list[int]]] = {}
 
 
 @dataclass(slots=True, frozen=True)
 class MemoryPromptTokens:
     token_ids: list[int]
-    selected_turn_ids: list[str]
-    retrieval_turn_ids: list[str]
+    selected_session_ids: list[str]
+    retrieval_session_ids: list[str]
     memory_order: str
 
 
@@ -43,80 +39,116 @@ class KvPromptTokens:
     stripped_query_bos: bool
 
 
-def hit_turn_id(hit: SearchHit) -> str | None:
+def hit_session_id(hit: SearchHit) -> str | None:
     metadata = hit.payload.get("metadata")
-    if isinstance(metadata, dict) and metadata.get("turn_id"):
-        return str(metadata["turn_id"])
-    if hit.payload.get("turn_id"):
-        return str(hit.payload["turn_id"])
+    if isinstance(metadata, dict):
+        if metadata.get("session_chunk_id"):
+            return str(metadata["session_chunk_id"])
+        if metadata.get("session_id"):
+            sample_id = metadata.get("sample_id")
+            session_id = str(metadata["session_id"])
+            return f"{sample_id}:{session_id}" if sample_id else session_id
+    if hit.payload.get("session_chunk_id"):
+        return str(hit.payload["session_chunk_id"])
+    if hit.payload.get("session_id"):
+        sample_id = hit.payload.get("sample_id")
+        session_id = str(hit.payload["session_id"])
+        return f"{sample_id}:{session_id}" if sample_id else session_id
     return None
 
 
-def selected_turn_ids(hits: list[SearchHit]) -> list[str]:
+def selected_session_ids(hits: list[SearchHit]) -> list[str]:
     ids: list[str] = []
     seen: set[str] = set()
     for hit in hits:
-        turn_id = hit_turn_id(hit)
-        if turn_id and turn_id not in seen:
-            ids.append(turn_id)
-            seen.add(turn_id)
+        session_id = hit_session_id(hit)
+        if session_id and session_id not in seen:
+            ids.append(session_id)
+            seen.add(session_id)
     return ids
 
 
-def ordered_memory_turn_ids(
+def ordered_memory_session_ids(
     sample: ConversationSample,
     hits: list[SearchHit],
     *,
-    memory_order: MemoryOrder = "retrieval",
+    memory_order: MemoryOrder = "session-index",
 ) -> tuple[list[str], list[str]]:
-    retrieval_turn_ids = selected_turn_ids(hits)
-    if not retrieval_turn_ids:
-        raise RuntimeError("Cannot compose memory because retrieval returned no turn ids.")
+    hit_session_ids = selected_session_ids(hits)
+    if not hit_session_ids:
+        raise RuntimeError("Cannot compose memory because retrieval returned no session ids.")
 
-    turns_by_id = {turn.id: turn for turn in sample.turns}
-    missing = [turn_id for turn_id in retrieval_turn_ids if turn_id not in turns_by_id]
+    sessions_by_id = {session.id: session for session in sample.sessions}
+    # Older payloads may carry only the raw LoCoMo session_id. Accept them
+    # within the current sample so stale vector stores fail less opaquely.
+    sessions_by_id.update({session.session_id: session for session in sample.sessions})
+    missing = [session_id for session_id in hit_session_ids if session_id not in sessions_by_id]
     if missing:
-        raise RuntimeError("Retrieved memory chunks were not found in the sample: " + ", ".join(missing[:5]))
+        raise RuntimeError("Retrieved memory sessions were not found in the sample: " + ", ".join(missing[:5]))
+
+    retrieval_session_ids: list[str] = []
+    seen: set[str] = set()
+    for session_id in hit_session_ids:
+        canonical_id = sessions_by_id[session_id].id
+        if canonical_id not in seen:
+            retrieval_session_ids.append(canonical_id)
+            seen.add(canonical_id)
 
     if memory_order == "retrieval":
-        return retrieval_turn_ids, retrieval_turn_ids
-    if memory_order == "turn-index":
-        turn_positions = {turn.id: index for index, turn in enumerate(sample.turns)}
-        return retrieval_turn_ids, sorted(retrieval_turn_ids, key=lambda turn_id: turn_positions[turn_id])
+        return retrieval_session_ids, retrieval_session_ids
+    if memory_order in {"session-index", "turn-index"}:
+        session_positions = {key: session.session_index for key, session in sessions_by_id.items()}
+        return retrieval_session_ids, sorted(retrieval_session_ids, key=lambda session_id: session_positions[session_id])
     if memory_order == "rank-zigzag":
-        return retrieval_turn_ids, rank_zigzag_turn_ids(retrieval_turn_ids)
+        return retrieval_session_ids, rank_zigzag_session_ids(retrieval_session_ids)
     if memory_order == "retrieval-reversed":
-        return retrieval_turn_ids, list(reversed(retrieval_turn_ids))
+        return retrieval_session_ids, list(reversed(retrieval_session_ids))
     raise ValueError(f"Unsupported memory order: {memory_order!r}")
 
 
-def rank_zigzag_turn_ids(turn_ids: list[str]) -> list[str]:
-    front = turn_ids[1::2]
-    back = list(reversed(turn_ids[::2]))
+def rank_zigzag_session_ids(session_ids: list[str]) -> list[str]:
+    front = session_ids[1::2]
+    back = list(reversed(session_ids[::2]))
     return front + back
 
 
-def memory_frame_prefix_token_ids(tokenizer: Any) -> list[int]:
-    """Chat-template tokens that precede the system message content (BOS, headers).
-
-    The memory block is injected at positions [0, N), so it must carry the
-    scaffolding that normally opens a prompt. Derived empirically as the
-    longest common prefix of two templated conversations that differ only in
-    the system body; assumes the template renders the system message first.
-    Without a chat template, falls back to a bare BOS.
-    """
+def memory_frame_token_ids(tokenizer: Any) -> tuple[list[int], list[int]]:
+    """Return system-role opening and closing tokens around memory content."""
     cache_key = id(tokenizer)
     cached = _MEMORY_FRAME_CACHE.get(cache_key)
     if cached is None:
         if _chat_template(tokenizer) is None:
+            header = []
             bos_token_id = getattr(tokenizer, "bos_token_id", None)
-            cached = [bos_token_id] if bos_token_id is not None else []
+            if bos_token_id is not None:
+                header.append(bos_token_id)
+            header.extend(encode_text_no_special(tokenizer, MEMORY_SYSTEM_TEXT))
+            footer: list[int] = []
         else:
-            tokens_a = _templated_tokens(tokenizer, _PROBE_SYSTEM_BODY_A, _PROBE_USER_TEXT)
-            tokens_b = _templated_tokens(tokenizer, _PROBE_SYSTEM_BODY_B, _PROBE_USER_TEXT)
-            cached = tokens_a[: _common_prefix_len(tokens_a, tokens_b)]
+            full_ids = _templated_system_tokens(tokenizer, MEMORY_SYSTEM_TEXT)
+            with_sentinel = _templated_system_tokens(tokenizer, MEMORY_SYSTEM_TEXT + _SENTINEL)
+            split_at = _common_prefix_len(full_ids, with_sentinel)
+            header = full_ids[:split_at]
+            footer = full_ids[split_at:]
+            if not footer:
+                raise RuntimeError(
+                    "Chat-template split produced an empty memory footer; "
+                    "the sentinel likely merged with the memory header text."
+                )
+        cached = (header, footer)
         _MEMORY_FRAME_CACHE[cache_key] = cached
-    return list(cached)
+    header, footer = cached
+    return list(header), list(footer)
+
+
+def memory_frame_prefix_token_ids(tokenizer: Any) -> list[int]:
+    header, _ = memory_frame_token_ids(tokenizer)
+    return header
+
+
+def memory_frame_suffix_token_ids(tokenizer: Any) -> list[int]:
+    _, footer = memory_frame_token_ids(tokenizer)
+    return footer
 
 
 def build_memory_prompt_token_ids(
@@ -124,18 +156,20 @@ def build_memory_prompt_token_ids(
     sample: ConversationSample,
     hits: list[SearchHit],
     *,
-    memory_order: MemoryOrder = "retrieval",
+    memory_order: MemoryOrder = "session-index",
 ) -> MemoryPromptTokens:
-    retrieval_turn_ids, turn_ids = ordered_memory_turn_ids(sample, hits, memory_order=memory_order)
-    turns_by_id = {turn.id: turn for turn in sample.turns}
-    token_ids = memory_frame_prefix_token_ids(tokenizer)
-    token_ids.extend(encode_text_no_special(tokenizer, MEMORY_SYSTEM_TEXT))
-    for turn_id in turn_ids:
-        token_ids.extend(encode_text_no_special(tokenizer, format_memory_turn(turns_by_id[turn_id])))
+    retrieval_session_ids, session_ids = ordered_memory_session_ids(sample, hits, memory_order=memory_order)
+    sessions_by_id = {session.id: session for session in sample.sessions}
+    sessions_by_id.update({session.session_id: session for session in sample.sessions})
+    header, footer = memory_frame_token_ids(tokenizer)
+    token_ids = list(header)
+    for session_id in session_ids:
+        token_ids.extend(encode_text_no_special(tokenizer, format_memory_session(sessions_by_id[session_id])))
+    token_ids.extend(footer)
     return MemoryPromptTokens(
         token_ids=token_ids,
-        selected_turn_ids=turn_ids,
-        retrieval_turn_ids=retrieval_turn_ids,
+        selected_session_ids=session_ids,
+        retrieval_session_ids=retrieval_session_ids,
         memory_order=memory_order,
     )
 
@@ -145,25 +179,14 @@ def build_kv_query_token_ids(
     sample: ConversationSample,
     qa: QuestionAnswer,
 ) -> list[int]:
-    """Tokens that follow the memory block: system-role close, user turn, generation prompt.
-
-    Derived as the longest common suffix of two templated conversations that
-    differ only in the system body, so `memory + query` concatenates to exactly
-    the sequence the chat template produces for (system=memory, user=question).
-    """
     user_text = kv_user_message_text(sample, qa)
-    if _chat_template(tokenizer) is None:
-        return tokenize_messages(tokenizer, [{"role": "user", "content": user_text}])
-    tokens_a = _templated_tokens(tokenizer, _PROBE_SYSTEM_BODY_A, user_text)
-    tokens_b = _templated_tokens(tokenizer, _PROBE_SYSTEM_BODY_B, user_text)
-    return tokens_a[len(tokens_a) - _common_suffix_len(tokens_a, tokens_b):]
+    return tokenize_messages(tokenizer, [{"role": "user", "content": user_text}])
 
 
-def kv_user_message_text(sample: ConversationSample, qa: QuestionAnswer) -> str:
+def kv_user_message_text(_sample: ConversationSample, qa: QuestionAnswer) -> str:
     return (
-        f"Conversation id: {sample.sample_id}\n\n"
-        f"Question: {qa.question}\n\n"
-        "Answer:"
+        "Based on the conversation above, answer concisely.\n"
+        f"Question: {qa.question}"
     )
 
 
@@ -229,15 +252,12 @@ def _chat_template(tokenizer: Any) -> Any:
     return getattr(tokenizer, "chat_template", None)
 
 
-def _templated_tokens(tokenizer: Any, system_body: str, user_text: str) -> list[int]:
+def _templated_system_tokens(tokenizer: Any, system_body: str) -> list[int]:
     return list(
         tokenizer.apply_chat_template(
-            [
-                {"role": "system", "content": system_body},
-                {"role": "user", "content": user_text},
-            ],
+            [{"role": "system", "content": system_body}],
             tokenize=True,
-            add_generation_prompt=True,
+            add_generation_prompt=False,
         )
     )
 
@@ -247,12 +267,4 @@ def _common_prefix_len(a: list[int], b: list[int]) -> int:
     for index in range(limit):
         if a[index] != b[index]:
             return index
-    return limit
-
-
-def _common_suffix_len(a: list[int], b: list[int]) -> int:
-    limit = min(len(a), len(b))
-    for offset in range(1, limit + 1):
-        if a[-offset] != b[-offset]:
-            return offset - 1
     return limit

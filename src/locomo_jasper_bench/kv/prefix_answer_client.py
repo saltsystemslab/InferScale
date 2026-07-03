@@ -27,7 +27,7 @@ class VLLMPrefixPromptAnswerClient:
         self._llm: Any | None = None
         self._tokenizer: Any | None = None
         self._sampling_cls: Any | None = None
-        self._active_sample_id: int | None = None
+        self._active_sample_id: str | None = None
 
     def start_llm(self) -> None:
         if self._llm is not None:
@@ -47,7 +47,7 @@ class VLLMPrefixPromptAnswerClient:
     def prepare_sample(self, sample: ConversationSample) -> None:
         self.close_sample()
         logger.info("Preparing vLLM prefix prompt sample_id=%s", sample.sample_id)
-        self._active_sample_id = id(sample)
+        self._active_sample_id = sample.sample_id
 
     def answer_with_retrieved_memory(
         self,
@@ -63,11 +63,16 @@ class VLLMPrefixPromptAnswerClient:
     ) -> ChatResult:
         if self._llm is None or self._tokenizer is None or self._sampling_cls is None:
             raise RuntimeError("VLLMPrefixPromptAnswerClient.prepare_sample() must be called before answering.")
-        if self._active_sample_id != id(sample):
+        if self._active_sample_id != sample.sample_id:
             raise RuntimeError(f"vllm-prefix sample_id={sample.sample_id} is not the active prepared sample.")
 
         request_started = ttft_started_at if ttft_started_at is not None else time.perf_counter()
-        memory = build_memory_prompt_token_ids(self._tokenizer, sample, hits)
+        memory = build_memory_prompt_token_ids(
+            self._tokenizer,
+            sample,
+            hits,
+            memory_order=self.config.memory_order,
+        )
         prompt = build_kv_equivalence_prompt_token_ids(
             self._tokenizer,
             memory.token_ids,
@@ -78,7 +83,9 @@ class VLLMPrefixPromptAnswerClient:
             "kv_memory_tokens": len(prompt.memory_token_ids),
             "kv_query_tokens": len(prompt.query_token_ids),
             "kv_query_bos_stripped": int(prompt.stripped_query_bos),
-            "kv_selected_turn_ids": memory.selected_turn_ids,
+            "kv_retrieval_session_ids": memory.retrieval_session_ids,
+            "kv_selected_session_ids": memory.selected_session_ids,
+            "kv_memory_order": memory.memory_order,
         }
 
         sampling = self._sampling_cls(

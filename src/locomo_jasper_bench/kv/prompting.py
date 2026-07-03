@@ -1,20 +1,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
-from ..data import ConversationSample, QuestionAnswer, Turn, format_turn_for_memory
+from ..data import ConversationSample, QuestionAnswer, SessionChunk, format_session_for_memory
 from ..prompts import RETRIEVAL_ANSWER_SYSTEM_PROMPT
 from ..vector_types import SearchHit
 from .tokenization import encode_text_no_special
 
 MEMORY_PREFIX_TEXT = "Retrieved memory context:\n"
+MemoryOrder = Literal["retrieval", "session-index", "turn-index", "retrieval-reversed"]
 
 
 @dataclass(slots=True, frozen=True)
 class MemoryPromptTokens:
     token_ids: list[int]
-    selected_turn_ids: list[str]
+    selected_session_ids: list[str]
+    retrieval_session_ids: list[str]
+    memory_order: str
 
 
 @dataclass(slots=True, frozen=True)
@@ -25,48 +28,110 @@ class KvPromptTokens:
     stripped_query_bos: bool
 
 
-def hit_turn_id(hit: SearchHit) -> str | None:
+def hit_session_id(hit: SearchHit) -> str | None:
     metadata = hit.payload.get("metadata")
-    if isinstance(metadata, dict) and metadata.get("turn_id"):
-        return str(metadata["turn_id"])
+    if isinstance(metadata, dict):
+        if metadata.get("session_chunk_id"):
+            return str(metadata["session_chunk_id"])
+        if metadata.get("session_id"):
+            sample_id = metadata.get("sample_id")
+            session_id = str(metadata["session_id"])
+            return f"{sample_id}:{session_id}" if sample_id else session_id
+        if metadata.get("turn_id"):
+            return session_id_from_turn_id(str(metadata["turn_id"]))
+    if hit.payload.get("session_chunk_id"):
+        return str(hit.payload["session_chunk_id"])
+    if hit.payload.get("session_id"):
+        sample_id = hit.payload.get("sample_id")
+        session_id = str(hit.payload["session_id"])
+        return f"{sample_id}:{session_id}" if sample_id else session_id
     if hit.payload.get("turn_id"):
-        return str(hit.payload["turn_id"])
+        return session_id_from_turn_id(str(hit.payload["turn_id"]))
     return None
 
 
-def selected_turn_ids(hits: list[SearchHit]) -> list[str]:
+def session_id_from_turn_id(turn_id: str) -> str | None:
+    base, separator, _turn_index = turn_id.rpartition(":")
+    if not separator or not base:
+        return None
+    return base
+
+
+def selected_session_ids(hits: list[SearchHit]) -> list[str]:
     ids: list[str] = []
     seen: set[str] = set()
     for hit in hits:
-        turn_id = hit_turn_id(hit)
-        if turn_id and turn_id not in seen:
-            ids.append(turn_id)
-            seen.add(turn_id)
+        session_id = hit_session_id(hit)
+        if session_id and session_id not in seen:
+            ids.append(session_id)
+            seen.add(session_id)
     return ids
 
 
-def format_kv_memory_turn(turn: Turn) -> str:
-    return format_turn_for_memory(turn).strip() + "\n"
+def ordered_memory_session_ids(
+    sample: ConversationSample,
+    hits: list[SearchHit],
+    *,
+    memory_order: MemoryOrder = "session-index",
+) -> tuple[list[str], list[str]]:
+    hit_session_ids = selected_session_ids(hits)
+    if not hit_session_ids:
+        raise RuntimeError("Cannot compose memory because retrieval returned no session ids.")
+
+    sessions_by_id = sessions_by_lookup_id(sample)
+    missing = [session_id for session_id in hit_session_ids if session_id not in sessions_by_id]
+    if missing:
+        raise RuntimeError("Retrieved memory sessions were not found in the sample: " + ", ".join(missing[:5]))
+
+    retrieval_session_ids: list[str] = []
+    seen: set[str] = set()
+    for session_id in hit_session_ids:
+        canonical_id = sessions_by_id[session_id].id
+        if canonical_id not in seen:
+            retrieval_session_ids.append(canonical_id)
+            seen.add(canonical_id)
+
+    if memory_order == "retrieval":
+        return retrieval_session_ids, retrieval_session_ids
+    if memory_order in {"session-index", "turn-index"}:
+        session_positions = {
+            lookup_id: session.session_index
+            for lookup_id, session in sessions_by_id.items()
+        }
+        return retrieval_session_ids, sorted(retrieval_session_ids, key=lambda session_id: session_positions[session_id])
+    if memory_order == "retrieval-reversed":
+        return retrieval_session_ids, list(reversed(retrieval_session_ids))
+    raise ValueError(f"Unsupported memory order: {memory_order!r}")
+
+
+def sessions_by_lookup_id(sample: ConversationSample) -> dict[str, SessionChunk]:
+    sessions_by_id = {session.id: session for session in sample.sessions}
+    sessions_by_id.update({session.session_id: session for session in sample.sessions})
+    return sessions_by_id
+
+
+def format_kv_memory_session(session: SessionChunk) -> str:
+    return format_session_for_memory(session).strip() + "\n\n"
 
 
 def build_memory_prompt_token_ids(
     tokenizer: Any,
     sample: ConversationSample,
     hits: list[SearchHit],
+    *,
+    memory_order: MemoryOrder = "session-index",
 ) -> MemoryPromptTokens:
-    turn_ids = selected_turn_ids(hits)
-    if not turn_ids:
-        raise RuntimeError("Cannot compose KV-equivalence prompt because retrieval returned no turn ids.")
-
-    turns_by_id = {turn.id: turn for turn in sample.turns}
-    missing = [turn_id for turn_id in turn_ids if turn_id not in turns_by_id]
-    if missing:
-        raise RuntimeError("Retrieved memory chunks were not found in the sample: " + ", ".join(missing[:5]))
-
+    retrieval_session_ids, session_ids = ordered_memory_session_ids(sample, hits, memory_order=memory_order)
+    sessions_by_id = sessions_by_lookup_id(sample)
     token_ids = encode_text_no_special(tokenizer, MEMORY_PREFIX_TEXT)
-    for turn_id in turn_ids:
-        token_ids.extend(encode_text_no_special(tokenizer, format_kv_memory_turn(turns_by_id[turn_id])))
-    return MemoryPromptTokens(token_ids=token_ids, selected_turn_ids=turn_ids)
+    for session_id in session_ids:
+        token_ids.extend(encode_text_no_special(tokenizer, format_kv_memory_session(sessions_by_id[session_id])))
+    return MemoryPromptTokens(
+        token_ids=token_ids,
+        selected_session_ids=session_ids,
+        retrieval_session_ids=retrieval_session_ids,
+        memory_order=memory_order,
+    )
 
 
 def build_kv_query_token_ids(

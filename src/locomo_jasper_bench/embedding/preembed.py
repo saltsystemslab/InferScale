@@ -20,6 +20,7 @@ def preembed_locomo_embeddings(config: BenchmarkConfig) -> dict[str, Any]:
 
     samples = load_locomo(config.dataset_path, max_samples=config.max_samples)
     memory_builder = SampleMemoryBuilder(config, embedding_cache_mode="write")
+    session_count = 0
     turn_count = 0
     question_count = 0
     cache_hits = 0
@@ -27,15 +28,17 @@ def preembed_locomo_embeddings(config: BenchmarkConfig) -> dict[str, Any]:
 
     for sample_index, sample in enumerate(samples, start=1):
         logger.info(
-            "Preembedding sample {}/{} sample_id={} turns={} questions={}",
+            "Preembedding sample {}/{} sample_id={} sessions={} turns={} questions={}",
             sample_index,
             len(samples),
             sample.sample_id,
+            len(sample.sessions),
             len(sample.turns),
             len(sample.qa),
         )
         memory = memory_builder.build(sample, finalize_index=False)
         try:
+            session_count += len(sample.sessions)
             turn_count += len(sample.turns)
             question_count += preembed_questions(memory, sample)
             stats = memory_builder.embedding_cache_stats(memory)
@@ -50,7 +53,8 @@ def preembed_locomo_embeddings(config: BenchmarkConfig) -> dict[str, Any]:
         "run_id": config.run_id,
         "mode": "preembed",
         "sample_count": len(samples),
-        "turn_embedding_count": turn_count,
+        "session_embedding_count": session_count,
+        "turn_count": turn_count,
         "question_embedding_count": question_count,
         "cache": {
             "mode": "write",
@@ -62,9 +66,9 @@ def preembed_locomo_embeddings(config: BenchmarkConfig) -> dict[str, Any]:
     }
     write_json(config.run_dir / "preembedding.json", summary)
     logger.info(
-        "Preembedded embeddings samples={} turns={} questions={} cache_hits={} cache_misses={}",
+        "Preembedded embeddings samples={} sessions={} questions={} cache_hits={} cache_misses={}",
         len(samples),
-        turn_count,
+        session_count,
         question_count,
         cache_hits,
         cache_misses,

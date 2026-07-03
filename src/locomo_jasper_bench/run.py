@@ -31,7 +31,7 @@ def main(argv: list[str] | None = None) -> None:
         summary = preembed_locomo_embeddings(config)
         print(f"preembedded embeddings to {summary['cache']['cache_dir']}")
         print(
-            f"samples={summary['sample_count']} turns={summary['turn_embedding_count']} "
+            f"samples={summary['sample_count']} sessions={summary['session_embedding_count']} "
             f"questions={summary['question_embedding_count']} cache_misses={summary['cache']['misses']}"
         )
         return

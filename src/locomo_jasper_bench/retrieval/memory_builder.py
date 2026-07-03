@@ -6,7 +6,7 @@ from typing import Any
 from loguru import logger
 
 from ..config import BenchmarkConfig
-from ..data import ConversationSample, format_turn_for_memory
+from ..data import ConversationSample, format_session_for_memory
 from ..embedding.cache import CacheMode, CachedEmbedder
 from ..vector_types import VectorStoreConfig
 from .mem0_provider import create_mem0_memory
@@ -36,16 +36,16 @@ class SampleMemoryBuilder:
         memory_create_time_ms = (time.perf_counter() - create_started) * 1000
 
         build_started = time.perf_counter()
-        for turn in sample.turns:
-            text = format_turn_for_memory(turn)
+        for session in sample.sessions:
+            text = format_session_for_memory(session)
             metadata = {
                 "user_id": sample.sample_id,
                 "sample_id": sample.sample_id,
-                "turn_id": turn.id,
-                "session_id": turn.session_id,
-                "turn_index": turn.turn_index,
-                "speaker": turn.speaker,
-                "timestamp": turn.timestamp,
+                "session_chunk_id": session.id,
+                "session_id": session.session_id,
+                "session_index": session.session_index,
+                "timestamp": session.timestamp,
+                "num_turns": len(session.turns),
             }
             memory.add(
                 [{"role": "user", "content": text}],
@@ -54,8 +54,8 @@ class SampleMemoryBuilder:
                 metadata=metadata,
             )
         logger.info(
-            "Added {} LoCoMo turns to Mem0 for sample_id={} infer=false",
-            len(sample.turns),
+            "Added {} LoCoMo sessions to Mem0 for sample_id={} infer=false",
+            len(sample.sessions),
             sample.sample_id,
         )
         embedding_memory_build_time_ms = (time.perf_counter() - build_started) * 1000

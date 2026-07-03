@@ -10,7 +10,19 @@ from ..vector_types import SearchHit, SearchMetrics, VectorStoreConfig
 from .jasper_vector_store import JasperVectorStore
 from .qdrant_vector_store import QdrantVectorStore
 
-_MIRRORED_METADATA_KEYS = ("user_id", "sample_id", "turn_id", "session_id", "turn_index", "speaker", "timestamp", "role")
+_MIRRORED_METADATA_KEYS = (
+    "user_id",
+    "sample_id",
+    "session_chunk_id",
+    "session_id",
+    "session_index",
+    "num_turns",
+    "turn_id",
+    "turn_index",
+    "speaker",
+    "timestamp",
+    "role",
+)
 
 try:
     from mem0.vector_stores.base import VectorStoreBase

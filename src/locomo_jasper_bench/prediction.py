@@ -8,7 +8,7 @@ from loguru import logger
 
 from .clients_factory import RuntimeClients
 from .config import BenchmarkConfig
-from .data import ConversationSample, QuestionAnswer, load_locomo
+from .data import ConversationSample, QuestionAnswer, answerable_questions, is_adversarial_category, load_locomo
 from .evaluation import QuestionEvaluator
 from .judging import judge_label
 from .modes import result_mode
@@ -69,19 +69,22 @@ def run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> 
         if remaining_questions is not None and remaining_questions <= 0:
             break
 
-        sample_questions = sample.qa
+        skipped_questions = sum(1 for qa in sample.qa if is_adversarial_category(qa.category))
+        sample_questions = answerable_questions(sample.qa)
         if remaining_questions is not None:
             sample_questions = sample_questions[:remaining_questions]
         if not sample_questions:
             continue
 
         logger.info(
-            "KV sample {}/{} sample_id={} turns={} questions={} preparation starting",
+            "KV sample {}/{} sample_id={} sessions={} turns={} questions={} skipped_category5={} preparation starting",
             sample_index,
             len(samples),
             sample.sample_id,
+            len(sample.sessions),
             len(sample.turns),
             len(sample_questions),
+            skipped_questions,
         )
 
         if remaining_questions is not None:
@@ -193,6 +196,7 @@ def _base_sample_setup_row(
         "mode": result_mode(config),
         "sample_id": sample.sample_id,
         "question_count": question_count,
+        "session_count": len(sample.sessions),
         "turn_count": len(sample.turns),
         "vector_backend": config.vector_backend,
         "memory_create_time_ms": None,
@@ -227,7 +231,10 @@ def _number(value: Any) -> float | None:
 
 
 def planned_question_count(samples: list[ConversationSample], max_questions: int | None) -> int:
-    total = sum(len(sample.qa) for sample in samples)
+    total = sum(
+        len(answerable_questions(sample.qa))
+        for sample in samples
+    )
     if max_questions is None:
         return total
     return min(total, max_questions)

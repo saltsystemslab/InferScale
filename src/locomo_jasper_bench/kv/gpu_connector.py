@@ -245,7 +245,7 @@ class MemoryKVConnector(KVConnectorBase_V1):
                     logger.warning("Layer %s not found in strict GPU memory for user %s", layer_name, load.user_id)
                     continue
 
-                kv_cache_layer = kv_cache_attr
+                kv_cache_layer = _kv_cache_layer_for_virtual_engine(kv_cache_attr, forward_context)
                 self._inject_kv_into_layer(
                     dst_kv_cache_layer=kv_cache_layer,
                     src_kv_cache=self._truncate_kv(src_kv, load.num_tokens),
@@ -369,6 +369,10 @@ class MemoryKVConnector(KVConnectorBase_V1):
             stats.get("total_tokens", 0),
             stats.get("total_gpu_mb", 0.0),
         )
+
+
+def _kv_cache_layer_for_virtual_engine(kv_cache_attr: Any, forward_context: "ForwardContext") -> Any:
+    return kv_cache_attr[forward_context.virtual_engine]
 
 
 __all__ = ["MemoryKVConnector"]

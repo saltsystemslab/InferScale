@@ -29,8 +29,8 @@ def torch_dtype(dtype_name: str) -> Any:
     raise ValueError(f"Unsupported KV dtype: {dtype_name!r}")
 
 
-class ChunkedRopeSampleComposer:
-    """GPU-resident pre-RoPE chunk encoder and top-k composer for one sample."""
+class ChunkedRopeEncoder:
+    """Shared HF pre-RoPE encoder used while precomputing sample chunks."""
 
     def __init__(
         self,
@@ -51,7 +51,6 @@ class ChunkedRopeSampleComposer:
         self.model = model
         self.device = device
         self.max_position = max_position
-        self.context_window = context_window
         self.tokenizer, self.hf_model = _load_hf_model_and_tokenizer(
             model=model,
             dtype=torch_dtype(dtype),
@@ -66,18 +65,122 @@ class ChunkedRopeSampleComposer:
             positions,
             self.head_dim,
         )
+
+    def encode_token_ids_chunk(self, turn_id: str, token_ids: list[int]) -> EncodedChunk:
+        if self.hf_model is None:
+            raise RuntimeError("Cannot encode KV chunk because the HF encoder has been released.")
+        if not token_ids:
+            raise RuntimeError(f"Memory chunk tokenized to zero tokens: {turn_id}")
+        return EncodedChunk(
+            token_ids=list(token_ids),
+            kv_by_layer=_detach_kv_by_layer_to_device(
+                _encode_token_chunk_pre_rope(
+                    self.hf_model,
+                    token_ids,
+                    slice_start=0,
+                    slice_end=len(token_ids),
+                ),
+                self.device,
+            ),
+        )
+
+    def encode_turn_chunk(
+        self,
+        sample: ConversationSample,
+        turn: Turn,
+        *,
+        context_window: int,
+        turn_token_ids: dict[str, list[int]],
+    ) -> EncodedChunk:
+        if self.tokenizer is None or self.hf_model is None:
+            raise RuntimeError("Cannot encode KV chunk because the HF encoder has been released.")
+        plan = build_turn_context_encoding_plan(
+            self.tokenizer,
+            sample,
+            turn,
+            context_window=context_window,
+            max_input_tokens=self.max_position,
+            turn_token_ids=turn_token_ids,
+        )
+        return EncodedChunk(
+            token_ids=plan.target_token_ids,
+            kv_by_layer=_detach_kv_by_layer_to_device(
+                _encode_token_chunk_pre_rope(
+                    self.hf_model,
+                    plan.input_token_ids,
+                    slice_start=plan.slice_start,
+                    slice_end=plan.slice_end,
+                ),
+                self.device,
+            ),
+            context_window=context_window,
+            context_prefix_tokens=len(plan.context_token_ids),
+            raw_context_prefix_tokens=plan.raw_context_prefix_tokens,
+            context_prefix_truncated_tokens=plan.context_prefix_truncated_tokens,
+        )
+
+    def release_model(self) -> None:
+        """Unload HF encoder weights while keeping RoPE tables available."""
+        import gc
+        import torch
+
+        for attr in ("hf_model", "tokenizer"):
+            if hasattr(self, attr):
+                try:
+                    setattr(self, attr, None)
+                except Exception:
+                    pass
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    def close(self) -> None:
+        import gc
+        import torch
+
+        self.release_model()
+        for attr in ("cos_table", "sin_table"):
+            if hasattr(self, attr):
+                try:
+                    setattr(self, attr, None)
+                except Exception:
+                    pass
+        gc.collect()
+        torch.cuda.empty_cache()
+
+
+class ChunkedRopeSampleComposer:
+    """GPU-resident pre-RoPE chunk encoder and top-k composer for one sample."""
+
+    def __init__(
+        self,
+        *,
+        encoder: ChunkedRopeEncoder,
+        context_window: int = 0,
+    ) -> None:
+        if context_window < 0:
+            raise ValueError("context_window must be >= 0.")
+
+        self.encoder = encoder
+        self.model = encoder.model
+        self.device = encoder.device
+        self.max_position = encoder.max_position
+        self.context_window = context_window
         self.chunks: dict[str, EncodedChunk] = {}
         self._turn_token_ids: dict[str, list[int]] = {}
-        scaffold = extract_memory_scaffold_token_ids(self.tokenizer)
-        self.header_chunk = self._encode_token_ids_chunk("__header__", scaffold.header_token_ids)
+        if encoder.tokenizer is None:
+            raise RuntimeError("Cannot create sample composer because the HF encoder has been released.")
+        scaffold = extract_memory_scaffold_token_ids(encoder.tokenizer)
+        self.header_chunk = encoder.encode_token_ids_chunk("__header__", scaffold.header_token_ids)
         self.footer_chunk = (
-            self._encode_token_ids_chunk("__footer__", scaffold.footer_token_ids)
+            encoder.encode_token_ids_chunk("__footer__", scaffold.footer_token_ids)
             if scaffold.footer_token_ids
             else None
         )
 
     def encode_sample(self, sample: ConversationSample, turn_ids: set[str] | None = None) -> None:
-        self._turn_token_ids = _encode_sample_turn_tokens(self.tokenizer, sample)
+        if self.encoder.tokenizer is None:
+            raise RuntimeError("Cannot encode sample because the HF encoder has been released.")
+        self._turn_token_ids = _encode_sample_turn_tokens(self.encoder.tokenizer, sample)
         turns = sample.turns
         if turn_ids is not None:
             turns = [turn for turn in sample.turns if turn.id in turn_ids]
@@ -182,30 +285,12 @@ class ChunkedRopeSampleComposer:
             "llama_kv_total_tensor_gpu_mb": _bytes_to_mb(total_bytes),
         }
 
-    def release_encoder(self) -> None:
-        """Unload HF encoder weights while keeping encoded GPU chunks resident."""
-        import gc
-        import torch
-
-        for attr in ("hf_model", "tokenizer"):
-            if hasattr(self, attr):
-                try:
-                    setattr(self, attr, None)
-                except Exception:
-                    pass
-        gc.collect()
-        torch.cuda.empty_cache()
-
     def close(self) -> None:
         import gc
         import torch
 
-        self.release_encoder()
         for attr in (
-            "hf_model",
-            "tokenizer",
-            "cos_table",
-            "sin_table",
+            "encoder",
             "chunks",
             "header_chunk",
             "footer_chunk",
@@ -220,58 +305,29 @@ class ChunkedRopeSampleComposer:
         torch.cuda.empty_cache()
 
     def _encode_turn_chunk(self, sample: ConversationSample, turn: Turn) -> EncodedChunk:
-        plan = build_turn_context_encoding_plan(
-            self.tokenizer,
+        return self.encoder.encode_turn_chunk(
             sample,
             turn,
             context_window=self.context_window,
-            max_input_tokens=self.max_position,
             turn_token_ids=self._turn_token_ids,
-        )
-        return EncodedChunk(
-            token_ids=plan.target_token_ids,
-            kv_by_layer=_detach_kv_by_layer_to_device(
-                _encode_token_chunk_pre_rope(
-                    self.hf_model,
-                    plan.input_token_ids,
-                    slice_start=plan.slice_start,
-                    slice_end=plan.slice_end,
-                ),
-                self.device,
-            ),
-            context_window=self.context_window,
-            context_prefix_tokens=len(plan.context_token_ids),
-            raw_context_prefix_tokens=plan.raw_context_prefix_tokens,
-            context_prefix_truncated_tokens=plan.context_prefix_truncated_tokens,
         )
 
     def _encode_text_chunk(self, turn_id: str, text: str) -> EncodedChunk:
-        token_ids = encode_text_no_special(self.tokenizer, text)
+        if self.encoder.tokenizer is None:
+            raise RuntimeError("Cannot encode text chunk because the HF encoder has been released.")
+        token_ids = encode_text_no_special(self.encoder.tokenizer, text)
         return self._encode_token_ids_chunk(turn_id, token_ids)
 
     def _encode_token_ids_chunk(self, turn_id: str, token_ids: list[int]) -> EncodedChunk:
-        if not token_ids:
-            raise RuntimeError(f"Memory chunk tokenized to zero tokens: {turn_id}")
-        return EncodedChunk(
-            token_ids=list(token_ids),
-            kv_by_layer=_detach_kv_by_layer_to_device(
-                _encode_token_chunk_pre_rope(
-                    self.hf_model,
-                    token_ids,
-                    slice_start=0,
-                    slice_end=len(token_ids),
-                ),
-                self.device,
-            ),
-        )
+        return self.encoder.encode_token_ids_chunk(turn_id, token_ids)
 
     def _compose_chunks(self, chunks: list[EncodedChunk]) -> dict[str, Any]:
         return _compose_encoded_chunks(
             chunks,
             device=self.device,
             max_position=self.max_position,
-            cos_table=self.cos_table,
-            sin_table=self.sin_table,
+            cos_table=self.encoder.cos_table,
+            sin_table=self.encoder.sin_table,
         )
 
 

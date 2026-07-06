@@ -9,7 +9,7 @@ from ..clients import ChatResult
 from ..config import BenchmarkConfig
 from ..data import ConversationSample, QuestionAnswer
 from ..vector_types import SearchHit
-from .chunked_rope import ChunkedRopeSampleComposer
+from .chunked_rope import ChunkedRopeEncoder, ChunkedRopeSampleComposer
 from .gpu_registry import (
     clear_namespace,
     drop_namespace,
@@ -42,6 +42,7 @@ class VLLMChunkedKVAnswerClient:
         self._tokenizer: Any | None = None
         self._sampling_cls: Any | None = None
         self._sample_caches = GpuSampleCacheStore()
+        self._encoder: ChunkedRopeEncoder | None = None
 
     def precompute_sample_cache(self, sample: ConversationSample) -> dict[str, Any]:
         force_vllm_inprocess_mode()
@@ -64,15 +65,12 @@ class VLLMChunkedKVAnswerClient:
         started = time.perf_counter()
         composer: ChunkedRopeSampleComposer | None = None
         try:
+            encoder = self._ensure_encoder()
             composer = ChunkedRopeSampleComposer(
-                model=self.config.model,
-                dtype=self.config.kv_dtype,
-                device=self.config.kv_device,
-                max_position=self.config.kv_max_position,
+                encoder=encoder,
                 context_window=self.config.context_window,
             )
             composer.encode_sample(sample)
-            composer.release_encoder()
         except RuntimeError as exc:
             if composer is not None:
                 composer.close()
@@ -110,6 +108,7 @@ class VLLMChunkedKVAnswerClient:
             return
         if not self._sample_caches:
             raise RuntimeError("At least one GPU-resident KV sample cache must be precomputed before starting vLLM.")
+        self._release_encoder_model()
 
         from vllm import LLM, SamplingParams
 
@@ -236,6 +235,7 @@ class VLLMChunkedKVAnswerClient:
     def close(self) -> None:
         self._sample_caches.release_all()
         clear_namespace(self.namespace)
+        self._close_encoder()
         if self._llm is not None:
             del self._llm
             self._llm = None
@@ -243,3 +243,22 @@ class VLLMChunkedKVAnswerClient:
         self._sampling_cls = None
         drop_namespace(self.namespace)
         empty_cuda_cache(collect_ipc=True)
+
+    def _ensure_encoder(self) -> ChunkedRopeEncoder:
+        if self._encoder is None:
+            self._encoder = ChunkedRopeEncoder(
+                model=self.config.model,
+                dtype=self.config.kv_dtype,
+                device=self.config.kv_device,
+                max_position=self.config.kv_max_position,
+            )
+        return self._encoder
+
+    def _release_encoder_model(self) -> None:
+        if self._encoder is not None:
+            self._encoder.release_model()
+
+    def _close_encoder(self) -> None:
+        if self._encoder is not None:
+            self._encoder.close()
+            self._encoder = None

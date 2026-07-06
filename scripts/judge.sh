@@ -21,7 +21,7 @@
 
 set -uo pipefail
 
-STAMP="${STAMP:-20260706T073907Z}"
+STAMP="<RUN_STAMP>"  # e.g. 20260706T073907Z
 RUNIDS_FROM="${RUNIDS_FROM:-discover}"
 DRY_RUN="${DRY_RUN:-0}"
 

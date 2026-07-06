@@ -142,8 +142,10 @@ class ChunkedRopeSampleComposer:
             scaffold_chunks.append(header_chunk)
         if footer_chunk is not None:
             scaffold_chunks.append(footer_chunk)
+        turn_chunks_by_id = getattr(self, "chunks", {}) or {}
+        turn_chunks = list(turn_chunks_by_id.values())
         chunks = list(scaffold_chunks)
-        chunks.extend(getattr(self, "chunks", {}).values())
+        chunks.extend(turn_chunks)
 
         total_bytes = 0
         total_tokens = 0
@@ -157,7 +159,7 @@ class ChunkedRopeSampleComposer:
                 device = getattr(tensor, "device", None)
                 if device is not None:
                     devices.add(str(device))
-        prefix_tensor_bytes = _chunk_tensor_bytes(prefix_chunk) if prefix_chunk is not None else 0
+        prefix_tensor_bytes = sum(_chunk_tensor_bytes(chunk) for chunk in scaffold_chunks)
         turn_chunk_tensor_bytes = sum(_chunk_tensor_bytes(chunk) for chunk in turn_chunks)
         chunk_map_cpu_bytes = _chunk_map_cpu_bytes(turn_chunks_by_id)
 

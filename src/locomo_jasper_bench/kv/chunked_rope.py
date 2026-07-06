@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import time
 import logging
 from typing import Any
@@ -7,7 +8,7 @@ from typing import Any
 from ..data import ConversationSample, Turn
 from ..vector_types import SearchHit
 from .context import build_turn_context_encoding_plan, format_memory_turn
-from .prompting import MEMORY_PREFIX_TEXT, selected_turn_ids
+from .prompting import extract_memory_scaffold_token_ids, selected_turn_ids
 from .rope import extract_cos_sin_from_model
 from .tokenization import encode_text_no_special
 from .types import ComposedMemory, EncodedChunk
@@ -67,7 +68,13 @@ class ChunkedRopeSampleComposer:
         )
         self.chunks: dict[str, EncodedChunk] = {}
         self._turn_token_ids: dict[str, list[int]] = {}
-        self.prefix_chunk = self._encode_text_chunk("__prefix__", MEMORY_PREFIX_TEXT)
+        scaffold = extract_memory_scaffold_token_ids(self.tokenizer)
+        self.header_chunk = self._encode_token_ids_chunk("__header__", scaffold.header_token_ids)
+        self.footer_chunk = (
+            self._encode_token_ids_chunk("__footer__", scaffold.footer_token_ids)
+            if scaffold.footer_token_ids
+            else None
+        )
 
     def encode_sample(self, sample: ConversationSample, turn_ids: set[str] | None = None) -> None:
         self._turn_token_ids = _encode_sample_turn_tokens(self.tokenizer, sample)
@@ -103,7 +110,9 @@ class ChunkedRopeSampleComposer:
                 "Retrieved memory chunks were not pre-encoded: " + ", ".join(missing[:5])
             )
 
-        chunks = [self.prefix_chunk, *selected]
+        chunks = [self.header_chunk, *selected]
+        if self.footer_chunk is not None:
+            chunks.append(self.footer_chunk)
         kv_by_layer = self._compose_chunks(chunks)
         token_ids: list[int] = []
         for chunk in chunks:
@@ -126,10 +135,14 @@ class ChunkedRopeSampleComposer:
         )
 
     def cache_stats(self) -> dict[str, Any]:
-        chunks = []
-        prefix_chunk = getattr(self, "prefix_chunk", None)
-        if prefix_chunk is not None:
-            chunks.append(prefix_chunk)
+        scaffold_chunks = []
+        header_chunk = getattr(self, "header_chunk", None)
+        footer_chunk = getattr(self, "footer_chunk", None)
+        if header_chunk is not None:
+            scaffold_chunks.append(header_chunk)
+        if footer_chunk is not None:
+            scaffold_chunks.append(footer_chunk)
+        chunks = list(scaffold_chunks)
         chunks.extend(getattr(self, "chunks", {}).values())
 
         total_bytes = 0
@@ -140,19 +153,31 @@ class ChunkedRopeSampleComposer:
             total_tokens += len(chunk.token_ids)
             layer_count = max(layer_count, len(chunk.kv_by_layer))
             for tensor in chunk.kv_by_layer.values():
-                total_bytes += int(getattr(tensor, "nbytes", 0) or 0)
+                total_bytes += _tensor_nbytes(tensor)
                 device = getattr(tensor, "device", None)
                 if device is not None:
                     devices.add(str(device))
+        prefix_tensor_bytes = _chunk_tensor_bytes(prefix_chunk) if prefix_chunk is not None else 0
+        turn_chunk_tensor_bytes = sum(_chunk_tensor_bytes(chunk) for chunk in turn_chunks)
+        chunk_map_cpu_bytes = _chunk_map_cpu_bytes(turn_chunks_by_id)
 
         return {
             "kv_chunk_cache_residency": "gpu",
-            "kv_precomputed_chunks": max(0, len(chunks) - 1),
+            "kv_precomputed_chunks": max(0, len(chunks) - len(scaffold_chunks)),
             "kv_precomputed_chunks_with_prefix": len(chunks),
             "kv_precomputed_tokens": total_tokens,
             "kv_precomputed_layers": layer_count,
             "kv_precomputed_gpu_mb": total_bytes / (1024 * 1024),
             "kv_precomputed_devices": ",".join(sorted(devices)),
+            "llama_kv_chunk_count": len(turn_chunks),
+            "llama_kv_chunk_map_cpu_bytes": chunk_map_cpu_bytes,
+            "llama_kv_chunk_map_cpu_mb": _bytes_to_mb(chunk_map_cpu_bytes),
+            "llama_kv_chunk_tensor_gpu_bytes": turn_chunk_tensor_bytes,
+            "llama_kv_chunk_tensor_gpu_mb": _bytes_to_mb(turn_chunk_tensor_bytes),
+            "llama_kv_prefix_tensor_gpu_bytes": prefix_tensor_bytes,
+            "llama_kv_prefix_tensor_gpu_mb": _bytes_to_mb(prefix_tensor_bytes),
+            "llama_kv_total_tensor_gpu_bytes": total_bytes,
+            "llama_kv_total_tensor_gpu_mb": _bytes_to_mb(total_bytes),
         }
 
     def release_encoder(self) -> None:
@@ -174,7 +199,16 @@ class ChunkedRopeSampleComposer:
         import torch
 
         self.release_encoder()
-        for attr in ("hf_model", "tokenizer", "cos_table", "sin_table", "chunks", "prefix_chunk", "_turn_token_ids"):
+        for attr in (
+            "hf_model",
+            "tokenizer",
+            "cos_table",
+            "sin_table",
+            "chunks",
+            "header_chunk",
+            "footer_chunk",
+            "_turn_token_ids",
+        ):
             if hasattr(self, attr):
                 try:
                     setattr(self, attr, None)
@@ -211,10 +245,13 @@ class ChunkedRopeSampleComposer:
 
     def _encode_text_chunk(self, turn_id: str, text: str) -> EncodedChunk:
         token_ids = encode_text_no_special(self.tokenizer, text)
+        return self._encode_token_ids_chunk(turn_id, token_ids)
+
+    def _encode_token_ids_chunk(self, turn_id: str, token_ids: list[int]) -> EncodedChunk:
         if not token_ids:
             raise RuntimeError(f"Memory chunk tokenized to zero tokens: {turn_id}")
         return EncodedChunk(
-            token_ids=token_ids,
+            token_ids=list(token_ids),
             kv_by_layer=_detach_kv_by_layer_to_device(
                 _encode_token_chunk_pre_rope(
                     self.hf_model,
@@ -343,6 +380,44 @@ def _detach_tensor_to_device(tensor: Any, device: str) -> Any:
 
 def _copy_layer_kv_to_device(layer_kv: Any, device: str) -> Any:
     return layer_kv.to(device=device, non_blocking=True)
+
+
+def _chunk_tensor_bytes(chunk: EncodedChunk | None) -> int:
+    if chunk is None:
+        return 0
+    return sum(_tensor_nbytes(tensor) for tensor in chunk.kv_by_layer.values())
+
+
+def _tensor_nbytes(tensor: Any) -> int:
+    nbytes = getattr(tensor, "nbytes", None)
+    if nbytes is not None:
+        return int(nbytes)
+    element_size = getattr(tensor, "element_size", None)
+    nelement = getattr(tensor, "nelement", None)
+    if callable(element_size) and callable(nelement):
+        return int(element_size() * nelement())
+    return 0
+
+
+def _chunk_map_cpu_bytes(chunks_by_id: dict[str, EncodedChunk]) -> int:
+    total = sys.getsizeof(chunks_by_id)
+    for chunk_id, chunk in chunks_by_id.items():
+        total += sys.getsizeof(chunk_id)
+        total += _encoded_chunk_cpu_bytes(chunk)
+    return total
+
+
+def _encoded_chunk_cpu_bytes(chunk: EncodedChunk) -> int:
+    total = sys.getsizeof(chunk)
+    total += sys.getsizeof(chunk.token_ids)
+    total += sum(sys.getsizeof(token_id) for token_id in chunk.token_ids)
+    total += sys.getsizeof(chunk.kv_by_layer)
+    total += sum(sys.getsizeof(layer_name) for layer_name in chunk.kv_by_layer)
+    return total
+
+
+def _bytes_to_mb(byte_count: int) -> float:
+    return byte_count / (1024 * 1024)
 
 
 def _load_hf_model_and_tokenizer(

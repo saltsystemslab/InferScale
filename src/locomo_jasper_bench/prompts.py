@@ -5,11 +5,6 @@ import json
 from .data import QuestionAnswer
 
 
-RETRIEVAL_ANSWER_SYSTEM_PROMPT = (
-    "You answer questions about a long conversation. Use the retrieved memory context when it is relevant. "
-    "Be concise and do not invent details that are not supported by the context."
-)
-
 JUDGE_SYSTEM_PROMPT = (
     "You are evaluating the correctness of an answer about a conversation. "
     "Compare the predicted answer to the reference answer. "

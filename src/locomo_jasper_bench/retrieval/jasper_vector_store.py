@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import uuid
 import time
 from pathlib import Path
@@ -20,6 +21,7 @@ class JasperVectorStore:
         self._payloads_by_ordinal: dict[int, tuple[str, dict[str, Any]]] = {}
         self._vectors: np.ndarray | None = None
         self._graph: Any = None
+        self._jasper_graph_memory_stats: dict[str, int | float | None] = _empty_graph_memory_stats()
 
     @property
     def vector_count(self) -> int:
@@ -49,6 +51,8 @@ class JasperVectorStore:
         id_list = list(ids) if ids is not None else [str(uuid.uuid4()) for _ in vector_list]
         if len(id_list) != len(vector_list):
             raise ValueError("ids and vectors must have the same length")
+        if self._graph is not None:
+            self.close()
 
         matrix = np.vstack(vector_list)
         if self._vectors is None:
@@ -65,6 +69,7 @@ class JasperVectorStore:
             ordinal = start_ord + offset
             self._payloads_by_ordinal[ordinal] = (item_id, dict(payload))
         self._graph = None
+        self._jasper_graph_memory_stats = _empty_graph_memory_stats()
         return id_list
 
     def finalize(self) -> None:
@@ -72,6 +77,20 @@ class JasperVectorStore:
             return
 
         self._graph = self._build_jasper_graph()
+
+    def memory_stats(self) -> dict[str, int | float | None]:
+        vector_bytes = int(self._vectors.nbytes) if self._vectors is not None else 0
+        graph_loaded = self._graph is not None
+        logical_gpu_bytes = vector_bytes if graph_loaded else 0
+        return {
+            "jasper_vector_count": self.vector_count,
+            "jasper_embedding_dim": self.dim,
+            "jasper_embedding_matrix_cpu_bytes": vector_bytes,
+            "jasper_embedding_matrix_cpu_mb": _bytes_to_mb(vector_bytes),
+            "jasper_embedding_matrix_gpu_logical_bytes": logical_gpu_bytes,
+            "jasper_embedding_matrix_gpu_logical_mb": _bytes_to_mb(logical_gpu_bytes),
+            **self._jasper_graph_memory_stats,
+        }
 
     def search(self, query_vector: np.ndarray | list[float], top_k: int) -> tuple[list[SearchHit], SearchMetrics]:
         if self._vectors is None or self._vectors.size == 0:
@@ -89,7 +108,8 @@ class JasperVectorStore:
             free = getattr(self._graph, "free", None)
             if callable(free):
                 free()
-            self._graph = None
+        self._graph = None
+        self._jasper_graph_memory_stats = _empty_graph_memory_stats()
 
     def _build_jasper_graph(self) -> Any:
         try:
@@ -101,15 +121,38 @@ class JasperVectorStore:
             ) from exc
         if not torch.cuda.is_available():
             raise RuntimeError("Jasper backend requires a CUDA device.")
-        vectors = torch.from_numpy(self._vectors).to(device="cuda", dtype=torch.float32)
+        _cuda_synchronize(torch)
+        allocated_before = _cuda_memory_allocated(torch)
+        free_before = _cuda_memory_free(torch)
 
-        return jasper.Graph.build(
+        vectors = torch.from_numpy(self._vectors).to(device="cuda", dtype=torch.float32)
+        graph = jasper.Graph.build(
             vectors,
             n_neighbors=self.config.n_neighbors,
             distance=self.config.distance,
             alpha=self.config.alpha,
             workspace_budget=self.config.workspace_budget,
         )
+
+        _cuda_synchronize(torch)
+        del vectors
+        gc.collect()
+        empty_cache = getattr(torch.cuda, "empty_cache", None)
+        if callable(empty_cache):
+            empty_cache()
+        _cuda_synchronize(torch)
+        allocated_after = _cuda_memory_allocated(torch)
+        free_after = _cuda_memory_free(torch)
+
+        graph_gpu_bytes = _positive_delta(free_after, free_before)
+        torch_allocated_delta_bytes = _positive_delta(allocated_before, allocated_after)
+        self._jasper_graph_memory_stats = {
+            "jasper_graph_gpu_bytes": graph_gpu_bytes,
+            "jasper_graph_gpu_mb": _bytes_to_mb(graph_gpu_bytes),
+            "jasper_graph_torch_allocated_delta_bytes": torch_allocated_delta_bytes,
+            "jasper_graph_torch_allocated_delta_mb": _bytes_to_mb(torch_allocated_delta_bytes),
+        }
+        return graph
 
     def _search_jasper(self, query: np.ndarray, top_k: int) -> tuple[list[SearchHit], float]:
         if self._graph is None:
@@ -165,3 +208,51 @@ def _as_float32_array(value: Any) -> np.ndarray:
     if isinstance(value, np.ndarray) and value.dtype == np.float32 and value.flags.c_contiguous:
         return value
     return np.ascontiguousarray(value, dtype=np.float32)
+
+
+def _empty_graph_memory_stats() -> dict[str, int | float | None]:
+    return {
+        "jasper_graph_gpu_bytes": None,
+        "jasper_graph_gpu_mb": None,
+        "jasper_graph_torch_allocated_delta_bytes": None,
+        "jasper_graph_torch_allocated_delta_mb": None,
+    }
+
+
+def _cuda_synchronize(torch: Any) -> None:
+    synchronize = getattr(getattr(torch, "cuda", None), "synchronize", None)
+    if callable(synchronize):
+        synchronize()
+
+
+def _cuda_memory_allocated(torch: Any) -> int | None:
+    memory_allocated = getattr(getattr(torch, "cuda", None), "memory_allocated", None)
+    if not callable(memory_allocated):
+        return None
+    try:
+        return int(memory_allocated())
+    except Exception:
+        return None
+
+
+def _cuda_memory_free(torch: Any) -> int | None:
+    mem_get_info = getattr(getattr(torch, "cuda", None), "mem_get_info", None)
+    if not callable(mem_get_info):
+        return None
+    try:
+        free_bytes, _ = mem_get_info()
+    except Exception:
+        return None
+    return int(free_bytes)
+
+
+def _positive_delta(before: int | None, after: int | None) -> int | None:
+    if before is None or after is None:
+        return None
+    return max(0, int(after) - int(before))
+
+
+def _bytes_to_mb(byte_count: int | None) -> float | None:
+    if byte_count is None:
+        return None
+    return int(byte_count) / (1024 * 1024)

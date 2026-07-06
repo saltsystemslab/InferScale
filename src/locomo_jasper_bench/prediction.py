@@ -69,7 +69,7 @@ def run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> 
         if remaining_questions is not None and remaining_questions <= 0:
             break
 
-        sample_questions = sample.qa
+        sample_questions = _eligible_questions(sample.qa)
         if remaining_questions is not None:
             sample_questions = sample_questions[:remaining_questions]
         if not sample_questions:
@@ -227,10 +227,14 @@ def _number(value: Any) -> float | None:
 
 
 def planned_question_count(samples: list[ConversationSample], max_questions: int | None) -> int:
-    total = sum(len(sample.qa) for sample in samples)
+    total = sum(len(_eligible_questions(sample.qa)) for sample in samples)
     if max_questions is None:
         return total
     return min(total, max_questions)
+
+
+def _eligible_questions(questions: list[QuestionAnswer]) -> list[QuestionAnswer]:
+    return [qa for qa in questions if str(qa.category).strip() != "5"]
 
 
 def should_log_progress(index: int, total: int, interval: int) -> bool:

@@ -29,6 +29,25 @@ class PredictionResult:
     sample_setup_metrics: list[dict[str, Any]]
 
 
+KV_PRECOMPUTE_SETUP_KEYS = (
+    "kv_precomputed_chunks",
+    "kv_precomputed_chunks_with_prefix",
+    "kv_precomputed_tokens",
+    "kv_precomputed_layers",
+    "kv_precomputed_gpu_mb",
+    "kv_chunk_cache_residency_is_gpu",
+    "llama_kv_chunk_count",
+    "llama_kv_chunk_map_cpu_bytes",
+    "llama_kv_chunk_map_cpu_mb",
+    "llama_kv_chunk_tensor_gpu_bytes",
+    "llama_kv_chunk_tensor_gpu_mb",
+    "llama_kv_prefix_tensor_gpu_bytes",
+    "llama_kv_prefix_tensor_gpu_mb",
+    "llama_kv_total_tensor_gpu_bytes",
+    "llama_kv_total_tensor_gpu_mb",
+)
+
+
 def run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> PredictionResult:
     return run_kv_prediction_mode(config, clients)
 
@@ -101,6 +120,8 @@ def run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> 
         if active_sample_gpu_cache:
             kv_metrics = precompute_sample_cache(sample) or {}
             setup_row["kv_precompute_time_ms"] = _number(kv_metrics.get("kv_precompute_time_ms"))
+            for key in KV_PRECOMPUTE_SETUP_KEYS:
+                setup_row[key] = _number(kv_metrics.get(key))
         sample_setup_by_key[id(sample)] = setup_row
 
     if active_sample_gpu_cache:
@@ -198,8 +219,33 @@ def _base_sample_setup_row(
         "memory_create_time_ms": None,
         "embedding_memory_build_time_ms": None,
         "vector_index_build_time_ms": None,
+        "jasper_vector_count": None,
+        "jasper_embedding_dim": None,
+        "jasper_embedding_matrix_cpu_bytes": None,
+        "jasper_embedding_matrix_cpu_mb": None,
+        "jasper_embedding_matrix_gpu_logical_bytes": None,
+        "jasper_embedding_matrix_gpu_logical_mb": None,
+        "jasper_graph_gpu_bytes": None,
+        "jasper_graph_gpu_mb": None,
+        "jasper_graph_torch_allocated_delta_bytes": None,
+        "jasper_graph_torch_allocated_delta_mb": None,
         "memory_setup_time_ms": None,
         "kv_precompute_time_ms": None,
+        "kv_precomputed_chunks": None,
+        "kv_precomputed_chunks_with_prefix": None,
+        "kv_precomputed_tokens": None,
+        "kv_precomputed_layers": None,
+        "kv_precomputed_gpu_mb": None,
+        "kv_chunk_cache_residency_is_gpu": None,
+        "llama_kv_chunk_count": None,
+        "llama_kv_chunk_map_cpu_bytes": None,
+        "llama_kv_chunk_map_cpu_mb": None,
+        "llama_kv_chunk_tensor_gpu_bytes": None,
+        "llama_kv_chunk_tensor_gpu_mb": None,
+        "llama_kv_prefix_tensor_gpu_bytes": None,
+        "llama_kv_prefix_tensor_gpu_mb": None,
+        "llama_kv_total_tensor_gpu_bytes": None,
+        "llama_kv_total_tensor_gpu_mb": None,
         "answer_prepare_sample_time_ms": None,
         "sample_setup_time_ms": None,
     }

@@ -111,7 +111,7 @@ class QuestionEvaluator:
         embedding_started = time.perf_counter()
         query_embedding = embed_mem0_query(memory, query)
         embedding_time_ms = (time.perf_counter() - embedding_started) * 1000
-        hits = search(query=query, vectors=query_embedding, top_k=self.config.top_k)
+        hits = list(reversed(search(query=query, vectors=query_embedding, top_k=self.config.top_k)))
         total_time_ms = (time.perf_counter() - started) * 1000
         store_metrics = self._mem0_store_search_metrics(memory)
         return hits, RetrievalMetrics(

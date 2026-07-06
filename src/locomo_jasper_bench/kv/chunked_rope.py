@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import time
 import logging
 from typing import Any
@@ -152,10 +153,13 @@ class ChunkedRopeSampleComposer:
             total_tokens += len(chunk.token_ids)
             layer_count = max(layer_count, len(chunk.kv_by_layer))
             for tensor in chunk.kv_by_layer.values():
-                total_bytes += int(getattr(tensor, "nbytes", 0) or 0)
+                total_bytes += _tensor_nbytes(tensor)
                 device = getattr(tensor, "device", None)
                 if device is not None:
                     devices.add(str(device))
+        prefix_tensor_bytes = _chunk_tensor_bytes(prefix_chunk) if prefix_chunk is not None else 0
+        turn_chunk_tensor_bytes = sum(_chunk_tensor_bytes(chunk) for chunk in turn_chunks)
+        chunk_map_cpu_bytes = _chunk_map_cpu_bytes(turn_chunks_by_id)
 
         return {
             "kv_chunk_cache_residency": "gpu",
@@ -165,6 +169,15 @@ class ChunkedRopeSampleComposer:
             "kv_precomputed_layers": layer_count,
             "kv_precomputed_gpu_mb": total_bytes / (1024 * 1024),
             "kv_precomputed_devices": ",".join(sorted(devices)),
+            "llama_kv_chunk_count": len(turn_chunks),
+            "llama_kv_chunk_map_cpu_bytes": chunk_map_cpu_bytes,
+            "llama_kv_chunk_map_cpu_mb": _bytes_to_mb(chunk_map_cpu_bytes),
+            "llama_kv_chunk_tensor_gpu_bytes": turn_chunk_tensor_bytes,
+            "llama_kv_chunk_tensor_gpu_mb": _bytes_to_mb(turn_chunk_tensor_bytes),
+            "llama_kv_prefix_tensor_gpu_bytes": prefix_tensor_bytes,
+            "llama_kv_prefix_tensor_gpu_mb": _bytes_to_mb(prefix_tensor_bytes),
+            "llama_kv_total_tensor_gpu_bytes": total_bytes,
+            "llama_kv_total_tensor_gpu_mb": _bytes_to_mb(total_bytes),
         }
 
     def release_encoder(self) -> None:
@@ -367,6 +380,44 @@ def _detach_tensor_to_device(tensor: Any, device: str) -> Any:
 
 def _copy_layer_kv_to_device(layer_kv: Any, device: str) -> Any:
     return layer_kv.to(device=device, non_blocking=True)
+
+
+def _chunk_tensor_bytes(chunk: EncodedChunk | None) -> int:
+    if chunk is None:
+        return 0
+    return sum(_tensor_nbytes(tensor) for tensor in chunk.kv_by_layer.values())
+
+
+def _tensor_nbytes(tensor: Any) -> int:
+    nbytes = getattr(tensor, "nbytes", None)
+    if nbytes is not None:
+        return int(nbytes)
+    element_size = getattr(tensor, "element_size", None)
+    nelement = getattr(tensor, "nelement", None)
+    if callable(element_size) and callable(nelement):
+        return int(element_size() * nelement())
+    return 0
+
+
+def _chunk_map_cpu_bytes(chunks_by_id: dict[str, EncodedChunk]) -> int:
+    total = sys.getsizeof(chunks_by_id)
+    for chunk_id, chunk in chunks_by_id.items():
+        total += sys.getsizeof(chunk_id)
+        total += _encoded_chunk_cpu_bytes(chunk)
+    return total
+
+
+def _encoded_chunk_cpu_bytes(chunk: EncodedChunk) -> int:
+    total = sys.getsizeof(chunk)
+    total += sys.getsizeof(chunk.token_ids)
+    total += sum(sys.getsizeof(token_id) for token_id in chunk.token_ids)
+    total += sys.getsizeof(chunk.kv_by_layer)
+    total += sum(sys.getsizeof(layer_name) for layer_name in chunk.kv_by_layer)
+    return total
+
+
+def _bytes_to_mb(byte_count: int) -> float:
+    return byte_count / (1024 * 1024)
 
 
 def _load_hf_model_and_tokenizer(

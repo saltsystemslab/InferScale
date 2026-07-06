@@ -112,6 +112,12 @@ class Mem0JasperVectorStore(VectorStoreBase):
             "path": str(self.root),
         }
 
+    def memory_stats(self) -> dict[str, Any]:
+        stats = getattr(self.store, "memory_stats", None)
+        if callable(stats):
+            return dict(stats())
+        return {}
+
     def list(
         self,
         filters: dict[str, Any] | None = None,

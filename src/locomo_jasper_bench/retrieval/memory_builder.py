@@ -73,6 +73,7 @@ class SampleMemoryBuilder:
             "vector_index_build_time_ms": vector_index_build_time_ms,
             "memory_setup_time_ms": (time.perf_counter() - total_started) * 1000,
         }
+        metrics.update(self._vector_store_memory_stats(memory))
         return memory, metrics
 
     def log_embedding_cache_stats(self, memory: Any, sample_id: str) -> None:
@@ -128,6 +129,13 @@ class SampleMemoryBuilder:
         finalize = getattr(vector_store, "finalize", None)
         if callable(finalize):
             finalize()
+
+    def _vector_store_memory_stats(self, memory: Any) -> dict[str, Any]:
+        vector_store = getattr(memory, "vector_store", None)
+        memory_stats = getattr(vector_store, "memory_stats", None)
+        if callable(memory_stats):
+            return dict(memory_stats())
+        return {}
 
 
 def memory_embedder(memory: Any) -> Any:

@@ -67,21 +67,18 @@ def extract_memory_scaffold_token_ids(tokenizer: Any) -> MemoryScaffoldTokens:
             tokenize=False,
             add_generation_prompt=False,
         )
-        if MEMORY_TEMPLATE_PLACEHOLDER not in templated:
-            raise RuntimeError(
-                "Memory placeholder was not preserved by the tokenizer chat template."
+        if MEMORY_TEMPLATE_PLACEHOLDER in templated:
+            header_text, footer_text = templated.split(MEMORY_TEMPLATE_PLACEHOLDER, 1)
+            header_token_ids = encode_text_no_special(tokenizer, header_text)
+            footer_token_ids = encode_text_no_special(tokenizer, footer_text)
+            if not header_token_ids or not footer_token_ids:
+                raise RuntimeError(
+                    f"Empty memory scaffold tokens: header={len(header_token_ids)} footer={len(footer_token_ids)}."
+                )
+            return MemoryScaffoldTokens(
+                header_token_ids=header_token_ids,
+                footer_token_ids=footer_token_ids,
             )
-        header_text, footer_text = templated.split(MEMORY_TEMPLATE_PLACEHOLDER, 1)
-        header_token_ids = encode_text_no_special(tokenizer, header_text)
-        footer_token_ids = encode_text_no_special(tokenizer, footer_text)
-        if not header_token_ids or not footer_token_ids:
-            raise RuntimeError(
-                f"Empty memory scaffold tokens: header={len(header_token_ids)} footer={len(footer_token_ids)}."
-            )
-        return MemoryScaffoldTokens(
-            header_token_ids=header_token_ids,
-            footer_token_ids=footer_token_ids,
-        )
 
     header_token_ids = encode_text_no_special(tokenizer, MEMORY_SYSTEM_PROMPT)
     if not header_token_ids:

@@ -8,7 +8,7 @@ from typing import Any
 from ..data import ConversationSample, Turn
 from ..vector_types import SearchHit
 from .context import build_turn_context_encoding_plan, format_memory_turn
-from .prompting import MEMORY_PREFIX_TEXT, selected_turn_ids
+from .prompting import extract_memory_scaffold_token_ids, selected_turn_ids
 from .rope import extract_cos_sin_from_model
 from .tokenization import encode_text_no_special
 from .types import ComposedMemory, EncodedChunk
@@ -68,7 +68,13 @@ class ChunkedRopeSampleComposer:
         )
         self.chunks: dict[str, EncodedChunk] = {}
         self._turn_token_ids: dict[str, list[int]] = {}
-        self.prefix_chunk = self._encode_text_chunk("__prefix__", MEMORY_PREFIX_TEXT)
+        scaffold = extract_memory_scaffold_token_ids(self.tokenizer)
+        self.header_chunk = self._encode_token_ids_chunk("__header__", scaffold.header_token_ids)
+        self.footer_chunk = (
+            self._encode_token_ids_chunk("__footer__", scaffold.footer_token_ids)
+            if scaffold.footer_token_ids
+            else None
+        )
 
     def encode_sample(self, sample: ConversationSample, turn_ids: set[str] | None = None) -> None:
         self._turn_token_ids = _encode_sample_turn_tokens(self.tokenizer, sample)
@@ -104,7 +110,9 @@ class ChunkedRopeSampleComposer:
                 "Retrieved memory chunks were not pre-encoded: " + ", ".join(missing[:5])
             )
 
-        chunks = [self.prefix_chunk, *selected]
+        chunks = [self.header_chunk, *selected]
+        if self.footer_chunk is not None:
+            chunks.append(self.footer_chunk)
         kv_by_layer = self._compose_chunks(chunks)
         token_ids: list[int] = []
         for chunk in chunks:
@@ -127,13 +135,15 @@ class ChunkedRopeSampleComposer:
         )
 
     def cache_stats(self) -> dict[str, Any]:
-        chunks = []
-        prefix_chunk = getattr(self, "prefix_chunk", None)
-        if prefix_chunk is not None:
-            chunks.append(prefix_chunk)
-        turn_chunks_by_id = getattr(self, "chunks", {}) or {}
-        turn_chunks = list(turn_chunks_by_id.values())
-        chunks.extend(turn_chunks)
+        scaffold_chunks = []
+        header_chunk = getattr(self, "header_chunk", None)
+        footer_chunk = getattr(self, "footer_chunk", None)
+        if header_chunk is not None:
+            scaffold_chunks.append(header_chunk)
+        if footer_chunk is not None:
+            scaffold_chunks.append(footer_chunk)
+        chunks = list(scaffold_chunks)
+        chunks.extend(getattr(self, "chunks", {}).values())
 
         total_bytes = 0
         total_tokens = 0
@@ -153,7 +163,7 @@ class ChunkedRopeSampleComposer:
 
         return {
             "kv_chunk_cache_residency": "gpu",
-            "kv_precomputed_chunks": max(0, len(chunks) - 1),
+            "kv_precomputed_chunks": max(0, len(chunks) - len(scaffold_chunks)),
             "kv_precomputed_chunks_with_prefix": len(chunks),
             "kv_precomputed_tokens": total_tokens,
             "kv_precomputed_layers": layer_count,
@@ -189,7 +199,16 @@ class ChunkedRopeSampleComposer:
         import torch
 
         self.release_encoder()
-        for attr in ("hf_model", "tokenizer", "cos_table", "sin_table", "chunks", "prefix_chunk", "_turn_token_ids"):
+        for attr in (
+            "hf_model",
+            "tokenizer",
+            "cos_table",
+            "sin_table",
+            "chunks",
+            "header_chunk",
+            "footer_chunk",
+            "_turn_token_ids",
+        ):
             if hasattr(self, attr):
                 try:
                     setattr(self, attr, None)
@@ -226,10 +245,13 @@ class ChunkedRopeSampleComposer:
 
     def _encode_text_chunk(self, turn_id: str, text: str) -> EncodedChunk:
         token_ids = encode_text_no_special(self.tokenizer, text)
+        return self._encode_token_ids_chunk(turn_id, token_ids)
+
+    def _encode_token_ids_chunk(self, turn_id: str, token_ids: list[int]) -> EncodedChunk:
         if not token_ids:
             raise RuntimeError(f"Memory chunk tokenized to zero tokens: {turn_id}")
         return EncodedChunk(
-            token_ids=token_ids,
+            token_ids=list(token_ids),
             kv_by_layer=_detach_kv_by_layer_to_device(
                 _encode_token_chunk_pre_rope(
                     self.hf_model,

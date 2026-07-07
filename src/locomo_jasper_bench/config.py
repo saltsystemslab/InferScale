@@ -20,7 +20,7 @@ DEFAULT_JUDGE_PROVIDER = "vllm"
 DEFAULT_JUDGE_MODEL = "Gemma-2-9B-Instruct"
 DEFAULT_JUDGE_BASE_URL = "http://localhost:8000/v1"
 DEFAULT_JUDGE_API_KEY = "token-abc123"
-DEFAULT_OPENAI_JUDGE_MODEL = "gpt-5.5"
+DEFAULT_OPENAI_JUDGE_MODEL = "gpt-5.4"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 
 ANSWER_MODEL_DEFAULTS = {
@@ -148,6 +148,7 @@ class BenchmarkConfig:
     preembed_only: bool = False
     skip_judge: bool = False
     judge_only: bool = False
+    rejudge: bool = False
 
     def to_jsonable(self) -> dict[str, object]:
         data = asdict(self)
@@ -262,6 +263,11 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
         action="store_true",
         help="Judge missing results in an existing run directory and regenerate summary.json.",
     )
+    parser.add_argument(
+        "--rejudge",
+        action="store_true",
+        help="With --judge-only, replace existing judge results instead of only filling missing results.",
+    )
 
     ns = parser.parse_args(raw_argv)
     if ns.answer_backend not in {"vllm-kv", "vllm-prefix"}:
@@ -276,6 +282,8 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
         parser.error(str(exc))
     if ns.judge_provider == "none":
         ns.skip_judge = True
+    if ns.rejudge and not ns.judge_only:
+        parser.error("--rejudge requires --judge-only.")
     if ns.judge_only and ns.judge_provider == "none":
         parser.error("--judge-only requires --judge vllm or --judge openai.")
     _resolve_judge_connection(ns, explicit_argv=raw_argv)

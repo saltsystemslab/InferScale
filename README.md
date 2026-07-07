@@ -20,7 +20,7 @@ Edit `.env` for your session. The common values are:
 - `BENCHMARK_RUNTIME_ROOT=/workspace`
 - `JUDGE_PROVIDER=vllm`
 - `JUDGE_MODEL=google/gemma-2-9b-it`
-- `OPENAI_JUDGE_MODEL=gpt-5.5`
+- `OPENAI_JUDGE_MODEL=gpt-5.4`
 - `CUDA_MODULE=` for Runpod containers without environment modules
 - `OPENAI_API_KEY=...` for embeddings and OpenAI judging
 - `HF_TOKEN=...` if the model is gated
@@ -149,7 +149,7 @@ locomo-jasper-bench \
   --judge-model "${JUDGE_MODEL}"
 ```
 
-OpenAI judging uses `OPENAI_API_KEY` and `OPENAI_JUDGE_MODEL`, and it does not require `scripts/serve_vllm.sh`.
+OpenAI judging uses `OPENAI_API_KEY` and `OPENAI_JUDGE_MODEL`, runs through the OpenAI Batch API, and does not require `scripts/serve_vllm.sh`.
 
 ```bash
 locomo-jasper-bench \
@@ -157,10 +157,12 @@ locomo-jasper-bench \
   --run-id "${RUN_ID}" \
   --judge-only \
   --judge openai \
-  --judge-model "${OPENAI_JUDGE_MODEL:-gpt-5.5}"
+  --judge-model "${OPENAI_JUDGE_MODEL:-gpt-5.4}"
 ```
 
 `--judge-only` fills only rows that are still unjudged, preserves already judged rows, and regenerates `summary.json`.
+Add `--rejudge` with `--judge-only` to replace existing judge results for every row in the run.
+OpenAI batch judging persists `openai_judge_batch_input.jsonl`, `openai_judge_batch_output.jsonl`, `openai_judge_batch_errors.jsonl`, and `openai_judge_batch.json` in the run directory.
 
 ## 5. Compare Results
 

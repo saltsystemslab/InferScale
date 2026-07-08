@@ -198,5 +198,5 @@ Primary summary metrics:
 - `metrics.query_to_answer_ms`: query embedding, retrieval, prompt/KV composition, and full answer generation measured with one stopwatch.
 - `metrics.sample_setup_time_ms`: per-sample setup before the first query, including memory/index construction, KV precompute when applicable, and sample activation.
 - `metrics.vector_db_query_time_ms`: raw backend vector search latency.
-- Jasper memory metrics in `summary.json` and `sample_setup_metrics.csv`: `jasper_graph_gpu_mb`, `jasper_embedding_matrix_gpu_logical_mb`, and `jasper_embedding_matrix_cpu_mb`.
+- Jasper graph and embedding metrics in `summary.json` and `sample_setup_metrics.csv`: `jasper_graph_gpu_mb` is the packed serialized graph size matching Jasper `total_file_size`, while `jasper_embedding_matrix_gpu_logical_mb` and `jasper_embedding_matrix_cpu_mb` describe embedding matrix storage.
 - Llama KV chunk metrics in `summary.json` and `sample_setup_metrics.csv`: `llama_kv_total_tensor_gpu_mb`, `llama_kv_chunk_tensor_gpu_mb`, `llama_kv_prefix_tensor_gpu_mb`, and `llama_kv_chunk_map_cpu_mb`.

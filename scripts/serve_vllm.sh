@@ -9,6 +9,7 @@ source "${SCRIPT_DIR}/load_env.sh"
 DEFAULT_MODEL_LLAMA="meta-llama/Llama-3.1-8B-Instruct"
 DEFAULT_MODEL_MISTRAL="mistralai/Mistral-7B-Instruct-v0.3"
 DEFAULT_MODEL_QWEN="Qwen/Qwen2.5-7B-Instruct"
+DEFAULT_MODEL_QWEN3_14B="Qwen/Qwen3-14B"
 
 resolve_model_name() {
   local raw="$1"
@@ -23,6 +24,9 @@ resolve_model_name() {
       ;;
     qwen|qwen2.5|qwen2.5-7b|qwen2.5-7b-instruct)
       printf '%s\n' "${MODEL_QWEN:-${LOCOMO_MODEL_QWEN:-${DEFAULT_MODEL_QWEN}}}"
+      ;;
+    qwen3|qwen3-14b)
+      printf '%s\n' "${MODEL_QWEN3_14B:-${LOCOMO_MODEL_QWEN3_14B:-${DEFAULT_MODEL_QWEN3_14B}}}"
       ;;
     *)
       printf '%s\n' "${raw}"

@@ -10,6 +10,7 @@ _ROPE_MODULES = (
     "transformers.models.llama.modeling_llama",
     "transformers.models.mistral.modeling_mistral",
     "transformers.models.qwen2.modeling_qwen2",
+    "transformers.models.qwen3.modeling_qwen3",
 )
 
 

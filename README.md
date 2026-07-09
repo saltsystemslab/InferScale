@@ -16,6 +16,7 @@ Edit `.env` for your session. The common values are:
 - `MODEL_LLAMA=meta-llama/Llama-3.1-8B-Instruct`
 - `MODEL_MISTRAL=mistralai/Mistral-7B-Instruct-v0.3`
 - `MODEL_QWEN=Qwen/Qwen2.5-7B-Instruct`
+- `MODEL_QWEN3_14B=Qwen/Qwen3-14B`
 - `LOCOMO_VLLM_MODEL=llama`
 - `BENCHMARK_RUNTIME_ROOT=/workspace`
 - `JUDGE_PROVIDER=vllm`
@@ -45,8 +46,9 @@ source scripts/load_env.sh
 ```
 
 The answer-model CLI accepts a Hugging Face id, a local model path, or one of
-the configured aliases: `llama`, `mistral`, `qwen`. The Qwen alias resolves to
-`Qwen/Qwen2.5-7B-Instruct`.
+the configured aliases: `llama`, `mistral`, `qwen`, `qwen3-14b`. The `qwen`
+alias resolves to `Qwen/Qwen2.5-7B-Instruct`; `qwen3-14b` resolves to
+`Qwen/Qwen3-14B`.
 
 ## 2. Install
 

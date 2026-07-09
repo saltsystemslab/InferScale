@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Sweep the LoCoMo Jasper benchmark across:
-#   models  = {llama, mistral, qwen}
+#   models  = {llama, mistral, qwen, qwen3-14b}
 #   top-k   = {5, 10, 20, 50, 100}
 #   window  = {0, 1, 3, 5}   (applied to the kv-jasper run ONLY)
 #
@@ -9,7 +9,7 @@
 #   - vllm-kv     + jasper, once per window W  (--context-window W)   -> 4 runs
 #   - vllm-prefix + jasper, once (no window flag, as in your template) -> 1 run
 #   - vllm-prefix + qdrant, once (no window flag, as in your template) -> 1 run
-# => 3 models x 5 top-k x (4 + 1 + 1) = 90 runs.
+# => 4 models x 5 top-k x (4 + 1 + 1) = 120 runs.
 #
 # Usage:
 #   BENCHMARK_RESULTS_ROOT=/path/to/results ./run_locomo_sweep.sh
@@ -18,7 +18,7 @@
 #   DRY_RUN=1 BENCHMARK_RESULTS_ROOT=/path/to/results ./run_locomo_sweep.sh
 #
 #   # Override any grid:
-#   MODELS="llama qwen" TOPKS="10 50" WINDOWS="0 3" BENCHMARK_RESULTS_ROOT=/path ./run_locomo_sweep.sh
+#   MODELS="llama qwen3-14b" TOPKS="10 50" WINDOWS="0 3" BENCHMARK_RESULTS_ROOT=/path ./run_locomo_sweep.sh
 #
 # Run IDs encode the swept axes so results never collide:
 #   kv     -> <model>-kv-gpu-jasper10-k<topk>-w<W>-<stamp>
@@ -28,7 +28,7 @@
 set -uo pipefail
 
 # ----- Config (override via environment) -----------------------------------
-MODELS="${MODELS:-llama mistral qwen}"
+MODELS="${MODELS:-llama mistral qwen qwen3-14b}"
 TOPKS="${TOPKS:-5 10 20 50 100}"
 WINDOWS="${WINDOWS:-0 1 3 5}"
 DATASET="${DATASET:-data/locomo10.json}"

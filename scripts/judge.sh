@@ -31,7 +31,7 @@ DRY_RUN="${DRY_RUN:-0}"
 : "${JUDGE_MODEL:?Set JUDGE_MODEL}"
 
 # Grid -- only used when RUNIDS_FROM=grid. Must match the sweep that produced results.
-MODELS="${MODELS:-llama mistral qwen}"
+MODELS="${MODELS:-llama mistral qwen qwen3-14b}"
 TOPKS="${TOPKS:-5 10 20 50 100}"
 WINDOWS="${WINDOWS:-0 1 3 5}"
 

@@ -62,7 +62,8 @@ def format_kv_memory_turn(turn: Turn) -> str:
 def extract_memory_scaffold_token_ids(tokenizer: Any) -> MemoryScaffoldTokens:
     apply_chat_template = getattr(tokenizer, "apply_chat_template", None)
     if callable(apply_chat_template):
-        templated = apply_chat_template(
+        templated = apply_chat_template_non_thinking(
+            tokenizer,
             [{"role": "system", "content": MEMORY_SYSTEM_PROMPT + MEMORY_TEMPLATE_PLACEHOLDER}],
             tokenize=False,
             add_generation_prompt=False,
@@ -175,7 +176,8 @@ def tokenize_messages(tokenizer: Any, messages: list[dict[str, str]]) -> list[in
     apply_chat_template = getattr(tokenizer, "apply_chat_template", None)
     if callable(apply_chat_template):
         return list(
-            apply_chat_template(
+            apply_chat_template_non_thinking(
+                tokenizer,
                 messages,
                 tokenize=True,
                 add_generation_prompt=True,
@@ -187,3 +189,16 @@ def tokenize_messages(tokenizer: Any, messages: list[dict[str, str]]) -> list[in
     if not callable(encode):
         raise RuntimeError("Tokenizer has neither apply_chat_template nor encode.")
     return list(encode(text))
+
+
+def apply_chat_template_non_thinking(tokenizer: Any, messages: list[dict[str, str]], **kwargs: Any) -> Any:
+    apply_chat_template = getattr(tokenizer, "apply_chat_template", None)
+    if not callable(apply_chat_template):
+        raise RuntimeError("Tokenizer has no apply_chat_template method.")
+
+    try:
+        return apply_chat_template(messages, enable_thinking=False, **kwargs)
+    except TypeError as exc:
+        if "enable_thinking" not in str(exc):
+            raise
+        return apply_chat_template(messages, **kwargs)

@@ -15,6 +15,7 @@ from .runtime_paths import default_results_root
 DEFAULT_LLAMA_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 DEFAULT_MISTRAL_MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
 DEFAULT_QWEN_MODEL = "Qwen/Qwen2.5-7B-Instruct"
+DEFAULT_QWEN3_14B_MODEL = "Qwen/Qwen3-14B"
 DEFAULT_MODEL = DEFAULT_LLAMA_MODEL
 DEFAULT_JUDGE_PROVIDER = "vllm"
 DEFAULT_JUDGE_MODEL = "Gemma-2-9B-Instruct"
@@ -27,11 +28,13 @@ ANSWER_MODEL_DEFAULTS = {
     "llama": DEFAULT_LLAMA_MODEL,
     "mistral": DEFAULT_MISTRAL_MODEL,
     "qwen": DEFAULT_QWEN_MODEL,
+    "qwen3-14b": DEFAULT_QWEN3_14B_MODEL,
 }
 ANSWER_MODEL_ENV_VARS = {
     "llama": ("LOCOMO_MODEL_LLAMA", "MODEL_LLAMA"),
     "mistral": ("LOCOMO_MODEL_MISTRAL", "MODEL_MISTRAL"),
     "qwen": ("LOCOMO_MODEL_QWEN", "MODEL_QWEN"),
+    "qwen3-14b": ("LOCOMO_MODEL_QWEN3_14B", "MODEL_QWEN3_14B"),
 }
 ANSWER_MODEL_NAME_ALIASES = {
     "llama": "llama",
@@ -46,6 +49,8 @@ ANSWER_MODEL_NAME_ALIASES = {
     "qwen2.5": "qwen",
     "qwen2.5-7b": "qwen",
     "qwen2.5-7b-instruct": "qwen",
+    "qwen3": "qwen3-14b",
+    "qwen3-14b": "qwen3-14b",
 }
 
 DistanceMetric = Literal["ip", "l2"]
@@ -182,7 +187,7 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
         default=os.environ.get("LOCOMO_VLLM_MODEL", DEFAULT_MODEL),
         help=(
             "Answer model HF id, local path, or configured alias. "
-            "Built-in aliases: llama, mistral, qwen."
+            "Built-in aliases: llama, mistral, qwen, qwen3-14b."
         ),
     )
     parser.add_argument(

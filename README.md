@@ -73,11 +73,8 @@ Timed runs read from that cache and fail if an embedding is missing.
 Run answer generation with judging skipped.
 This keeps the GPU focused on the in-process answer backend; judge result files afterward.
 
-Jasper-KV with `--context-window 0` is the isolated target-turn control.
 The `w5`, `w20`, and `w50` variants condition the retained target-turn KV on the immediately preceding 5, 20, or 50 turns, so they are KV turn-context ablations rather than information-equivalent prefix comparisons.
-Qdrant-prefix is a separate retrieval and prompt-prefix baseline.
 `--jasper-beam-width` is a minimum search width, and the benchmark automatically uses at least `top_k` candidates.
-The configured and effective beam widths are recorded in the run artifacts.
 
 ```bash
 RUN_STAMP=$(date -u +%Y%m%dT%H%M%SZ)
@@ -94,7 +91,7 @@ locomo-jasper-bench \
   --vector-backend jasper \
   --top-k 50 \
   --context-window "${KV_WINDOW}" \
-  --kv-gpu-memory-utilization 0.40 \
+  --kv-gpu-memory-utilization 0.38 \
   --max-samples 10 \
   --log-every 1 \
   --skip-judge \
@@ -110,7 +107,7 @@ locomo-jasper-bench \
   --vector-backend qdrant \
   --top-k 50 \
   --context-window 0 \
-  --kv-gpu-memory-utilization 0.40 \
+  --kv-gpu-memory-utilization 0.38 \
   --max-samples 10 \
   --log-every 1 \
   --skip-judge \

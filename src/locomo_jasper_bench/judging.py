@@ -45,11 +45,15 @@ def judge_qa(
         temperature=0.0,
         top_p=1.0,
     )
-    correct, reason = parse_judge_response(judge.content)
+    return parsed_judge_payload(config, judge.content)
+
+
+def parsed_judge_payload(config: BenchmarkConfig, content: str) -> dict[str, Any]:
+    correct, reason = parse_judge_response(content)
     return {
         "correct": correct,
         "reason": reason,
-        "raw": judge.content,
+        "raw": content,
         "status": "ok" if isinstance(correct, bool) else "unparsed",
         **_judge_metadata(config),
     }

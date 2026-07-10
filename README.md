@@ -22,7 +22,7 @@ Edit `.env` for your session. The common values are:
 - `BENCHMARK_RUNTIME_ROOT=/workspace`
 - `JUDGE_PROVIDER=vllm`
 - `JUDGE_MODEL=google/gemma-2-9b-it`
-- `OPENAI_JUDGE_MODEL=gpt-5.5`
+- `OPENAI_JUDGE_MODEL=gpt-5.4`
 - `CUDA_MODULE=` for Runpod containers without environment modules
 - `OPENAI_API_KEY=...` for embeddings and OpenAI judging
 - `HF_TOKEN=...` if the model is gated
@@ -154,7 +154,7 @@ locomo-jasper-bench \
   --judge-model "${JUDGE_MODEL}"
 ```
 
-OpenAI judging uses `OPENAI_API_KEY` and `OPENAI_JUDGE_MODEL`, and it does not require `scripts/serve_vllm.sh`.
+OpenAI judging uses `OPENAI_API_KEY` and `OPENAI_JUDGE_MODEL`, runs through the OpenAI Batch API, and does not require `scripts/serve_vllm.sh`.
 
 ```bash
 locomo-jasper-bench \
@@ -162,10 +162,12 @@ locomo-jasper-bench \
   --run-id "${RUN_ID}" \
   --judge-only \
   --judge openai \
-  --judge-model "${OPENAI_JUDGE_MODEL:-gpt-5.5}"
+  --judge-model "${OPENAI_JUDGE_MODEL:-gpt-5.4}"
 ```
 
 `--judge-only` fills only rows that are still unjudged, preserves already judged rows, and regenerates `summary.json`.
+Add `--rejudge` with `--judge-only` to replace existing judge results for every row in the run.
+OpenAI batch judging persists `openai_judge_batch_input.jsonl`, `openai_judge_batch_output.jsonl`, `openai_judge_batch_errors.jsonl`, and `openai_judge_batch.json` in the run directory.
 
 ## 5. Compare Results
 
@@ -201,5 +203,5 @@ Primary summary metrics:
 - `metrics.query_to_answer_ms`: query embedding, retrieval, prompt/KV composition, and full answer generation measured with one stopwatch.
 - `metrics.sample_setup_time_ms`: per-sample setup before the first query, including memory/index construction, KV precompute when applicable, and sample activation.
 - `metrics.vector_db_query_time_ms`: raw backend vector search latency.
-- Jasper memory metrics in `summary.json` and `sample_setup_metrics.csv`: `jasper_graph_gpu_mb`, `jasper_embedding_matrix_gpu_logical_mb`, and `jasper_embedding_matrix_cpu_mb`.
+- Jasper graph and embedding metrics in `summary.json` and `sample_setup_metrics.csv`: `jasper_graph_gpu_mb` is the packed serialized graph size matching Jasper `total_file_size`, while `jasper_embedding_matrix_gpu_logical_mb` and `jasper_embedding_matrix_cpu_mb` describe embedding matrix storage.
 - Llama KV chunk metrics in `summary.json` and `sample_setup_metrics.csv`: `llama_kv_total_tensor_gpu_mb`, `llama_kv_chunk_tensor_gpu_mb`, `llama_kv_prefix_tensor_gpu_mb`, and `llama_kv_chunk_map_cpu_mb`.

@@ -10,6 +10,10 @@ import numpy as np
 
 from ..vector_types import SearchHit, SearchMetrics, VectorStoreConfig
 
+_JASPER_GRAPH_FILE_HEADER_BYTES = 4 * 8
+_JASPER_INDEX_BYTES = 4
+_JASPER_EDGE_COUNT_BYTES = 1
+
 
 class JasperVectorStore:
     """In-memory vector store with Jasper GPU search."""
@@ -136,7 +140,6 @@ class JasperVectorStore:
             raise RuntimeError("Jasper backend requires a CUDA device.")
         _cuda_synchronize(torch)
         allocated_before = _cuda_memory_allocated(torch)
-        free_before = _cuda_memory_free(torch)
 
         vectors = torch.from_numpy(self._vectors).to(device="cuda", dtype=torch.float32)
         graph = jasper.Graph.build(
@@ -155,9 +158,13 @@ class JasperVectorStore:
             empty_cache()
         _cuda_synchronize(torch)
         allocated_after = _cuda_memory_allocated(torch)
-        free_after = _cuda_memory_free(torch)
 
-        graph_gpu_bytes = _positive_delta(free_after, free_before)
+        graph_gpu_bytes = _jasper_graph_serialized_bytes(
+            vector_count=self.vector_count,
+            dim=int(self._vectors.shape[1]),
+            n_neighbors=self.config.n_neighbors,
+            data_type_bytes=int(self._vectors.dtype.itemsize),
+        )
         torch_allocated_delta_bytes = _positive_delta(allocated_before, allocated_after)
         self._jasper_graph_memory_stats = {
             "jasper_graph_gpu_bytes": graph_gpu_bytes,
@@ -232,6 +239,24 @@ def _empty_graph_memory_stats() -> dict[str, int | float | None]:
     }
 
 
+def _jasper_graph_serialized_bytes(
+    *,
+    vector_count: int,
+    dim: int,
+    n_neighbors: int,
+    data_type_bytes: int,
+) -> int:
+    if vector_count <= 0 or dim <= 0:
+        return 0
+
+    bytes_per_node = (
+        int(dim) * int(data_type_bytes)
+        + _JASPER_EDGE_COUNT_BYTES
+        + int(n_neighbors) * _JASPER_INDEX_BYTES
+    )
+    return _JASPER_GRAPH_FILE_HEADER_BYTES + int(vector_count) * bytes_per_node
+
+
 def _cuda_synchronize(torch: Any) -> None:
     synchronize = getattr(getattr(torch, "cuda", None), "synchronize", None)
     if callable(synchronize):
@@ -246,17 +271,6 @@ def _cuda_memory_allocated(torch: Any) -> int | None:
         return int(memory_allocated())
     except Exception:
         return None
-
-
-def _cuda_memory_free(torch: Any) -> int | None:
-    mem_get_info = getattr(getattr(torch, "cuda", None), "mem_get_info", None)
-    if not callable(mem_get_info):
-        return None
-    try:
-        free_bytes, _ = mem_get_info()
-    except Exception:
-        return None
-    return int(free_bytes)
 
 
 def _positive_delta(before: int | None, after: int | None) -> int | None:

@@ -21,7 +21,7 @@ except Exception:  # pragma: no cover - mem0 is optional for local unit tests
 
 
 class Mem0JasperVectorStore(VectorStoreBase):
-    """Mem0 VectorStoreBase adapter backed by the local JasperVectorStore."""
+    """Mem0 adapter dispatching to the requested local vector backend."""
 
     def __init__(
         self,
@@ -51,7 +51,11 @@ class Mem0JasperVectorStore(VectorStoreBase):
             beam_width=beam_width,
         )
         self.store = self._create_store()
-        self.last_search_metrics = SearchMetrics(search_time_ms=0.0)
+        self.last_search_metrics = SearchMetrics(
+            search_time_ms=0.0,
+            vector_backend=self.config.backend,
+            jasper_effective_beam_width=(self.config.beam_width if self.config.backend == "jasper" else None),
+        )
 
     def create_col(self, name: str | None = None, vector_size: int | None = None, distance: str | None = None) -> None:
         if name and name != self.collection_name:
@@ -77,9 +81,13 @@ class Mem0JasperVectorStore(VectorStoreBase):
         top_k: int = 5,
         **_: Any,
     ) -> list[SearchHit]:
-        requested_top_k = max(1, int(top_k or 5))
+        requested_top_k = 5 if top_k is None else int(top_k)
+        if requested_top_k < 1:
+            raise ValueError("top_k must be >= 1.")
         query_vector = _first_vector(vectors)
         hits, metrics = self.store.search(query_vector, top_k=requested_top_k)
+        expected_count = min(requested_top_k, self.store.vector_count)
+        _validate_search_hits(hits, expected_count=expected_count, backend=self.config.backend)
         self.last_search_metrics = metrics
         return hits
 
@@ -137,9 +145,11 @@ class Mem0JasperVectorStore(VectorStoreBase):
         self.store.close()
 
     def _create_store(self) -> Any:
+        if self.config.backend == "jasper":
+            return JasperVectorStore(self.root, self.config)
         if self.config.backend == "qdrant":
             return QdrantVectorStore(self.root, self.config)
-        return JasperVectorStore(self.root, self.config)
+        raise ValueError(f"Unsupported vector backend: {self.config.backend!r}.")
 
 
 def _first_vector(vectors: np.ndarray | list[float] | list[list[float]]) -> np.ndarray:
@@ -161,6 +171,30 @@ def _normalize_distance(distance: str) -> str:
     if lowered in {"euclidean", "l2"}:
         return "l2"
     return lowered
+
+
+def _validate_search_hits(hits: list[SearchHit], *, expected_count: int, backend: str) -> None:
+    if len(hits) != expected_count:
+        raise RuntimeError(
+            f"{backend} returned {len(hits)} hits, expected {expected_count}; refusing to use incomplete retrieval."
+        )
+
+    ids = [hit.id for hit in hits]
+    if len(ids) != len(set(ids)):
+        raise RuntimeError(f"{backend} returned duplicate result ids; refusing to use corrupt retrieval.")
+
+    ranks = [hit.rank for hit in hits]
+    expected_ranks = list(range(1, expected_count + 1))
+    if ranks != expected_ranks:
+        raise RuntimeError(
+            f"{backend} returned non-contiguous ranks {ranks[:10]!r}; expected ranks starting at 1."
+        )
+
+    for hit in hits:
+        if not np.isfinite(hit.distance) or not np.isfinite(hit.score):
+            raise RuntimeError(f"{backend} returned a non-finite score or distance for result {hit.id!r}.")
+        if abs(hit.distance) >= 1e30 or abs(hit.score) >= 1e30:
+            raise RuntimeError(f"{backend} returned a sentinel-like score or distance for result {hit.id!r}.")
 
 
 def _normalize_memory_payload(payload: dict[str, Any] | None) -> dict[str, Any]:

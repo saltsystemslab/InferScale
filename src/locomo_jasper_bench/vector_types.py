@@ -17,6 +17,8 @@ class VectorStoreConfig:
 @dataclass(slots=True)
 class SearchMetrics:
     search_time_ms: float
+    vector_backend: str | None = None
+    jasper_effective_beam_width: int | None = None
 
 
 @dataclass(slots=True)
@@ -24,6 +26,8 @@ class RetrievalMetrics:
     embedding_time_ms: float
     search_time_ms: float
     total_time_ms: float
+    vector_backend: str | None = None
+    jasper_effective_beam_width: int | None = None
 
 
 @dataclass(slots=True)

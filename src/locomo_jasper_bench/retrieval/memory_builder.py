@@ -9,7 +9,7 @@ from ..config import BenchmarkConfig
 from ..data import ConversationSample, format_turn_for_memory
 from ..embedding.cache import CacheMode, CachedEmbedder
 from ..vector_types import VectorStoreConfig
-from .mem0_provider import create_mem0_memory
+from .mem0_provider import create_mem0_memory, resolved_mem0_backend
 
 
 class SampleMemoryBuilder:
@@ -32,6 +32,7 @@ class SampleMemoryBuilder:
             embedding_api_key=self.config.embedding_api_key,
             embedding_base_url=self.config.embedding_base_url,
         )
+        resolved_backend = resolved_mem0_backend(memory)
         self._install_embedding_cache(memory)
         memory_create_time_ms = (time.perf_counter() - create_started) * 1000
 
@@ -62,12 +63,13 @@ class SampleMemoryBuilder:
 
         vector_index_build_time_ms = None
         if finalize_index:
-            logger.info("Building vector index for sample_id={} backend={}", sample.sample_id, self.config.vector_backend)
+            logger.info("Building vector index for sample_id={} backend={}", sample.sample_id, resolved_backend)
             index_started = time.perf_counter()
             self._finalize(memory)
             vector_index_build_time_ms = (time.perf_counter() - index_started) * 1000
-            logger.info("Index ready sample_id={} backend={}", sample.sample_id, self.config.vector_backend)
+            logger.info("Index ready sample_id={} backend={}", sample.sample_id, resolved_backend)
         metrics = {
+            "vector_backend": resolved_backend,
             "memory_create_time_ms": memory_create_time_ms,
             "embedding_memory_build_time_ms": embedding_memory_build_time_ms,
             "vector_index_build_time_ms": vector_index_build_time_ms,
@@ -161,5 +163,5 @@ def _store_config(config: BenchmarkConfig) -> VectorStoreConfig:
         n_neighbors=config.jasper_n_neighbors,
         alpha=config.jasper_alpha,
         workspace_budget=config.jasper_workspace_budget,
-        beam_width=config.jasper_beam_width,
+        beam_width=config.jasper_effective_beam_width or config.jasper_beam_width,
     )

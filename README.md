@@ -94,7 +94,7 @@ locomo-jasper-bench \
   --vector-backend jasper \
   --top-k 50 \
   --context-window "${KV_WINDOW}" \
-  --kv-gpu-memory-utilization 0.52 \
+  --kv-gpu-memory-utilization 0.40 \
   --max-samples 10 \
   --log-every 1 \
   --skip-judge \
@@ -110,7 +110,7 @@ locomo-jasper-bench \
   --vector-backend qdrant \
   --top-k 50 \
   --context-window 0 \
-  --kv-gpu-memory-utilization 0.52 \
+  --kv-gpu-memory-utilization 0.40 \
   --max-samples 10 \
   --log-every 1 \
   --skip-judge \

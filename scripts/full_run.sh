@@ -88,7 +88,7 @@ for MODEL in ${MODELS}; do
           --vector-backend jasper \
           --top-k "${TOP_K}" \
           --context-window "${W}" \
-          --kv-gpu-memory-utilization 0.52 \
+          --kv-gpu-memory-utilization 0.40 \
           --max-samples 10 \
           --log-every 1 \
           --skip-judge \
@@ -106,7 +106,7 @@ for MODEL in ${MODELS}; do
         --vector-backend qdrant \
         --top-k "${TOP_K}" \
         --context-window 0 \
-        --kv-gpu-memory-utilization 0.52 \
+        --kv-gpu-memory-utilization 0.40 \
         --max-samples 10 \
         --log-every 1 \
         --skip-judge \

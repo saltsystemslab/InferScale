@@ -9,11 +9,11 @@ from .runtime_paths import configure_runtime_environment
 
 configure_runtime_environment()
 
-from .config import parse_args
-from .runner import judge_existing_run, run_benchmark
-
 
 def main(argv: list[str] | None = None) -> None:
+    from .config import parse_args
+    from .runner import judge_existing_run, run_benchmark
+
     config = parse_args(argv)
     _configure_logging()
     if config.judge_only:

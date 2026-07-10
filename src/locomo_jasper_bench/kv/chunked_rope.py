@@ -84,6 +84,18 @@ class ChunkedRopeEncoder:
             ),
         )
 
+    def compose_chunks(self, chunks: list[EncodedChunk]) -> dict[str, Any]:
+        """Compose pre-RoPE chunks into position-correct GPU KV tensors."""
+        if not chunks:
+            raise ValueError("At least one encoded chunk is required.")
+        return _compose_encoded_chunks(
+            chunks,
+            device=self.device,
+            max_position=self.max_position,
+            cos_table=self.cos_table,
+            sin_table=self.sin_table,
+        )
+
     def encode_turn_chunk(
         self,
         sample: ConversationSample,
@@ -322,13 +334,7 @@ class ChunkedRopeSampleComposer:
         return self.encoder.encode_token_ids_chunk(turn_id, token_ids)
 
     def _compose_chunks(self, chunks: list[EncodedChunk]) -> dict[str, Any]:
-        return _compose_encoded_chunks(
-            chunks,
-            device=self.device,
-            max_position=self.max_position,
-            cos_table=self.encoder.cos_table,
-            sin_table=self.encoder.sin_table,
-        )
+        return self.encoder.compose_chunks(chunks)
 
 
 def _compose_encoded_chunks(

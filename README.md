@@ -205,3 +205,43 @@ Primary summary metrics:
 - `metrics.vector_db_query_time_ms`: raw backend vector search latency.
 - Jasper graph and embedding metrics in `summary.json` and `sample_setup_metrics.csv`: `jasper_graph_gpu_mb` is the packed serialized graph size matching Jasper `total_file_size`, while `jasper_embedding_matrix_gpu_logical_mb` and `jasper_embedding_matrix_cpu_mb` describe embedding matrix storage.
 - Llama KV chunk metrics in `summary.json` and `sample_setup_metrics.csv`: `llama_kv_total_tensor_gpu_mb`, `llama_kv_chunk_tensor_gpu_mb`, `llama_kv_prefix_tensor_gpu_mb`, and `llama_kv_chunk_map_cpu_mb`.
+
+## 6. Run Multi-User Throughput
+
+The throughput benchmark ports the synthetic multi-user matrix from `ai-memory-code` to the current in-process vLLM, GPU registry, chunked-RoPE, and Mem0 implementations.
+
+Preview the full default matrix for one model without loading a model:
+
+```bash
+DRY_RUN=1 MODEL=llama CONDITIONS="no_memory prompt_injection kv_injection" \
+  bash scripts/run_throughput.sh
+```
+
+Run one model:
+
+```bash
+MODEL=llama CONDITIONS="no_memory prompt_injection kv_injection mem0" \
+  bash scripts/run_throughput.sh
+```
+
+Run all configured model aliases:
+
+```bash
+MODELS="llama mistral qwen" bash scripts/full_throughput.sh
+```
+
+`MATRIX` accepts comma-separated `USERS:TOKENS` points, and `REQUESTS_PER_USER`, `MAX_OUTPUT_TOKENS`, `WARMUP_BATCHES`, `TOP_K`, `GPU_MEMORY_UTILIZATION`, and `VECTOR_BACKEND` override the other benchmark controls.
+
+The default matrix matches the stale benchmark: 10, 25, and 50 users at 512, 1024, 2048, and 4096 memory tokens, plus 100 users at 512, 1024, and 2048 memory tokens.
+
+The Mem0 condition uses the current OpenAI-compatible embedder and defaults to the current local Qdrant adapter, so it requires `OPENAI_API_KEY` or a local `OPENAI_BASE_URL`.
+
+Set `VECTOR_BACKEND=jasper` to measure the current Jasper adapter instead.
+
+Each run writes to `${BENCHMARK_RESULTS_ROOT}/throughput/<run-id>/` and includes `config.json`, `system.json`, one CSV per completed condition, `throughput_merged.csv`, `summary.json`, `throughput_report.md`, worker result JSON, and `run.log`.
+
+No-memory, prompt-injection, and KV-injection QPS time only `llm.generate()`.
+
+Offline KV requests identify users through the connector's exact token-prefix scan, so that lookup cost is included in KV QPS.
+
+Mem0 QPS includes query embedding, retrieval, prompt construction, and generation, while memory setup, KV precomputation, and engine startup are reported separately.

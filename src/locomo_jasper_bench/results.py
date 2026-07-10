@@ -109,6 +109,7 @@ def summarize_records(
         "kv_context_prefix_tokens_max",
         "kv_context_prefix_truncated_tokens",
         "kv_store_gpu_mb",
+        "jasper_effective_beam_width",
         "prefix_engine_time_to_first_token_ms",
     ):
         summary = _numeric_summary(_metric_values(rows, key))

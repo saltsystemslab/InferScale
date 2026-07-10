@@ -76,7 +76,7 @@ class QdrantVectorStore:
 
     def search(self, query_vector: np.ndarray | list[float], top_k: int) -> tuple[list[SearchHit], SearchMetrics]:
         if self.vector_count == 0:
-            return [], SearchMetrics(0.0)
+            return [], SearchMetrics(0.0, vector_backend="qdrant")
         query = np.asarray(query_vector, dtype=np.float32)
         if query.ndim != 1:
             raise ValueError("query_vector must be one-dimensional")
@@ -94,7 +94,7 @@ class QdrantVectorStore:
         elapsed_ms = (time.perf_counter() - started) * 1000
         points = getattr(result, "points", result)
         hits = [self._hit_from_point(point, rank) for rank, point in enumerate(points, start=1)]
-        return hits, SearchMetrics(elapsed_ms)
+        return hits, SearchMetrics(elapsed_ms, vector_backend="qdrant")
 
     def close(self) -> None:
         close = getattr(self._client, "close", None)

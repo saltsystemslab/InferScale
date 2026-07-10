@@ -94,14 +94,27 @@ class JasperVectorStore:
 
     def search(self, query_vector: np.ndarray | list[float], top_k: int) -> tuple[list[SearchHit], SearchMetrics]:
         if self._vectors is None or self._vectors.size == 0:
-            return [], SearchMetrics(0.0)
+            return [], SearchMetrics(
+                0.0,
+                vector_backend="jasper",
+                jasper_effective_beam_width=self.config.beam_width,
+            )
         query = _as_float32_vector(query_vector, name="query_vector")
         if query.shape[0] != self._vectors.shape[1]:
             raise ValueError(f"query dim {query.shape[0]} does not match store dim {self._vectors.shape[1]}")
         top_k = max(1, min(top_k, self.vector_count))
+        if top_k > self.config.beam_width:
+            raise ValueError(
+                f"Jasper top_k={top_k} exceeds beam_width={self.config.beam_width}; "
+                "use an effective beam width at least as large as top_k."
+            )
 
         hits, search_time_ms = self._search_jasper(query, top_k)
-        return hits, SearchMetrics(search_time_ms)
+        return hits, SearchMetrics(
+            search_time_ms,
+            vector_backend="jasper",
+            jasper_effective_beam_width=self.config.beam_width,
+        )
 
     def close(self) -> None:
         if self._graph is not None:
@@ -175,7 +188,7 @@ class JasperVectorStore:
         for ordinal, distance in zip(index_values, distance_values):
             row = self._payload_by_ordinal(int(ordinal))
             if row is None:
-                continue
+                raise RuntimeError(f"Jasper returned invalid vector ordinal {int(ordinal)}.")
             item_id, payload = row
             score = float(-distance)
             hits.append(

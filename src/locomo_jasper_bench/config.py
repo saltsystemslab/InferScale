@@ -57,6 +57,8 @@ DistanceMetric = Literal["ip", "l2"]
 AnswerBackend = Literal["vllm-kv", "vllm-prefix"]
 JudgeProvider = Literal["vllm", "openai", "none"]
 VectorBackend = Literal["jasper", "qdrant"]
+CONTEXT_WINDOW_UNIT = "turns"
+MAX_JASPER_BEAM_WIDTH = 959
 
 
 def configured_answer_models() -> dict[str, str]:
@@ -140,7 +142,8 @@ class BenchmarkConfig:
     max_judge_tokens: int = 4
 
     kv_connector_module: str = "locomo_jasper_bench.kv.gpu_connector"
-    context_window: int = 3
+    context_window: int = 0
+    context_window_unit: Literal["turns"] = CONTEXT_WINDOW_UNIT
     kv_gpu_memory_utilization: float = 0.52
     kv_max_model_len: int = 32768
     kv_max_position: int = 32768
@@ -156,6 +159,7 @@ class BenchmarkConfig:
 
     def to_jsonable(self) -> dict[str, object]:
         data = asdict(self)
+        data["jasper_effective_beam_width"] = self.jasper_effective_beam_width
         for key in ("dataset_path", "results_dir", "embedding_cache_dir"):
             if data[key] is not None:
                 data[key] = str(data[key])
@@ -163,6 +167,12 @@ class BenchmarkConfig:
             if data.get(key):
                 data[key] = "<redacted>"
         return data
+
+    @property
+    def jasper_effective_beam_width(self) -> int | None:
+        if self.vector_backend != "jasper":
+            return None
+        return max(self.jasper_beam_width, self.top_k)
 
     @property
     def run_dir(self) -> Path:
@@ -235,9 +245,9 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     parser.add_argument(
         "--context-window",
         type=int,
-        default=int(os.environ.get("LOCOMO_KV_CONTEXT_WINDOW", "3")),
+        default=int(os.environ.get("LOCOMO_KV_CONTEXT_WINDOW", "0")),
         help=(
-            "Number of previous LoCoMo sessions to include as prefix context when "
+            "Number of immediately preceding LoCoMo turns to include as prefix context when "
             "pre-RoPE encoding each selected KV memory turn. 0 encodes each turn in isolation."
         ),
     )
@@ -271,8 +281,19 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     ns = parser.parse_args(raw_argv)
     if ns.answer_backend not in {"vllm-kv", "vllm-prefix"}:
         parser.error("--answer-backend must be vllm-kv or vllm-prefix.")
+    if ns.top_k < 1:
+        parser.error("--top-k must be >= 1.")
+    if ns.jasper_beam_width < 1:
+        parser.error("--jasper-beam-width must be >= 1.")
+    if ns.vector_backend == "jasper" and max(ns.jasper_beam_width, ns.top_k) > MAX_JASPER_BEAM_WIDTH:
+        parser.error(
+            "Effective Jasper beam width must be <= "
+            f"{MAX_JASPER_BEAM_WIDTH}; got max({ns.jasper_beam_width}, {ns.top_k})."
+        )
     if ns.context_window < 0:
         parser.error("--context-window must be >= 0.")
+    if ns.context_window > 0 and ns.answer_backend != "vllm-kv":
+        parser.error("--context-window > 0 is supported only with --answer-backend vllm-kv.")
     if ns.skip_judge and ns.judge_provider is not None:
         parser.error("--skip-judge cannot be combined with --judge.")
     try:

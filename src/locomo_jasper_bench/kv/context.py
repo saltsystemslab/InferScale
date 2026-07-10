@@ -33,7 +33,7 @@ def build_turn_context_encoding_plan(
         )
 
     context_token_ids: list[int] = []
-    for context_turn in previous_session_context_turns(sample, turn, context_window):
+    for context_turn in previous_turn_context_turns(sample, turn, context_window):
         context_token_ids.extend(
             _turn_token_ids(
                 tokenizer,
@@ -65,15 +65,27 @@ def build_turn_context_encoding_plan(
     )
 
 
-def previous_session_context_turns(sample: ConversationSample, turn: Turn, context_window: int) -> list[Turn]:
-    if context_window <= 0:
+def previous_turn_context_turns(
+    sample: ConversationSample,
+    turn: Turn,
+    context_window: int,
+) -> list[Turn]:
+    if context_window < 0:
+        raise ValueError("context_window must be >= 0.")
+    if context_window == 0:
         return []
-    first_session_index = turn.session_index - context_window
-    return [
-        candidate
-        for candidate in sample.turns
-        if first_session_index <= candidate.session_index < turn.session_index
-    ]
+
+    try:
+        target_index = next(
+            index for index, candidate in enumerate(sample.turns) if candidate.id == turn.id
+        )
+    except StopIteration as exc:
+        raise ValueError(
+            f"Turn {turn.id} is not present in sample {sample.sample_id}."
+        ) from exc
+
+    first_context_index = max(0, target_index - context_window)
+    return sample.turns[first_context_index:target_index]
 
 
 def format_memory_turn(turn: Turn) -> str:

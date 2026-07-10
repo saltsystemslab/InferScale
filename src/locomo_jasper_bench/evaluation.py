@@ -74,6 +74,10 @@ class QuestionEvaluator:
                     "query_retrieval_time_ms": retrieval_metrics.total_time_ms,
                 }
             )
+            if retrieval_metrics.vector_backend is not None:
+                metrics["resolved_vector_backend"] = retrieval_metrics.vector_backend
+            if retrieval_metrics.jasper_effective_beam_width is not None:
+                metrics["jasper_effective_beam_width"] = retrieval_metrics.jasper_effective_beam_width
         return {
             "run_id": self.config.run_id,
             "mode": result_mode(self.config),
@@ -118,6 +122,8 @@ class QuestionEvaluator:
             embedding_time_ms=embedding_time_ms,
             search_time_ms=store_metrics.search_time_ms,
             total_time_ms=total_time_ms,
+            vector_backend=store_metrics.vector_backend,
+            jasper_effective_beam_width=store_metrics.jasper_effective_beam_width,
         )
 
     def _mem0_store_search_metrics(self, memory: Any) -> SearchMetrics:
@@ -127,4 +133,6 @@ class QuestionEvaluator:
             return metrics
         return SearchMetrics(
             search_time_ms=float(getattr(metrics, "search_time_ms", 0.0) or 0.0),
+            vector_backend=getattr(metrics, "vector_backend", None),
+            jasper_effective_beam_width=getattr(metrics, "jasper_effective_beam_width", None),
         )

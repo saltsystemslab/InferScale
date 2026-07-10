@@ -1,6 +1,7 @@
 # LoCoMo KV Cache Benchmarks
 
-This repository runs a LoCoMo benchmark comparison between in-process vLLM answer backends. On Runpod, runtime files are kept under `/workspace` so model downloads, caches, temp files, and results persist on the hosted partition.
+This repository runs a LoCoMo benchmark comparison between in-process vLLM answer backends.
+On Runpod, runtime files are kept under `/workspace` so model downloads, caches, temp files, and results persist on the hosted partition.
 
 - `vllm-kv`: retrieved memories are encoded with the package's chunked-RoPE helpers, then injected through the top-level GPU KV connector.
 - `vllm-prefix`: the same retrieved memory tokens are included as a normal vLLM prompt prefix.
@@ -56,7 +57,8 @@ alias resolves to `Qwen/Qwen2.5-7B-Instruct`; `qwen3-14b` resolves to
 bash scripts/setup_remote.sh
 ```
 
-The setup script initializes Jasper, installs the benchmark, Jasper, vLLM, and CUDA wheel constraints, downloads LoCoMo to `data/locomo10.json` when needed, and precomputes embeddings into `${BENCHMARK_CACHE_ROOT}/embeddings`. Pre-embedding is required and setup fails if embedding credentials or network access are missing.
+The setup script initializes Jasper, installs the benchmark, Jasper, vLLM, and CUDA wheel constraints, downloads LoCoMo to `data/locomo10.json` when needed, and precomputes embeddings into `${BENCHMARK_CACHE_ROOT}/embeddings`.
+Pre-embedding is required and setup fails if embedding credentials or network access are missing.
 
 Activate the environment before running benchmark commands:
 
@@ -66,16 +68,23 @@ source .venv/bin/activate
 
 Timed runs read from that cache and fail if an embedding is missing.
 
-## 3. Run KV And Prefix
+## 3. Run Jasper KV And Qdrant Prefix
 
-Run answer generation with judging skipped. This keeps the GPU focused on the in-process answer backend; judge result files afterward.
+Run answer generation with judging skipped.
+This keeps the GPU focused on the in-process answer backend; judge result files afterward.
+
+Jasper-KV with `--context-window 0` is the isolated target-turn control.
+The `w5`, `w20`, and `w50` variants condition the retained target-turn KV on the immediately preceding 5, 20, or 50 turns, so they are KV turn-context ablations rather than information-equivalent prefix comparisons.
+Qdrant-prefix is a separate retrieval and prompt-prefix baseline.
+`--jasper-beam-width` is a minimum search width, and the benchmark automatically uses at least `top_k` candidates.
+The configured and effective beam widths are recorded in the run artifacts.
 
 ```bash
 RUN_STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 ANSWER_MODEL="${ANSWER_MODEL:-llama}"
-KV_RUN_ID="${ANSWER_MODEL}-kv-gpu-jasper10-${RUN_STAMP}"
-PREFIX_RUN_ID="${ANSWER_MODEL}-prefix-gpu-jasper10-${RUN_STAMP}"
-QDRANT_PREFIX_RUN_ID="${ANSWER_MODEL}-prefix-qdrant10-${RUN_STAMP}"
+KV_WINDOW="${KV_WINDOW:-0}"
+KV_RUN_ID="${ANSWER_MODEL}-kv-gpu-jasper10-k50-w${KV_WINDOW}-${RUN_STAMP}"
+QDRANT_PREFIX_RUN_ID="${ANSWER_MODEL}-prefix-qdrant10-k50-${RUN_STAMP}"
 
 locomo-jasper-bench \
   --dataset data/locomo10.json \
@@ -84,7 +93,7 @@ locomo-jasper-bench \
   --answer-backend vllm-kv \
   --vector-backend jasper \
   --top-k 50 \
-  --context-window 3 \
+  --context-window "${KV_WINDOW}" \
   --kv-gpu-memory-utilization 0.52 \
   --max-samples 10 \
   --log-every 1 \
@@ -98,23 +107,9 @@ locomo-jasper-bench \
   --results-dir "${BENCHMARK_RESULTS_ROOT}" \
   --answer-model "${ANSWER_MODEL}" \
   --answer-backend vllm-prefix \
-  --vector-backend jasper \
-  --top-k 50 \
-  --kv-gpu-memory-utilization 0.52 \
-  --max-samples 10 \
-  --log-every 1 \
-  --skip-judge \
-  --run-id "${PREFIX_RUN_ID}"
-```
-
-```bash
-locomo-jasper-bench \
-  --dataset data/locomo10.json \
-  --results-dir "${BENCHMARK_RESULTS_ROOT}" \
-  --answer-model "${ANSWER_MODEL}" \
-  --answer-backend vllm-prefix \
   --vector-backend qdrant \
   --top-k 50 \
+  --context-window 0 \
   --kv-gpu-memory-utilization 0.52 \
   --max-samples 10 \
   --log-every 1 \
@@ -122,9 +117,20 @@ locomo-jasper-bench \
   --run-id "${QDRANT_PREFIX_RUN_ID}"
 ```
 
-All three runs write query-start-to-answer-complete latency as `metrics.query_to_answer_ms`. This is a single stopwatch around query embedding, vector retrieval, prompt/KV composition, and answer generation. It does not include memory storage/index construction, KV precompute, vLLM startup, or judging.
+Both runs write query-start-to-answer-complete latency as `metrics.query_to_answer_ms`.
+This is a single stopwatch around query embedding, vector retrieval, prompt/KV composition, and answer generation.
+It does not include memory storage/index construction, KV precompute, vLLM startup, or judging.
 
-TTFT metrics come from vLLM request timing on the real answer `generate()` call. They are populated only when vLLM returns usable per-request metrics on `RequestOutput.metrics`; no one-token probe or synthetic fallback is used.
+TTFT metrics come from vLLM request timing on the real answer `generate()` call.
+They are populated only when vLLM returns usable per-request metrics on `RequestOutput.metrics`; no one-token probe or synthetic fallback is used.
+
+The standard sweep runs four Jasper-KV windows and one Qdrant-prefix baseline for every model and top-k pair, for `4 models x 5 top-k values x 5 variants = 100 runs`.
+
+```bash
+DRY_RUN=1 BENCHMARK_RESULTS_ROOT="${BENCHMARK_RESULTS_ROOT}" bash scripts/full_run.sh
+BENCHMARK_RESULTS_ROOT="${BENCHMARK_RESULTS_ROOT}" bash scripts/full_run.sh
+```
+
 
 ## 4. Judge Accuracy
 
@@ -180,13 +186,13 @@ Each run writes to `${BENCHMARK_RESULTS_ROOT}/<run-id>/`:
 - `plots/tokens_vs_accuracy_binned.png`
 - `plots/tokens_vs_accuracy_binned.csv`
 
-`query_metrics.csv` is derived from `predictions.jsonl` after normal generation and after `--judge-only`. It uses `metrics.kv_memory_tokens` as the retrieved memory token count and computes total input prompt tokens as `memory + query tokens`.
+`query_metrics.csv` is derived from `predictions.jsonl` after normal generation and after `--judge-only`.
+It uses `metrics.kv_memory_tokens` as the retrieved memory token count and computes total input prompt tokens as `memory + query tokens`.
 
 Read the primary metrics:
 
 ```bash
 cat "${BENCHMARK_RESULTS_ROOT}/${KV_RUN_ID}/summary.json"
-cat "${BENCHMARK_RESULTS_ROOT}/${PREFIX_RUN_ID}/summary.json"
 cat "${BENCHMARK_RESULTS_ROOT}/${QDRANT_PREFIX_RUN_ID}/summary.json"
 ```
 

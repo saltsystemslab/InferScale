@@ -15,13 +15,13 @@
 # Optional:     STAMP  RUNIDS_FROM  DRY_RUN  MODELS/TOPKS/WINDOWS (grid mode only)
 #
 # Usage:
-#   BENCHMARK_RESULTS_ROOT=/r JUDGE_BASE_URL=... JUDGE_API_KEY=... JUDGE_MODEL=... ./judge_locomo_results.sh
-#   DRY_RUN=1 ...            ./judge_locomo_results.sh   # preview run-id list + command shape
-#   RUNIDS_FROM=grid ...     ./judge_locomo_results.sh   # rebuild ids from the grid instead
+#   BENCHMARK_RESULTS_ROOT=/r JUDGE_BASE_URL=... JUDGE_API_KEY=... JUDGE_MODEL=... bash scripts/judge.sh
+#   DRY_RUN=1 ...            bash scripts/judge.sh   # preview run-id list + command shape
+#   RUNIDS_FROM=grid ...     bash scripts/judge.sh   # rebuild ids from the grid instead
 
 set -uo pipefail
 
-STAMP="<RUN_STAMP>"  # e.g. 20260706T073907Z
+STAMP="${STAMP:-<RUN_STAMP>}"  # e.g. 20260706T073907Z
 RUNIDS_FROM="${RUNIDS_FROM:-discover}"
 DRY_RUN="${DRY_RUN:-0}"
 
@@ -33,7 +33,7 @@ DRY_RUN="${DRY_RUN:-0}"
 # Grid -- only used when RUNIDS_FROM=grid. Must match the sweep that produced results.
 MODELS="${MODELS:-llama mistral qwen qwen3-14b}"
 TOPKS="${TOPKS:-5 10 20 50 100}"
-WINDOWS="${WINDOWS:-0 1 3 5}"
+WINDOWS="${WINDOWS:-0 5 20 50}"
 
 # ----- Build list of run-ids -----------------------------------------------
 declare -a RUN_IDS=()
@@ -44,7 +44,6 @@ if [[ "${RUNIDS_FROM}" == "grid" ]]; then
       for W in ${WINDOWS}; do
         RUN_IDS+=("${MODEL}-kv-gpu-jasper10-k${TOP_K}-w${W}-${STAMP}")
       done
-      RUN_IDS+=("${MODEL}-prefix-gpu-jasper10-k${TOP_K}-${STAMP}")
       RUN_IDS+=("${MODEL}-prefix-qdrant10-k${TOP_K}-${STAMP}")
     done
   done
@@ -52,10 +51,12 @@ elif [[ "${RUNIDS_FROM}" == "discover" ]]; then
   # Any path under results-dir mentioning the stamp -> pull out the run-id token.
   # Filter to tokens containing the tool's backend markers so result files that merely
   # embed the stamp (e.g. metrics-<stamp>.json) don't get mistaken for run-ids.
-  mapfile -t RUN_IDS < <(
+  while IFS= read -r RUN_ID; do
+    RUN_IDS+=("${RUN_ID}")
+  done < <(
     find "${BENCHMARK_RESULTS_ROOT}" -name "*${STAMP}*" 2>/dev/null \
       | grep -oE "[A-Za-z0-9]+(-[A-Za-z0-9]+)*-${STAMP}" \
-      | grep -E "(jasper10|qdrant10)" \
+      | grep -E -- "-(kv-gpu-jasper10|prefix-qdrant10)-" \
       | sort -u
   )
 else

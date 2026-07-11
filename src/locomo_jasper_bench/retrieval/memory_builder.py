@@ -7,6 +7,7 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 from loguru import logger
@@ -24,7 +25,11 @@ from .memory_llm_cache import CachedMemoryLLM
 from .prepared_retriever import PreparedMem0Retriever
 
 
-_MEM0_PROMPT_PATCH_LOCK = threading.RLock()
+_MEM0_PROMPT_PATCH_LOCK = threading.Lock()
+_MEM0_OBSERVATION_DATE: ContextVar[str | None] = ContextVar(
+    "mem0_observation_date",
+    default=None,
+)
 
 
 def fact_catalog_store_for(config: BenchmarkConfig) -> FactCatalogStore:
@@ -175,53 +180,57 @@ class SampleMemoryBuilder:
             staging_config,
             inference_enabled=True,
         )
-        self._install_embedding_cache(memory)
-        self._install_memory_llm_cache(memory)
-        self._reset_vector_store(memory)
-        memory_create_time_ms = (time.perf_counter() - create_started) * 1000
+        try:
+            self._install_embedding_cache(memory)
+            self._install_memory_llm_cache(memory)
+            self._reset_vector_store(memory)
+            memory_create_time_ms = (time.perf_counter() - create_started) * 1000
 
-        build_started = time.perf_counter()
-        facts: list[MemoryFact] = []
-        seen_fact_ids: set[str] = set()
-        for turn in sample.turns:
-            metadata = source_metadata(sample, turn)
-            role = str(metadata["role"])
-            with _mem0_observation_date(str(metadata["created_at"])):
-                result = memory.add(
-                    [{"role": role, "content": format_turn_for_memory(turn)}],
-                    user_id=sample.sample_id,
-                    infer=True,
-                    metadata=metadata,
-                )
-            for text in _memory_result_texts(result):
-                fact = make_memory_fact(text, sample, turn)
-                if fact.id not in seen_fact_ids:
-                    facts.append(fact)
-                    seen_fact_ids.add(fact.id)
-        catalog_path = self._fact_catalog_store.write(sample, facts)
-        memory._locomo_fact_catalog = tuple(facts)
-        logger.info(
-            "Materialized {} inferred Mem0 facts for sample_id={} catalog={}",
-            len(facts),
-            sample.sample_id,
-            catalog_path,
-        )
-        build_time_ms = (time.perf_counter() - build_started) * 1000
-        cache_stats = self.memory_llm_cache_stats(memory)
-        metrics: dict[str, Any] = {
-            "vector_backend": "qdrant",
-            "memory_create_time_ms": memory_create_time_ms,
-            "embedding_memory_build_time_ms": build_time_ms,
-            "vector_index_build_time_ms": None,
-            "memory_setup_time_ms": (time.perf_counter() - total_started) * 1000,
-            "memory_input_turn_count": len(sample.turns),
-            "memory_inferred_record_count": len(facts),
-            "memory_fact_catalog_loaded": 0,
-        }
-        if cache_stats is not None:
-            metrics["memory_llm_cache_hits"] = int(cache_stats["hits"])
-            metrics["memory_llm_cache_misses"] = int(cache_stats["misses"])
-        return memory, metrics
+            build_started = time.perf_counter()
+            facts: list[MemoryFact] = []
+            seen_fact_ids: set[str] = set()
+            for turn in sample.turns:
+                metadata = source_metadata(sample, turn)
+                role = str(metadata["role"])
+                with _mem0_observation_date(str(metadata["created_at"])):
+                    result = memory.add(
+                        [{"role": role, "content": format_turn_for_memory(turn)}],
+                        user_id=sample.sample_id,
+                        infer=True,
+                        metadata=metadata,
+                    )
+                for text in _memory_result_texts(result):
+                    fact = make_memory_fact(text, sample, turn)
+                    if fact.id not in seen_fact_ids:
+                        facts.append(fact)
+                        seen_fact_ids.add(fact.id)
+            catalog_path = self._fact_catalog_store.write(sample, facts)
+            memory._locomo_fact_catalog = tuple(facts)
+            logger.info(
+                "Materialized {} inferred Mem0 facts for sample_id={} catalog={}",
+                len(facts),
+                sample.sample_id,
+                catalog_path,
+            )
+            build_time_ms = (time.perf_counter() - build_started) * 1000
+            cache_stats = self.memory_llm_cache_stats(memory)
+            metrics: dict[str, Any] = {
+                "vector_backend": "qdrant",
+                "memory_create_time_ms": memory_create_time_ms,
+                "embedding_memory_build_time_ms": build_time_ms,
+                "vector_index_build_time_ms": None,
+                "memory_setup_time_ms": (time.perf_counter() - total_started) * 1000,
+                "memory_input_turn_count": len(sample.turns),
+                "memory_inferred_record_count": len(facts),
+                "memory_fact_catalog_loaded": 0,
+            }
+            if cache_stats is not None:
+                metrics["memory_llm_cache_hits"] = int(cache_stats["hits"])
+                metrics["memory_llm_cache_misses"] = int(cache_stats["misses"])
+            return memory, metrics
+        except BaseException:
+            self.close(memory)
+            raise
 
     def _create_memory(
         self,
@@ -451,20 +460,31 @@ def _memory_result_ids(result: Any) -> list[str]:
 @contextmanager
 def _mem0_observation_date(created_at: str) -> Iterator[None]:
     """Supply the source date omitted by mem0ai 2.0.11's OSS add path."""
+    _install_mem0_observation_date_wrapper()
+    token = _MEM0_OBSERVATION_DATE.set(created_at)
+    try:
+        yield
+    finally:
+        _MEM0_OBSERVATION_DATE.reset(token)
+
+
+def _install_mem0_observation_date_wrapper() -> None:
+    """Install one process-wide wrapper whose timestamp is context-local."""
     os.environ.setdefault("MEM0_DIR", default_mem0_dir_string())
     os.environ.setdefault("MEM0_TELEMETRY", "false")
     importlib.import_module("mem0")
     mem0_main = importlib.import_module("mem0.memory.main")
 
-    original = mem0_main.generate_additive_extraction_prompt
-
-    def with_timestamp(*args: Any, **kwargs: Any) -> Any:
-        kwargs.setdefault("timestamp", created_at)
-        return original(*args, **kwargs)
-
     with _MEM0_PROMPT_PATCH_LOCK:
+        current = mem0_main.generate_additive_extraction_prompt
+        if getattr(current, "_locomo_observation_date_wrapper", False):
+            return
+
+        def with_timestamp(*args: Any, **kwargs: Any) -> Any:
+            created_at = _MEM0_OBSERVATION_DATE.get()
+            if created_at is not None:
+                kwargs.setdefault("timestamp", created_at)
+            return current(*args, **kwargs)
+
+        with_timestamp._locomo_observation_date_wrapper = True  # type: ignore[attr-defined]
         mem0_main.generate_additive_extraction_prompt = with_timestamp
-        try:
-            yield
-        finally:
-            mem0_main.generate_additive_extraction_prompt = original

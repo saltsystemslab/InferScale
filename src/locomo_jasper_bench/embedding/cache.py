@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import tempfile
 from pathlib import Path
 from typing import Any, Literal
 
@@ -220,10 +221,23 @@ class CachedEmbedder:
 
     def _write_array(self, path: Path, array: np.ndarray) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-        with tmp_path.open("wb") as fh:
-            np.save(fh, array.astype(np.float32, copy=False))
-        os.replace(tmp_path, path)
+        tmp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=path.parent,
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as fh:
+                tmp_path = Path(fh.name)
+                np.save(fh, array.astype(np.float32, copy=False))
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp_path, path)
+        finally:
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
 
 
 def _embedding_purpose(args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:

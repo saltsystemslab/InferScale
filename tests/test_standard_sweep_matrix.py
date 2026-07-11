@@ -10,6 +10,20 @@ ROOT = Path(__file__).resolve().parents[1]
 MODELS = ("llama", "mistral", "qwen", "qwen3-14b")
 TOP_KS = (5, 10, 20, 50, 100)
 KV_WINDOWS = (0, 5, 20, 50)
+INDIVIDUAL_RUN_SCRIPTS = {
+    5: "individual/gpu0_topk5.sh",
+    10: "individual/gpu1_topk10.sh",
+    20: "individual/gpu2_topk20.sh",
+    50: "individual/gpu3_topk50.sh",
+    100: "individual/gpu4_topk100.sh",
+}
+INDIVIDUAL_JUDGE_SCRIPTS = {
+    5: "individual/judge_gpu0_topk5.sh",
+    10: "individual/judge_gpu1_topk10.sh",
+    20: "individual/judge_gpu2_topk20.sh",
+    50: "individual/judge_gpu3_topk50.sh",
+    100: "individual/judge_gpu4_topk100.sh",
+}
 
 
 def _expected_full_run_ids(stamp: str) -> set[str]:
@@ -83,6 +97,72 @@ def test_full_run_dry_run_emits_the_100_run_mem0_fact_matrix(tmp_path: Path) -> 
     assert all("--vector-backend jasper" in command for command in kv_commands)
     assert all("--vector-backend qdrant" in command for command in prefix_commands)
     assert all("--context-window 0" in command and "-s0-" in command for command in prefix_commands)
+
+
+def test_full_run_honors_shared_run_stamp(tmp_path: Path) -> None:
+    stamp = "20260711T220000Z"
+    output = _run_script(
+        "full_run.sh",
+        tmp_path,
+        RUN_STAMP=stamp,
+        MODELS="qwen",
+        TOPKS="5",
+        KV_WINDOWS="0",
+    )
+
+    assert f"Sweep complete: 2 runs (stamp {stamp})" in output
+    assert f"qwen-kv-mem0-jasper10-k5-s0-{stamp}" in output
+    assert f"qwen-prefix-mem0-qdrant10-k5-s0-{stamp}" in output
+
+
+def test_individual_judge_scripts_partition_the_shared_sweep(tmp_path: Path) -> None:
+    stamp = "20260711T220000Z"
+    combined_run_ids: set[str] = set()
+
+    for top_k, script in INDIVIDUAL_JUDGE_SCRIPTS.items():
+        output = _run_script(
+            script,
+            tmp_path,
+            RUN_STAMP=stamp,
+            JUDGE_BASE_URL="http://judge.invalid",
+            JUDGE_API_KEY="secret",
+            JUDGE_MODEL="judge-model",
+        )
+        run_ids = _judge_run_ids(output)
+        expected = {
+            *(
+                f"qwen3-14b-kv-mem0-jasper10-k{top_k}-s{window}-{stamp}"
+                for window in KV_WINDOWS
+            ),
+            f"qwen3-14b-prefix-mem0-qdrant10-k{top_k}-s0-{stamp}",
+        }
+
+        assert f"Would judge 5 run(s) for stamp {stamp} (source: grid)." in output
+        assert run_ids == expected
+        combined_run_ids.update(run_ids)
+
+    assert len(combined_run_ids) == 25
+
+
+def test_individual_run_scripts_partition_the_qwen3_sweep(tmp_path: Path) -> None:
+    stamp = "20260711T220000Z"
+    combined_run_ids: set[str] = set()
+
+    for top_k, script in INDIVIDUAL_RUN_SCRIPTS.items():
+        output = _run_script(
+            script,
+            tmp_path,
+            RUN_STAMP=stamp,
+        )
+        run_ids = set(re.findall(r"--run-id ([^\s]+)", output))
+
+        assert f"Sweep complete: 5 runs (stamp {stamp})" in output
+        assert len(run_ids) == 5
+        assert all(run_id.startswith("qwen3-14b-") for run_id in run_ids)
+        assert all(f"-k{top_k}-" in run_id for run_id in run_ids)
+        combined_run_ids.update(run_ids)
+
+    assert len(combined_run_ids) == 25
 
 
 def test_full_run_dry_run_omits_removed_comparison_steps(tmp_path: Path) -> None:

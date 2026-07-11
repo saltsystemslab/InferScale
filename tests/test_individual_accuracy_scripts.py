@@ -19,7 +19,7 @@ SCRIPT_CASES = (
 
 
 @pytest.mark.parametrize(("script_name", "gpu", "top_k"), SCRIPT_CASES)
-def test_individual_accuracy_script_emits_15_runs(
+def test_individual_accuracy_script_emits_five_qwen3_runs(
     tmp_path: Path,
     script_name: str,
     gpu: str,
@@ -39,16 +39,13 @@ def test_individual_accuracy_script_emits_15_runs(
     )
 
     assert completed.returncode == 0, completed.stderr or completed.stdout
-    assert "Sweep complete: 15 runs" in completed.stdout
+    assert "Sweep complete: 5 runs" in completed.stdout
     commands = [line for line in completed.stdout.splitlines() if "--run-id" in line]
-    assert len(commands) == 15
+    assert len(commands) == 5
     assert all(f"-k{top_k}-" in command for command in commands)
     assert {re.search(r"--answer-model ([^ ]+)", command).group(1) for command in commands} == {
-        "llama",
-        "mistral",
-        "qwen",
+        "qwen3-14b",
     }
-    assert all("qwen3-14b" not in command for command in commands)
     assert f'CUDA_VISIBLE_DEVICES="${{CUDA_VISIBLE_DEVICES:-{gpu}}}"' in (
         ROOT / "scripts" / "individual" / script_name
     ).read_text()

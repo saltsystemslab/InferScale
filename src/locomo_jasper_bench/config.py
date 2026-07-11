@@ -239,6 +239,7 @@ class BenchmarkConfig:
 
     max_samples: int | None = None
     max_questions: int | None = None
+    preembed_workers: int = 4
     log_every: int = 5
     check_catalogs: bool = False
     preembed_only: bool = False
@@ -399,6 +400,12 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
 
     parser.add_argument("--max-samples", type=int)
     parser.add_argument("--max-questions", type=int)
+    parser.add_argument(
+        "--preembed-workers",
+        type=int,
+        default=int(os.environ.get("LOCOMO_PREEMBED_WORKERS", "4")),
+        help="Concurrent conversations used by --preembed-only; turns within each conversation remain serial.",
+    )
     parser.add_argument("--log-every", type=int, default=int(os.environ.get("LOCOMO_LOG_EVERY", "5")))
     parser.add_argument(
         "--check-catalogs",
@@ -446,6 +453,8 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
         )
     if ns.context_window < 0:
         parser.error("--context-window must be >= 0.")
+    if ns.preembed_workers < 1:
+        parser.error("--preembed-workers must be >= 1.")
     if ns.kv_block_size < 1:
         parser.error("--kv-block-size must be >= 1.")
     if ns.skip_judge and ns.judge_provider is not None:

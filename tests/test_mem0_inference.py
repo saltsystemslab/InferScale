@@ -153,7 +153,7 @@ def test_locomo_roles_and_timestamps_match_pinned_memory_benchmark() -> None:
         locomo_timestamp("sometime last spring")
 
 
-def test_mem0_observation_date_shim_anchors_prompt_and_restores_global(
+def test_mem0_observation_date_shim_anchors_prompt_and_keeps_wrapper_installed(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -164,7 +164,6 @@ def test_mem0_observation_date_shim_anchors_prompt_and_restores_global(
     del mem0
     from mem0.memory import main as mem0_main
 
-    original = mem0_main.generate_additive_extraction_prompt
     with _mem0_observation_date("2026-01-02T00:00:00+00:00"):
         prompt = mem0_main.generate_additive_extraction_prompt(
             existing_memories=[],
@@ -173,7 +172,43 @@ def test_mem0_observation_date_shim_anchors_prompt_and_restores_global(
         )
 
     assert "## Observation Date\n2026-01-02" in prompt
-    assert mem0_main.generate_additive_extraction_prompt is original
+    installed = mem0_main.generate_additive_extraction_prompt
+    assert getattr(installed, "_locomo_observation_date_wrapper", False) is True
+
+    with _mem0_observation_date("2026-02-03T00:00:00+00:00"):
+        second_prompt = mem0_main.generate_additive_extraction_prompt(
+            existing_memories=[],
+            new_messages="user: Bob likes coffee.",
+            last_k_messages=[],
+        )
+
+    assert "## Observation Date\n2026-02-03" in second_prompt
+    assert mem0_main.generate_additive_extraction_prompt is installed
+
+
+def test_mem0_observation_dates_are_isolated_across_threads() -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from mem0.memory import main as mem0_main
+
+    barrier = Barrier(2)
+
+    def render(created_at: str) -> str:
+        with _mem0_observation_date(created_at):
+            barrier.wait(timeout=5)
+            return mem0_main.generate_additive_extraction_prompt(
+                existing_memories=[],
+                new_messages="user: Alice likes tea.",
+                last_k_messages=[],
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(render, "2026-01-02T00:00:00+00:00")
+        second = executor.submit(render, "2026-02-03T00:00:00+00:00")
+
+    assert "## Observation Date\n2026-01-02" in first.result()
+    assert "## Observation Date\n2026-02-03" in second.result()
 
 
 def test_fact_catalog_hits_promote_stable_source_metadata() -> None:

@@ -57,6 +57,22 @@ def test_structured_judge_token_budget_defaults_to_512_and_remains_configurable(
     assert parse_args(["--judge", "none", "--max-judge-tokens", "256"]).max_judge_tokens == 256
 
 
+def test_preembed_workers_default_environment_and_validation(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.delenv("LOCOMO_PREEMBED_WORKERS", raising=False)
+    assert parse_args(["--judge", "none"]).preembed_workers == 4
+
+    monkeypatch.setenv("LOCOMO_PREEMBED_WORKERS", "8")
+    assert parse_args(["--judge", "none"]).preembed_workers == 8
+    assert parse_args(["--judge", "none", "--preembed-workers", "2"]).preembed_workers == 2
+
+    with pytest.raises(SystemExit, match="2"):
+        parse_args(["--judge", "none", "--preembed-workers", "0"])
+    assert "--preembed-workers must be >= 1" in capsys.readouterr().err
+
+
 def test_memory_llm_defaults_and_cache_root(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

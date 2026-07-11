@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 from typing import Any
 
+import numpy as np
 import pytest
 
 from locomo_jasper_bench.embedding.cache import CachedEmbedder, CachedEmbeddingMissingError
@@ -124,6 +127,31 @@ def test_cached_embedder_batch_read_mode_rejects_corrupt_entries_without_fallbac
 
     assert wrapped.batch_calls == []
     assert wrapped.scalar_calls == []
+
+
+def test_cached_embedder_concurrent_same_key_writes_are_atomic(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    barrier = Barrier(2)
+    original_save = np.save
+
+    def synchronized_save(*args: Any, **kwargs: Any) -> None:
+        barrier.wait(timeout=5)
+        original_save(*args, **kwargs)
+
+    monkeypatch.setattr("locomo_jasper_bench.embedding.cache.np.save", synchronized_save)
+    first = CachedEmbedder(RecordingEmbedder(), cache_dir=tmp_path, model="model", mode="write")
+    second = CachedEmbedder(RecordingEmbedder(), cache_dir=tmp_path, model="model", mode="write")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda cache: cache.embed("same", "add"), (first, second)))
+
+    assert results == [_vector_for("same"), _vector_for("same")]
+    cache_files = list(first.cache_dir.glob("*.npy"))
+    assert len(cache_files) == 1
+    assert np.load(cache_files[0]).tolist() == _vector_for("same")
+    assert list(first.cache_dir.glob("*.tmp")) == []
 
 
 def test_cached_memory_llm_replays_canonical_requests_and_delegates_attributes(tmp_path: Path) -> None:

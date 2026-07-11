@@ -17,6 +17,7 @@
 #   MEM0_LLM_PORT                      port for the extraction server (default: 8000)
 #   EXTRACTION_GPU_MEMORY_UTILIZATION  vllm serve GPU fraction (default: 0.85)
 #   EXTRACTION_MAX_MODEL_LEN           vLLM serve context length (fixed: 16384)
+#   EXTRACTION_WORKERS                 concurrent LoCoMo conversations (default: 4)
 #   EXTRACTION_HEALTH_TIMEOUT          seconds to wait for server health (default: 900)
 #   EXTRACTION_EXTRA_VLLM_ARGS         extra args appended to vllm serve
 #   DATASET                            LoCoMo dataset path (default: data/locomo10.json)
@@ -42,6 +43,7 @@ EXTRACTION_MODELS="${EXTRACTION_MODELS:-llama mistral qwen qwen3-14b}"
 MEM0_LLM_PORT="${MEM0_LLM_PORT:-8000}"
 EXTRACTION_GPU_MEMORY_UTILIZATION="${EXTRACTION_GPU_MEMORY_UTILIZATION:-0.85}"
 EXTRACTION_MAX_MODEL_LEN="${EXTRACTION_MAX_MODEL_LEN:-16384}"
+EXTRACTION_WORKERS="${EXTRACTION_WORKERS:-4}"
 EXTRACTION_HEALTH_TIMEOUT="${EXTRACTION_HEALTH_TIMEOUT:-900}"
 EXTRACTION_EXTRA_VLLM_ARGS="${EXTRACTION_EXTRA_VLLM_ARGS:-}"
 DATASET="${DATASET:-data/locomo10.json}"
@@ -185,6 +187,7 @@ for MODEL_ALIAS in ${EXTRACTION_MODELS}; do
     --answer-model "${MODEL_ALIAS}" \
     --vector-backend qdrant \
     --max-samples "${MAX_SAMPLES}" \
+    --preembed-workers "${EXTRACTION_WORKERS}" \
     --preembed-only \
     --run-id "setup-preembed-${MODEL_SLUG}-${RUN_STAMP}"
 

@@ -5,6 +5,7 @@ import os
 import re
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit, urlunsplit
 
 import numpy as np
 
@@ -18,11 +19,24 @@ class CachedEmbeddingMissingError(RuntimeError):
 class CachedEmbedder:
     """Disk-backed wrapper for Mem0 embedders."""
 
-    def __init__(self, wrapped: Any, *, cache_dir: str | Path, model: str, mode: CacheMode = "write") -> None:
+    def __init__(
+        self,
+        wrapped: Any,
+        *,
+        cache_dir: str | Path,
+        model: str,
+        mode: CacheMode = "write",
+        endpoint: str | None = None,
+    ) -> None:
         if mode not in {"read", "write"}:
             raise ValueError(f"Unsupported embedding cache mode: {mode}")
         self._wrapped = wrapped
-        self.cache_dir = Path(cache_dir) / _safe_path_part(model)
+        self.endpoint = _normalize_endpoint(endpoint)
+        self.cache_dir = (
+            Path(cache_dir)
+            / _safe_path_part(model)
+            / _endpoint_cache_key(self.endpoint)
+        )
         self.model = model
         self.mode = mode
         self.hits = 0
@@ -85,6 +99,7 @@ class CachedEmbedder:
         return {
             "enabled": True,
             "mode": self.mode,
+            "endpoint": self.endpoint,
             "cache_dir": str(self.cache_dir),
             "hits": self.hits,
             "misses": self.misses,
@@ -93,6 +108,8 @@ class CachedEmbedder:
     def _cache_path(self, text: str, purpose: str) -> Path:
         key = hashlib.sha256()
         key.update(self.model.encode("utf-8"))
+        key.update(b"\0")
+        key.update(self.endpoint.encode("utf-8"))
         key.update(b"\0")
         key.update(purpose.encode("utf-8"))
         key.update(b"\0")
@@ -120,3 +137,26 @@ def _embedding_purpose(args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
 def _safe_path_part(value: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", value.strip())
     return safe or "default"
+
+
+def _normalize_endpoint(value: str | None) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "<provider-default>"
+    parsed = urlsplit(text)
+    if not parsed.scheme or not parsed.netloc:
+        return text.rstrip("/")
+    return urlunsplit(
+        (
+            parsed.scheme.lower(),
+            parsed.netloc.lower(),
+            parsed.path.rstrip("/"),
+            parsed.query,
+            "",
+        )
+    )
+
+
+def _endpoint_cache_key(endpoint: str) -> str:
+    digest = hashlib.sha256(endpoint.encode("utf-8")).hexdigest()[:16]
+    return f"endpoint-{digest}"

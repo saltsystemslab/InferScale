@@ -124,6 +124,7 @@ class SampleMemoryBuilder:
             cache_dir=self.config.embedding_cache_dir,
             model=self.config.embedding_model,
             mode=self.embedding_cache_mode,
+            endpoint=self.config.embedding_base_url,
         )
         if hasattr(memory, "embedding_model"):
             memory.embedding_model = cached

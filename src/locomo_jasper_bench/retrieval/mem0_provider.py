@@ -94,7 +94,7 @@ def build_mem0_config(
     memory_llm_config: dict[str, Any] = {
         "model": memory_llm_model,
         "temperature": MEMORY_LLM_TEMPERATURE,
-        "max_tokens": 16384,
+        "max_tokens": 4096,
     }
     if memory_llm_api_key:
         memory_llm_config["api_key"] = memory_llm_api_key

@@ -1,12 +1,24 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from locomo_jasper_bench.embedding.cache import CachedEmbedder, CachedEmbeddingMissingError
+from locomo_jasper_bench.protocol import (
+    MEMORY_EXTRACTION_MAX_FACTS,
+    MEMORY_EXTRACTION_MAX_MODEL_LEN,
+    MEMORY_EXTRACTION_MAX_TEXT_CHARS,
+    MEMORY_EXTRACTION_MAX_TOKENS,
+    MEMORY_EXTRACTION_RESPONSE_PROTOCOL,
+)
 from locomo_jasper_bench.retrieval.memory_llm_cache import CachedMemoryLLM, CachedMemoryLLMMissingError
+from locomo_jasper_bench.retrieval.memory_llm_protocol import (
+    InvalidMemoryExtractionResponseError,
+    validate_memory_extraction_response,
+)
 
 
 class RecordingEmbedder:
@@ -38,6 +50,22 @@ class RecordingMemoryLLM:
 def _vector_for(value: Any) -> list[float]:
     text = str(value)
     return [float(len(text)), float(sum(text.encode("utf-8")))]
+
+
+def _valid_extraction_response(text: str = "User likes blue.") -> str:
+    return json.dumps(
+        {
+            "memory": [
+                {
+                    "id": "0",
+                    "text": text,
+                    "attributed_to": "user",
+                    "linked_memory_ids": [],
+                }
+            ]
+        },
+        separators=(",", ":"),
+    )
 
 
 def test_cached_embedder_batch_uses_partial_hits_and_preserves_order(tmp_path: Path) -> None:
@@ -101,12 +129,20 @@ def test_cached_embedder_batch_read_mode_rejects_corrupt_entries_without_fallbac
 def test_cached_memory_llm_replays_canonical_requests_and_delegates_attributes(tmp_path: Path) -> None:
     cache_dir = tmp_path / "memory-llm"
     messages = [{"role": "user", "content": "Remember blue."}]
-    response = {"content": '{"memory":[{"text":"blue"}]}', "tool_calls": []}
+    response = _valid_extraction_response()
     wrapped = RecordingMemoryLLM(response)
     writer = CachedMemoryLLM(wrapped, cache_dir, "openai", "gpt-5-mini", "write")
 
     assert writer.generate_response(messages, response_format={"type": "json_object"}, temperature=0) == response
     assert len(wrapped.calls) == 1
+    effective_kwargs = wrapped.calls[0][2]
+    assert effective_kwargs["max_tokens"] == MEMORY_EXTRACTION_MAX_TOKENS
+    schema = effective_kwargs["response_format"]["json_schema"]["schema"]
+    assert schema["properties"]["memory"]["maxItems"] == MEMORY_EXTRACTION_MAX_FACTS
+    assert (
+        schema["properties"]["memory"]["items"]["properties"]["text"]["maxLength"]
+        == MEMORY_EXTRACTION_MAX_TEXT_CHARS
+    )
     assert writer.provider_name == "recording"
     assert writer.stats()["misses"] == 1
 
@@ -124,6 +160,11 @@ def test_cached_memory_llm_replays_canonical_requests_and_delegates_attributes(t
         "endpoint": "<provider-default>",
         "mem0_version": reader.mem0_version,
         "temperature": 0.0,
+        "memory_extraction_response_protocol": MEMORY_EXTRACTION_RESPONSE_PROTOCOL,
+        "memory_extraction_max_model_len": MEMORY_EXTRACTION_MAX_MODEL_LEN,
+        "memory_extraction_max_tokens": MEMORY_EXTRACTION_MAX_TOKENS,
+        "memory_extraction_max_facts": MEMORY_EXTRACTION_MAX_FACTS,
+        "memory_extraction_max_text_chars": MEMORY_EXTRACTION_MAX_TEXT_CHARS,
         "cache_dir": str(reader.cache_dir),
         "hits": 1,
         "misses": 0,
@@ -165,14 +206,98 @@ def test_cached_memory_llm_read_mode_fails_on_missing_or_corrupt_entries_without
         reader.generate_response(messages, response_format={"type": "json_object"})
     assert wrapped.calls == []
 
-    writer = CachedMemoryLLM(RecordingMemoryLLM("cached"), cache_dir, "openai", "gpt-5-mini", "write")
-    assert writer.generate_response(messages, response_format={"type": "json_object"}) == "cached"
+    valid_response = _valid_extraction_response()
+    writer = CachedMemoryLLM(
+        RecordingMemoryLLM(valid_response), cache_dir, "openai", "gpt-5-mini", "write"
+    )
+    assert writer.generate_response(messages, response_format={"type": "json_object"}) == valid_response
     cache_file = next(writer.cache_dir.glob("*.json"))
     cache_file.write_text("not json", encoding="utf-8")
 
     with pytest.raises(CachedMemoryLLMMissingError, match="corrupt.*--preembed-only"):
         reader.generate_response(messages, response_format={"type": "json_object"})
     assert wrapped.calls == []
+
+
+def test_cached_memory_llm_never_caches_invalid_extraction_response(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "memory-llm"
+    messages = [{"role": "user", "content": "Remember blue."}]
+    cached = CachedMemoryLLM(
+        RecordingMemoryLLM('{"memory":[{"id":"0"}]'),
+        cache_dir,
+        "vllm",
+        "model",
+        "write",
+    )
+
+    with pytest.raises(InvalidMemoryExtractionResponseError, match="malformed JSON"):
+        cached.generate_response(messages, response_format={"type": "json_object"})
+
+    assert list(cached.cache_dir.glob("*.json")) == []
+
+
+def test_cached_memory_llm_write_mode_regenerates_invalid_cached_extraction(
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "memory-llm"
+    messages = [{"role": "user", "content": "Remember blue."}]
+    valid_response = _valid_extraction_response()
+    seed = CachedMemoryLLM(
+        RecordingMemoryLLM(valid_response), cache_dir, "vllm", "model", "write"
+    )
+    seed.generate_response(messages, response_format={"type": "json_object"})
+    cache_file = next(seed.cache_dir.glob("*.json"))
+    cache_file.write_text(
+        '{"version":1,"response":"{\\"memory\\":[{\\"id\\":\\"0\\"}]}"}\n',
+        encoding="utf-8",
+    )
+
+    wrapped = RecordingMemoryLLM(valid_response)
+    replacement = CachedMemoryLLM(wrapped, cache_dir, "vllm", "model", "write")
+
+    assert replacement.generate_response(
+        messages, response_format={"type": "json_object"}
+    ) == valid_response
+    assert len(wrapped.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ({"memory": [{"id": "1", "text": "fact", "attributed_to": "user"}]}, "sequential id"),
+        (
+            {"memory": [{"id": "0", "text": "fact", "attributed_to": "system"}]},
+            "invalid attributed_to",
+        ),
+        (
+            {
+                "memory": [
+                    {
+                        "id": "0",
+                        "text": "x" * (MEMORY_EXTRACTION_MAX_TEXT_CHARS + 1),
+                        "attributed_to": "user",
+                    }
+                ]
+            },
+            "characters",
+        ),
+        (
+            {
+                "memory": [
+                    {"id": str(index), "text": "fact", "attributed_to": "user"}
+                    for index in range(MEMORY_EXTRACTION_MAX_FACTS + 1)
+                ]
+            },
+            "maximum",
+        ),
+    ],
+)
+def test_memory_extraction_validation_rejects_protocol_violations(
+    payload: dict[str, Any],
+    message: str,
+) -> None:
+    with pytest.raises(InvalidMemoryExtractionResponseError, match=message):
+        validate_memory_extraction_response(json.dumps(payload))
 
 
 def test_cached_memory_llm_write_mode_replaces_corrupt_entries_atomically(tmp_path: Path) -> None:

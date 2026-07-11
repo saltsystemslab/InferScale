@@ -10,6 +10,17 @@ from typing import Any
 from ..cache_identity import atomic_write_json, endpoint_cache_key, safe_path_part
 from ..cache_identity import normalize_endpoint as normalize_llm_endpoint
 from ..embedding.cache import CacheMode
+from ..protocol import (
+    MEMORY_EXTRACTION_MAX_FACTS,
+    MEMORY_EXTRACTION_MAX_MODEL_LEN,
+    MEMORY_EXTRACTION_MAX_TEXT_CHARS,
+    MEMORY_EXTRACTION_MAX_TOKENS,
+    MEMORY_EXTRACTION_RESPONSE_PROTOCOL,
+)
+from .memory_llm_protocol import (
+    prepare_memory_extraction_kwargs,
+    validate_memory_extraction_response,
+)
 
 
 _MEM0_DYNAMIC_DATE_SECTION = re.compile(
@@ -49,6 +60,8 @@ class CachedMemoryLLM:
             / safe_path_part(provider)
             / safe_path_part(model)
             / f"mem0-{safe_path_part(self.mem0_version)}"
+            / safe_path_part(MEMORY_EXTRACTION_RESPONSE_PROTOCOL)
+            / f"context-{MEMORY_EXTRACTION_MAX_MODEL_LEN}"
             / endpoint_cache_key(self.endpoint)
         )
         self.hits = 0
@@ -60,10 +73,13 @@ class CachedMemoryLLM:
         return getattr(self._wrapped, name)
 
     def generate_response(self, messages: Any, *args: Any, **kwargs: Any) -> Any:
-        path = self._cache_path(messages, args, kwargs)
+        effective_kwargs, validate_extraction = prepare_memory_extraction_kwargs(kwargs)
+        path = self._cache_path(messages, args, effective_kwargs)
         if path.exists():
             try:
                 response = self._read_response(path)
+                if validate_extraction:
+                    validate_memory_extraction_response(response)
             except Exception as exc:
                 self.misses += 1
                 if self.mode == "read":
@@ -78,7 +94,9 @@ class CachedMemoryLLM:
         if self.mode == "read":
             raise self._missing_error(path, "Missing cached Mem0 LLM response")
 
-        response = self._wrapped.generate_response(messages, *args, **kwargs)
+        response = self._wrapped.generate_response(messages, *args, **effective_kwargs)
+        if validate_extraction:
+            validate_memory_extraction_response(response)
         self._write_response(path, response)
         return response
 
@@ -91,6 +109,11 @@ class CachedMemoryLLM:
             "endpoint": self.endpoint,
             "mem0_version": self.mem0_version,
             "temperature": self.temperature,
+            "memory_extraction_response_protocol": MEMORY_EXTRACTION_RESPONSE_PROTOCOL,
+            "memory_extraction_max_model_len": MEMORY_EXTRACTION_MAX_MODEL_LEN,
+            "memory_extraction_max_tokens": MEMORY_EXTRACTION_MAX_TOKENS,
+            "memory_extraction_max_facts": MEMORY_EXTRACTION_MAX_FACTS,
+            "memory_extraction_max_text_chars": MEMORY_EXTRACTION_MAX_TEXT_CHARS,
             "cache_dir": str(self.cache_dir),
             "hits": self.hits,
             "misses": self.misses,

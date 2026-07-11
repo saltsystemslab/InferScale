@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 from loguru import logger
 
-from ..protocol import MEM0AI_VERSION
+from ..protocol import MEM0AI_VERSION, MEMORY_EXTRACTION_MAX_TOKENS
 from ..runtime_paths import default_mem0_dir_string
 from ..vector_types import VECTOR_DISTANCE, VectorStoreConfig
 
@@ -94,7 +94,7 @@ def build_mem0_config(
     memory_llm_config: dict[str, Any] = {
         "model": memory_llm_model,
         "temperature": MEMORY_LLM_TEMPERATURE,
-        "max_tokens": 16384,
+        "max_tokens": MEMORY_EXTRACTION_MAX_TOKENS,
     }
     if memory_llm_api_key:
         memory_llm_config["api_key"] = memory_llm_api_key

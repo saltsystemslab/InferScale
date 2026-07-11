@@ -14,6 +14,11 @@ from .protocol import (
     MEM0AI_VERSION,
     MEMORY_BENCHMARKS_COMMIT,
     MEMORY_BENCHMARKS_REPOSITORY,
+    MEMORY_EXTRACTION_MAX_FACTS,
+    MEMORY_EXTRACTION_MAX_MODEL_LEN,
+    MEMORY_EXTRACTION_MAX_TEXT_CHARS,
+    MEMORY_EXTRACTION_MAX_TOKENS,
+    MEMORY_EXTRACTION_RESPONSE_PROTOCOL,
     MEMORY_INGESTION_PROTOCOL,
 )
 from .runtime_paths import default_embedding_cache_dir as runtime_default_embedding_cache_dir
@@ -182,6 +187,26 @@ class BenchmarkConfig:
     )
     memory_benchmarks_commit: str = field(default=MEMORY_BENCHMARKS_COMMIT, init=False)
     mem0ai_version: str = field(default=MEM0AI_VERSION, init=False)
+    memory_extraction_response_protocol: str = field(
+        default=MEMORY_EXTRACTION_RESPONSE_PROTOCOL,
+        init=False,
+    )
+    memory_extraction_max_model_len: int = field(
+        default=MEMORY_EXTRACTION_MAX_MODEL_LEN,
+        init=False,
+    )
+    memory_extraction_max_tokens: int = field(
+        default=MEMORY_EXTRACTION_MAX_TOKENS,
+        init=False,
+    )
+    memory_extraction_max_facts: int = field(
+        default=MEMORY_EXTRACTION_MAX_FACTS,
+        init=False,
+    )
+    memory_extraction_max_text_chars: int = field(
+        default=MEMORY_EXTRACTION_MAX_TEXT_CHARS,
+        init=False,
+    )
     memory_ingestion_protocol: str = field(default=MEMORY_INGESTION_PROTOCOL, init=False)
     answer_prompt_protocol: str = field(default=ANSWER_PROMPT_PROTOCOL, init=False)
     judge_prompt_protocol: str = field(default=JUDGE_PROMPT_PROTOCOL, init=False)

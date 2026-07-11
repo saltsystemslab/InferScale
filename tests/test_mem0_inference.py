@@ -21,22 +21,33 @@ from locomo_jasper_bench.retrieval.memory_builder import (
     SampleMemoryBuilder,
     _mem0_observation_date,
 )
+from locomo_jasper_bench.protocol import (
+    MEMORY_EXTRACTION_MAX_FACTS,
+    MEMORY_EXTRACTION_MAX_MODEL_LEN,
+    MEMORY_EXTRACTION_MAX_TEXT_CHARS,
+    MEMORY_EXTRACTION_MAX_TOKENS,
+    MEMORY_EXTRACTION_RESPONSE_PROTOCOL,
+)
 from locomo_jasper_bench.retrieval.prepared_retriever import PreparedMem0Retriever
 from locomo_jasper_bench.vector_types import VECTOR_DISTANCE, VectorStoreConfig
 
 
 class _RecordingLlm:
-    def __init__(self) -> None:
+    def __init__(self, response: str | None = None) -> None:
         self.calls: list[tuple[Any, tuple[Any, ...], dict[str, Any]]] = []
+        self.response = response or (
+            '{"memory":[{"id":"0","text":"Alice likes tea.",'
+            '"attributed_to":"user","linked_memory_ids":[]}]}'
+        )
 
     def generate_response(self, messages: Any, *args: Any, **kwargs: Any) -> str:
         self.calls.append((messages, args, kwargs))
-        return '{"memory":[{"text":"Alice likes tea."}]}'
+        return self.response
 
 
 class _FakeMemory:
-    def __init__(self) -> None:
-        self.llm = _RecordingLlm()
+    def __init__(self, response: str | None = None) -> None:
+        self.llm = _RecordingLlm(response)
         self.add_calls: list[tuple[Any, dict[str, Any]]] = []
         self.vector_store = SimpleNamespace(
             config=SimpleNamespace(backend="qdrant"),
@@ -104,6 +115,7 @@ def test_mem0_config_uses_explicit_memory_llm_settings(tmp_path: Path) -> None:
         "config": {
             "model": "Qwen/Qwen2.5-7B-Instruct",
             "temperature": 0.0,
+            "max_tokens": MEMORY_EXTRACTION_MAX_TOKENS,
             "api_key": "memory-secret",
             "vllm_base_url": "https://memory.example/v1",
         },
@@ -257,8 +269,21 @@ def test_fact_catalog_identity_requires_current_inner_product_and_temperature(tm
     baseline.write(sample, [fact])
 
     payload = json.loads(baseline.path_for(sample).read_text(encoding="utf-8"))
-    assert payload["version"] == 4
+    assert payload["version"] == 5
     assert payload["vector_distance"] == VECTOR_DISTANCE
+    assert payload["memory_extraction_response_protocol"] == MEMORY_EXTRACTION_RESPONSE_PROTOCOL
+    assert payload["memory_extraction_max_model_len"] == MEMORY_EXTRACTION_MAX_MODEL_LEN
+    assert payload["memory_extraction_max_tokens"] == MEMORY_EXTRACTION_MAX_TOKENS
+    assert payload["memory_extraction_max_facts"] == MEMORY_EXTRACTION_MAX_FACTS
+    assert payload["memory_extraction_max_text_chars"] == MEMORY_EXTRACTION_MAX_TEXT_CHARS
+
+    payload.pop("memory_extraction_response_protocol")
+    baseline.path_for(sample).write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="memory_extraction_response_protocol"):
+        baseline.load(sample)
+
+    baseline.write(sample, [fact])
+    payload = json.loads(baseline.path_for(sample).read_text(encoding="utf-8"))
 
     payload.pop("memory_llm_temperature")
     baseline.path_for(sample).write_text(json.dumps(payload) + "\n", encoding="utf-8")
@@ -411,6 +436,31 @@ def test_sample_builder_materializes_catalog_and_read_mode_never_reruns_inferenc
     assert read_memory.add_calls[0][1]["infer"] is False
     assert read_metrics["memory_fact_catalog_loaded"] == 1
     assert read_metrics["memory_inferred_record_count"] == 1
+
+
+def test_sample_builder_aborts_without_catalog_when_extraction_json_is_invalid(
+    monkeypatch: Any,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "locomo_jasper_bench.retrieval.memory_builder.create_mem0_memory",
+        lambda **_: _FakeMemory('{"memory":[{"id":"0"}]'),
+    )
+    config = BenchmarkConfig(
+        results_dir=tmp_path / "results",
+        run_id="run",
+        model="Qwen/Qwen2.5-7B-Instruct",
+        vector_backend="qdrant",
+        embedding_cache_enabled=False,
+        memory_llm_cache_dir=tmp_path / "inference-cache",
+    )
+    writer = SampleMemoryBuilder(config, memory_llm_cache_mode="write")
+
+    with pytest.raises(RuntimeError, match="malformed JSON"):
+        writer.build_with_metrics(_sample(), finalize_index=False)
+
+    with pytest.raises(RuntimeError, match="Missing Mem0 fact catalog"):
+        writer.load_fact_catalog(_sample())
 
 
 def test_mem0_2_inference_persists_turn_metadata_through_custom_adapter(

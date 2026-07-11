@@ -18,6 +18,11 @@ from locomo_jasper_bench.protocol import (
     MEM0AI_VERSION,
     MEMORY_BENCHMARKS_COMMIT,
     MEMORY_BENCHMARKS_REPOSITORY,
+    MEMORY_EXTRACTION_MAX_FACTS,
+    MEMORY_EXTRACTION_MAX_MODEL_LEN,
+    MEMORY_EXTRACTION_MAX_TEXT_CHARS,
+    MEMORY_EXTRACTION_MAX_TOKENS,
+    MEMORY_EXTRACTION_RESPONSE_PROTOCOL,
     MEMORY_INGESTION_PROTOCOL,
 )
 
@@ -78,6 +83,11 @@ def test_run_config_records_fixed_benchmark_provenance() -> None:
     assert config["memory_benchmarks_repository"] == MEMORY_BENCHMARKS_REPOSITORY
     assert config["memory_benchmarks_commit"] == MEMORY_BENCHMARKS_COMMIT
     assert config["mem0ai_version"] == MEM0AI_VERSION
+    assert config["memory_extraction_response_protocol"] == MEMORY_EXTRACTION_RESPONSE_PROTOCOL
+    assert config["memory_extraction_max_model_len"] == MEMORY_EXTRACTION_MAX_MODEL_LEN
+    assert config["memory_extraction_max_tokens"] == MEMORY_EXTRACTION_MAX_TOKENS
+    assert config["memory_extraction_max_facts"] == MEMORY_EXTRACTION_MAX_FACTS
+    assert config["memory_extraction_max_text_chars"] == MEMORY_EXTRACTION_MAX_TEXT_CHARS
     assert config["memory_ingestion_protocol"] == MEMORY_INGESTION_PROTOCOL
     assert config["answer_prompt_protocol"] == ANSWER_PROMPT_PROTOCOL
     assert config["judge_prompt_protocol"] == JUDGE_PROMPT_PROTOCOL

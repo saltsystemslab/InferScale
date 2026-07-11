@@ -16,7 +16,7 @@
 #   EXTRACTION_MODELS                  answer models to extract for (default: llama mistral qwen qwen3-14b)
 #   MEM0_LLM_PORT                      port for the extraction server (default: 8000)
 #   EXTRACTION_GPU_MEMORY_UTILIZATION  vllm serve GPU fraction (default: 0.85)
-#   EXTRACTION_MAX_MODEL_LEN           vllm serve context length (default: 32768)
+#   EXTRACTION_MAX_MODEL_LEN           vLLM serve context length (fixed: 16384)
 #   EXTRACTION_HEALTH_TIMEOUT          seconds to wait for server health (default: 900)
 #   EXTRACTION_EXTRA_VLLM_ARGS         extra args appended to vllm serve
 #   DATASET                            LoCoMo dataset path (default: data/locomo10.json)
@@ -41,11 +41,33 @@ fi
 EXTRACTION_MODELS="${EXTRACTION_MODELS:-llama mistral qwen qwen3-14b}"
 MEM0_LLM_PORT="${MEM0_LLM_PORT:-8000}"
 EXTRACTION_GPU_MEMORY_UTILIZATION="${EXTRACTION_GPU_MEMORY_UTILIZATION:-0.85}"
-EXTRACTION_MAX_MODEL_LEN="${EXTRACTION_MAX_MODEL_LEN:-32768}"
+EXTRACTION_MAX_MODEL_LEN="${EXTRACTION_MAX_MODEL_LEN:-16384}"
 EXTRACTION_HEALTH_TIMEOUT="${EXTRACTION_HEALTH_TIMEOUT:-900}"
 EXTRACTION_EXTRA_VLLM_ARGS="${EXTRACTION_EXTRA_VLLM_ARGS:-}"
 DATASET="${DATASET:-data/locomo10.json}"
 MAX_SAMPLES="${MAX_SAMPLES:-10}"
+
+read -r PROTOCOL_MAX_MODEL_LEN PROTOCOL_MAX_TOKENS PROTOCOL_MAX_FACTS PROTOCOL_MAX_TEXT_CHARS < <(
+  python - <<'PY'
+from locomo_jasper_bench.protocol import (
+    MEMORY_EXTRACTION_MAX_FACTS,
+    MEMORY_EXTRACTION_MAX_MODEL_LEN,
+    MEMORY_EXTRACTION_MAX_TEXT_CHARS,
+    MEMORY_EXTRACTION_MAX_TOKENS,
+)
+
+print(
+    MEMORY_EXTRACTION_MAX_MODEL_LEN,
+    MEMORY_EXTRACTION_MAX_TOKENS,
+    MEMORY_EXTRACTION_MAX_FACTS,
+    MEMORY_EXTRACTION_MAX_TEXT_CHARS,
+)
+PY
+)
+if [[ "${EXTRACTION_MAX_MODEL_LEN}" != "${PROTOCOL_MAX_MODEL_LEN}" ]]; then
+  echo "ERROR: EXTRACTION_MAX_MODEL_LEN=${EXTRACTION_MAX_MODEL_LEN} conflicts with the fixed protocol value ${PROTOCOL_MAX_MODEL_LEN}." >&2
+  exit 2
+fi
 
 : "${BENCHMARK_RESULTS_ROOT:?Set BENCHMARK_RESULTS_ROOT (normally exported by scripts/load_env.sh)}"
 
@@ -145,6 +167,7 @@ for MODEL_ALIAS in ${EXTRACTION_MODELS}; do
   fi
 
   echo "=== Extracting facts with ${MODEL_ALIAS} (${RESOLVED_MODEL}) ==="
+  echo "Extraction protocol: context=${PROTOCOL_MAX_MODEL_LEN} output=${PROTOCOL_MAX_TOKENS} facts=${PROTOCOL_MAX_FACTS} text_chars=${PROTOCOL_MAX_TEXT_CHARS}"
   echo "Starting extraction vLLM server on port ${MEM0_LLM_PORT}; log: ${LOG_FILE}"
   if command -v setsid >/dev/null 2>&1; then
     setsid vllm serve "${RESOLVED_MODEL}" "${SERVE_ARGS[@]}" >"${LOG_FILE}" 2>&1 &

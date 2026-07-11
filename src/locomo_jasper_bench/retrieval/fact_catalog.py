@@ -11,12 +11,19 @@ from typing import Any, Iterable
 
 from ..cache_identity import atomic_write_json, endpoint_cache_key, normalize_endpoint, safe_path_part
 from ..data import ConversationSample, Turn
-from ..protocol import MEMORY_INGESTION_PROTOCOL
+from ..protocol import (
+    MEMORY_EXTRACTION_MAX_FACTS,
+    MEMORY_EXTRACTION_MAX_MODEL_LEN,
+    MEMORY_EXTRACTION_MAX_TEXT_CHARS,
+    MEMORY_EXTRACTION_MAX_TOKENS,
+    MEMORY_EXTRACTION_RESPONSE_PROTOCOL,
+    MEMORY_INGESTION_PROTOCOL,
+)
 from ..vector_types import SearchHit, VECTOR_DISTANCE
 
 
 _FACT_NAMESPACE = uuid.UUID("55bbc260-62d5-4a84-9724-6686fd41798e")
-_CATALOG_VERSION = 4
+_CATALOG_VERSION = 5
 _LOCOMO_TIMESTAMP_FORMATS = (
     "%I:%M %p on %d %B, %Y",
     "%I:%M %p on %d %b, %Y",
@@ -104,6 +111,11 @@ class FactCatalogStore:
             / f"mem0-{safe_path_part(self.mem0_version)}"
             / safe_path_part(self.provider)
             / safe_path_part(self.model)
+            / safe_path_part(MEMORY_EXTRACTION_RESPONSE_PROTOCOL)
+            / f"context-{MEMORY_EXTRACTION_MAX_MODEL_LEN}"
+            / f"tokens-{MEMORY_EXTRACTION_MAX_TOKENS}"
+            / f"facts-{MEMORY_EXTRACTION_MAX_FACTS}"
+            / f"text-{MEMORY_EXTRACTION_MAX_TEXT_CHARS}"
             / endpoint_cache_key(self.endpoint)
             / safe_path_part(self.embedding_model)
             / endpoint_cache_key(self.embedding_endpoint)
@@ -126,6 +138,11 @@ class FactCatalogStore:
             "endpoint": self.endpoint,
             "mem0_version": self.mem0_version,
             "memory_llm_temperature": self.temperature,
+            "memory_extraction_response_protocol": MEMORY_EXTRACTION_RESPONSE_PROTOCOL,
+            "memory_extraction_max_model_len": MEMORY_EXTRACTION_MAX_MODEL_LEN,
+            "memory_extraction_max_tokens": MEMORY_EXTRACTION_MAX_TOKENS,
+            "memory_extraction_max_facts": MEMORY_EXTRACTION_MAX_FACTS,
+            "memory_extraction_max_text_chars": MEMORY_EXTRACTION_MAX_TEXT_CHARS,
             "vector_distance": VECTOR_DISTANCE,
             "ingestion_protocol": MEMORY_INGESTION_PROTOCOL,
             "embedding_model": self.embedding_model,
@@ -159,6 +176,11 @@ class FactCatalogStore:
             "endpoint": self.endpoint,
             "mem0_version": self.mem0_version,
             "memory_llm_temperature": self.temperature,
+            "memory_extraction_response_protocol": MEMORY_EXTRACTION_RESPONSE_PROTOCOL,
+            "memory_extraction_max_model_len": MEMORY_EXTRACTION_MAX_MODEL_LEN,
+            "memory_extraction_max_tokens": MEMORY_EXTRACTION_MAX_TOKENS,
+            "memory_extraction_max_facts": MEMORY_EXTRACTION_MAX_FACTS,
+            "memory_extraction_max_text_chars": MEMORY_EXTRACTION_MAX_TEXT_CHARS,
             "vector_distance": VECTOR_DISTANCE,
             "ingestion_protocol": MEMORY_INGESTION_PROTOCOL,
             "embedding_model": self.embedding_model,

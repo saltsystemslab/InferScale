@@ -62,6 +62,12 @@ source .venv/bin/activate
 
 Timed runs require the immutable fact catalogs and embedding-cache entries produced by `--preembed-only`.
 
+`scripts/extract_facts.sh` runs a fixed bounded extraction protocol for each answer model.
+The extraction vLLM server uses a 16,384-token context and each request allows at most 4,096 output tokens, 20 facts, and 600 characters per fact.
+The benchmark replaces Mem0's unbounded JSON-object request with a strict JSON schema, validates every cached and fresh response, and aborts instead of caching malformed JSON or silently dropping facts.
+The extraction protocol is part of inference-cache and fact-catalog identity, so artifacts from older extraction limits are ignored automatically and must be regenerated.
+The embedding cache remains compatible and reusable.
+
 Mem0 stores the facts produced by inference as searchable memory records.
 Accordingly, `--top-k` counts inferred records rather than raw conversation turns.
 Both `vllm-prefix` and `vllm-kv` retrieve and answer from these inferred fact texts.

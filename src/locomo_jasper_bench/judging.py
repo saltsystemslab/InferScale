@@ -34,11 +34,7 @@ def judge_qa(
     qa: QuestionAnswer,
     predicted_answer: str,
 ) -> dict[str, Any]:
-    judge_messages = build_judge_messages(
-        qa,
-        predicted_answer,
-        structured=config.judge_provider == "openai",
-    )
+    judge_messages = build_judge_messages(qa, predicted_answer)
     judge = judge_client.chat(
         judge_messages,
         max_tokens=config.max_judge_tokens,

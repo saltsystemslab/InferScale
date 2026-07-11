@@ -12,6 +12,33 @@ from ..vector_types import VectorStoreConfig
 from .mem0_provider import create_mem0_memory, resolved_mem0_backend
 
 
+def load_turns_into_memory(memory: Any, sample: ConversationSample) -> int:
+    """Ingest a sample's raw LoCoMo turns into a Mem0 store with infer=False."""
+    for turn in sample.turns:
+        text = format_turn_for_memory(turn)
+        metadata = {
+            "user_id": sample.sample_id,
+            "sample_id": sample.sample_id,
+            "turn_id": turn.id,
+            "session_id": turn.session_id,
+            "turn_index": turn.turn_index,
+            "speaker": turn.speaker,
+            "timestamp": turn.timestamp,
+        }
+        memory.add(
+            [{"role": "user", "content": text}],
+            user_id=sample.sample_id,
+            infer=False,
+            metadata=metadata,
+        )
+    logger.info(
+        "Added {} LoCoMo turns to Mem0 for sample_id={} infer=false",
+        len(sample.turns),
+        sample.sample_id,
+    )
+    return len(sample.turns)
+
+
 class SampleMemoryBuilder:
     def __init__(self, config: BenchmarkConfig, *, embedding_cache_mode: CacheMode = "read") -> None:
         self.config = config
@@ -37,28 +64,7 @@ class SampleMemoryBuilder:
         memory_create_time_ms = (time.perf_counter() - create_started) * 1000
 
         build_started = time.perf_counter()
-        for turn in sample.turns:
-            text = format_turn_for_memory(turn)
-            metadata = {
-                "user_id": sample.sample_id,
-                "sample_id": sample.sample_id,
-                "turn_id": turn.id,
-                "session_id": turn.session_id,
-                "turn_index": turn.turn_index,
-                "speaker": turn.speaker,
-                "timestamp": turn.timestamp,
-            }
-            memory.add(
-                [{"role": "user", "content": text}],
-                user_id=sample.sample_id,
-                infer=False,
-                metadata=metadata,
-            )
-        logger.info(
-            "Added {} LoCoMo turns to Mem0 for sample_id={} infer=false",
-            len(sample.turns),
-            sample.sample_id,
-        )
+        load_turns_into_memory(memory, sample)
         embedding_memory_build_time_ms = (time.perf_counter() - build_started) * 1000
 
         vector_index_build_time_ms = None

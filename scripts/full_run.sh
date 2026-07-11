@@ -3,7 +3,7 @@
 # Sweep the LoCoMo Jasper benchmark across:
 #   models  = {llama, mistral, qwen, qwen3-14b}
 #   top-k   = {5, 10, 20, 50, 100}
-#   window  = {0, 5, 20, 50}   (immediately preceding turns; kv-jasper only)
+#   window  = {0, 1, 3, 5}   (previous sessions; kv-jasper only)
 #
 # Per (model, top-k) it runs:
 #   - vllm-kv     + jasper, once per window W (--context-window W) -> 4 runs
@@ -17,7 +17,7 @@
 #   DRY_RUN=1 BENCHMARK_RESULTS_ROOT=/path/to/results bash scripts/full_run.sh
 #
 #   # Override any grid:
-#   MODELS="llama qwen3-14b" TOPKS="10 50" WINDOWS="0 20" BENCHMARK_RESULTS_ROOT=/path bash scripts/full_run.sh
+#   MODELS="llama qwen3-14b" TOPKS="10 50" WINDOWS="0 3" BENCHMARK_RESULTS_ROOT=/path bash scripts/full_run.sh
 #
 # Run IDs encode the swept axes so results never collide:
 #   kv     -> <model>-kv-gpu-jasper10-k<topk>-w<W>-<stamp>
@@ -28,7 +28,7 @@ set -uo pipefail
 # ----- Config (override via environment) -----------------------------------
 MODELS="${MODELS:-llama mistral qwen qwen3-14b}"
 TOPKS="${TOPKS:-5 10 20 50 100}"
-WINDOWS="${WINDOWS:-0 5 20 50}"
+WINDOWS="${WINDOWS:-0 1 3 5}"
 DATASET="${DATASET:-data/locomo10.json}"
 DRY_RUN="${DRY_RUN:-0}"
 

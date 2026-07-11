@@ -24,16 +24,22 @@ def build_strict_gpu_kv_transfer_config(
     *,
     connector_module: str,
     namespace: str,
-    default_user_id: str = "default",
+    default_user_id: str | None = "default",
+    allow_prefix_scan: bool = False,
 ) -> dict[str, Any]:
+    extra_config: dict[str, Any] = {
+        "memory_namespace": namespace,
+        "default_user_id": default_user_id,
+    }
+    if allow_prefix_scan:
+        # Match requests to registered memories by token prefix instead of a
+        # single active user id; needed when one batch carries many memories.
+        extra_config["allow_prefix_scan"] = True
     return {
         "kv_connector": "MemoryKVConnector",
         "kv_role": "kv_both",
         "kv_connector_module_path": connector_module,
-        "kv_connector_extra_config": {
-            "memory_namespace": namespace,
-            "default_user_id": default_user_id,
-        },
+        "kv_connector_extra_config": extra_config,
     }
 
 

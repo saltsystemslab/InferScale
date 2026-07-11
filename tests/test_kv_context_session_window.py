@@ -5,7 +5,7 @@ import pytest
 from locomo_jasper_bench.data import ConversationSample, Turn
 from locomo_jasper_bench.kv.context import (
     build_turn_context_encoding_plan,
-    previous_turn_context_turns,
+    previous_session_context_turns,
 )
 
 
@@ -35,57 +35,58 @@ def _sample() -> ConversationSample:
     )
 
 
-def test_context_window_selects_immediately_preceding_turns_across_sessions() -> None:
+def test_context_window_selects_all_turns_of_previous_sessions() -> None:
     sample = _sample()
 
-    selected = previous_turn_context_turns(sample, sample.turns[4], context_window=3)
+    selected = previous_session_context_turns(sample, sample.turns[4], context_window=1)
 
-    assert [turn.id for turn in selected] == [
-        sample.turns[1].id,
-        sample.turns[2].id,
-        sample.turns[3].id,
-    ]
+    assert [turn.id for turn in selected] == [sample.turns[2].id, sample.turns[3].id]
 
 
-def test_context_window_selects_prior_turns_from_the_same_session() -> None:
+def test_context_window_spans_multiple_previous_sessions() -> None:
     sample = _sample()
 
-    selected = previous_turn_context_turns(sample, sample.turns[3], context_window=2)
+    selected = previous_session_context_turns(sample, sample.turns[4], context_window=2)
 
-    assert [turn.id for turn in selected] == [sample.turns[1].id, sample.turns[2].id]
+    assert [turn.id for turn in selected] == [turn.id for turn in sample.turns[:4]]
 
 
-def test_context_window_excludes_target_and_uses_available_prefix_at_start() -> None:
+def test_context_window_excludes_same_session_turns() -> None:
     sample = _sample()
 
-    selected = previous_turn_context_turns(sample, sample.turns[1], context_window=5)
+    selected = previous_session_context_turns(sample, sample.turns[3], context_window=1)
 
-    assert selected == [sample.turns[0]]
-    assert sample.turns[1] not in selected
+    assert [turn.id for turn in selected] == [sample.turns[0].id, sample.turns[1].id]
+    assert sample.turns[2].id not in [turn.id for turn in selected]
+
+
+def test_context_window_uses_available_sessions_at_the_start() -> None:
+    sample = _sample()
+
+    selected = previous_session_context_turns(sample, sample.turns[1], context_window=5)
+
+    assert selected == []
 
 
 def test_zero_context_window_returns_no_context() -> None:
     sample = _sample()
 
-    assert previous_turn_context_turns(sample, sample.turns[3], context_window=0) == []
+    assert previous_session_context_turns(sample, sample.turns[3], context_window=0) == []
 
 
-def test_context_window_rejects_invalid_inputs() -> None:
+def test_context_window_rejects_negative_values() -> None:
     sample = _sample()
-    missing_turn = _turn(9, 0)
 
     with pytest.raises(ValueError, match="context_window must be >= 0"):
-        previous_turn_context_turns(sample, sample.turns[0], context_window=-1)
-    with pytest.raises(ValueError, match="is not present in sample"):
-        previous_turn_context_turns(sample, missing_turn, context_window=1)
+        previous_session_context_turns(sample, sample.turns[0], context_window=-1)
 
 
-def test_encoding_plan_uses_cached_tokens_in_turn_order_and_truncates_from_left() -> None:
+def test_encoding_plan_uses_cached_tokens_in_session_order_and_truncates_from_left() -> None:
     sample = _sample()
     target = sample.turns[3]
     cached_tokens = {
-        sample.turns[1].id: [11, 12],
-        sample.turns[2].id: [20],
+        sample.turns[0].id: [11, 12],
+        sample.turns[1].id: [20],
         target.id: [30, 31],
     }
 
@@ -93,7 +94,7 @@ def test_encoding_plan_uses_cached_tokens_in_turn_order_and_truncates_from_left(
         object(),
         sample,
         target,
-        context_window=2,
+        context_window=1,
         max_input_tokens=4,
         turn_token_ids=cached_tokens,
     )

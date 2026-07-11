@@ -22,9 +22,8 @@ Edit `.env` for your session. The common values are:
 - `BENCHMARK_RUNTIME_ROOT=/workspace`
 - `JUDGE_PROVIDER=vllm`
 - `JUDGE_MODEL=google/gemma-2-9b-it`
-- `OPENAI_JUDGE_MODEL=gpt-5.4`
 - `CUDA_MODULE=` for Runpod containers without environment modules
-- `OPENAI_API_KEY=...` for embeddings and OpenAI judging
+- `OPENAI_API_KEY=...` for embeddings
 - `HF_TOKEN=...` if the model is gated
 
 By default, runtime storage is rooted at `${BENCHMARK_RUNTIME_ROOT:-/workspace}` on Runpod:
@@ -73,7 +72,7 @@ Timed runs read from that cache and fail if an embedding is missing.
 Run answer generation with judging skipped.
 This keeps the GPU focused on the in-process answer backend; judge result files afterward.
 
-The `w5`, `w20`, and `w50` variants condition the retained target-turn KV on the immediately preceding 5, 20, or 50 turns, so they are KV turn-context ablations rather than information-equivalent prefix comparisons.
+The `w1`, `w3`, and `w5` variants condition the retained target-turn KV on the 1, 3, or 5 previous LoCoMo sessions, so they are KV session-context ablations rather than information-equivalent prefix comparisons.
 `--jasper-beam-width` is a minimum search width, and the benchmark automatically uses at least `top_k` candidates.
 
 ```bash
@@ -131,7 +130,7 @@ BENCHMARK_RESULTS_ROOT="${BENCHMARK_RESULTS_ROOT}" bash scripts/full_run.sh
 
 ## 4. Judge Accuracy
 
-The CLI selects a judge with `--judge vllm|openai|none`.
+The CLI selects a judge with `--judge vllm|none`.
 `--skip-judge` is still accepted as an alias for `--judge none`.
 
 For local Gemma/vLLM judging on the same GPU, start the judge after answer runs finish:
@@ -154,20 +153,8 @@ locomo-jasper-bench \
   --judge-model "${JUDGE_MODEL}"
 ```
 
-OpenAI judging uses `OPENAI_API_KEY` and `OPENAI_JUDGE_MODEL`, runs through the OpenAI Batch API, and does not require `scripts/serve_vllm.sh`.
-
-```bash
-locomo-jasper-bench \
-  --results-dir "${BENCHMARK_RESULTS_ROOT}" \
-  --run-id "${RUN_ID}" \
-  --judge-only \
-  --judge openai \
-  --judge-model "${OPENAI_JUDGE_MODEL:-gpt-5.4}"
-```
-
 `--judge-only` fills only rows that are still unjudged, preserves already judged rows, and regenerates `summary.json`.
 Add `--rejudge` with `--judge-only` to replace existing judge results for every row in the run.
-OpenAI batch judging persists `openai_judge_batch_input.jsonl`, `openai_judge_batch_output.jsonl`, `openai_judge_batch_errors.jsonl`, and `openai_judge_batch.json` in the run directory.
 
 ## 5. Compare Results
 
@@ -205,3 +192,25 @@ Primary summary metrics:
 - `metrics.vector_db_query_time_ms`: raw backend vector search latency.
 - Jasper graph and embedding metrics in `summary.json` and `sample_setup_metrics.csv`: `jasper_graph_gpu_mb` is the packed serialized graph size matching Jasper `total_file_size`, while `jasper_embedding_matrix_gpu_logical_mb` and `jasper_embedding_matrix_cpu_mb` describe embedding matrix storage.
 - Llama KV chunk metrics in `summary.json` and `sample_setup_metrics.csv`: `llama_kv_total_tensor_gpu_mb`, `llama_kv_chunk_tensor_gpu_mb`, `llama_kv_prefix_tensor_gpu_mb`, and `llama_kv_chunk_map_cpu_mb`.
+
+## 6. Multi-User Throughput
+
+`locomo-throughput-bench` measures serving throughput for four memory conditions over the LoCoMo dataset:
+
+- `no_memory`: plain question prompts with no retrieval.
+- `mem0_qdrant`: per-request Qdrant top-k turn retrieval injected as prompt text.
+- `mem0_jasper`: per-request Jasper top-k turn retrieval injected as prompt text.
+- `kv_injection`: the identical Jasper top-k retrieval, injecting the retrieved turns' pre-encoded chunked-RoPE KV instead of prompt text.
+
+Simulated users map to the 10 LoCoMo conversations round-robin, each with its own Mem0 replica store built from the conversation's raw turns (`infer=False`), and each user asks a seeded selection of that conversation's own questions.
+Store setup reads turn embeddings through the shared embedding cache (run `--preembed-only` first), while query-time embedding stays live so retrieval timing reflects real serving latency.
+`--context-window N` applies session-based encoding prefixes to the kv_injection chunks, matching the accuracy bench semantics; the default `0` encodes each turn in isolation.
+Token-equivalence verification between composed KV and the canonical prompt layout is reported as `kv_verify_time_s` and excluded from QPS.
+
+```bash
+bash scripts/run_throughput.sh MODEL=llama USER_COUNTS=10,25,50,100
+bash scripts/full_throughput.sh MODELS="llama mistral qwen"
+```
+
+Both scripts accept `CONDITIONS`, `DATASET`, `CONTEXT_WINDOW`, `RUN_ID`, `RESULTS_DIR`, and `DRY_RUN=1`; extra flags pass through to `locomo-throughput-bench`.
+Each run writes per-condition CSVs, `throughput_merged.csv`, `summary.json`, and `throughput_report.md` under `${BENCHMARK_RESULTS_ROOT}/throughput/<run-id>/`, keyed by `(condition, num_users)` with a `memory_turn_count` column recording the average turns per user store.

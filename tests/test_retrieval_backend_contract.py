@@ -113,7 +113,7 @@ def test_effective_beam_expands_to_top_k_and_is_recorded(monkeypatch: pytest.Mon
     config = parse_args(["--skip-judge", "--top-k", "100", "--jasper-beam-width", "64"])
 
     assert config.context_window == 0
-    assert config.context_window_unit == "turns"
+    assert config.context_window_unit == "sessions"
     assert config.jasper_effective_beam_width == 100
     assert config.to_jsonable()["jasper_effective_beam_width"] == 100
     assert _store_config(config).beam_width == 100

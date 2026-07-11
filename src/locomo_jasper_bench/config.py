@@ -21,7 +21,6 @@ DEFAULT_JUDGE_PROVIDER = "vllm"
 DEFAULT_JUDGE_MODEL = "Gemma-2-9B-Instruct"
 DEFAULT_JUDGE_BASE_URL = "http://localhost:8000/v1"
 DEFAULT_JUDGE_API_KEY = "token-abc123"
-DEFAULT_OPENAI_JUDGE_MODEL = "gpt-5.4"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 
 ANSWER_MODEL_DEFAULTS = {
@@ -55,9 +54,9 @@ ANSWER_MODEL_NAME_ALIASES = {
 
 DistanceMetric = Literal["ip", "l2"]
 AnswerBackend = Literal["vllm-kv", "vllm-prefix"]
-JudgeProvider = Literal["vllm", "openai", "none"]
+JudgeProvider = Literal["vllm", "none"]
 VectorBackend = Literal["jasper", "qdrant"]
-CONTEXT_WINDOW_UNIT = "turns"
+CONTEXT_WINDOW_UNIT = "sessions"
 MAX_JASPER_BEAM_WIDTH = 959
 
 
@@ -143,7 +142,7 @@ class BenchmarkConfig:
 
     kv_connector_module: str = "locomo_jasper_bench.kv.gpu_connector"
     context_window: int = 0
-    context_window_unit: Literal["turns"] = CONTEXT_WINDOW_UNIT
+    context_window_unit: Literal["sessions"] = CONTEXT_WINDOW_UNIT
     kv_gpu_memory_utilization: float = 0.52
     kv_max_model_len: int = 32768
     kv_max_position: int = 32768
@@ -211,9 +210,9 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     parser.add_argument(
         "--judge",
         dest="judge_provider",
-        choices=["vllm", "openai", "none"],
+        choices=["vllm", "none"],
         default=None,
-        help="Judge provider to use: local OpenAI-compatible vLLM, OpenAI Responses API, or none.",
+        help="Judge provider to use: local OpenAI-compatible vLLM or none.",
     )
     parser.add_argument("--judge-model")
     parser.add_argument("--judge-base-url")
@@ -248,7 +247,7 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
         type=int,
         default=int(os.environ.get("LOCOMO_KV_CONTEXT_WINDOW", "0")),
         help=(
-            "Number of immediately preceding LoCoMo turns to include as prefix context when "
+            "Number of previous LoCoMo sessions to include as prefix context when "
             "pre-RoPE encoding each selected KV memory turn. 0 encodes each turn in isolation."
         ),
     )
@@ -311,7 +310,7 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     if ns.rejudge and not ns.judge_only:
         parser.error("--rejudge requires --judge-only.")
     if ns.judge_only and ns.judge_provider == "none":
-        parser.error("--judge-only requires --judge vllm or --judge openai.")
+        parser.error("--judge-only requires --judge vllm.")
     _resolve_judge_connection(ns, explicit_argv=raw_argv)
     ns.model = resolve_answer_model(ns.model)
     return BenchmarkConfig(**vars(ns))
@@ -321,8 +320,8 @@ def _resolve_judge_provider(value: str | None, *, skip_judge: bool) -> JudgeProv
     if skip_judge:
         return "none"
     resolved = value or os.environ.get("JUDGE_PROVIDER") or DEFAULT_JUDGE_PROVIDER
-    if resolved not in {"vllm", "openai", "none"}:
-        raise ValueError(f"JUDGE_PROVIDER must be vllm, openai, or none, got {resolved!r}.")
+    if resolved not in {"vllm", "none"}:
+        raise ValueError(f"JUDGE_PROVIDER must be vllm or none, got {resolved!r}.")
     return resolved  # type: ignore[return-value]
 
 
@@ -330,15 +329,6 @@ def _resolve_judge_connection(ns: argparse.Namespace, *, explicit_argv: list[str
     explicit_model = _arg_present(explicit_argv, "--judge-model")
     explicit_base_url = _arg_present(explicit_argv, "--judge-base-url")
     explicit_api_key = _arg_present(explicit_argv, "--judge-api-key")
-
-    if ns.judge_provider == "openai":
-        ns.judge_model = ns.judge_model if explicit_model else _env_or_default(
-            "OPENAI_JUDGE_MODEL",
-            DEFAULT_OPENAI_JUDGE_MODEL,
-        )
-        ns.judge_base_url = ns.judge_base_url if explicit_base_url else os.environ.get("OPENAI_BASE_URL")
-        ns.judge_api_key = ns.judge_api_key if explicit_api_key else os.environ.get("OPENAI_API_KEY")
-        return
 
     if ns.judge_provider == "vllm":
         ns.judge_model = ns.judge_model if explicit_model else _env_or_default("JUDGE_MODEL", DEFAULT_JUDGE_MODEL)

@@ -107,17 +107,17 @@ class JasperVectorStore:
         if query.shape[0] != self._vectors.shape[1]:
             raise ValueError(f"query dim {query.shape[0]} does not match store dim {self._vectors.shape[1]}")
         top_k = max(1, min(top_k, self.vector_count))
-        if top_k > self.config.beam_width:
-            raise ValueError(
-                f"Jasper top_k={top_k} exceeds beam_width={self.config.beam_width}; "
-                "use an effective beam width at least as large as top_k."
-            )
+        effective_beam_width = max(self.config.beam_width, top_k)
 
-        hits, search_time_ms = self._search_jasper(query, top_k)
+        hits, search_time_ms = self._search_jasper(
+            query,
+            top_k,
+            beam_width=effective_beam_width,
+        )
         return hits, SearchMetrics(
             search_time_ms,
             vector_backend="jasper",
-            jasper_effective_beam_width=self.config.beam_width,
+            jasper_effective_beam_width=effective_beam_width,
         )
 
     def close(self) -> None:
@@ -174,7 +174,13 @@ class JasperVectorStore:
         }
         return graph
 
-    def _search_jasper(self, query: np.ndarray, top_k: int) -> tuple[list[SearchHit], float]:
+    def _search_jasper(
+        self,
+        query: np.ndarray,
+        top_k: int,
+        *,
+        beam_width: int,
+    ) -> tuple[list[SearchHit], float]:
         if self._graph is None:
             self._graph = self._build_jasper_graph()
         import torch
@@ -184,7 +190,7 @@ class JasperVectorStore:
         if callable(synchronize):
             synchronize()
         started = time.perf_counter()
-        indices, distances = self._graph.search(query_tensor, k=top_k, beam_width=self.config.beam_width)
+        indices, distances = self._graph.search(query_tensor, k=top_k, beam_width=beam_width)
         if callable(synchronize):
             synchronize()
         search_time_ms = (time.perf_counter() - started) * 1000

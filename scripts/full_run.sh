@@ -19,6 +19,9 @@
 #   # Override any grid:
 #   MODELS="llama qwen3-14b" TOPKS="10 50" WINDOWS="0 3" BENCHMARK_RESULTS_ROOT=/path bash scripts/full_run.sh
 #
+#   # Reuse one stamp across multiple workers writing to a shared results root:
+#   RUN_STAMP=20260711T220000Z BENCHMARK_RESULTS_ROOT=/path bash scripts/full_run.sh
+#
 # Run IDs encode the swept axes so results never collide:
 #   kv     -> <model>-kv-gpu-jasper10-k<topk>-w<W>-<stamp>
 #   qdrant -> <model>-prefix-qdrant10-k<topk>-<stamp>
@@ -34,7 +37,7 @@ DRY_RUN="${DRY_RUN:-0}"
 
 : "${BENCHMARK_RESULTS_ROOT:?Set BENCHMARK_RESULTS_ROOT to the results output directory}"
 
-RUN_STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+RUN_STAMP="${RUN_STAMP:-$(date -u +%Y%m%dT%H%M%SZ)}"
 LOG_DIR="${BENCHMARK_RESULTS_ROOT}/sweep-logs-${RUN_STAMP}"
 mkdir -p "${LOG_DIR}"
 

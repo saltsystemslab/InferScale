@@ -4,10 +4,12 @@ from dataclasses import dataclass
 from typing import Any
 
 
+VECTOR_DISTANCE = "ip"
+
+
 @dataclass(slots=True)
 class VectorStoreConfig:
     backend: str = "jasper"
-    distance: str = "ip"
     n_neighbors: int = 64
     alpha: float = 1.0
     workspace_budget: str = "10GB"

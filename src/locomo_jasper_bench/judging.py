@@ -34,11 +34,7 @@ def judge_qa(
     qa: QuestionAnswer,
     predicted_answer: str,
 ) -> dict[str, Any]:
-    judge_messages = build_judge_messages(
-        qa,
-        predicted_answer,
-        structured=config.judge_provider == "openai",
-    )
+    judge_messages = build_judge_messages(qa, predicted_answer)
     judge = judge_client.chat(
         judge_messages,
         max_tokens=config.max_judge_tokens,
@@ -98,10 +94,11 @@ def format_accuracy(value: Any) -> str:
     return f"{float(value):.4f}"
 
 
-def _judge_metadata(config: BenchmarkConfig | None) -> dict[str, str]:
+def _judge_metadata(config: BenchmarkConfig | None) -> dict[str, Any]:
     if config is None:
         return {}
     return {
         "provider": config.judge_provider,
         "model": config.judge_model,
+        "with_evidence": config.with_evidence,
     }

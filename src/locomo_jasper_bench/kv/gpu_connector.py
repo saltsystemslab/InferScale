@@ -64,6 +64,7 @@ class MemoryKVConnector(KVConnectorBase_V1):
         self._memory_store = get_gpu_memory_store(namespace)
         self._default_user_id = _extra_config(self._kv_transfer_config, "default_user_id")
         self._allow_prefix_scan = bool(_extra_config(self._kv_transfer_config, "allow_prefix_scan", False))
+        self._log_memory_hits = bool(_extra_config(self._kv_transfer_config, "log_memory_hits", True))
         self._requests_need_load: dict[str, tuple[str, int]] = {}
 
         if self._allow_prefix_scan:
@@ -96,7 +97,8 @@ class MemoryKVConnector(KVConnectorBase_V1):
                 match = self._try_match_user(candidate_user_id, prompt_token_ids)
                 if match is not None:
                     user_id = candidate_user_id
-                    logger.warning(
+                    log_match = logger.warning if self._log_memory_hits else logger.debug
+                    log_match(
                         "Prefix scan matched strict GPU memory user %s for a request with no explicit user id.",
                         candidate_user_id,
                     )
@@ -113,7 +115,8 @@ class MemoryKVConnector(KVConnectorBase_V1):
             return 0, False
 
         request._memory_user_id = user_id  # type: ignore[attr-defined]
-        logger.info(
+        log_hit = logger.info if self._log_memory_hits else logger.debug
+        log_hit(
             "Strict GPU memory hit user=%s aligned_tokens=%d raw_tokens=%d new_tokens=%d",
             user_id,
             aligned_tokens,
@@ -233,7 +236,8 @@ class MemoryKVConnector(KVConnectorBase_V1):
                 continue
 
             slot_mapping = load.slot_mapping.to(device=first_tensor.device, dtype=torch.long)
-            logger.info("Injecting %d strict GPU memory tokens for user %s", load.num_tokens, load.user_id)
+            log_injection = logger.info if self._log_memory_hits else logger.debug
+            log_injection("Injecting %d strict GPU memory tokens for user %s", load.num_tokens, load.user_id)
 
             for layer_name, layer in forward_context.no_compile_layers.items():
                 kv_cache_attr = getattr(layer, "kv_cache", None)

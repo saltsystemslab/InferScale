@@ -9,22 +9,22 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MODELS = ("llama", "mistral", "qwen", "qwen3-14b")
 TOP_KS = (5, 10, 20, 50, 100)
-WINDOWS = (0, 5, 20, 50)
+KV_WINDOWS = (0, 5, 20, 50)
 
 
-def _expected_run_ids(stamp: str) -> set[str]:
-    return {
-        run_id
+def _expected_full_run_ids(stamp: str) -> set[str]:
+    kv_ids = {
+        f"{model}-kv-mem0-jasper10-k{top_k}-s{window}-{stamp}"
         for model in MODELS
         for top_k in TOP_KS
-        for run_id in (
-            *(
-                f"{model}-kv-gpu-jasper10-k{top_k}-w{window}-{stamp}"
-                for window in WINDOWS
-            ),
-            f"{model}-prefix-qdrant10-k{top_k}-{stamp}",
-        )
+        for window in KV_WINDOWS
     }
+    prefix_ids = {
+        f"{model}-prefix-mem0-qdrant10-k{top_k}-s0-{stamp}"
+        for model in MODELS
+        for top_k in TOP_KS
+    }
+    return kv_ids | prefix_ids
 
 
 def _run_script(script: str, results_root: Path, **overrides: str) -> str:
@@ -35,7 +35,7 @@ def _run_script(script: str, results_root: Path, **overrides: str) -> str:
             "DRY_RUN": "1",
             "MODELS": " ".join(MODELS),
             "TOPKS": " ".join(str(top_k) for top_k in TOP_KS),
-            "WINDOWS": " ".join(str(window) for window in WINDOWS),
+            "KV_WINDOWS": " ".join(str(window) for window in KV_WINDOWS),
         }
     )
     env.update(overrides)
@@ -56,18 +56,49 @@ def _judge_run_ids(output: str) -> set[str]:
     return {line.strip() for line in run_id_block.splitlines() if line.strip()}
 
 
-def test_full_run_dry_run_emits_the_100_run_standard_matrix(tmp_path: Path) -> None:
+def test_full_run_dry_run_emits_the_100_run_mem0_fact_matrix(tmp_path: Path) -> None:
     output = _run_script("full_run.sh", tmp_path)
     stamp_match = re.search(r"Sweep complete: 100 runs \(stamp ([^)]+)\)", output)
 
     assert stamp_match is not None
     run_ids = re.findall(r"--run-id ([^\s]+)", output)
     assert len(run_ids) == 100
-    assert set(run_ids) == _expected_run_ids(stamp_match.group(1))
-    assert "prefix-gpu-jasper" not in output
+    assert set(run_ids) == _expected_full_run_ids(stamp_match.group(1))
+
+    kv_commands = [line for line in output.splitlines() if "--answer-backend vllm-kv" in line]
+    prefix_commands = [line for line in output.splitlines() if "--answer-backend vllm-prefix" in line]
+    assert len(kv_commands) == 80
+    assert len(prefix_commands) == 20
+    for window in KV_WINDOWS:
+        assert any(
+            f"--context-window {window}" in command and f"-s{window}-" in command
+            for command in kv_commands
+        )
+    assert not any(
+        re.search(rf"--context-window {window}(?:\s|$)", command)
+        for window in (1, 2, 3)
+        for command in (*kv_commands, *prefix_commands)
+    )
+    assert all("-mem0-" in run_id for run_id in run_ids)
+    assert all("--vector-backend jasper" in command for command in kv_commands)
+    assert all("--vector-backend qdrant" in command for command in prefix_commands)
+    assert all("--context-window 0" in command and "-s0-" in command for command in prefix_commands)
 
 
-def test_judge_grid_dry_run_emits_the_same_100_run_matrix(tmp_path: Path) -> None:
+def test_full_run_dry_run_omits_removed_comparison_steps(tmp_path: Path) -> None:
+    output = _run_script("full_run.sh", tmp_path)
+    removed_outputs = (
+        "locomo-compare-pairs",
+        "locomo-matrix-report",
+        "pairing.json",
+        "backend_overlap.json",
+        "matrix_report.csv",
+    )
+
+    assert all(marker not in output for marker in removed_outputs)
+
+
+def test_judge_grid_dry_run_emits_the_100_run_mem0_fact_matrix(tmp_path: Path) -> None:
     stamp = "20260710T120000Z"
     output = _run_script(
         "judge.sh",
@@ -80,18 +111,20 @@ def test_judge_grid_dry_run_emits_the_same_100_run_matrix(tmp_path: Path) -> Non
     )
 
     assert f"Would judge 100 run(s) for stamp {stamp} (source: grid)." in output
-    assert _judge_run_ids(output) == _expected_run_ids(stamp)
+    assert _judge_run_ids(output) == _expected_full_run_ids(stamp)
     assert "prefix-gpu-jasper" not in output
 
 
-def test_judge_discovery_ignores_legacy_jasper_prefix_runs(tmp_path: Path) -> None:
+def test_judge_discovery_accepts_current_and_supported_legacy_runs(tmp_path: Path) -> None:
     stamp = "20260710T120000Z"
     expected = {
+        f"llama-kv-mem0-jasper10-k5-s0-{stamp}",
+        f"llama-prefix-mem0-jasper10-k5-s0-{stamp}",
         f"llama-kv-gpu-jasper10-k5-w0-{stamp}",
-        f"llama-prefix-qdrant10-k5-{stamp}",
+        f"llama-prefix-qdrant10-k5-w0-{stamp}",
     }
-    legacy = f"llama-prefix-gpu-jasper10-k5-{stamp}"
-    for run_id in (*expected, legacy):
+    unsupported = f"llama-prefix-gpu-jasper10-k5-{stamp}"
+    for run_id in (*expected, unsupported):
         (tmp_path / run_id).mkdir()
 
     output = _run_script(
@@ -104,6 +137,6 @@ def test_judge_discovery_ignores_legacy_jasper_prefix_runs(tmp_path: Path) -> No
         JUDGE_MODEL="judge-model",
     )
 
-    assert f"Would judge 2 run(s) for stamp {stamp} (source: discover)." in output
+    assert f"Would judge 4 run(s) for stamp {stamp} (source: discover)." in output
     assert _judge_run_ids(output) == expected
-    assert legacy not in output
+    assert unsupported not in output

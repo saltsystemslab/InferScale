@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
 
 import torch
 
 from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorMetadata
+
+from .connector_utils import (  # noqa: F401  (re-exported for the GPU connector)
+    align_to_block_size,
+    build_slot_mapping,
+    extra_config,
+    extract_user_id,
+)
 
 
 @dataclass
@@ -27,50 +33,11 @@ class MemoryConnectorMetadata(KVConnectorMetadata):
         block_size: int,
         num_tokens: int,
     ) -> None:
-        block_ids_tensor = torch.tensor(block_ids, dtype=torch.long)
-        block_offsets = torch.arange(0, block_size, dtype=torch.long)
-        slot_mapping = (
-            block_offsets.reshape(1, block_size)
-            + block_ids_tensor.reshape(block_ids_tensor.shape[0], 1) * block_size
-        )
+        slot_mapping = build_slot_mapping(block_ids, block_size, num_tokens)
         self.loads.append(
             MemoryLoadMeta(
                 user_id=user_id,
-                slot_mapping=slot_mapping.flatten()[:num_tokens],
+                slot_mapping=torch.tensor(slot_mapping, dtype=torch.long),
                 num_tokens=num_tokens,
             )
         )
-
-
-def align_to_block_size(num_tokens: int, block_size: int) -> int:
-    return (num_tokens // block_size) * block_size
-
-
-def extra_config(kv_transfer_config: Any, key: str, default: Any = None) -> Any:
-    getter = getattr(kv_transfer_config, "get_from_extra_config", None)
-    if callable(getter):
-        return getter(key, default)
-    extra = getattr(kv_transfer_config, "kv_connector_extra_config", None) or {}
-    return extra.get(key, default)
-
-
-def extract_user_id(request: Any, default_user_id: str | None = None) -> str | None:
-    user_id = getattr(request, "user", None)
-    if user_id:
-        return str(user_id)
-
-    sampling_params = getattr(request, "sampling_params", None)
-    if sampling_params is not None:
-        user_id = getattr(sampling_params, "user", None)
-        if user_id:
-            return str(user_id)
-
-    metadata = getattr(request, "metadata", None)
-    if metadata:
-        user_id = metadata.get("user_id")
-        if user_id:
-            return str(user_id)
-
-    if default_user_id:
-        return default_user_id
-    return None

@@ -124,10 +124,7 @@ print("transformers:", transformers.__version__)
 print("vllm:", vllm.__version__)
 PY
 
-PREEMBED_RUN_ID="${PREEMBED_RUN_ID:-setup-preembed-$(date -u +%Y%m%dT%H%M%SZ)}"
-locomo-jasper-bench \
-  --dataset "${LOCOMO_DATASET_PATH}" \
-  --results-dir "${BENCHMARK_RESULTS_ROOT}" \
-  --max-samples 10 \
-  --preembed-only \
-  --run-id "${PREEMBED_RUN_ID}"
+# Materialize the Mem0 fact catalogs. For every answer model this spins up a
+# local vLLM server serving that same model, extracts facts through it, and
+# shuts it down again; extraction always uses the answer model itself.
+DATASET="${LOCOMO_DATASET_PATH}" bash "${SCRIPT_DIR}/extract_facts.sh"

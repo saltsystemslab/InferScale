@@ -6,11 +6,28 @@ from typing import Any
 import numpy as np
 
 from ..runtime_paths import default_mem0_dir
-from ..vector_types import SearchHit, SearchMetrics, VectorStoreConfig
+from ..vector_types import SearchHit, SearchMetrics, VECTOR_DISTANCE, VectorStoreConfig
 from .jasper_vector_store import JasperVectorStore
 from .qdrant_vector_store import QdrantVectorStore
 
-_MIRRORED_METADATA_KEYS = ("user_id", "sample_id", "turn_id", "session_id", "turn_index", "speaker", "timestamp", "role")
+_MIRRORED_METADATA_KEYS = (
+    "fact_id",
+    "user_id",
+    "sample_id",
+    "created_at",
+    "timestamp",
+    "timestamp_epoch",
+    "source_session_index",
+    "source_session_id",
+    "source_turn_index",
+    "source_turn_id",
+    "turn_id",
+    "session_id",
+    "turn_index",
+    "speaker",
+    "source_role",
+    "role",
+)
 
 try:
     from mem0.vector_stores.base import VectorStoreBase
@@ -30,12 +47,13 @@ class Mem0JasperVectorStore(VectorStoreBase):
         embedding_model_dims: int | None = 1536,
         path: str | Path | None = None,
         backend: str = "jasper",
-        distance: str = "ip",
+        distance: str = VECTOR_DISTANCE,
         n_neighbors: int = 64,
         alpha: float = 1.0,
         workspace_budget: str = "10GB",
         beam_width: int = 64,
     ) -> None:
+        _require_inner_product(distance)
         self.collection_name = collection_name
         self.embedding_model_dims = embedding_model_dims
         if path is None:
@@ -44,7 +62,6 @@ class Mem0JasperVectorStore(VectorStoreBase):
             self.root = Path(path) / collection_name
         self.config = VectorStoreConfig(
             backend=backend,
-            distance=distance,
             n_neighbors=n_neighbors,
             alpha=alpha,
             workspace_budget=workspace_budget,
@@ -58,6 +75,8 @@ class Mem0JasperVectorStore(VectorStoreBase):
         )
 
     def create_col(self, name: str | None = None, vector_size: int | None = None, distance: str | None = None) -> None:
+        if distance is not None:
+            _require_inner_product(distance)
         if name and name != self.collection_name:
             close = getattr(self.store, "close", None)
             if callable(close):
@@ -67,32 +86,44 @@ class Mem0JasperVectorStore(VectorStoreBase):
             self.store = self._create_store()
         if vector_size is not None:
             self.embedding_model_dims = vector_size
-        if distance:
-            self.config.distance = _normalize_distance(distance)
 
     def insert(self, vectors: list[Any], payloads: list[dict[str, Any]] | None = None, ids: list[str] | None = None) -> list[str]:
         payload_list = [_normalize_memory_payload(payload) for payload in (payloads or [{} for _ in vectors])]
-        return self.store.add_many(vectors, payload_list, ids)
+        requested_ids = list(ids) if ids is not None else [None] * len(payload_list)
+        stable_ids = [
+            str(payload.get("fact_id") or requested_id)
+            if payload.get("fact_id") is not None or requested_id is not None
+            else None
+            for payload, requested_id in zip(payload_list, requested_ids)
+        ]
+        return self.store.add_many(
+            vectors,
+            payload_list,
+            None if any(item_id is None for item_id in stable_ids) else stable_ids,
+        )
 
     def search(
         self,
         query: str,
         vectors: np.ndarray | list[float] | list[list[float]],
         top_k: int = 5,
+        filters: dict[str, Any] | None = None,
         **_: Any,
     ) -> list[SearchHit]:
         requested_top_k = 5 if top_k is None else int(top_k)
         if requested_top_k < 1:
             raise ValueError("top_k must be >= 1.")
         query_vector = _first_vector(vectors)
-        hits, metrics = self.store.search(query_vector, top_k=requested_top_k)
-        expected_count = min(requested_top_k, self.store.vector_count)
+        hits, metrics = self.store.search(query_vector, top_k=requested_top_k, filters=filters)
+        count = getattr(self.store, "count", None)
+        matching_count = int(count(filters)) if callable(count) else len(self.store.rows(filters))
+        expected_count = min(requested_top_k, matching_count)
         _validate_search_hits(hits, expected_count=expected_count, backend=self.config.backend)
         self.last_search_metrics = metrics
         return hits
 
     def delete(self, vector_id: str) -> None:
-        raise NotImplementedError("Mem0JasperVectorStore.delete is not used by this benchmark.")
+        self.store.delete(str(vector_id))
 
     def update(
         self,
@@ -100,16 +131,20 @@ class Mem0JasperVectorStore(VectorStoreBase):
         vector: list[float] | None = None,
         payload: dict[str, Any] | None = None,
     ) -> None:
-        raise NotImplementedError("Mem0JasperVectorStore.update is not used by this benchmark.")
+        self.store.update(
+            str(vector_id),
+            vector=vector,
+            payload=_normalize_memory_payload(payload) if payload is not None else None,
+        )
 
     def get(self, vector_id: str) -> SearchHit | None:
-        raise NotImplementedError("Mem0JasperVectorStore.get is not used by this benchmark.")
+        return self.store.get(str(vector_id))
 
     def list_cols(self) -> list[str]:
         return [self.collection_name]
 
     def delete_col(self) -> None:
-        raise NotImplementedError("Mem0JasperVectorStore.delete_col is not used by this benchmark.")
+        self.store.reset()
 
     def col_info(self) -> dict[str, Any]:
         return {
@@ -133,10 +168,23 @@ class Mem0JasperVectorStore(VectorStoreBase):
         limit: int | None = None,
         **_: Any,
     ) -> list[SearchHit]:
-        raise NotImplementedError("Mem0JasperVectorStore.list is not used by this benchmark.")
+        requested = top_k if top_k is not None else limit
+        rows = self.store.rows(filters)
+        if requested is not None:
+            rows = rows[: max(0, int(requested))]
+        return [
+            SearchHit(
+                id=item_id,
+                payload=dict(payload),
+                score=0.0,
+                distance=0.0,
+                rank=rank,
+            )
+            for rank, (item_id, payload) in enumerate(rows, start=1)
+        ]
 
     def reset(self) -> None:
-        raise NotImplementedError("Mem0JasperVectorStore.reset is not used by this benchmark.")
+        self.store.reset()
 
     def finalize(self) -> None:
         self.store.finalize()
@@ -164,13 +212,11 @@ def _first_vector(vectors: np.ndarray | list[float] | list[list[float]]) -> np.n
     raise ValueError("vectors must be a one-dimensional vector or a non-empty list of vectors")
 
 
-def _normalize_distance(distance: str) -> str:
-    lowered = str(distance).lower()
-    if lowered in {"cosine", "ip", "dot"}:
-        return "ip"
-    if lowered in {"euclidean", "l2"}:
-        return "l2"
-    return lowered
+def _require_inner_product(distance: str) -> None:
+    if distance != VECTOR_DISTANCE:
+        raise ValueError(
+            f"Mem0 Jasper provider requires distance={VECTOR_DISTANCE!r}, got {distance!r}."
+        )
 
 
 def _validate_search_hits(hits: list[SearchHit], *, expected_count: int, backend: str) -> None:
@@ -202,6 +248,7 @@ def _normalize_memory_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
     memory = normalized.get("memory") or normalized.get("data") or normalized.get("text") or ""
     normalized.setdefault("memory", memory)
     normalized.setdefault("data", memory)
+    normalized.setdefault("text", memory)
 
     metadata = normalized.get("metadata")
     if isinstance(metadata, dict):

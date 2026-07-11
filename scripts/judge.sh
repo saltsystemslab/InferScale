@@ -8,11 +8,11 @@
 # Enumerating run-ids (set RUNIDS_FROM):
 #   discover (default) : scan BENCHMARK_RESULTS_ROOT for run-ids whose name contains STAMP.
 #                        Judges exactly what exists -- skips sweep runs that produced nothing.
-#   grid               : regenerate them from MODELS x TOPKS x WINDOWS (the sweep grid).
+#   grid               : regenerate them from the current Mem0 fact sweep grid.
 #                        Use this if discovery finds nothing due to the results layout.
 #
 # Required env: BENCHMARK_RESULTS_ROOT  JUDGE_BASE_URL  JUDGE_API_KEY  JUDGE_MODEL
-# Optional:     STAMP  RUNIDS_FROM  DRY_RUN  MODELS/TOPKS/WINDOWS (grid mode only)
+# Optional:     STAMP  RUNIDS_FROM  DRY_RUN  MODELS/TOPKS/KV_WINDOWS
 #
 # Usage:
 #   BENCHMARK_RESULTS_ROOT=/r JUDGE_BASE_URL=... JUDGE_API_KEY=... JUDGE_MODEL=... bash scripts/judge.sh
@@ -33,7 +33,7 @@ DRY_RUN="${DRY_RUN:-0}"
 # Grid -- only used when RUNIDS_FROM=grid. Must match the sweep that produced results.
 MODELS="${MODELS:-llama mistral qwen qwen3-14b}"
 TOPKS="${TOPKS:-5 10 20 50 100}"
-WINDOWS="${WINDOWS:-0 5 20 50}"
+KV_WINDOWS="${KV_WINDOWS:-${WINDOWS:-0 5 20 50}}"
 
 # ----- Build list of run-ids -----------------------------------------------
 declare -a RUN_IDS=()
@@ -41,10 +41,10 @@ declare -a RUN_IDS=()
 if [[ "${RUNIDS_FROM}" == "grid" ]]; then
   for MODEL in ${MODELS}; do
     for TOP_K in ${TOPKS}; do
-      for W in ${WINDOWS}; do
-        RUN_IDS+=("${MODEL}-kv-gpu-jasper10-k${TOP_K}-w${W}-${STAMP}")
+      for W in ${KV_WINDOWS}; do
+        RUN_IDS+=("${MODEL}-kv-mem0-jasper10-k${TOP_K}-s${W}-${STAMP}")
       done
-      RUN_IDS+=("${MODEL}-prefix-qdrant10-k${TOP_K}-${STAMP}")
+      RUN_IDS+=("${MODEL}-prefix-mem0-qdrant10-k${TOP_K}-s0-${STAMP}")
     done
   done
 elif [[ "${RUNIDS_FROM}" == "discover" ]]; then
@@ -56,7 +56,7 @@ elif [[ "${RUNIDS_FROM}" == "discover" ]]; then
   done < <(
     find "${BENCHMARK_RESULTS_ROOT}" -name "*${STAMP}*" 2>/dev/null \
       | grep -oE "[A-Za-z0-9]+(-[A-Za-z0-9]+)*-${STAMP}" \
-      | grep -E -- "-(kv-gpu-jasper10|prefix-qdrant10)-" \
+      | grep -E -- "-(kv-mem0-(jasper|qdrant)10|prefix-mem0-(jasper|qdrant)10|kv-gpu-jasper10|prefix-qdrant10)-" \
       | sort -u
   )
 else

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from collections.abc import Sequence
 from typing import Any
 
 from ..clients import ChatResult
@@ -10,6 +11,7 @@ from ..config import BenchmarkConfig
 from ..data import ConversationSample, QuestionAnswer
 from ..vector_types import SearchHit
 from .chunked_rope import ChunkedRopeEncoder, ChunkedRopeSampleComposer
+from .context import memory_context_metrics
 from .gpu_registry import (
     clear_namespace,
     drop_namespace,
@@ -17,9 +19,15 @@ from .gpu_registry import (
     register_user_memory,
     remove_user_memory,
 )
-from .prompting import build_kv_equivalence_prompt_token_ids
+from .prompting import (
+    build_kv_equivalence_prompt_from_query_tokens,
+    build_kv_query_tokens_for_memory,
+    build_memory_prompt_token_ids,
+    calculate_memory_token_budget,
+    extract_memory_scaffold_token_ids,
+)
 from .sample_cache import GpuSampleCacheStore
-from .vllm_metrics import request_timing_from_output
+from .vllm_metrics import require_engine_ttft_ms
 from .vllm_runtime import (
     build_strict_gpu_kv_transfer_config,
     common_vllm_kwargs,
@@ -44,7 +52,11 @@ class VLLMChunkedKVAnswerClient:
         self._sample_caches = GpuSampleCacheStore()
         self._encoder: ChunkedRopeEncoder | None = None
 
-    def precompute_sample_cache(self, sample: ConversationSample) -> dict[str, Any]:
+    def precompute_sample_cache(
+        self,
+        sample: ConversationSample,
+        facts: Sequence[SearchHit],
+    ) -> dict[str, Any]:
         force_vllm_inprocess_mode()
         if self._llm is not None:
             raise RuntimeError(
@@ -57,9 +69,9 @@ class VLLMChunkedKVAnswerClient:
         else:
             self._sample_caches.release(sample_key)
         logger.info(
-            "Precomputing GPU-resident KV cache sample_id=%s turns=%d context_window=%d",
+            "Precomputing GPU-resident KV cache sample_id=%s facts=%d context_window=%d",
             sample.sample_id,
-            len(sample.turns),
+            len(facts),
             self.config.context_window,
         )
         started = time.perf_counter()
@@ -69,8 +81,9 @@ class VLLMChunkedKVAnswerClient:
             composer = ChunkedRopeSampleComposer(
                 encoder=encoder,
                 context_window=self.config.context_window,
+                block_size=self.config.kv_block_size,
             )
-            composer.encode_sample(sample)
+            composer.encode_sample(sample, facts)
         except RuntimeError as exc:
             if composer is not None:
                 composer.close()
@@ -155,7 +168,43 @@ class VLLMChunkedKVAnswerClient:
             raise RuntimeError(f"Strict GPU KV sample_id={sample.sample_id} is not the active prepared sample.")
 
         request_started = ttft_started_at if ttft_started_at is not None else time.perf_counter()
-        composed = composer.compose(hits)
+        scaffold = extract_memory_scaffold_token_ids(
+            self._tokenizer,
+            sample,
+            block_size=self.config.kv_block_size,
+        )
+        query_tokens = build_kv_query_tokens_for_memory(
+            self._tokenizer,
+            scaffold.header_token_ids,
+            sample,
+            qa,
+            memory_scaffold=scaffold,
+        )
+        memory_token_budget = calculate_memory_token_budget(
+            self._tokenizer,
+            sample,
+            qa,
+            memory_prefix_token_ids=scaffold.header_token_ids,
+            max_position=self.config.kv_max_position,
+            max_model_len=self.config.kv_max_model_len,
+            max_answer_tokens=max_tokens,
+            query_tokens=query_tokens,
+            memory_scaffold=scaffold,
+        )
+        composed = composer.compose(hits, memory_token_budget=memory_token_budget)
+        # Token-equivalence verification is benchmark bookkeeping, not part of the
+        # serving path, so its cost is timed separately and excluded from latency.
+        verify_started = time.perf_counter()
+        live_memory = build_memory_prompt_token_ids(
+            self._tokenizer,
+            sample,
+            hits,
+            context_window=self.config.context_window,
+            memory_token_budget=memory_token_budget,
+            memory_scaffold=scaffold,
+        )
+        _require_same_memory_token_ids(composed.token_ids, live_memory.token_ids)
+        verify_ms = (time.perf_counter() - verify_started) * 1000
         user_id = self.active_user_id
         register_user_memory(
             self.namespace,
@@ -165,22 +214,24 @@ class VLLMChunkedKVAnswerClient:
             token_ids=composed.token_ids,
         )
         try:
-            prompt = build_kv_equivalence_prompt_token_ids(
-                self._tokenizer,
+            prompt = build_kv_equivalence_prompt_from_query_tokens(
                 list(composed.token_ids),
-                sample,
-                qa,
+                query_tokens,
             )
             metrics: dict[str, Any] = {
                 **self._sample_caches.active_metrics,
                 "kv_memory_tokens": composed.num_tokens,
                 "kv_compose_time_ms": composed.compose_time_ms,
+                "kv_verify_time_ms": verify_ms,
                 "kv_context_window": composed.context_window,
-                "kv_context_prefix_tokens_total": composed.context_prefix_tokens_total,
-                "kv_context_prefix_tokens_max": composed.context_prefix_tokens_max,
-                "kv_context_prefix_truncated_tokens": composed.context_prefix_truncated_tokens,
                 "kv_query_tokens": len(prompt.query_token_ids),
                 "kv_query_bos_stripped": int(prompt.stripped_query_bos),
+                "kv_selected_fact_ids": composed.selected_fact_ids,
+                "kv_block_size": self.config.kv_block_size,
+                "kv_loaded_memory_tokens": composed.loaded_memory_tokens,
+                "kv_recomputed_memory_tail_tokens": composed.recomputed_memory_tail_tokens,
+                "kv_fact_tokens_end": composed.fact_tokens_end,
+                **memory_context_metrics(composed.fact_plan),
             }
             sampling = self._sampling_cls(
                 temperature=temperature,
@@ -195,20 +246,20 @@ class VLLMChunkedKVAnswerClient:
             )
             finished = time.perf_counter()
             generate_ms = (finished - generate_started) * 1000
-            total_ms = max(0.0, (finished - request_started) * 1000)
+            total_ms = max(0.0, (finished - request_started) * 1000 - verify_ms)
             if query_started_at is not None:
-                metrics["query_to_answer_ms"] = max(0.0, (finished - query_started_at) * 1000)
-            timing = request_timing_from_output(outputs[0])
-            ttft_ms = timing.time_to_first_token_ms
-            if ttft_ms is not None:
-                metrics["kv_engine_time_to_first_token_ms"] = ttft_ms
-                metrics["answer_time_to_first_token_ms"] = (
-                    max(0.0, (generate_started - request_started) * 1000) + ttft_ms
+                metrics["query_to_answer_ms"] = max(
+                    0.0, (finished - query_started_at) * 1000 - verify_ms
                 )
-                if query_started_at is not None:
-                    metrics["query_to_first_token_ms"] = (
-                        max(0.0, (generate_started - query_started_at) * 1000) + ttft_ms
-                    )
+            ttft_ms = require_engine_ttft_ms(outputs[0])
+            prep_ms = max(0.0, (generate_started - request_started) * 1000 - verify_ms)
+            metrics["kv_engine_time_to_first_token_ms"] = ttft_ms
+            metrics["answer_time_to_first_token_ms"] = prep_ms + ttft_ms
+            if query_started_at is not None:
+                metrics["query_to_first_token_ms"] = (
+                    max(0.0, (generate_started - query_started_at) * 1000 - verify_ms)
+                    + ttft_ms
+                )
             text = outputs[0].outputs[0].text.strip()
             stats = namespace_stats(self.namespace)
             metrics.update(
@@ -216,7 +267,6 @@ class VLLMChunkedKVAnswerClient:
                     "answer_generate_time_ms": generate_ms,
                     "answer_total_time_ms": total_ms,
                     "kv_store_gpu_mb": stats.get("total_gpu_mb", 0.0),
-                    "kv_selected_turn_ids": composed.selected_turn_ids,
                 }
             )
             return ChatResult(
@@ -262,3 +312,28 @@ class VLLMChunkedKVAnswerClient:
         if self._encoder is not None:
             self._encoder.close()
             self._encoder = None
+
+
+def _first_token_mismatch(left: list[int], right: list[int]) -> int:
+    for index, (left_token, right_token) in enumerate(zip(left, right)):
+        if left_token != right_token:
+            return index
+    return min(len(left), len(right))
+
+
+def _require_same_memory_token_ids(
+    precomputed_token_ids: list[int],
+    live_token_ids: list[int],
+) -> None:
+    if precomputed_token_ids == live_token_ids:
+        return
+    mismatch_index = _first_token_mismatch(
+        precomputed_token_ids,
+        live_token_ids,
+    )
+    raise RuntimeError(
+        "Precomputed Hugging Face memory tokens differ from the live vLLM "
+        f"tokenizer at index={mismatch_index}: "
+        f"precomputed_length={len(precomputed_token_ids)} "
+        f"live_length={len(live_token_ids)}."
+    )

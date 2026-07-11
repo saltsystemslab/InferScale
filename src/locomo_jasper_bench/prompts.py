@@ -11,35 +11,19 @@ JUDGE_SYSTEM_PROMPT = (
     "Answer with exactly one lowercase word: true or false."
 )
 
-STRUCTURED_JUDGE_SYSTEM_PROMPT = (
-    "You are evaluating the correctness of an answer about a conversation. "
-    "Compare the predicted answer to the reference answer."
-)
-
 
 def build_judge_messages(
     qa: QuestionAnswer,
     predicted_answer: str,
-    *,
-    structured: bool = False,
 ) -> list[dict[str, str]]:
-    system_prompt = STRUCTURED_JUDGE_SYSTEM_PROMPT if structured else JUDGE_SYSTEM_PROMPT
-    output_instruction = (
-        "Set correct to true if the prediction conveys the same essential information as the reference answer, even if worded differently. "
-        "Set correct to false for contradictions, unsupported answers, or missing key facts."
-        if structured
-        else (
-            "Return true if the prediction conveys the same essential information as the reference answer, even if worded differently. "
-            "Return false for contradictions, unsupported answers, or missing key facts. "
-            "Output only true or false. Do not return JSON, punctuation, or an explanation."
-        )
-    )
     user = (
-        f"{system_prompt}\n\n"
+        f"{JUDGE_SYSTEM_PROMPT}\n\n"
         f"Question: {qa.question}\n"
         f"Reference answer: {qa.answer}\n"
         f"Predicted answer: {predicted_answer}\n\n"
-        f"{output_instruction}"
+        "Return true if the prediction conveys the same essential information as the reference answer, even if worded differently. "
+        "Return false for contradictions, unsupported answers, or missing key facts. "
+        "Output only true or false. Do not return JSON, punctuation, or an explanation."
     )
     return [{"role": "user", "content": user}]
 

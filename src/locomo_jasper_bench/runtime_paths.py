@@ -54,6 +54,10 @@ def default_embedding_cache_dir(root: str | Path | None = None) -> Path:
     return default_cache_root(root) / "embeddings"
 
 
+def default_memory_llm_cache_dir(root: str | Path | None = None) -> Path:
+    return default_cache_root(root) / "mem0-inference"
+
+
 def default_mem0_dir_string() -> str:
     return str(default_mem0_dir())
 
@@ -63,6 +67,7 @@ def configure_runtime_environment(root: str | Path | None = None) -> None:
     os.environ.setdefault("BENCHMARK_CACHE_ROOT", str(cache_root))
     os.environ.setdefault("BENCHMARK_RESULTS_ROOT", str(default_results_root(root)))
     os.environ.setdefault("MEM0_DIR", str(default_mem0_dir(root)))
+    os.environ.setdefault("MEM0_TELEMETRY", "false")
     os.environ.setdefault("TMPDIR", str(default_tmp_dir(root)))
     os.environ.setdefault("PIP_CACHE_DIR", str(cache_root / "pip"))
     os.environ.setdefault("XDG_CACHE_HOME", str(cache_root / "xdg"))

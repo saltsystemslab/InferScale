@@ -8,12 +8,19 @@ from ..clients import ChatResult
 from ..config import BenchmarkConfig
 from ..data import ConversationSample, QuestionAnswer
 from ..vector_types import SearchHit
-from .prompting import build_kv_equivalence_prompt_token_ids, build_memory_prompt_token_ids
-from .vllm_metrics import request_timing_from_output
+from .context import memory_context_metrics
+from .prompting import (
+    build_kv_equivalence_prompt_from_query_tokens,
+    build_kv_query_tokens_for_memory,
+    build_memory_prompt_token_ids,
+    calculate_memory_token_budget,
+    extract_memory_scaffold_token_ids,
+)
+from .vllm_metrics import require_engine_ttft_ms
 from .vllm_runtime import (
     common_vllm_kwargs,
     empty_cuda_cache,
-    sanitize_repo_vllm_env_for_import,
+    force_vllm_inprocess_mode,
 )
 
 logger = logging.getLogger(__name__)
@@ -23,6 +30,7 @@ class VLLMPrefixPromptAnswerClient:
     """In-process vLLM answer client for same-token KV-equivalence prompt injection."""
 
     def __init__(self, config: BenchmarkConfig) -> None:
+        force_vllm_inprocess_mode()
         self.config = config
         self._llm: Any | None = None
         self._tokenizer: Any | None = None
@@ -33,7 +41,7 @@ class VLLMPrefixPromptAnswerClient:
         if self._llm is not None:
             return
 
-        sanitize_repo_vllm_env_for_import()
+        force_vllm_inprocess_mode()
         from vllm import LLM, SamplingParams
 
         try:
@@ -67,18 +75,50 @@ class VLLMPrefixPromptAnswerClient:
             raise RuntimeError(f"vllm-prefix sample_id={sample.sample_id} is not the active prepared sample.")
 
         request_started = ttft_started_at if ttft_started_at is not None else time.perf_counter()
-        memory = build_memory_prompt_token_ids(self._tokenizer, sample, hits)
-        prompt = build_kv_equivalence_prompt_token_ids(
+        scaffold = extract_memory_scaffold_token_ids(
             self._tokenizer,
-            memory.token_ids,
+            sample,
+            block_size=self.config.kv_block_size,
+        )
+        query_tokens = build_kv_query_tokens_for_memory(
+            self._tokenizer,
+            scaffold.header_token_ids,
             sample,
             qa,
+            memory_scaffold=scaffold,
+        )
+        memory_token_budget = calculate_memory_token_budget(
+            self._tokenizer,
+            sample,
+            qa,
+            memory_prefix_token_ids=scaffold.header_token_ids,
+            max_position=self.config.kv_max_position,
+            max_model_len=self.config.kv_max_model_len,
+            max_answer_tokens=max_tokens,
+            query_tokens=query_tokens,
+            memory_scaffold=scaffold,
+        )
+        memory = build_memory_prompt_token_ids(
+            self._tokenizer,
+            sample,
+            hits,
+            context_window=self.config.context_window,
+            memory_token_budget=memory_token_budget,
+            memory_scaffold=scaffold,
+            render_context_turns=True,
+        )
+        prompt = build_kv_equivalence_prompt_from_query_tokens(
+            memory.token_ids,
+            query_tokens,
         )
         metrics: dict[str, Any] = {
             "kv_memory_tokens": len(prompt.memory_token_ids),
             "kv_query_tokens": len(prompt.query_token_ids),
             "kv_query_bos_stripped": int(prompt.stripped_query_bos),
-            "kv_selected_turn_ids": memory.selected_turn_ids,
+            "kv_selected_fact_ids": memory.selected_fact_ids,
+            "kv_block_size": self.config.kv_block_size,
+            "kv_context_window": memory.fact_plan.context_window,
+            **memory_context_metrics(memory.fact_plan),
         }
 
         sampling = self._sampling_cls(
@@ -101,13 +141,11 @@ class VLLMPrefixPromptAnswerClient:
         )
         if query_started_at is not None:
             metrics["query_to_answer_ms"] = max(0.0, (finished - query_started_at) * 1000)
-        timing = request_timing_from_output(outputs[0])
-        ttft_ms = timing.time_to_first_token_ms
-        if ttft_ms is not None:
-            metrics["prefix_engine_time_to_first_token_ms"] = ttft_ms
-            metrics["answer_time_to_first_token_ms"] = max(0.0, (generate_started - request_started) * 1000) + ttft_ms
-            if query_started_at is not None:
-                metrics["query_to_first_token_ms"] = max(0.0, (generate_started - query_started_at) * 1000) + ttft_ms
+        ttft_ms = require_engine_ttft_ms(outputs[0])
+        metrics["prefix_engine_time_to_first_token_ms"] = ttft_ms
+        metrics["answer_time_to_first_token_ms"] = max(0.0, (generate_started - request_started) * 1000) + ttft_ms
+        if query_started_at is not None:
+            metrics["query_to_first_token_ms"] = max(0.0, (generate_started - query_started_at) * 1000) + ttft_ms
         return ChatResult(
             content=outputs[0].outputs[0].text.strip(),
             ttft_ms=ttft_ms,

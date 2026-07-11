@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.metadata
+import os
 import platform
 import subprocess
 from pathlib import Path
@@ -14,12 +15,22 @@ def collect_system_metadata() -> dict[str, Any]:
         "packages": {
             "torch": _package_version("torch"),
             "vllm": _package_version("vllm"),
+            "mem0ai": _package_version("mem0ai"),
             "openai": _package_version("openai"),
             "jasper": _package_version("jasper"),
             "qdrant-client": _package_version("qdrant-client"),
         },
         "gpu": _gpu_metadata(),
         "jasper_commit": _jasper_commit(),
+        "vllm_engine": _vllm_engine_metadata(),
+    }
+
+
+def _vllm_engine_metadata() -> dict[str, Any]:
+    multiprocessing_env = os.environ.get("VLLM_ENABLE_V1_MULTIPROCESSING")
+    return {
+        "vllm_enable_v1_multiprocessing": multiprocessing_env,
+        "inprocess": multiprocessing_env == "0",
     }
 
 

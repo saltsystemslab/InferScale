@@ -5,13 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "locomo-jasper-bench"
 version = "0.1.0"
-description = "LoCoMo KV-cache benchmark harness for vLLM with Mem0 retrieval backed by Jasper"
+description = "LoCoMo KV-cache benchmark harness for vLLM with Mem0 fact retrieval backed by Jasper or Qdrant"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "loguru>=0.7",
     "matplotlib>=3.8",
-    "mem0ai[nlp]>=0.1.0",
+    "mem0ai[nlp]==2.0.11",
     "numpy>=1.24",
     "openai>=2.44,<3",
     "pandas>=2",
@@ -37,6 +37,7 @@ remote = [
 
 [project.scripts]
 locomo-jasper-bench = "locomo_jasper_bench.run:main"
+locomo-throughput-bench = "locomo_jasper_bench.throughput.run:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

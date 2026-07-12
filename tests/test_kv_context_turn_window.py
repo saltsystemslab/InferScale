@@ -284,7 +284,10 @@ class _FakeChunkEncoder:
         self.fact_plans: list[FactContextEncodingPlan] = []
 
     def encode_token_ids_chunk(self, chunk_id: str, token_ids: list[int]) -> EncodedChunk:
-        del chunk_id
+        # Mirror the real encoder's invariant so empty scaffold chunks fail in
+        # tests the same way they fail on the GPU path.
+        if not token_ids:
+            raise RuntimeError(f"Memory chunk tokenized to zero tokens: {chunk_id}")
         return EncodedChunk(token_ids=list(token_ids), kv_by_layer={})
 
     def encode_fact_chunk(self, plan: FactContextEncodingPlan) -> EncodedChunk:

@@ -208,10 +208,15 @@ class ChunkedRopeSampleComposer:
             "__header__",
             scaffold.header_token_ids,
         )
-        self.memory_list_header_chunk = self.encoder.encode_token_ids_chunk(
-            "__memory_list_header__",
-            scaffold.memory_list_header_token_ids,
-        )
+        if scaffold.memory_list_header_token_ids:
+            self.memory_list_header_chunk = self.encoder.encode_token_ids_chunk(
+                "__memory_list_header__",
+                scaffold.memory_list_header_token_ids,
+            )
+        else:
+            # The scaffold renders retrieved facts without a list heading, so
+            # there is no chunk to encode; compose() treats None as zero tokens.
+            self.memory_list_header_chunk = None
         self.empty_memory_chunk = self.encoder.encode_token_ids_chunk(
             "__empty_memory__",
             scaffold.empty_memory_token_ids,
@@ -248,7 +253,6 @@ class ChunkedRopeSampleComposer:
             raise RuntimeError("Cannot compose KV memory before encoding a sample.")
         if (
             self.header_chunk is None
-            or self.memory_list_header_chunk is None
             or self.empty_memory_chunk is None
             or self.footer_chunk is None
         ):
@@ -270,12 +274,20 @@ class ChunkedRopeSampleComposer:
             self.max_position,
             self.max_position if memory_token_budget is None else memory_token_budget,
         )
-        memory_heading_chunk = (
-            self.memory_list_header_chunk if selected_facts else self.empty_memory_chunk
+        if selected_facts:
+            memory_heading_chunks = (
+                [self.memory_list_header_chunk]
+                if self.memory_list_header_chunk is not None
+                else []
+            )
+        else:
+            memory_heading_chunks = [self.empty_memory_chunk]
+        memory_heading_tokens = sum(
+            len(chunk.token_ids) for chunk in memory_heading_chunks
         )
         scaffold_token_count = (
             len(self.header_chunk.token_ids)
-            + len(memory_heading_chunk.token_ids)
+            + memory_heading_tokens
             + len(self.footer_chunk.token_ids)
         )
         fact_plan = build_memory_fact_plan(
@@ -292,7 +304,7 @@ class ChunkedRopeSampleComposer:
 
         fact_tokens_end = (
             len(self.header_chunk.token_ids)
-            + len(memory_heading_chunk.token_ids)
+            + memory_heading_tokens
             + fact_plan.fact_tokens
         )
         loaded_memory_tokens = (
@@ -311,7 +323,7 @@ class ChunkedRopeSampleComposer:
         for fact in selected_facts:
             selected.append(self.chunks[fact.memory_id])
 
-        chunks = [self.header_chunk, memory_heading_chunk, *selected]
+        chunks = [self.header_chunk, *memory_heading_chunks, *selected]
         chunks.append(self.footer_chunk)
         kv_by_layer = self._compose_chunks(chunks)
         token_ids: list[int] = []

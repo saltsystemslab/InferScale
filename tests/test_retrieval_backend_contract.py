@@ -205,6 +205,60 @@ def test_jasper_all_matching_scope_filter_keeps_top_k_gpu_search(
     assert metrics.jasper_effective_beam_width == 2
 
 
+def test_jasper_gpu_search_truncates_negative_padding_ordinals(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: object,
+) -> None:
+    store = JasperVectorStore(tmp_path, VectorStoreConfig(backend="jasper"))
+    store.add_many(
+        [[1.0, 0.0], [0.0, 1.0]],
+        [{"memory": "one"}, {"memory": "two"}],
+        ["one", "two"],
+    )
+    store._finalized = True
+
+    class FakeResultTensor:
+        def __init__(self, rows: list[list[float]]) -> None:
+            self._rows = rows
+
+        def __getitem__(self, index: int) -> FakeResultTensor:
+            return FakeResultTensor([self._rows[index]])
+
+        def detach(self) -> FakeResultTensor:
+            return self
+
+        def cpu(self) -> FakeResultTensor:
+            return self
+
+        def numpy(self) -> np.ndarray:
+            return np.asarray(self._rows[0])
+
+    class FakeQueryTensor:
+        def to(self, **_kwargs: object) -> FakeQueryTensor:
+            return self
+
+    graph_results = {"indices": [[0, 1, -1, -1]], "distances": [[-0.9, -0.5, 1e30, 1e30]]}
+    store._graph = SimpleNamespace(
+        search=lambda _query, k, beam_width: (
+            FakeResultTensor(graph_results["indices"]),
+            FakeResultTensor(graph_results["distances"]),
+        )
+    )
+    fake_torch = SimpleNamespace(
+        cuda=SimpleNamespace(synchronize=lambda: None),
+        float16="float16",
+        from_numpy=lambda _vectors: FakeQueryTensor(),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    hits, _ = store._search_jasper(np.asarray([1.0, 0.0], dtype=np.float32), 4, beam_width=4)
+    assert [hit.id for hit in hits] == ["one", "two"]
+
+    graph_results["indices"] = [[0, 7, -1, -1]]
+    with pytest.raises(RuntimeError, match="invalid vector ordinal 7"):
+        store._search_jasper(np.asarray([1.0, 0.0], dtype=np.float32), 4, beam_width=4)
+
+
 def test_jasper_partial_filter_uses_complete_exact_fallback(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: object,

@@ -297,6 +297,9 @@ class JasperVectorStore:
         distance_values = distances[0].detach().cpu().numpy()
         hits: list[SearchHit] = []
         for ordinal, raw_distance in zip(index_values, distance_values):
+            if int(ordinal) < 0:
+                # Jasper pads the tail with -1 when fewer than k results exist
+                break
             row = self._payload_by_ordinal(int(ordinal))
             if row is None:
                 raise RuntimeError(f"Jasper returned invalid vector ordinal {int(ordinal)}.")

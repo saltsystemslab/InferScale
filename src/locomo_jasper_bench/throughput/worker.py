@@ -12,6 +12,7 @@ from ..kv.prompting import (
     build_kv_equivalence_prompt_token_ids,
     build_memory_prompt_token_ids,
 )
+from ..kv.tokenization import encode_text_no_special
 from ..kv.request_identity import MEMORY_USER_ID_EXTRA_ARG
 from ..results import write_json
 from ..retrieval.mem0_provider import create_mem0_memory
@@ -186,6 +187,9 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
                 f"({len(composer.chunks)} turns, context_window={config.context_window})",
                 flush=True,
             )
+        encoder_probe_token_ids = encode_text_no_special(
+            encoder.tokenizer, _TOKENIZER_PARITY_PROBE_TEXT
+        )
         encoder.release_model()
         kv_precompute_time_s = time.perf_counter() - precompute_started
 
@@ -200,6 +204,7 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
             kv_transfer_config=transfer_config,
         )
         tokenizer = llm.get_tokenizer()
+        _require_tokenizer_parity(encoder_probe_token_ids, tokenizer)
 
         memory_setup_time_s = 0.0
         retrieval_time_s = 0.0
@@ -555,6 +560,37 @@ def _request_question_answer(request: LocomoRequest) -> QuestionAnswer:
         question=request.query,
         answer="",
         category="",
+    )
+
+
+# Mixed-script probe so tokenizer stacks that differ in template, whitespace,
+# byte-fallback, or unicode handling cannot encode it identically by accident.
+_TOKENIZER_PARITY_PROBE_TEXT = (
+    "SPEAKER Caroline (2023-05-08): I'll re-check trip #42 — cost $1,300.50; "
+    "email caroline@example.com, emoji 🙂, CJK 你好, newline\nend.\n"
+)
+
+
+def _require_tokenizer_parity(
+    encoder_probe_token_ids: list[int],
+    engine_tokenizer: Any,
+) -> None:
+    """The connector matches chunk ids as a prompt prefix, so the encoder and
+    engine tokenizers must produce identical ids."""
+    engine_probe_token_ids = encode_text_no_special(
+        engine_tokenizer, _TOKENIZER_PARITY_PROBE_TEXT
+    )
+    if encoder_probe_token_ids == engine_probe_token_ids:
+        return
+    raise RuntimeError(
+        "Encoder and engine tokenizers disagree; KV chunk token ids will not "
+        "match prompt token ids and injection cannot work. "
+        f"encoder_probe_tokens={len(encoder_probe_token_ids)} "
+        f"engine_probe_tokens={len(engine_probe_token_ids)} "
+        f"engine_tokenizer={type(engine_tokenizer).__name__}. "
+        "Ensure ChunkedRopeEncoder loads its tokenizer via "
+        "vllm.transformers_utils.tokenizer.get_tokenizer and that the "
+        "transformers/vllm/mistral_common versions match the engine's."
     )
 
 

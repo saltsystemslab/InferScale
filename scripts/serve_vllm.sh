@@ -40,23 +40,8 @@ if [[ -n "${QUANTIZATION}" ]]; then
   QUANTIZATION_ARGS=(--quantization "${QUANTIZATION}")
 fi
 
-# Bound whitespace in schema-guided outputs so extraction models cannot loop
-# on newlines until max_tokens truncates the JSON mid-structure. Override with
-# LOCOMO_VLLM_STRUCTURED_OUTPUTS_CONFIG (set it empty to omit the flag; on
-# older vLLM builds without --structured-outputs-config, disable it here and
-# use --guided-decoding-backend xgrammar:disable-any-whitespace instead).
-STRUCTURED_OUTPUTS_CONFIG='{"disable_any_whitespace":true}'
-if [[ -n "${LOCOMO_VLLM_STRUCTURED_OUTPUTS_CONFIG+x}" ]]; then
-  STRUCTURED_OUTPUTS_CONFIG="${LOCOMO_VLLM_STRUCTURED_OUTPUTS_CONFIG}"
-fi
-STRUCTURED_OUTPUTS_ARGS=()
-if [[ -n "${STRUCTURED_OUTPUTS_CONFIG}" ]]; then
-  STRUCTURED_OUTPUTS_ARGS=(--structured-outputs-config "${STRUCTURED_OUTPUTS_CONFIG}")
-fi
-
 exec vllm serve "${MODEL}" \
   "${QUANTIZATION_ARGS[@]}" \
-  "${STRUCTURED_OUTPUTS_ARGS[@]}" \
   --trust-remote-code \
   --dtype "${DTYPE}" \
   --max-model-len "${JUDGE_MAX_MODEL_LEN}" \

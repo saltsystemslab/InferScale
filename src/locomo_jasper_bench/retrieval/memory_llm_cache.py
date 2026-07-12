@@ -19,6 +19,7 @@ from ..protocol import (
     MEMORY_EXTRACTION_MAX_TOKENS,
     MEMORY_EXTRACTION_RESPONSE_PROTOCOL,
     MEMORY_EXTRACTION_RETRY_TEMPERATURES,
+    MEMORY_EXTRACTION_RETRY_TOP_P,
 )
 from .memory_llm_protocol import (
     InvalidMemoryExtractionResponseError,
@@ -115,11 +116,17 @@ class CachedMemoryLLM:
         effective_kwargs: dict[str, Any],
     ) -> str:
         # Attempt 1 keeps the exact baseline request; retries only exist on
-        # failure paths and escalate temperature so greedy decoding cannot
-        # deterministically reproduce a degenerate response. The cache path is
-        # derived from the baseline kwargs, so retries never change identity.
+        # failure paths and escalate temperature (widening top_p, which mem0
+        # otherwise pins to its 0.1 config default on every request) so greedy
+        # decoding cannot deterministically reproduce a degenerate response.
+        # The cache path is derived from the baseline kwargs, so retries never
+        # change identity.
         attempt_kwargs = [effective_kwargs] + [
-            {**effective_kwargs, "temperature": temperature}
+            {
+                **effective_kwargs,
+                "temperature": temperature,
+                "top_p": MEMORY_EXTRACTION_RETRY_TOP_P,
+            }
             for temperature in MEMORY_EXTRACTION_RETRY_TEMPERATURES
         ]
         dump_paths: list[Path] = []

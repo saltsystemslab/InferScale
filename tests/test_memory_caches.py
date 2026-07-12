@@ -17,6 +17,7 @@ from locomo_jasper_bench.protocol import (
     MEMORY_EXTRACTION_MAX_TOKENS,
     MEMORY_EXTRACTION_RESPONSE_PROTOCOL,
     MEMORY_EXTRACTION_RETRY_TEMPERATURES,
+    MEMORY_EXTRACTION_RETRY_TOP_P,
 )
 from locomo_jasper_bench.retrieval.memory_llm_cache import CachedMemoryLLM, CachedMemoryLLMMissingError
 from locomo_jasper_bench.retrieval.memory_llm_protocol import (
@@ -288,9 +289,15 @@ def test_cached_memory_llm_retries_extraction_with_escalating_temperature(tmp_pa
     assert len(wrapped.calls) == 2
     first_kwargs, retry_kwargs = wrapped.calls[0][2], wrapped.calls[1][2]
     assert "temperature" not in first_kwargs
+    assert "top_p" not in first_kwargs
     assert retry_kwargs["temperature"] == MEMORY_EXTRACTION_RETRY_TEMPERATURES[0]
+    # mem0 sends its config default top_p=0.1 when the kwarg is absent, which
+    # would keep retries effectively greedy; the retry must widen it.
+    assert retry_kwargs["top_p"] == MEMORY_EXTRACTION_RETRY_TOP_P
     assert {
-        key: value for key, value in retry_kwargs.items() if key != "temperature"
+        key: value
+        for key, value in retry_kwargs.items()
+        if key not in {"temperature", "top_p"}
     } == first_kwargs
 
     dumps = list((cached.cache_dir / "invalid").glob("*.json"))

@@ -90,6 +90,7 @@ def validate_memory_extraction_response(response: Any) -> str:
         )
     allowed_fields = {"id", "text", "attributed_to", "linked_memory_ids"}
     required_fields = {"id", "text", "attributed_to"}
+    normalized = False
     for index, memory in enumerate(memories):
         if not isinstance(memory, dict):
             raise InvalidMemoryExtractionResponseError(
@@ -99,10 +100,16 @@ def validate_memory_extraction_response(response: Any) -> str:
             raise InvalidMemoryExtractionResponseError(
                 f"Mem0 extraction fact {index} has invalid or missing fields."
             )
-        if memory["id"] != str(index):
+        if not isinstance(memory["id"], str):
             raise InvalidMemoryExtractionResponseError(
-                f"Mem0 extraction fact {index} must have sequential id {str(index)!r}."
+                f"Mem0 extraction fact {index} id must be a string."
             )
+        # The prompt asks for sequential ids but guided decoding cannot enforce
+        # that, and no consumer reads the id, so normalize by position instead
+        # of rejecting the response.
+        if memory["id"] != str(index):
+            memory["id"] = str(index)
+            normalized = True
         text = memory["text"]
         if not isinstance(text, str) or not text.strip():
             raise InvalidMemoryExtractionResponseError(
@@ -122,4 +129,6 @@ def validate_memory_extraction_response(response: Any) -> str:
             raise InvalidMemoryExtractionResponseError(
                 f"Mem0 extraction fact {index} linked_memory_ids must be an array of strings."
             )
+    if normalized:
+        return json.dumps(payload, ensure_ascii=False)
     return response

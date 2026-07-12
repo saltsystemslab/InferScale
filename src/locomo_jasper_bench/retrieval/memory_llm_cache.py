@@ -79,7 +79,7 @@ class CachedMemoryLLM:
             try:
                 response = self._read_response(path)
                 if validate_extraction:
-                    validate_memory_extraction_response(response)
+                    response = validate_memory_extraction_response(response)
             except Exception as exc:
                 self.misses += 1
                 if self.mode == "read":
@@ -96,7 +96,7 @@ class CachedMemoryLLM:
 
         response = self._wrapped.generate_response(messages, *args, **effective_kwargs)
         if validate_extraction:
-            validate_memory_extraction_response(response)
+            response = validate_memory_extraction_response(response)
         self._write_response(path, response)
         return response
 

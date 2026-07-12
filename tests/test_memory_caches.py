@@ -292,7 +292,7 @@ def test_cached_memory_llm_write_mode_regenerates_invalid_cached_extraction(
 @pytest.mark.parametrize(
     ("payload", "message"),
     [
-        ({"memory": [{"id": "1", "text": "fact", "attributed_to": "user"}]}, "sequential id"),
+        ({"memory": [{"id": 1, "text": "fact", "attributed_to": "user"}]}, "must be a string"),
         (
             {"memory": [{"id": "0", "text": "fact", "attributed_to": "system"}]},
             "invalid attributed_to",
@@ -326,6 +326,40 @@ def test_memory_extraction_validation_rejects_protocol_violations(
 ) -> None:
     with pytest.raises(InvalidMemoryExtractionResponseError, match=message):
         validate_memory_extraction_response(json.dumps(payload))
+
+
+def test_memory_extraction_validation_normalizes_nonsequential_ids() -> None:
+    payload = {
+        "memory": [
+            {"id": "1", "text": "first fact", "attributed_to": "user"},
+            {"id": "e7b1c2d3", "text": "second fact", "attributed_to": "assistant"},
+        ]
+    }
+    normalized = json.loads(validate_memory_extraction_response(json.dumps(payload)))
+    assert [memory["id"] for memory in normalized["memory"]] == ["0", "1"]
+    assert [memory["text"] for memory in normalized["memory"]] == ["first fact", "second fact"]
+
+
+def test_memory_extraction_validation_preserves_sequential_response_verbatim() -> None:
+    response = _valid_extraction_response()
+    assert validate_memory_extraction_response(response) is response
+
+
+def test_cached_memory_llm_write_mode_caches_normalized_extraction(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "memory-llm"
+    messages = [{"role": "user", "content": "Remember blue."}]
+    raw_response = json.dumps(
+        {"memory": [{"id": "1", "text": "User likes blue.", "attributed_to": "user"}]}
+    )
+    wrapped = RecordingMemoryLLM(raw_response)
+    cache = CachedMemoryLLM(wrapped, cache_dir, "vllm", "model", "write")
+
+    response = cache.generate_response(messages, response_format={"type": "json_object"})
+    assert json.loads(response)["memory"][0]["id"] == "0"
+
+    replay = CachedMemoryLLM(RecordingMemoryLLM("unused"), cache_dir, "vllm", "model", "read")
+    cached = replay.generate_response(messages, response_format={"type": "json_object"})
+    assert json.loads(cached)["memory"][0]["id"] == "0"
 
 
 def test_cached_memory_llm_write_mode_replaces_corrupt_entries_atomically(tmp_path: Path) -> None:

@@ -104,7 +104,7 @@ fi
 
 python -m pip install -c "${CONSTRAINTS_FILE}" torch torchvision torchaudio --index-url "${PYTORCH_INDEX}"
 python -m pip install -c "${CONSTRAINTS_FILE}" -e ".[dev,jasper]"
-python -m pip install -c "${CONSTRAINTS_FILE}" vllm accelerate --extra-index-url "${PYTORCH_INDEX}"
+python -m pip install -c "${CONSTRAINTS_FILE}" vllm accelerate hf_transfer --extra-index-url "${PYTORCH_INDEX}"
 
 cmake -S jasperpy -B jasperpy/build \
   -DJASPER_BUILD_FFI=ON \

@@ -47,12 +47,14 @@ EXTRACTION_WORKERS="${EXTRACTION_WORKERS:-4}"
 EXTRACTION_HEALTH_TIMEOUT="${EXTRACTION_HEALTH_TIMEOUT:-900}"
 EXTRACTION_EXTRA_VLLM_ARGS="${EXTRACTION_EXTRA_VLLM_ARGS:-}"
 # Bound whitespace in schema-guided outputs so extraction models cannot loop
-# on newlines until max_tokens truncates the JSON mid-structure. The colon-less
-# '-' expansion is load-bearing: set-but-empty omits the flag entirely (use
-# that on older vLLM builds without --structured-outputs-config, together with
+# on newlines until max_tokens truncates the JSON mid-structure. The backend
+# must be pinned: vLLM rejects disable_any_whitespace under the default "auto"
+# backend (only xgrammar and guidance support it). The colon-less '-'
+# expansion is load-bearing: set-but-empty omits the flag entirely (use that
+# on older vLLM builds without --structured-outputs-config, together with
 # --guided-decoding-backend xgrammar:disable-any-whitespace via
 # EXTRACTION_EXTRA_VLLM_ARGS).
-EXTRACTION_STRUCTURED_OUTPUTS_CONFIG=${EXTRACTION_STRUCTURED_OUTPUTS_CONFIG-'{"disable_any_whitespace":true}'}
+EXTRACTION_STRUCTURED_OUTPUTS_CONFIG=${EXTRACTION_STRUCTURED_OUTPUTS_CONFIG-'{"backend":"xgrammar","disable_any_whitespace":true}'}
 DATASET="${DATASET:-data/locomo10.json}"
 MAX_SAMPLES="${MAX_SAMPLES:-10}"
 

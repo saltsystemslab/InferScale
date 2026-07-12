@@ -137,9 +137,11 @@ def test_jasper_graph_build_receives_inner_product(
     tmp_path: object,
 ) -> None:
     graph_builds: list[dict[str, object]] = []
+    tensor_moves: list[dict[str, object]] = []
 
     class FakeTensor:
-        def to(self, **_kwargs: object) -> FakeTensor:
+        def to(self, **kwargs: object) -> FakeTensor:
+            tensor_moves.append(dict(kwargs))
             return self
 
     fake_torch = SimpleNamespace(
@@ -149,7 +151,7 @@ def test_jasper_graph_build_receives_inner_product(
             memory_allocated=lambda: 0,
             empty_cache=lambda: None,
         ),
-        float32="float32",
+        float16="float16",
         from_numpy=lambda _vectors: FakeTensor(),
     )
     fake_jasper = SimpleNamespace(
@@ -165,6 +167,7 @@ def test_jasper_graph_build_receives_inner_product(
     store._build_jasper_graph()
 
     assert graph_builds[0]["distance"] == VECTOR_DISTANCE
+    assert tensor_moves[0]["dtype"] == "float16"
 
 
 def test_jasper_all_matching_scope_filter_keeps_top_k_gpu_search(

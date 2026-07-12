@@ -14,6 +14,8 @@ from .store_utils import payload_matches
 _JASPER_GRAPH_FILE_HEADER_BYTES = 4 * 8
 _JASPER_INDEX_BYTES = 4
 _JASPER_EDGE_COUNT_BYTES = 1
+# jasperpy stores vectors on GPU as float16 regardless of the input dtype
+_JASPER_GPU_VECTOR_BYTES = 2
 
 
 class JasperVectorStore:
@@ -237,7 +239,7 @@ class JasperVectorStore:
         _cuda_synchronize(torch)
         allocated_before = _cuda_memory_allocated(torch)
 
-        vectors = torch.from_numpy(self._vectors).to(device="cuda", dtype=torch.float32)
+        vectors = torch.from_numpy(self._vectors).to(device="cuda", dtype=torch.float16)
         graph = jasper.Graph.build(
             vectors,
             n_neighbors=self.config.n_neighbors,
@@ -259,7 +261,7 @@ class JasperVectorStore:
             vector_count=self.vector_count,
             dim=int(self._vectors.shape[1]),
             n_neighbors=self.config.n_neighbors,
-            data_type_bytes=int(self._vectors.dtype.itemsize),
+            data_type_bytes=_JASPER_GPU_VECTOR_BYTES,
         )
         torch_allocated_delta_bytes = _positive_delta(allocated_before, allocated_after)
         self._jasper_graph_memory_stats = {
@@ -281,7 +283,7 @@ class JasperVectorStore:
             raise RuntimeError("Jasper graph must be finalized before GPU search.")
         import torch
 
-        query_tensor = torch.from_numpy(query.reshape(1, -1)).to(device="cuda", dtype=torch.float32)
+        query_tensor = torch.from_numpy(query.reshape(1, -1)).to(device="cuda", dtype=torch.float16)
         synchronize = getattr(getattr(torch, "cuda", None), "synchronize", None)
         if callable(synchronize):
             synchronize()

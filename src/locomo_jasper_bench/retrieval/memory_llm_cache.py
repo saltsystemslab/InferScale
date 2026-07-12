@@ -7,6 +7,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
 from ..cache_identity import atomic_write_json, endpoint_cache_key, safe_path_part
 from ..cache_identity import normalize_endpoint as normalize_llm_endpoint
 from ..embedding.cache import CacheMode
@@ -16,8 +18,10 @@ from ..protocol import (
     MEMORY_EXTRACTION_MAX_TEXT_CHARS,
     MEMORY_EXTRACTION_MAX_TOKENS,
     MEMORY_EXTRACTION_RESPONSE_PROTOCOL,
+    MEMORY_EXTRACTION_RETRY_TEMPERATURES,
 )
 from .memory_llm_protocol import (
+    InvalidMemoryExtractionResponseError,
     prepare_memory_extraction_kwargs,
     validate_memory_extraction_response,
 )
@@ -94,11 +98,82 @@ class CachedMemoryLLM:
         if self.mode == "read":
             raise self._missing_error(path, "Missing cached Mem0 LLM response")
 
-        response = self._wrapped.generate_response(messages, *args, **effective_kwargs)
         if validate_extraction:
-            response = validate_memory_extraction_response(response)
+            response = self._generate_validated_extraction(
+                path, messages, args, effective_kwargs
+            )
+        else:
+            response = self._wrapped.generate_response(messages, *args, **effective_kwargs)
         self._write_response(path, response)
         return response
+
+    def _generate_validated_extraction(
+        self,
+        path: Path,
+        messages: Any,
+        args: tuple[Any, ...],
+        effective_kwargs: dict[str, Any],
+    ) -> str:
+        # Attempt 1 keeps the exact baseline request; retries only exist on
+        # failure paths and escalate temperature so greedy decoding cannot
+        # deterministically reproduce a degenerate response. The cache path is
+        # derived from the baseline kwargs, so retries never change identity.
+        attempt_kwargs = [effective_kwargs] + [
+            {**effective_kwargs, "temperature": temperature}
+            for temperature in MEMORY_EXTRACTION_RETRY_TEMPERATURES
+        ]
+        dump_paths: list[Path] = []
+        last_error: InvalidMemoryExtractionResponseError | None = None
+        for attempt, kwargs in enumerate(attempt_kwargs, start=1):
+            response = self._wrapped.generate_response(messages, *args, **kwargs)
+            try:
+                return validate_memory_extraction_response(response)
+            except InvalidMemoryExtractionResponseError as exc:
+                last_error = exc
+                dump_paths.append(
+                    self._dump_invalid_response(path, response, attempt, kwargs, exc)
+                )
+                logger.warning(
+                    "Mem0 extraction attempt {}/{} failed validation "
+                    "model={} temperature={}: {}",
+                    attempt,
+                    len(attempt_kwargs),
+                    self.model,
+                    kwargs.get("temperature", self.temperature),
+                    exc,
+                )
+        assert last_error is not None
+        raise InvalidMemoryExtractionResponseError(
+            f"{last_error} Mem0 extraction failed validation on all "
+            f"{len(attempt_kwargs)} attempts; raw responses saved to: "
+            + ", ".join(str(dump_path) for dump_path in dump_paths)
+        ) from last_error
+
+    def _dump_invalid_response(
+        self,
+        path: Path,
+        response: Any,
+        attempt: int,
+        kwargs: dict[str, Any],
+        error: Exception,
+    ) -> Path:
+        dump_path = path.parent / "invalid" / f"{path.stem}.attempt{attempt}.json"
+        atomic_write_json(
+            dump_path,
+            {
+                "version": 1,
+                "provider": self.provider,
+                "model": self.model,
+                "endpoint": self.endpoint,
+                "mem0_version": self.mem0_version,
+                "attempt": attempt,
+                "temperature": kwargs.get("temperature", self.temperature),
+                "error": str(error),
+                "response": response if isinstance(response, str) else repr(response),
+            },
+            indent=2,
+        )
+        return dump_path
 
     def stats(self) -> dict[str, Any]:
         return {

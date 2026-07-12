@@ -16,6 +16,7 @@ from locomo_jasper_bench.protocol import (
     MEMORY_EXTRACTION_MAX_TEXT_CHARS,
     MEMORY_EXTRACTION_MAX_TOKENS,
     MEMORY_EXTRACTION_RESPONSE_PROTOCOL,
+    MEMORY_EXTRACTION_RETRY_TEMPERATURES,
 )
 from locomo_jasper_bench.retrieval.memory_llm_cache import CachedMemoryLLM, CachedMemoryLLMMissingError
 from locomo_jasper_bench.retrieval.memory_llm_protocol import (
@@ -48,6 +49,17 @@ class RecordingMemoryLLM:
     def generate_response(self, messages: Any, *args: Any, **kwargs: Any) -> Any:
         self.calls.append((messages, args, kwargs))
         return self.response
+
+
+class SequenceMemoryLLM:
+    def __init__(self, responses: list[Any]) -> None:
+        self.responses = list(responses)
+        self.calls: list[tuple[Any, tuple[Any, ...], dict[str, Any]]] = []
+        self.provider_name = "sequence"
+
+    def generate_response(self, messages: Any, *args: Any, **kwargs: Any) -> Any:
+        self.calls.append((messages, args, kwargs))
+        return self.responses[len(self.calls) - 1]
 
 
 def _vector_for(value: Any) -> list[float]:
@@ -250,18 +262,88 @@ def test_cached_memory_llm_read_mode_fails_on_missing_or_corrupt_entries_without
 def test_cached_memory_llm_never_caches_invalid_extraction_response(tmp_path: Path) -> None:
     cache_dir = tmp_path / "memory-llm"
     messages = [{"role": "user", "content": "Remember blue."}]
-    cached = CachedMemoryLLM(
-        RecordingMemoryLLM('{"memory":[{"id":"0"}]'),
-        cache_dir,
-        "vllm",
-        "model",
-        "write",
-    )
+    wrapped = RecordingMemoryLLM('{"memory":[{"id":"0"}]')
+    cached = CachedMemoryLLM(wrapped, cache_dir, "vllm", "model", "write")
 
     with pytest.raises(InvalidMemoryExtractionResponseError, match="malformed JSON"):
         cached.generate_response(messages, response_format={"type": "json_object"})
 
+    assert len(wrapped.calls) == 1 + len(MEMORY_EXTRACTION_RETRY_TEMPERATURES)
     assert list(cached.cache_dir.glob("*.json")) == []
+    dumps = sorted((cached.cache_dir / "invalid").glob("*.json"))
+    assert len(dumps) == 1 + len(MEMORY_EXTRACTION_RETRY_TEMPERATURES)
+
+
+def test_cached_memory_llm_retries_extraction_with_escalating_temperature(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "memory-llm"
+    messages = [{"role": "user", "content": "Remember blue."}]
+    valid_response = _valid_extraction_response()
+    wrapped = SequenceMemoryLLM(['{"memory":[{"id":"0"}]', valid_response])
+    cached = CachedMemoryLLM(wrapped, cache_dir, "vllm", "model", "write")
+
+    assert (
+        cached.generate_response(messages, response_format={"type": "json_object"})
+        == valid_response
+    )
+    assert len(wrapped.calls) == 2
+    first_kwargs, retry_kwargs = wrapped.calls[0][2], wrapped.calls[1][2]
+    assert "temperature" not in first_kwargs
+    assert retry_kwargs["temperature"] == MEMORY_EXTRACTION_RETRY_TEMPERATURES[0]
+    assert {
+        key: value for key, value in retry_kwargs.items() if key != "temperature"
+    } == first_kwargs
+
+    dumps = list((cached.cache_dir / "invalid").glob("*.json"))
+    assert len(dumps) == 1
+    dump_payload = json.loads(dumps[0].read_text(encoding="utf-8"))
+    assert dump_payload["attempt"] == 1
+    assert dump_payload["response"] == '{"memory":[{"id":"0"}]'
+    assert "malformed JSON" in dump_payload["error"]
+
+    # The retried response is cached under the baseline digest and replays
+    # without contacting the LLM again.
+    reader_wrapped = RecordingMemoryLLM("must not be called")
+    reader = CachedMemoryLLM(reader_wrapped, cache_dir, "vllm", "model", "read")
+    assert (
+        reader.generate_response(messages, response_format={"type": "json_object"})
+        == valid_response
+    )
+    assert reader_wrapped.calls == []
+
+
+def test_cached_memory_llm_raises_after_exhausting_extraction_retries(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "memory-llm"
+    messages = [{"role": "user", "content": "Remember blue."}]
+    attempts = 1 + len(MEMORY_EXTRACTION_RETRY_TEMPERATURES)
+    wrapped = SequenceMemoryLLM(['{"memory":[{"id":"0"}]'] * attempts)
+    cached = CachedMemoryLLM(wrapped, cache_dir, "vllm", "model", "write")
+
+    with pytest.raises(
+        InvalidMemoryExtractionResponseError,
+        match=f"failed validation on all {attempts} attempts",
+    ):
+        cached.generate_response(messages, response_format={"type": "json_object"})
+
+    assert len(wrapped.calls) == attempts
+    temperatures = [call[2].get("temperature") for call in wrapped.calls]
+    assert temperatures == [None, *MEMORY_EXTRACTION_RETRY_TEMPERATURES]
+    assert list(cached.cache_dir.glob("*.json")) == []
+    dump_attempts = sorted(
+        json.loads(dump.read_text(encoding="utf-8"))["attempt"]
+        for dump in (cached.cache_dir / "invalid").glob("*.json")
+    )
+    assert dump_attempts == list(range(1, attempts + 1))
+
+
+def test_cached_memory_llm_does_not_retry_non_extraction_calls(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "memory-llm"
+    messages = [{"role": "user", "content": "Remember blue."}]
+    wrapped = RecordingMemoryLLM("plain response")
+    cached = CachedMemoryLLM(wrapped, cache_dir, "vllm", "model", "write")
+
+    assert cached.generate_response(messages) == "plain response"
+    assert len(wrapped.calls) == 1
+    assert not (cached.cache_dir / "invalid").exists()
 
 
 def test_cached_memory_llm_write_mode_regenerates_invalid_cached_extraction(

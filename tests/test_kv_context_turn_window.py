@@ -247,6 +247,33 @@ class _DeterministicTokenizer:
         return [ord(character) for character in text]
 
 
+class _NewlineMergingTokenizer:
+    """Char-level tokenizer that merges up to 8 consecutive newlines per token,
+    modeling how BPE vocabularies collapse whitespace runs."""
+
+    bos_token_id = None
+    _MAX_MERGED_NEWLINES = 8
+    _NEWLINE_RUN_TOKEN = 0x10FFFF
+
+    def encode(self, text: str, **_: Any) -> list[int]:
+        token_ids: list[int] = []
+        newline_run = 0
+        for character in text:
+            if character == "\n":
+                newline_run += 1
+                if newline_run == self._MAX_MERGED_NEWLINES:
+                    token_ids.append(self._NEWLINE_RUN_TOKEN)
+                    newline_run = 0
+                continue
+            if newline_run:
+                token_ids.append(self._NEWLINE_RUN_TOKEN)
+                newline_run = 0
+            token_ids.append(ord(character))
+        if newline_run:
+            token_ids.append(self._NEWLINE_RUN_TOKEN)
+        return token_ids
+
+
 class _FakeChunkEncoder:
     model = "fake-model"
     device = "cpu"
@@ -581,3 +608,25 @@ def test_prefix_without_context_rendering_matches_kv_fact_only_tokens(
     assert len(with_context.token_ids) > len(fact_only.token_ids)
     assert with_context.fact_plan.context_text_tokens > 0
     assert fact_only.fact_plan.context_text_tokens == 0
+
+
+def test_scaffold_footer_reaches_block_size_tokens_despite_newline_merging() -> None:
+    sample = _sample()
+    block_size = 16
+
+    scaffold = extract_memory_scaffold_token_ids(
+        _NewlineMergingTokenizer(), sample, block_size=block_size
+    )
+
+    assert len(scaffold.footer_token_ids) >= block_size - 1
+
+
+def test_scaffold_footer_needs_no_growth_for_char_level_tokenizer() -> None:
+    sample = _sample()
+    block_size = 16
+
+    scaffold = extract_memory_scaffold_token_ids(
+        _DeterministicTokenizer(), sample, block_size=block_size
+    )
+
+    assert len(scaffold.footer_token_ids) == block_size

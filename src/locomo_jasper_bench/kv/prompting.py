@@ -65,24 +65,41 @@ def extract_memory_scaffold_token_ids(
 ) -> MemoryScaffoldTokens:
     if block_size < 1:
         raise ValueError("block_size must be >= 1.")
-    memory_placeholder = MEMORY_TEMPLATE_PLACEHOLDER + ("\n" * block_size)
-    apply_chat_template = getattr(tokenizer, "apply_chat_template", None)
-    if callable(apply_chat_template):
-        templated = apply_chat_template_non_thinking(
-            tokenizer,
-            [{"role": "system", "content": MEMORY_SYSTEM_PROMPT + memory_placeholder}],
-            tokenize=False,
-            add_generation_prompt=False,
-        )
-    else:
-        templated = f"SYSTEM: {MEMORY_SYSTEM_PROMPT}{memory_placeholder}"
+    # The recomputed KV tail is up to block_size - 1 TOKENS, but BPE tokenizers
+    # merge newline runs, so a fixed character count can encode to far fewer
+    # tokens. Grow the pad until the encoded footer actually covers the tail.
+    pad_newlines = block_size
+    max_pad_newlines = block_size * 64
+    while True:
+        memory_placeholder = MEMORY_TEMPLATE_PLACEHOLDER + ("\n" * pad_newlines)
+        apply_chat_template = getattr(tokenizer, "apply_chat_template", None)
+        if callable(apply_chat_template):
+            templated = apply_chat_template_non_thinking(
+                tokenizer,
+                [{"role": "system", "content": MEMORY_SYSTEM_PROMPT + memory_placeholder}],
+                tokenize=False,
+                add_generation_prompt=False,
+            )
+        else:
+            templated = f"SYSTEM: {MEMORY_SYSTEM_PROMPT}{memory_placeholder}"
 
-    if MEMORY_TEMPLATE_PLACEHOLDER not in templated:
-        raise RuntimeError("Answer prompt chat template removed the memory placeholder.")
-    header_text, footer_text = templated.split(MEMORY_TEMPLATE_PLACEHOLDER, 1)
+        if MEMORY_TEMPLATE_PLACEHOLDER not in templated:
+            raise RuntimeError("Answer prompt chat template removed the memory placeholder.")
+        header_text, footer_text = templated.split(MEMORY_TEMPLATE_PLACEHOLDER, 1)
+        footer_token_ids = encode_text_no_special(tokenizer, footer_text)
+        if len(footer_token_ids) >= block_size - 1:
+            break
+        if pad_newlines >= max_pad_newlines:
+            raise RuntimeError(
+                "The memory scaffold does not contain enough trailing whitespace to keep "
+                "retrieved facts outside the recomputed KV tail: "
+                f"{len(footer_token_ids)} footer token(s) from {pad_newlines} pad "
+                f"newline(s); need at least {block_size - 1}."
+            )
+        pad_newlines *= 2
+
     header_token_ids = encode_text_no_special(tokenizer, header_text)
     empty_memory_token_ids = encode_text_no_special(tokenizer, EMPTY_MEMORY_TEXT)
-    footer_token_ids = encode_text_no_special(tokenizer, footer_text)
     if (
         not header_token_ids
         or not empty_memory_token_ids
@@ -91,11 +108,6 @@ def extract_memory_scaffold_token_ids(
             f"Empty answer scaffold tokens: header={len(header_token_ids)} "
             f"empty_memory={len(empty_memory_token_ids)} "
             f"footer={len(footer_token_ids)}."
-        )
-    if len(footer_token_ids) < block_size - 1:
-        raise RuntimeError(
-            "The memory scaffold does not contain enough trailing whitespace to keep "
-            "retrieved facts outside the recomputed KV tail."
         )
     return MemoryScaffoldTokens(
         header_token_ids=header_token_ids,

@@ -107,17 +107,24 @@ class JasperVectorStore:
         if query.shape[0] != self._vectors.shape[1]:
             raise ValueError(f"query dim {query.shape[0]} does not match store dim {self._vectors.shape[1]}")
         top_k = max(1, min(top_k, self.vector_count))
-        effective_beam_width = max(self.config.beam_width, top_k)
+        if top_k > self.config.beam_width:
+            # The config layer sizes beam_width to cover the run's top_k, so a
+            # larger search-time top_k means a caller bypassed that expansion;
+            # silently widening the beam per call would make search behavior
+            # depend on the request instead of the store configuration.
+            raise ValueError(
+                f"top_k {top_k} exceeds beam_width {self.config.beam_width}"
+            )
 
         hits, search_time_ms = self._search_jasper(
             query,
             top_k,
-            beam_width=effective_beam_width,
+            beam_width=self.config.beam_width,
         )
         return hits, SearchMetrics(
             search_time_ms,
             vector_backend="jasper",
-            jasper_effective_beam_width=effective_beam_width,
+            jasper_effective_beam_width=self.config.beam_width,
         )
 
     def close(self) -> None:

@@ -26,7 +26,6 @@ def _row(condition: str, num_users: int, qps: float = 4.0, **overrides: Any) -> 
         "memory_turn_count": 0.0 if condition == "no_memory" else 25.0,
         "requests_per_user": 2,
         "total_requests": total_requests,
-        "wall_time_s": total_requests / qps,
         "throughput_qps": qps,
         "avg_latency_ms": 1000 / qps,
         "generation_time_s": total_requests / qps,
@@ -39,6 +38,7 @@ def _row(condition: str, num_users: int, qps: float = 4.0, **overrides: Any) -> 
         "kv_precompute_time_s": 0.0,
         "engine_startup_time_s": 0.0,
         "kv_store_gpu_mb": 0.0,
+        "kv_requests_loaded": 0 if condition != "kv_injection" else total_requests,
         "total_input_tokens": 100,
         "total_output_tokens": 50,
         "input_tokens_per_second": 100.0,
@@ -85,3 +85,13 @@ def test_markdown_report_shows_turns_per_user() -> None:
     assert "Turns/user" in report
     assert "Facts/user" not in report
     assert "| 10 | 25 |" in report
+
+
+def test_markdown_report_states_generation_only_qps() -> None:
+    config, _ = parse_args(["--model", "test/model", "--user-counts", "10", "--run-id", "run"])
+    rows = [_row("no_memory", 10)]
+
+    report = render_markdown_report(config, [validate_result_row(row) for row in rows])
+
+    assert "QPS for every condition times only the synchronous vLLM generation call" in report
+    assert "UNUSED" not in report

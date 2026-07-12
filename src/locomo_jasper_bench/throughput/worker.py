@@ -105,7 +105,6 @@ def _run_no_memory(
                     config,
                     num_users,
                     condition="no_memory",
-                    wall_time_s=measured["generation_time_s"],
                     generation_time_s=measured["generation_time_s"],
                     prompt_build_time_s=prompt_build_time_s,
                     engine_startup_time_s=engine_startup_time_s,
@@ -133,9 +132,15 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
             "--embedding-base-url."
         )
 
+    import importlib
+
+    import torch
+
     from ..kv.chunked_rope import ChunkedRopeEncoder, ChunkedRopeSampleComposer
     from ..kv.gpu_registry import drop_namespace, namespace_stats, register_user_memory
     from ..kv.vllm_runtime import build_strict_gpu_kv_transfer_config, force_vllm_inprocess_mode
+
+    connector_module = importlib.import_module(config.kv_connector_module)
 
     force_vllm_inprocess_mode()
     samples = _load_samples(config)
@@ -191,6 +196,7 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
             encoder.tokenizer, _TOKENIZER_PARITY_PROBE_TEXT
         )
         encoder.release_model()
+        torch.cuda.synchronize()
         kv_precompute_time_s = time.perf_counter() - precompute_started
 
         transfer_config = build_strict_gpu_kv_transfer_config(
@@ -244,6 +250,10 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
                     retrieval_time_s += elapsed_s
                     vector_search_time_s += search_s
 
+                    # Compose launches asynchronous CUDA work; synchronize on
+                    # both sides of the timer so it measures the GPU time, not
+                    # just the kernel-enqueue time.
+                    torch.cuda.synchronize()
                     compose_started = time.perf_counter()
                     composed = composer.compose(hits)
                     memory_user_id = f"request-{request_index:05d}"
@@ -254,11 +264,12 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
                         num_tokens=composed.num_tokens,
                         token_ids=composed.token_ids,
                     )
+                    torch.cuda.synchronize()
                     kv_compose_time_s += time.perf_counter() - compose_started
 
                     # Token-equivalence verification is benchmark bookkeeping,
                     # not part of the serving path; its cost is reported
-                    # separately and excluded from wall_time_s.
+                    # separately and excluded from QPS.
                     verify_started = time.perf_counter()
                     canonical_memory = build_memory_prompt_token_ids(tokenizer, sample, hits)
                     _require_canonical_memory_tokens(composed.token_ids, canonical_memory.token_ids)
@@ -292,13 +303,17 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
             prompt_memory_user_ids,
         )
         _warm_up(llm, prompts, routed_sampling_params, config.warmup_batches)
+        connector_module.reset_load_stats()
         measured = _measure_batch(llm, prompts, routed_sampling_params)
-        wall_time_s = (
-            retrieval_time_s
-            + kv_compose_time_s
-            + prompt_build_time_s
-            + measured["generation_time_s"]
-        )
+        load_stats = connector_module.snapshot_load_stats()
+        # Preemption can re-load a request, so more loads than prompts are
+        # legitimate; fewer means some request generated without its KV.
+        if load_stats["requests_loaded"] < len(prompts):
+            raise RuntimeError(
+                "KV connector loaded memory for "
+                f"{load_stats['requests_loaded']} of {len(prompts)} requests; "
+                "some requests generated without injected KV."
+            )
         return _result_row(
             config,
             num_users,
@@ -306,7 +321,6 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
             vector_backend="jasper",
             jasper_effective_beam_width=max(config.jasper_beam_width, config.top_k),
             memory_turn_count=memory_turn_total / num_users,
-            wall_time_s=wall_time_s,
             generation_time_s=measured["generation_time_s"],
             retrieval_time_s=retrieval_time_s,
             vector_search_time_s=vector_search_time_s,
@@ -317,6 +331,7 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
             kv_verify_time_s=kv_verify_time_s,
             engine_startup_time_s=engine_startup_time_s,
             kv_store_gpu_mb=float(store_stats.get("total_gpu_mb", 0.0)),
+            kv_requests_loaded=int(load_stats["requests_loaded"]),
             total_input_tokens=measured["total_input_tokens"],
             total_output_tokens=measured["total_output_tokens"],
         )
@@ -434,11 +449,6 @@ def _run_mem0(
             _validate_prompt_lengths(config, prompts)
             _warm_up(llm, prompts, sampling_params, config.warmup_batches)
             measured = _measure_batch(llm, prompts, sampling_params)
-            wall_time_s = (
-                accumulator["retrieval_time_s"]
-                + accumulator["prompt_build_time_s"]
-                + measured["generation_time_s"]
-            )
             results.append(
                 _result_row(
                     config,
@@ -451,7 +461,6 @@ def _run_mem0(
                         else None
                     ),
                     memory_turn_count=accumulator["memory_turn_total"] / count,
-                    wall_time_s=wall_time_s,
                     generation_time_s=measured["generation_time_s"],
                     retrieval_time_s=accumulator["retrieval_time_s"],
                     vector_search_time_s=accumulator["vector_search_time_s"],
@@ -764,7 +773,6 @@ def _result_row(
     vector_backend: str | None = None,
     jasper_effective_beam_width: int | None = None,
     memory_turn_count: float = 0.0,
-    wall_time_s: float,
     generation_time_s: float,
     retrieval_time_s: float = 0.0,
     vector_search_time_s: float = 0.0,
@@ -775,11 +783,12 @@ def _result_row(
     kv_verify_time_s: float = 0.0,
     engine_startup_time_s: float = 0.0,
     kv_store_gpu_mb: float = 0.0,
+    kv_requests_loaded: int = 0,
     total_input_tokens: int,
     total_output_tokens: int,
 ) -> dict[str, Any]:
     total_requests = num_users * config.requests_per_user
-    if wall_time_s <= 0 or generation_time_s <= 0:
+    if generation_time_s <= 0:
         raise RuntimeError("Measured benchmark time must be greater than zero.")
     row = {
         "run_id": config.run_id,
@@ -792,9 +801,8 @@ def _result_row(
         "memory_turn_count": memory_turn_count,
         "requests_per_user": config.requests_per_user,
         "total_requests": total_requests,
-        "wall_time_s": wall_time_s,
-        "throughput_qps": total_requests / wall_time_s,
-        "avg_latency_ms": wall_time_s / total_requests * 1000,
+        "throughput_qps": total_requests / generation_time_s,
+        "avg_latency_ms": generation_time_s / total_requests * 1000,
         "generation_time_s": generation_time_s,
         "retrieval_time_s": retrieval_time_s,
         "vector_search_time_s": vector_search_time_s,
@@ -805,6 +813,7 @@ def _result_row(
         "kv_precompute_time_s": kv_precompute_time_s,
         "engine_startup_time_s": engine_startup_time_s,
         "kv_store_gpu_mb": kv_store_gpu_mb,
+        "kv_requests_loaded": kv_requests_loaded,
         "total_input_tokens": total_input_tokens,
         "total_output_tokens": total_output_tokens,
         "input_tokens_per_second": total_input_tokens / generation_time_s,

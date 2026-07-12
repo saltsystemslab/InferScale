@@ -27,7 +27,6 @@ def test_result_row_matches_the_report_schema() -> None:
         vector_backend="jasper",
         jasper_effective_beam_width=64,
         memory_turn_count=25.0,
-        wall_time_s=5.0,
         generation_time_s=4.0,
         retrieval_time_s=0.5,
         prompt_build_time_s=0.5,
@@ -37,9 +36,30 @@ def test_result_row_matches_the_report_schema() -> None:
 
     assert tuple(row) == RESULT_COLUMNS
     assert row["total_requests"] == 20
-    assert row["throughput_qps"] == pytest.approx(4.0)
+    assert row["throughput_qps"] == pytest.approx(5.0)
+    assert row["avg_latency_ms"] == pytest.approx(200.0)
     assert row["memory_turn_count"] == 25.0
+    assert row["kv_requests_loaded"] == 0
     assert validate_result_row(row) is not None
+
+
+def test_result_row_qps_counts_only_generation_time() -> None:
+    row = _result_row(
+        _config(),
+        10,
+        condition="kv_injection",
+        vector_backend="jasper",
+        generation_time_s=2.0,
+        retrieval_time_s=50.0,
+        kv_compose_time_s=10.0,
+        prompt_build_time_s=5.0,
+        kv_requests_loaded=20,
+        total_input_tokens=1000,
+        total_output_tokens=500,
+    )
+
+    assert row["throughput_qps"] == pytest.approx(10.0)
+    assert row["kv_requests_loaded"] == 20
 
 
 def test_result_row_rejects_non_positive_times() -> None:
@@ -48,7 +68,6 @@ def test_result_row_rejects_non_positive_times() -> None:
             _config(),
             10,
             condition="no_memory",
-            wall_time_s=0.0,
             generation_time_s=0.0,
             total_input_tokens=1,
             total_output_tokens=1,

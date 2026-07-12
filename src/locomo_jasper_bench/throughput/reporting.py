@@ -19,7 +19,6 @@ RESULT_COLUMNS = (
     "memory_turn_count",
     "requests_per_user",
     "total_requests",
-    "wall_time_s",
     "throughput_qps",
     "avg_latency_ms",
     "generation_time_s",
@@ -32,6 +31,7 @@ RESULT_COLUMNS = (
     "kv_precompute_time_s",
     "engine_startup_time_s",
     "kv_store_gpu_mb",
+    "kv_requests_loaded",
     "total_input_tokens",
     "total_output_tokens",
     "input_tokens_per_second",
@@ -133,14 +133,11 @@ def render_markdown_report(config: ThroughputConfig, rows: Iterable[dict[str, An
         "",
         f"Dataset: `{config.dataset_path}`; users map to LoCoMo conversations round-robin and ask that conversation's own questions.",
         "",
-        "No-memory QPS times only the synchronous vLLM generation call.",
+        "QPS for every condition times only the synchronous vLLM generation call over the prepared batch.",
         "",
-        "Mem0 QPS includes query embedding, vector retrieval, retrieval prompt construction, and vLLM generation.",
-        "",
-        "KV QPS includes the identical Jasper query embedding and retrieval, UNUSED, prompt construction, and vLLM generation; "
-        "token-equivalence verification is reported separately and excluded.",
-        "",
-        "Memory setup, per-turn KV precomputation, and model startup are reported separately and excluded from QPS.",
+        "Query embedding, vector retrieval, prompt construction, KV composition, token-equivalence "
+        "verification, memory setup, per-turn KV precomputation, and model startup are reported "
+        "separately in the phase table and excluded from QPS.",
         "",
         "| Users | Turns/user | No memory QPS | Mem0 Qdrant QPS | Mem0 Jasper QPS | KV QPS | KV / Mem0 Jasper |",
         "| ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
@@ -237,6 +234,7 @@ def _coerce_row(row: dict[str, Any]) -> dict[str, Any]:
         "num_users",
         "requests_per_user",
         "total_requests",
+        "kv_requests_loaded",
         "total_input_tokens",
         "total_output_tokens",
     ):
@@ -247,7 +245,6 @@ def _coerce_row(row: dict[str, Any]) -> dict[str, Any]:
     )
     for column in (
         "memory_turn_count",
-        "wall_time_s",
         "throughput_qps",
         "avg_latency_ms",
         "generation_time_s",

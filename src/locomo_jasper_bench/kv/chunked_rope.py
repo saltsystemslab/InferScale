@@ -597,9 +597,15 @@ def _load_hf_model_and_tokenizer(
     logger.info("Loading pre-RoPE encoder model=%s device=%s", model, device)
     started = time.perf_counter()
     tokenizer = AutoTokenizer.from_pretrained(model)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.pad_token_id = tokenizer.eos_token_id
+    # The encoder never pads (chunks are encoded one sequence at a time); this
+    # fixup only keeps HF tokenizers usable elsewhere. vLLM's MistralTokenizer
+    # wrapper exposes no pad_token attribute, so skip it there.
+    if getattr(tokenizer, "pad_token", None) is None and hasattr(tokenizer, "eos_token"):
+        try:
+            tokenizer.pad_token = tokenizer.eos_token
+            tokenizer.pad_token_id = tokenizer.eos_token_id
+        except AttributeError:
+            pass
 
     hf_model = AutoModelForCausalLM.from_pretrained(
         model,

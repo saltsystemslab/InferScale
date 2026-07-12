@@ -33,7 +33,6 @@ def _row(condition: str, qps: float, *, num_users: int = 10) -> dict[str, object
         "fact_count": 200.0 if uses_jasper else 0.0,
         "requests_per_user": 2,
         "total_requests": num_users * 2,
-        "wall_time_s": num_users * 2 / qps,
         "throughput_qps": qps,
         "avg_latency_ms": 1000 / qps,
         "generation_time_s": num_users * 2 / qps,
@@ -46,6 +45,7 @@ def _row(condition: str, qps: float, *, num_users: int = 10) -> dict[str, object
         "kv_precompute_time_s": 1.0 if is_kv else 0.0,
         "engine_startup_time_s": 2.0,
         "kv_store_gpu_mb": 10.0 if is_kv else 0.0,
+        "kv_requests_loaded": num_users * 2 if is_kv else 0,
         "total_input_tokens": 10240,
         "total_output_tokens": 1000,
         "input_tokens_per_second": 5120.0,
@@ -96,3 +96,4 @@ def test_write_reports_creates_csv_json_and_markdown(tmp_path: Path) -> None:
     assert "Facts/user" in report
     assert "2.00x" in report
     assert "KV verify (s)" in report
+    assert "QPS for every condition times only the synchronous vLLM generation call" in report

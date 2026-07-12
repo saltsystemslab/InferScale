@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -33,6 +34,29 @@ if TYPE_CHECKING:
     from vllm.v1.request import Request
 
 logger = init_logger(__name__)
+
+# Strict GPU mode runs the vLLM engine in-process, so the benchmark worker can
+# read these counters to verify that every measured request actually had its
+# KV loaded (a load that never happens would otherwise be invisible).
+_LOAD_STATS_LOCK = threading.Lock()
+_LOAD_STATS = {"requests_loaded": 0, "tokens_loaded": 0}
+
+
+def reset_load_stats() -> None:
+    with _LOAD_STATS_LOCK:
+        _LOAD_STATS["requests_loaded"] = 0
+        _LOAD_STATS["tokens_loaded"] = 0
+
+
+def snapshot_load_stats() -> dict[str, int]:
+    with _LOAD_STATS_LOCK:
+        return dict(_LOAD_STATS)
+
+
+def _record_load(num_tokens: int) -> None:
+    with _LOAD_STATS_LOCK:
+        _LOAD_STATS["requests_loaded"] += 1
+        _LOAD_STATS["tokens_loaded"] += int(num_tokens)
 
 
 def _is_mla_metadata(value: Any) -> bool:
@@ -91,6 +115,11 @@ class MemoryKVConnector(KVConnectorBase_V1):
         user_id = _extract_user_id(request, self._default_user_id)
         if user_id is not None:
             match = self._try_match_user(user_id, prompt_token_ids)
+            if match is None:
+                raise RuntimeError(
+                    "Explicit strict GPU memory routing failed: "
+                    f"user_id={user_id!r} request_id={request.request_id!r}."
+                )
         elif self._allow_prefix_scan:
             match = None
             for candidate_user_id in self._memory_store.get_all_user_ids():
@@ -219,26 +248,35 @@ class MemoryKVConnector(KVConnectorBase_V1):
         if not isinstance(metadata, MemoryConnectorMetadata):
             raise TypeError(f"Unexpected connector metadata type: {type(metadata)!r}")
 
+        # By the time start_load_kv runs, the scheduler has already credited
+        # the memory tokens as externally computed and skipped their prefill,
+        # so any failure to load below must fail closed: continuing would let
+        # the request attend over uninitialized KV.
         attn_metadata = forward_context.attn_metadata
         if attn_metadata is None:
-            logger.warning("start_load_kv called with no attention metadata.")
-            return
+            raise RuntimeError(
+                "start_load_kv called with no attention metadata while "
+                f"{len(metadata.loads)} strict GPU memory load(s) are pending."
+            )
 
         for load in metadata.loads:
             memory = self._memory_store.get_user_memory(load.user_id)
             if memory is None:
-                logger.warning("Strict GPU memory for user %s was not found during load.", load.user_id)
-                continue
+                raise RuntimeError(
+                    f"Strict GPU memory for user {load.user_id} was not found during load."
+                )
 
             first_tensor = next(iter(memory.kv_by_layer.values()), None)
             if first_tensor is None:
-                logger.warning("Strict GPU memory for user %s has no layer tensors.", load.user_id)
-                continue
+                raise RuntimeError(
+                    f"Strict GPU memory for user {load.user_id} has no layer tensors."
+                )
 
             slot_mapping = load.slot_mapping.to(device=first_tensor.device, dtype=torch.long)
             log_injection = logger.info if self._log_memory_hits else logger.debug
             log_injection("Injecting %d strict GPU memory tokens for user %s", load.num_tokens, load.user_id)
 
+            injected_layers = 0
             for layer_name, layer in forward_context.no_compile_layers.items():
                 kv_cache_attr = getattr(layer, "kv_cache", None)
                 if kv_cache_attr is None:
@@ -246,8 +284,10 @@ class MemoryKVConnector(KVConnectorBase_V1):
 
                 src_kv = memory.kv_by_layer.get(layer_name)
                 if src_kv is None:
-                    logger.warning("Layer %s not found in strict GPU memory for user %s", layer_name, load.user_id)
-                    continue
+                    raise RuntimeError(
+                        f"Layer {layer_name} not found in strict GPU memory for "
+                        f"user {load.user_id}."
+                    )
 
                 kv_cache_layer = kv_cache_attr
                 self._inject_kv_into_layer(
@@ -257,6 +297,13 @@ class MemoryKVConnector(KVConnectorBase_V1):
                     attn_metadata=attn_metadata,
                     layer_name=layer_name,
                 )
+                injected_layers += 1
+
+            if injected_layers == 0:
+                raise RuntimeError(
+                    f"No KV cache layers were injected for user {load.user_id}."
+                )
+            _record_load(load.num_tokens)
 
     @staticmethod
     def _truncate_kv(src_kv: torch.Tensor, num_tokens: int) -> torch.Tensor:

@@ -44,7 +44,6 @@ def test_kv_result_row_matches_report_schema(tmp_path: Path) -> None:
         vector_backend="jasper",
         jasper_effective_beam_width=64,
         fact_count=212.5,
-        wall_time_s=2.0,
         generation_time_s=1.0,
         retrieval_time_s=0.5,
         vector_search_time_s=0.1,
@@ -55,15 +54,47 @@ def test_kv_result_row_matches_report_schema(tmp_path: Path) -> None:
         kv_verify_time_s=0.05,
         engine_startup_time_s=20.0,
         kv_store_gpu_mb=64.0,
+        kv_requests_loaded=20,
         total_input_tokens=10000,
         total_output_tokens=1000,
     )
 
     assert tuple(row) == RESULT_COLUMNS
-    assert row["throughput_qps"] == 10.0  # 20 requests / 2s wall
+    assert row["throughput_qps"] == 20.0  # 20 requests / 1s generation
     assert row["fact_count"] == 212.5
     assert row["kv_verify_time_s"] == 0.05
+    assert row["kv_requests_loaded"] == 20
     assert validate_result_row(row) == validate_result_row(dict(row))
+
+
+def test_result_row_qps_counts_only_generation_time(tmp_path: Path) -> None:
+    row = _result_row(
+        _config(tmp_path),
+        10,
+        condition="mem0_jasper",
+        vector_backend="jasper",
+        generation_time_s=2.0,
+        retrieval_time_s=50.0,
+        prompt_build_time_s=5.0,
+        total_input_tokens=1000,
+        total_output_tokens=500,
+    )
+
+    assert row["throughput_qps"] == pytest.approx(10.0)
+    assert row["avg_latency_ms"] == pytest.approx(100.0)
+    assert row["kv_requests_loaded"] == 0
+
+
+def test_result_row_rejects_non_positive_generation_time(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="greater than zero"):
+        _result_row(
+            _config(tmp_path),
+            10,
+            condition="no_memory",
+            generation_time_s=0.0,
+            total_input_tokens=1,
+            total_output_tokens=1,
+        )
 
 
 def test_run_condition_rejects_removed_prompt_injection(tmp_path: Path) -> None:

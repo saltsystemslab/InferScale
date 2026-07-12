@@ -65,41 +65,32 @@ def extract_memory_scaffold_token_ids(
 ) -> MemoryScaffoldTokens:
     if block_size < 1:
         raise ValueError("block_size must be >= 1.")
-    # The recomputed KV tail is up to block_size - 1 TOKENS, but BPE tokenizers
-    # merge newline runs, so a fixed character count can encode to far fewer
-    # tokens. Grow the pad until the encoded footer actually covers the tail.
-    pad_newlines = block_size
-    max_pad_newlines = block_size * 64
-    while True:
-        memory_placeholder = MEMORY_TEMPLATE_PLACEHOLDER + ("\n" * pad_newlines)
-        apply_chat_template = getattr(tokenizer, "apply_chat_template", None)
-        if callable(apply_chat_template):
-            templated = apply_chat_template_non_thinking(
-                tokenizer,
-                [{"role": "system", "content": MEMORY_SYSTEM_PROMPT + memory_placeholder}],
-                tokenize=False,
-                add_generation_prompt=False,
-            )
-        else:
-            templated = f"SYSTEM: {MEMORY_SYSTEM_PROMPT}{memory_placeholder}"
+    apply_chat_template = getattr(tokenizer, "apply_chat_template", None)
+    if callable(apply_chat_template):
+        templated = apply_chat_template_non_thinking(
+            tokenizer,
+            [{"role": "system", "content": MEMORY_SYSTEM_PROMPT + MEMORY_TEMPLATE_PLACEHOLDER}],
+            tokenize=False,
+            add_generation_prompt=False,
+        )
+    else:
+        templated = f"SYSTEM: {MEMORY_SYSTEM_PROMPT}{MEMORY_TEMPLATE_PLACEHOLDER}"
 
-        if MEMORY_TEMPLATE_PLACEHOLDER not in templated:
-            raise RuntimeError("Answer prompt chat template removed the memory placeholder.")
-        header_text, footer_text = templated.split(MEMORY_TEMPLATE_PLACEHOLDER, 1)
-        footer_token_ids = encode_text_no_special(tokenizer, footer_text)
-        if len(footer_token_ids) >= block_size - 1:
-            break
-        if pad_newlines >= max_pad_newlines:
-            raise RuntimeError(
-                "The memory scaffold does not contain enough trailing whitespace to keep "
-                "retrieved facts outside the recomputed KV tail: "
-                f"{len(footer_token_ids)} footer token(s) from {pad_newlines} pad "
-                f"newline(s); need at least {block_size - 1}."
-            )
-        pad_newlines *= 2
-
+    if MEMORY_TEMPLATE_PLACEHOLDER not in templated:
+        raise RuntimeError("Answer prompt chat template removed the memory placeholder.")
+    header_text, footer_text = templated.split(MEMORY_TEMPLATE_PLACEHOLDER, 1)
     header_token_ids = encode_text_no_special(tokenizer, header_text)
     empty_memory_token_ids = encode_text_no_special(tokenizer, EMPTY_MEMORY_TEXT)
+    footer_close_token_ids = encode_text_no_special(tokenizer, footer_text)
+    # The recomputed KV tail is up to block_size - 1 TOKENS. Text-level padding
+    # cannot guarantee that: chat templates (e.g. Llama 3) trim message content,
+    # and BPE tokenizers merge whitespace runs. Pad at the token level instead,
+    # repeating the newline token so the tail never reaches fact content.
+    newline_token_ids = encode_text_no_special(tokenizer, "\n")
+    if not newline_token_ids:
+        raise RuntimeError("Tokenizer produced no tokens for a newline pad.")
+    pad_repeats = max(0, block_size - 1 - len(footer_close_token_ids))
+    footer_token_ids = newline_token_ids * pad_repeats + footer_close_token_ids
     if (
         not header_token_ids
         or not empty_memory_token_ids
@@ -108,6 +99,12 @@ def extract_memory_scaffold_token_ids(
             f"Empty answer scaffold tokens: header={len(header_token_ids)} "
             f"empty_memory={len(empty_memory_token_ids)} "
             f"footer={len(footer_token_ids)}."
+        )
+    if len(footer_token_ids) < block_size - 1:
+        raise RuntimeError(
+            "The memory scaffold does not contain enough trailing whitespace to keep "
+            f"retrieved facts outside the recomputed KV tail: {len(footer_token_ids)} "
+            f"footer token(s); need at least {block_size - 1}."
         )
     return MemoryScaffoldTokens(
         header_token_ids=header_token_ids,

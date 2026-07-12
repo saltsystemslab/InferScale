@@ -610,7 +610,7 @@ def test_prefix_without_context_rendering_matches_kv_fact_only_tokens(
     assert fact_only.fact_plan.context_text_tokens == 0
 
 
-def test_scaffold_footer_reaches_block_size_tokens_despite_newline_merging() -> None:
+def test_scaffold_footer_covers_kv_tail_despite_newline_merging() -> None:
     sample = _sample()
     block_size = 16
 
@@ -621,7 +621,7 @@ def test_scaffold_footer_reaches_block_size_tokens_despite_newline_merging() -> 
     assert len(scaffold.footer_token_ids) >= block_size - 1
 
 
-def test_scaffold_footer_needs_no_growth_for_char_level_tokenizer() -> None:
+def test_scaffold_footer_covers_kv_tail_for_char_level_tokenizer() -> None:
     sample = _sample()
     block_size = 16
 
@@ -629,4 +629,21 @@ def test_scaffold_footer_needs_no_growth_for_char_level_tokenizer() -> None:
         _DeterministicTokenizer(), sample, block_size=block_size
     )
 
-    assert len(scaffold.footer_token_ids) == block_size
+    assert len(scaffold.footer_token_ids) >= block_size - 1
+
+
+def test_scaffold_footer_pad_survives_content_trimming_template() -> None:
+    """Llama-style chat templates trim message content, deleting any text-level
+    whitespace pad; the token-level pad must still cover the KV tail."""
+
+    class _TrimmingTemplateTokenizer(_NewlineMergingTokenizer):
+        def apply_chat_template(self, messages: list[dict[str, str]], **_: Any) -> str:
+            content = messages[0]["content"].strip()
+            return f"<|header|>{content}<|eot|>"
+
+    block_size = 16
+    scaffold = extract_memory_scaffold_token_ids(
+        _TrimmingTemplateTokenizer(), _sample(), block_size=block_size
+    )
+
+    assert len(scaffold.footer_token_ids) >= block_size - 1

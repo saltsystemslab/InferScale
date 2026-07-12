@@ -90,6 +90,11 @@ class MemoryKVConnector(KVConnectorBase_V1):
         user_id = _extract_user_id(request, self._default_user_id)
         if user_id is not None:
             match = self._try_match_user(user_id, prompt_token_ids)
+            if match is None:
+                raise RuntimeError(
+                    "Explicit strict GPU memory routing failed: "
+                    f"user_id={user_id!r} request_id={request.request_id!r}."
+                )
         elif self._allow_prefix_scan:
             match = None
             for candidate_user_id in self._memory_store.get_all_user_ids():

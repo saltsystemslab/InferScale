@@ -12,6 +12,7 @@ from ..kv.prompting import (
     build_kv_equivalence_prompt_token_ids,
     build_memory_prompt_token_ids,
 )
+from ..kv.request_identity import MEMORY_USER_ID_EXTRA_ARG
 from ..results import write_json
 from ..retrieval.mem0_provider import create_mem0_memory
 from ..retrieval.memory_builder import embed_mem0_query, load_turns_into_memory
@@ -192,7 +193,7 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
             connector_module=config.kv_connector_module,
             namespace=namespace,
             default_user_id=None,
-            allow_prefix_scan=True,
+            allow_prefix_scan=False,
         )
         llm, sampling_params, engine_startup_time_s = _start_llm(
             config,
@@ -208,6 +209,7 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
         prompt_build_time_s = 0.0
         memory_turn_total = 0
         prompts: list[dict[str, list[int]]] = []
+        prompt_memory_user_ids: list[str] = []
         request_index = 0
         requests_by_user: dict[int, list[LocomoRequest]] = {
             user_index: [] for user_index in range(num_users)
@@ -239,9 +241,10 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
 
                     compose_started = time.perf_counter()
                     composed = composer.compose(hits)
+                    memory_user_id = f"request-{request_index:05d}"
                     register_user_memory(
                         namespace,
-                        user_id=f"request-{request_index:05d}",
+                        user_id=memory_user_id,
                         kv_by_layer=composed.kv_by_layer,
                         num_tokens=composed.num_tokens,
                         token_ids=composed.token_ids,
@@ -268,6 +271,7 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
                             ).prompt_token_ids
                         }
                     )
+                    prompt_memory_user_ids.append(memory_user_id)
                     prompt_build_time_s += time.perf_counter() - prompt_started
                     request_index += 1
             finally:
@@ -278,8 +282,12 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
 
         store_stats = namespace_stats(namespace)
         _validate_prompt_lengths(config, prompts)
-        _warm_up(llm, prompts, sampling_params, config.warmup_batches)
-        measured = _measure_batch(llm, prompts, sampling_params)
+        routed_sampling_params = _sampling_params_with_memory_user_ids(
+            sampling_params,
+            prompt_memory_user_ids,
+        )
+        _warm_up(llm, prompts, routed_sampling_params, config.warmup_batches)
+        measured = _measure_batch(llm, prompts, routed_sampling_params)
         wall_time_s = (
             retrieval_time_s
             + kv_compose_time_s
@@ -656,16 +664,43 @@ def _start_llm(
     return llm, sampling_params, startup_time_s
 
 
-def _warm_up(llm: Any, prompts: list[dict[str, list[int]]], sampling_params: Any, batches: int) -> None:
+def _sampling_params_with_memory_user_ids(
+    sampling_params: Any,
+    memory_user_ids: list[str],
+) -> list[Any]:
+    routed: list[Any] = []
+    for memory_user_id in memory_user_ids:
+        clone = getattr(sampling_params, "clone", None)
+        if not callable(clone):
+            raise RuntimeError("Pinned vLLM SamplingParams must provide clone() for request routing.")
+        request_params = clone()
+        extra_args = dict(getattr(request_params, "extra_args", None) or {})
+        extra_args[MEMORY_USER_ID_EXTRA_ARG] = memory_user_id
+        request_params.extra_args = extra_args
+        routed.append(request_params)
+    return routed
+
+
+def _warm_up(
+    llm: Any,
+    prompts: list[dict[str, list[int]]],
+    sampling_params: Any | list[Any],
+    batches: int,
+) -> None:
     warmup_prompts = prompts[: min(10, len(prompts))]
+    warmup_sampling_params = (
+        sampling_params[: len(warmup_prompts)]
+        if isinstance(sampling_params, list)
+        else sampling_params
+    )
     for _ in range(batches):
-        llm.generate(warmup_prompts, sampling_params, use_tqdm=False)
+        llm.generate(warmup_prompts, warmup_sampling_params, use_tqdm=False)
 
 
 def _measure_batch(
     llm: Any,
     prompts: list[dict[str, list[int]]],
-    sampling_params: Any,
+    sampling_params: Any | list[Any],
 ) -> dict[str, int | float]:
     started = time.perf_counter()
     outputs = llm.generate(prompts, sampling_params, use_tqdm=False)

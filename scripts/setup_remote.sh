@@ -7,6 +7,8 @@ cd "${PROJECT_ROOT}"
 
 # shellcheck source=scripts/load_env.sh
 source "${SCRIPT_DIR}/load_env.sh"
+# shellcheck source=scripts/runpod_cuda_cmake.sh
+source "${SCRIPT_DIR}/runpod_cuda_cmake.sh"
 
 CUDA_MODULE="${CUDA_MODULE-cuda/12.8}"
 PYTORCH_INDEX="${PYTORCH_INDEX:-https://download.pytorch.org/whl/cu128}"
@@ -70,6 +72,9 @@ if [[ "${CUDA_VERSION}" != 12.8* ]]; then
   echo "warning: This script pins cu128 wheels." >&2
 fi
 
+declare -a JASPER_CMAKE_PLATFORM_ARGS=()
+configure_runpod_cuda_cmake_args
+
 PYTHON_VERSION="$(python3 - <<'PY'
 import sys
 print(f"{sys.version_info.major}.{sys.version_info.minor}")
@@ -104,7 +109,8 @@ python -m pip install -c "${CONSTRAINTS_FILE}" vllm accelerate --extra-index-url
 cmake -S jasperpy -B jasperpy/build \
   -DJASPER_BUILD_FFI=ON \
   -DJASPER_BUILD_CMD=ON \
-  -DCMAKE_CUDA_ARCHITECTURES="${JASPER_CUDA_ARCHITECTURES}"
+  -DCMAKE_CUDA_ARCHITECTURES="${JASPER_CUDA_ARCHITECTURES}" \
+  "${JASPER_CMAKE_PLATFORM_ARGS[@]}"
 cmake --build jasperpy/build --parallel
 cmake --install jasperpy/build
 python -m pip install -e jasperpy/python

@@ -7,6 +7,8 @@ import torch
 
 from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorMetadata
 
+from .request_identity import extract_user_id
+
 
 @dataclass
 class MemoryLoadMeta:
@@ -52,25 +54,3 @@ def extra_config(kv_transfer_config: Any, key: str, default: Any = None) -> Any:
         return getter(key, default)
     extra = getattr(kv_transfer_config, "kv_connector_extra_config", None) or {}
     return extra.get(key, default)
-
-
-def extract_user_id(request: Any, default_user_id: str | None = None) -> str | None:
-    user_id = getattr(request, "user", None)
-    if user_id:
-        return str(user_id)
-
-    sampling_params = getattr(request, "sampling_params", None)
-    if sampling_params is not None:
-        user_id = getattr(sampling_params, "user", None)
-        if user_id:
-            return str(user_id)
-
-    metadata = getattr(request, "metadata", None)
-    if metadata:
-        user_id = metadata.get("user_id")
-        if user_id:
-            return str(user_id)
-
-    if default_user_id:
-        return default_user_id
-    return None

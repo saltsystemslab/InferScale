@@ -168,6 +168,7 @@ def test_jasper_graph_build_receives_inner_product(
 
     assert graph_builds[0]["distance"] == VECTOR_DISTANCE
     assert tensor_moves[0]["dtype"] == "float16"
+    assert store._vectors_gpu is not None
 
 
 def test_jasper_all_matching_scope_filter_keeps_top_k_gpu_search(
@@ -257,6 +258,66 @@ def test_jasper_gpu_search_truncates_negative_padding_ordinals(
     graph_results["indices"] = [[0, 7, -1, -1]]
     with pytest.raises(RuntimeError, match="invalid vector ordinal 7"):
         store._search_jasper(np.asarray([1.0, 0.0], dtype=np.float32), 4, beam_width=4)
+
+
+def test_jasper_full_store_top_k_uses_complete_exact_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: object,
+) -> None:
+    store = JasperVectorStore(tmp_path, VectorStoreConfig(backend="jasper", beam_width=1))
+    store.add_many(
+        [[1.0, 0.0], [0.5, 0.5], [0.0, 1.0]],
+        [{"memory": "one"}, {"memory": "two"}, {"memory": "three"}],
+        ["one", "two", "three"],
+    )
+    store._finalized = True
+    store._graph = object()
+    monkeypatch.setattr(
+        store,
+        "_search_jasper",
+        lambda *_args, **_kwargs: pytest.fail(
+            "full-store top_k must use exact search; beam search may miss vertices"
+        ),
+    )
+
+    hits, _ = store.search([1.0, 0.0], top_k=500)
+
+    assert [hit.id for hit in hits] == ["one", "two", "three"]
+    assert [hit.rank for hit in hits] == [1, 2, 3]
+
+
+def test_jasper_full_store_top_k_prefers_gpu_exact_when_matrix_resident(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: object,
+) -> None:
+    store = JasperVectorStore(tmp_path, VectorStoreConfig(backend="jasper", beam_width=1))
+    store.add_many(
+        [[1.0, 0.0], [0.5, 0.5], [0.0, 1.0]],
+        [{"memory": "one"}, {"memory": "two"}, {"memory": "three"}],
+        ["one", "two", "three"],
+    )
+    store._finalized = True
+    store._graph = object()
+    store._vectors_gpu = object()
+    gpu_exact_calls: list[int] = []
+
+    def fake_gpu_exact(query: np.ndarray, top_k: int) -> tuple[list[SearchHit], float]:
+        gpu_exact_calls.append(top_k)
+        return store._search_exact(query, top_k)
+
+    monkeypatch.setattr(store, "_search_exact_gpu", fake_gpu_exact)
+    monkeypatch.setattr(
+        store,
+        "_search_jasper",
+        lambda *_args, **_kwargs: pytest.fail(
+            "full-store top_k must use exact search; beam search may miss vertices"
+        ),
+    )
+
+    hits, _ = store.search([1.0, 0.0], top_k=500)
+
+    assert gpu_exact_calls == [3]
+    assert [hit.id for hit in hits] == ["one", "two", "three"]
 
 
 def test_jasper_partial_filter_uses_complete_exact_fallback(

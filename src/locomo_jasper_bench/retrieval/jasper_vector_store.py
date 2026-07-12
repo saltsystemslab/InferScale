@@ -27,6 +27,7 @@ class JasperVectorStore:
         self.root.mkdir(parents=True, exist_ok=True)
         self._payloads_by_ordinal: dict[int, tuple[str, dict[str, Any]]] = {}
         self._vectors: np.ndarray | None = None
+        self._vectors_gpu: Any = None
         self._graph: Any = None
         self._finalized = False
         self._jasper_graph_memory_stats: dict[str, int | float | None] = _empty_graph_memory_stats()
@@ -132,13 +133,23 @@ class JasperVectorStore:
         )
         requires_exact_filtering = bool(filters) and not filters_match_all
         candidate_k = self.vector_count if requires_exact_filtering else top_k
+        # Beam search does not guarantee reaching every vertex, so a request for
+        # the whole store must use exact scoring to stay complete.
+        requires_exact_completeness = candidate_k >= self.vector_count
         effective_beam_width = max(self.config.beam_width, top_k)
-        if self._finalized and self._graph is not None and not requires_exact_filtering:
+        if (
+            self._finalized
+            and self._graph is not None
+            and not requires_exact_filtering
+            and not requires_exact_completeness
+        ):
             hits, search_time_ms = self._search_jasper(
                 query,
                 candidate_k,
                 beam_width=effective_beam_width,
             )
+        elif self._finalized and self._graph is not None and self._vectors_gpu is not None:
+            hits, search_time_ms = self._search_exact_gpu(query, candidate_k)
         else:
             hits, search_time_ms = self._search_exact(query, candidate_k)
         if filters:
@@ -223,6 +234,7 @@ class JasperVectorStore:
             if callable(free):
                 free()
         self._graph = None
+        self._vectors_gpu = None
         self._finalized = False
         self._jasper_graph_memory_stats = _empty_graph_memory_stats()
 
@@ -249,7 +261,10 @@ class JasperVectorStore:
         )
 
         _cuda_synchronize(torch)
-        del vectors
+        # Keep the fp16 matrix resident so exact searches (full-store requests
+        # and partial-filter fallbacks) also run on GPU; jasper itself has no
+        # brute-force API. The allocated-delta stat below includes it.
+        self._vectors_gpu = vectors
         gc.collect()
         empty_cache = getattr(torch.cuda, "empty_cache", None)
         if callable(empty_cache):
@@ -312,6 +327,43 @@ class JasperVectorStore:
                     payload=payload,
                     score=score,
                     distance=distance,
+                    rank=len(hits) + 1,
+                )
+            )
+        return hits, search_time_ms
+
+    def _search_exact_gpu(self, query: np.ndarray, top_k: int) -> tuple[list[SearchHit], float]:
+        import torch
+
+        matrix = self._vectors_gpu
+        if matrix is None:
+            return self._search_exact(query, top_k)
+        query_tensor = torch.from_numpy(query).to(device=matrix.device, dtype=torch.float32)
+        synchronize = getattr(getattr(torch, "cuda", None), "synchronize", None)
+        if callable(synchronize):
+            synchronize()
+        started = time.perf_counter()
+        scores = matrix.float() @ query_tensor
+        k = min(int(top_k), int(scores.shape[0]))
+        top_scores, top_ordinals = torch.topk(scores, k)
+        if callable(synchronize):
+            synchronize()
+        search_time_ms = (time.perf_counter() - started) * 1000
+
+        ordinal_values = top_ordinals.detach().cpu().numpy()
+        score_values = top_scores.detach().cpu().numpy()
+        hits: list[SearchHit] = []
+        for ordinal, score in zip(ordinal_values, score_values):
+            row = self._payload_by_ordinal(int(ordinal))
+            if row is None:
+                raise RuntimeError(f"Jasper exact GPU search produced unknown ordinal {int(ordinal)}.")
+            item_id, payload = row
+            hits.append(
+                SearchHit(
+                    id=item_id,
+                    payload=dict(payload),
+                    score=float(score),
+                    distance=-float(score),
                     rank=len(hits) + 1,
                 )
             )

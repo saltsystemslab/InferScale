@@ -64,7 +64,7 @@ if [[ "${DRY_RUN}" != "1" ]]; then
   fi
 fi
 
-RUN_STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+RUN_STAMP="${RUN_STAMP:-$(date -u +%Y%m%dT%H%M%SZ)}"
 LOG_DIR="${BENCHMARK_RESULTS_ROOT}/sweep-logs-${RUN_STAMP}"
 mkdir -p "${LOG_DIR}"
 

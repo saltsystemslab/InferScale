@@ -54,7 +54,7 @@ class ThroughputConfig:
     top_k: int = 10
     seed: int = 42
     context_window: int = 0
-    kv_gpu_memory_utilization: float = 0.52
+    kv_gpu_memory_utilization: float = 0.38
     kv_max_model_len: int = 32768
     kv_max_position: int = 32768
     kv_dtype: str = "bfloat16"
@@ -183,7 +183,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[ThroughputConfig, bool]:
         "--gpu-memory-utilization",
         dest="kv_gpu_memory_utilization",
         type=float,
-        default=float(os.environ.get("LOCOMO_KV_GPU_MEMORY_UTILIZATION", "0.52")),
+        default=float(os.environ.get("LOCOMO_KV_GPU_MEMORY_UTILIZATION", "0.38")),
     )
     parser.add_argument("--max-model-len", dest="kv_max_model_len", type=int, default=32768)
     parser.add_argument("--kv-max-position", type=int, default=32768)

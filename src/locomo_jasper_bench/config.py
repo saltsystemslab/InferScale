@@ -143,7 +143,7 @@ class BenchmarkConfig:
     kv_connector_module: str = "locomo_jasper_bench.kv.gpu_connector"
     context_window: int = 0
     context_window_unit: Literal["sessions"] = CONTEXT_WINDOW_UNIT
-    kv_gpu_memory_utilization: float = 0.52
+    kv_gpu_memory_utilization: float = 0.38
     kv_max_model_len: int = 32768
     kv_max_position: int = 32768
     kv_dtype: str = "bfloat16"
@@ -254,7 +254,7 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     parser.add_argument(
         "--kv-gpu-memory-utilization",
         type=float,
-        default=float(os.environ.get("LOCOMO_KV_GPU_MEMORY_UTILIZATION", "0.52")),
+        default=float(os.environ.get("LOCOMO_KV_GPU_MEMORY_UTILIZATION", "0.38")),
     )
     parser.add_argument("--kv-dtype", default=os.environ.get("LOCOMO_KV_DTYPE", "bfloat16"))
     parser.add_argument("--kv-device", default=os.environ.get("LOCOMO_KV_DEVICE", "cuda:0"))

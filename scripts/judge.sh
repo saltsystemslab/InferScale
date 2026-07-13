@@ -57,7 +57,7 @@ elif [[ "${RUNIDS_FROM}" == "discover" ]]; then
   done < <(
     find "${BENCHMARK_RESULTS_ROOT}" -name "*${STAMP}*" 2>/dev/null \
       | grep -oE "[A-Za-z0-9]+(-[A-Za-z0-9]+)*-${STAMP}" \
-      | grep -E -- "-(kv-mem0-(jasper|qdrant)10|prefix-mem0-(jasper|qdrant)10|kv-gpu-jasper10|prefix-qdrant10)-" \
+      | grep -E -- "-(kv-mem0-(jasper|qdrant)10|kvcpu-mem0-jasper10|prefix-mem0-(jasper|qdrant)10|kv-gpu-jasper10|prefix-qdrant10)-" \
       | sort -u
   )
 else

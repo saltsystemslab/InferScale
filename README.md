@@ -150,6 +150,11 @@ DRY_RUN=1 BENCHMARK_RESULTS_ROOT="${BENCHMARK_RESULTS_ROOT}" bash scripts/full_r
 BENCHMARK_RESULTS_ROOT="${BENCHMARK_RESULTS_ROOT}" bash scripts/full_run.sh
 ```
 
+`scripts/full_run_cpu_store.sh` repeats only the vllm-kv+jasper grid with the pinned-host KV store (`--kv-store-backend cpu-pinned`).
+Its run ids use the `kvcpu` marker (e.g. `llama-kvcpu-mem0-jasper10-k50-s0-<stamp>`), so they never collide with the standard sweep and remain judge-discoverable.
+The vllm-prefix baselines never touch the KV store, so compare cpu-store runs against the standard sweep's rows.
+Tune the staging pool with `KV_STAGING_SLOTS` (default 4).
+
 
 ## 4. Judge Accuracy
 
@@ -231,3 +236,7 @@ Run all configured model aliases:
 ```bash
 MODELS="llama mistral qwen" bash scripts/full_throughput.sh
 ```
+
+`scripts/full_throughput_cpu_store.sh` repeats only the `kv_injection` condition with the pinned-host KV store (`--kv-store-backend cpu-pinned`), since the other conditions never touch the KV store.
+Its run ids are prefixed `throughput-cpu-<stamp>`; compare the rows against the standard sweep's `kv_injection` rows via the `kv_store_backend` and `kv_h2d_*` columns.
+Tune the staging pool with `KV_STAGING_SLOTS` (default 4).

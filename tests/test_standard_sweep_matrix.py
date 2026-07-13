@@ -226,3 +226,24 @@ def test_judge_discovery_accepts_current_and_supported_legacy_runs(tmp_path: Pat
     assert f"Would judge 4 run(s) for stamp {stamp} (source: discover)." in output
     assert _judge_run_ids(output) == expected
     assert unsupported not in output
+
+
+def test_full_run_cpu_store_dry_run_emits_the_80_run_kv_matrix(tmp_path: Path) -> None:
+    stamp = "20260711T220000Z"
+    output = _run_script("full_run_cpu_store.sh", tmp_path, RUN_STAMP=stamp)
+
+    assert f"Sweep complete: 80 runs (stamp {stamp})" in output
+    run_ids = re.findall(r"--run-id ([^\s]+)", output)
+    assert len(run_ids) == 80
+    assert set(run_ids) == {
+        f"{model}-kvcpu-mem0-jasper10-k{top_k}-s{window}-{stamp}"
+        for model in MODELS
+        for top_k in TOP_KS
+        for window in KV_WINDOWS
+    }
+
+    commands = [line for line in output.splitlines() if "--run-id" in line]
+    assert all("--answer-backend vllm-kv" in command for command in commands)
+    assert all("--kv-store-backend cpu-pinned" in command for command in commands)
+    assert all("--kv-staging-slots 4" in command for command in commands)
+    assert not any("vllm-prefix" in command for command in commands)

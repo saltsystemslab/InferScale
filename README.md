@@ -60,7 +60,28 @@ Activate the environment before running benchmark commands:
 source .venv/bin/activate
 ```
 
+## Extract the fact catalogs
+
 Timed runs require the immutable fact catalogs and embedding-cache entries produced by `--preembed-only`.
+Extraction is not part of `scripts/setup_remote.sh`; run it as a separate step after setup.
+
+With three pods sharing the results network volume, extract the three primary models in parallel, one model per pod:
+
+```bash
+# Pod 1
+bash scripts/individual/extract_llama.sh
+
+# Pod 2
+bash scripts/individual/extract_qwen.sh
+
+# Pod 3
+bash scripts/individual/extract_mistral.sh
+```
+
+Each script serves its own model on the pod's GPU and writes only that model's catalogs, so the runs never conflict on the shared volume.
+The three runs share the embedding cache, which is safe: identical conversations produce identical cache entries regardless of which run writes them first.
+The `qwen3-14b` catalogs are not covered by these scripts; extract them afterward on whichever pod frees up first with `EXTRACTION_MODELS="qwen3-14b" bash scripts/extract_facts.sh`.
+To extract every model serially on one pod instead, run `bash scripts/extract_facts.sh` with no arguments.
 
 `scripts/extract_facts.sh` runs a fixed bounded extraction protocol for each answer model.
 The extraction vLLM server uses a 16,384-token context and each request allows at most 4,096 output tokens, 20 facts, and 600 characters per fact.
@@ -95,7 +116,7 @@ locomo-jasper-bench \
   --vector-backend jasper \
   --top-k 50 \
   --context-window "${CONTEXT_WINDOW}" \
-  --kv-gpu-memory-utilization 0.38 \
+  --kv-gpu-memory-utilization 0.30 \
   --max-samples 10 \
   --log-every 1 \
   --skip-judge \
@@ -111,7 +132,7 @@ locomo-jasper-bench \
   --vector-backend qdrant \
   --top-k 50 \
   --context-window 0 \
-  --kv-gpu-memory-utilization 0.38 \
+  --kv-gpu-memory-utilization 0.30 \
   --max-samples 10 \
   --log-every 1 \
   --skip-judge \

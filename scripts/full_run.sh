@@ -8,7 +8,8 @@
 # Per (model, top-k) it runs:
 #   - vllm-kv     + jasper, once per window W (--context-window W) -> 4 runs
 #   - vllm-prefix + qdrant, once as a separate baseline           -> 1 run
-# => 4 models x 5 top-k x (4 + 1) = 100 runs.
+#   - vllm-prefix + jasper, once as a separate baseline           -> 1 run
+# => 4 models x 5 top-k x (4 + 2) = 120 runs.
 #
 # Usage:
 #   BENCHMARK_RESULTS_ROOT=/path/to/results bash scripts/full_run.sh
@@ -72,7 +73,7 @@ mkdir -p "${LOG_DIR}"
 n_models=$(wc -w <<<"${MODELS}")
 n_topks=$(wc -w <<<"${TOPKS}")
 n_windows=$(wc -w <<<"${KV_WINDOWS}")
-TOTAL=$(( n_models * n_topks * (n_windows + 1) ))
+TOTAL=$(( n_models * n_topks * (n_windows + 2) ))
 idx=0
 declare -a FAILURES=()
 
@@ -115,7 +116,7 @@ for MODEL in ${MODELS}; do
             --vector-backend jasper \
             --top-k "${TOP_K}" \
             --context-window "${W}" \
-            --kv-gpu-memory-utilization 0.38 \
+            --kv-gpu-memory-utilization 0.30 \
             --max-samples 10 \
             --log-every 1 \
             --skip-judge \
@@ -133,11 +134,27 @@ for MODEL in ${MODELS}; do
         --vector-backend qdrant \
         --top-k "${TOP_K}" \
         --context-window 0 \
-        --kv-gpu-memory-utilization 0.38 \
+        --kv-gpu-memory-utilization 0.30 \
         --max-samples 10 \
         --log-every 1 \
         --skip-judge \
         --run-id "${prefix_id}"
+
+    prefix_jasper_id="${MODEL}-prefix-mem0-jasper10-k${TOP_K}-s0-${RUN_STAMP}"
+    run_one "${MODEL} k=${TOP_K} mem0-prefix jasper" \
+      locomo-jasper-bench \
+        --dataset "${DATASET}" \
+        --results-dir "${BENCHMARK_RESULTS_ROOT}" \
+        --answer-model "${MODEL}" \
+        --answer-backend vllm-prefix \
+        --vector-backend jasper \
+        --top-k "${TOP_K}" \
+        --context-window 0 \
+        --kv-gpu-memory-utilization 0.30 \
+        --max-samples 10 \
+        --log-every 1 \
+        --skip-judge \
+        --run-id "${prefix_jasper_id}"
   done
 done
 

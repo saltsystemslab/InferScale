@@ -124,7 +124,7 @@ print("transformers:", transformers.__version__)
 print("vllm:", vllm.__version__)
 PY
 
-# Materialize the Mem0 fact catalogs. For every answer model this spins up a
-# local vLLM server serving that same model, extracts facts through it, and
-# shuts it down again; extraction always uses the answer model itself.
-DATASET="${LOCOMO_DATASET_PATH}" bash "${SCRIPT_DIR}/extract_facts.sh"
+# Fact extraction is a separate step so it can run in parallel across pods;
+# see "Extract the fact catalogs" in README.md (scripts/individual/extract_<model>.sh,
+# or scripts/extract_facts.sh for the serial all-models run).
+echo "Setup complete. Next: extract the Mem0 fact catalogs (see README.md, e.g. scripts/individual/extract_llama.sh)."

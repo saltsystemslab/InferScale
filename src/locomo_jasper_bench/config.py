@@ -246,7 +246,7 @@ class BenchmarkConfig:
         default=CONTEXT_WINDOW_SEMANTICS,
         init=False,
     )
-    kv_gpu_memory_utilization: float = 0.52
+    kv_gpu_memory_utilization: float = 0.30
     kv_block_size: int = 16
     kv_max_model_len: int = 32768
     kv_max_position: int = 32768
@@ -406,7 +406,7 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     parser.add_argument(
         "--kv-gpu-memory-utilization",
         type=float,
-        default=float(os.environ.get("LOCOMO_KV_GPU_MEMORY_UTILIZATION", "0.52")),
+        default=float(os.environ.get("LOCOMO_KV_GPU_MEMORY_UTILIZATION", "0.30")),
     )
     parser.add_argument(
         "--kv-block-size",

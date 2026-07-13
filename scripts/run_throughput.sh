@@ -57,7 +57,7 @@ COMMAND=(
   --max-output-tokens "${MAX_OUTPUT_TOKENS:-50}"
   --warmup-batches "${WARMUP_BATCHES:-2}"
   --top-k "${TOP_K:-10}"
-  --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION:-0.52}"
+  --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION:-0.30}"
   --max-model-len "${MAX_MODEL_LEN:-32768}"
   --kv-max-position "${KV_MAX_POSITION:-32768}"
   --kv-block-size "${KV_BLOCK_SIZE:-16}"

@@ -50,7 +50,7 @@ def _engine_config(**overrides: object) -> SimpleNamespace:
     values: dict[str, object] = {
         "model": "test/model",
         "kv_dtype": "bfloat16",
-        "kv_gpu_memory_utilization": 0.52,
+        "kv_gpu_memory_utilization": 0.30,
         "kv_block_size": 16,
         "kv_max_model_len": 32768,
     }

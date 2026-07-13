@@ -320,6 +320,72 @@ def test_jasper_full_store_top_k_prefers_gpu_exact_when_matrix_resident(
     assert [hit.id for hit in hits] == ["one", "two", "three"]
 
 
+def test_jasper_short_beam_results_fall_back_to_exact_search(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: object,
+) -> None:
+    store = JasperVectorStore(tmp_path, VectorStoreConfig(backend="jasper", beam_width=1))
+    store.add_many(
+        [[1.0, 0.0], [0.5, 0.5], [0.0, 1.0]],
+        [{"memory": "one"}, {"memory": "two"}, {"memory": "three"}],
+        ["one", "two", "three"],
+    )
+    store._finalized = True
+    store._graph = object()
+    gpu_exact_calls: list[int] = []
+
+    def short_beam_search(
+        query: np.ndarray, top_k: int, *, beam_width: int
+    ) -> tuple[list[SearchHit], float]:
+        exact_hits, search_time_ms = store._search_exact(query, top_k)
+        return exact_hits[:1], search_time_ms
+
+    def fake_gpu_exact(query: np.ndarray, top_k: int) -> tuple[list[SearchHit], float]:
+        gpu_exact_calls.append(top_k)
+        return store._search_exact(query, top_k)
+
+    monkeypatch.setattr(store, "_search_jasper", short_beam_search)
+    monkeypatch.setattr(store, "_search_exact_gpu", fake_gpu_exact)
+
+    hits, _ = store.search([1.0, 0.0], top_k=2)
+
+    assert gpu_exact_calls == [2]
+    assert [hit.id for hit in hits] == ["one", "two"]
+    assert [hit.rank for hit in hits] == [1, 2]
+
+
+def test_jasper_complete_beam_results_skip_exact_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: object,
+) -> None:
+    store = JasperVectorStore(tmp_path, VectorStoreConfig(backend="jasper", beam_width=1))
+    store.add_many(
+        [[1.0, 0.0], [0.5, 0.5], [0.0, 1.0]],
+        [{"memory": "one"}, {"memory": "two"}, {"memory": "three"}],
+        ["one", "two", "three"],
+    )
+    store._finalized = True
+    store._graph = object()
+
+    def complete_beam_search(
+        query: np.ndarray, top_k: int, *, beam_width: int
+    ) -> tuple[list[SearchHit], float]:
+        return store._search_exact(query, top_k)
+
+    monkeypatch.setattr(store, "_search_jasper", complete_beam_search)
+    monkeypatch.setattr(
+        store,
+        "_search_exact_gpu",
+        lambda *_args, **_kwargs: pytest.fail(
+            "complete beam results must not trigger the exact fallback"
+        ),
+    )
+
+    hits, _ = store.search([1.0, 0.0], top_k=2)
+
+    assert [hit.id for hit in hits] == ["one", "two"]
+
+
 def test_jasper_partial_filter_uses_complete_exact_fallback(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: object,

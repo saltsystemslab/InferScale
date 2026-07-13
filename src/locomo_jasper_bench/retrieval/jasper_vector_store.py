@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import numpy as np
+from loguru import logger
 
 from ..kv.gpu_memory_store import bytes_to_mb
 from ..vector_types import SearchHit, SearchMetrics, VECTOR_DISTANCE, VectorStoreConfig
@@ -149,6 +150,16 @@ class JasperVectorStore:
                 candidate_k,
                 beam_width=effective_beam_width,
             )
+            if len(hits) < candidate_k:
+                # Beam search pads with -1 instead of guaranteeing k results,
+                # so retry exactly to keep retrieval complete for every caller.
+                logger.info(
+                    "Jasper beam search returned {} of {} requested hits; retrying with exact search.",
+                    len(hits),
+                    candidate_k,
+                )
+                hits, exact_search_time_ms = self._search_exact_gpu(query, candidate_k)
+                search_time_ms += exact_search_time_ms
         elif self._finalized and self._graph is not None and self._vectors_gpu is not None:
             hits, search_time_ms = self._search_exact_gpu(query, candidate_k)
         else:

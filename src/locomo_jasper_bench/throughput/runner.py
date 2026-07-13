@@ -173,6 +173,16 @@ def _validate_runtime_requirements(config: ThroughputConfig) -> None:
         )
 
 
+# Values a config.json written before these fields existed is treated as
+# having used, so old run dirs stay resumable. Pre-change behavior was prefix
+# caching hard-off and the GPU store.
+_LEGACY_CONFIG_DEFAULTS: dict[str, Any] = {
+    "kv_enable_prefix_caching": False,
+    "kv_store_backend": "gpu",
+    "kv_staging_slots": 4,
+}
+
+
 def _validate_existing_config(config: ThroughputConfig) -> None:
     path = config.run_dir / "config.json"
     if not path.exists():
@@ -184,7 +194,11 @@ def _validate_existing_config(config: ThroughputConfig) -> None:
     for key, expected in expected_config.items():
         if key in {"conditions", "embedding_api_key"}:
             continue
-        if raw.get(key) != expected:
+        if key in _LEGACY_CONFIG_DEFAULTS and key not in raw:
+            recorded = _LEGACY_CONFIG_DEFAULTS[key]
+        else:
+            recorded = raw.get(key)
+        if recorded != expected:
             raise RuntimeError(
                 f"Run directory {config.run_dir} already contains a different {key}. Use a new --run-id."
             )

@@ -30,7 +30,16 @@ RESULT_COLUMNS = (
     "memory_setup_time_s",
     "kv_precompute_time_s",
     "engine_startup_time_s",
+    "kv_prefix_caching",
     "kv_store_gpu_mb",
+    "kv_store_backend",
+    "kv_store_host_mb",
+    "kv_store_write_time_s",
+    "kv_h2d_bytes",
+    "kv_h2d_avg_ms",
+    "kv_h2d_p95_ms",
+    "kv_h2d_overlap_ratio",
+    "kv_staging_stall_ms",
     "kv_requests_loaded",
     "total_input_tokens",
     "total_output_tokens",
@@ -230,15 +239,21 @@ def _coerce_row(row: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(row)
     if normalized.get("vector_backend") == "":
         normalized["vector_backend"] = None
+    if not normalized.get("kv_store_backend"):
+        normalized["kv_store_backend"] = "gpu"
     for column in (
         "num_users",
         "requests_per_user",
         "total_requests",
+        "kv_prefix_caching",
+        "kv_h2d_bytes",
         "kv_requests_loaded",
         "total_input_tokens",
         "total_output_tokens",
     ):
-        normalized[column] = int(normalized[column] or 0)
+        # .get: rows read from CSVs written before a column existed must
+        # coerce to 0, not crash the resume/merge path.
+        normalized[column] = int(normalized.get(column) or 0)
     beam_width = normalized.get("jasper_effective_beam_width")
     normalized["jasper_effective_beam_width"] = (
         None if beam_width in (None, "") else int(beam_width)
@@ -257,6 +272,12 @@ def _coerce_row(row: dict[str, Any]) -> dict[str, Any]:
         "kv_precompute_time_s",
         "engine_startup_time_s",
         "kv_store_gpu_mb",
+        "kv_store_host_mb",
+        "kv_store_write_time_s",
+        "kv_h2d_avg_ms",
+        "kv_h2d_p95_ms",
+        "kv_h2d_overlap_ratio",
+        "kv_staging_stall_ms",
         "input_tokens_per_second",
         "output_tokens_per_second",
     ):

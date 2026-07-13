@@ -27,11 +27,15 @@ def build_strict_gpu_kv_transfer_config(
     default_user_id: str | None = "default",
     allow_prefix_scan: bool = False,
     log_memory_hits: bool = True,
+    store_backend: str = "gpu",
+    num_staging_slots: int = 4,
 ) -> dict[str, Any]:
     extra_config: dict[str, Any] = {
         "memory_namespace": namespace,
         "allow_prefix_scan": allow_prefix_scan,
         "log_memory_hits": log_memory_hits,
+        "memory_store_backend": store_backend,
+        "num_staging_slots": num_staging_slots,
     }
     if default_user_id is not None:
         extra_config["default_user_id"] = default_user_id
@@ -75,7 +79,7 @@ def common_vllm_kwargs(config: Any) -> dict[str, Any]:
         "model": config.model,
         "dtype": config.kv_dtype,
         "trust_remote_code": True,
-        "enable_prefix_caching": False,
+        "enable_prefix_caching": bool(getattr(config, "kv_enable_prefix_caching", True)),
         "disable_log_stats": False,
         "swap_space": 0,
         "cpu_offload_gb": 0,

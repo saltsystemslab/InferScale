@@ -44,7 +44,16 @@ def _row(condition: str, qps: float, *, num_users: int = 10) -> dict[str, object
         "memory_setup_time_s": 0.5 if uses_jasper else 0.0,
         "kv_precompute_time_s": 1.0 if is_kv else 0.0,
         "engine_startup_time_s": 2.0,
+        "kv_prefix_caching": 1,
         "kv_store_gpu_mb": 10.0 if is_kv else 0.0,
+        "kv_store_backend": "cpu-pinned" if is_kv else "gpu",
+        "kv_store_host_mb": 120.0 if is_kv else 0.0,
+        "kv_store_write_time_s": 0.4 if is_kv else 0.0,
+        "kv_h2d_bytes": 125_829_120 if is_kv else 0,
+        "kv_h2d_avg_ms": 5.5 if is_kv else 0.0,
+        "kv_h2d_p95_ms": 9.0 if is_kv else 0.0,
+        "kv_h2d_overlap_ratio": 0.8 if is_kv else 0.0,
+        "kv_staging_stall_ms": 12.0 if is_kv else 0.0,
         "kv_requests_loaded": num_users * 2 if is_kv else 0,
         "total_input_tokens": 10240,
         "total_output_tokens": 1000,
@@ -97,3 +106,26 @@ def test_write_reports_creates_csv_json_and_markdown(tmp_path: Path) -> None:
     assert "2.00x" in report
     assert "KV verify (s)" in report
     assert "QPS for every condition times only the synchronous vLLM generation call" in report
+
+
+def test_coerce_row_tolerates_pre_change_csv_rows() -> None:
+    legacy = _row("kv_injection", 10.0)
+    for column in (
+        "kv_prefix_caching",
+        "kv_store_backend",
+        "kv_store_host_mb",
+        "kv_store_write_time_s",
+        "kv_h2d_bytes",
+        "kv_h2d_avg_ms",
+        "kv_h2d_p95_ms",
+        "kv_h2d_overlap_ratio",
+        "kv_staging_stall_ms",
+    ):
+        legacy.pop(column)
+
+    from locomo_jasper_bench.throughput.reporting import _coerce_row
+
+    coerced = _coerce_row(legacy)
+    assert coerced["kv_h2d_bytes"] == 0
+    assert coerced["kv_prefix_caching"] == 0
+    assert coerced["kv_store_backend"] == "gpu"

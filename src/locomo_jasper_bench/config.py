@@ -148,6 +148,13 @@ def _env_or_default(name: str, default: str) -> str:
     return os.environ.get(name) or default
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _arg_present(argv: list[str], option: str) -> bool:
     return option in argv or any(value.startswith(f"{option}=") for value in argv)
 
@@ -236,6 +243,9 @@ class BenchmarkConfig:
     kv_max_position: int = 32768
     kv_dtype: str = "bfloat16"
     kv_device: str = "cuda:0"
+    kv_enable_prefix_caching: bool = True
+    kv_store_backend: str = "gpu"
+    kv_staging_slots: int = 4
 
     max_samples: int | None = None
     max_questions: int | None = None
@@ -397,6 +407,28 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     )
     parser.add_argument("--kv-dtype", default=os.environ.get("LOCOMO_KV_DTYPE", "bfloat16"))
     parser.add_argument("--kv-device", default=os.environ.get("LOCOMO_KV_DEVICE", "cuda:0"))
+    parser.add_argument(
+        "--kv-prefix-caching",
+        action=argparse.BooleanOptionalAction,
+        dest="kv_enable_prefix_caching",
+        default=_env_flag("LOCOMO_KV_ENABLE_PREFIX_CACHING", True),
+        help=(
+            "vLLM automatic prefix caching (vllm-prefix requires it). The CLI "
+            "overrides the LOCOMO_KV_ENABLE_PREFIX_CACHING env default in both directions."
+        ),
+    )
+    parser.add_argument(
+        "--kv-store-backend",
+        choices=["gpu", "cpu-pinned"],
+        default=os.environ.get("LOCOMO_KV_STORE_BACKEND", "gpu"),
+        help="Where pre-encoded KV embeddings live: GPU HBM, or pinned host RAM streamed over PCIe.",
+    )
+    parser.add_argument(
+        "--kv-staging-slots",
+        type=int,
+        default=int(os.environ.get("LOCOMO_KV_STAGING_SLOTS", "4")),
+        help="GPU staging buffers kept in flight by the cpu-pinned KV store.",
+    )
 
     parser.add_argument("--max-samples", type=int)
     parser.add_argument("--max-questions", type=int)
@@ -457,6 +489,13 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
         parser.error("--preembed-workers must be >= 1.")
     if ns.kv_block_size < 1:
         parser.error("--kv-block-size must be >= 1.")
+    if ns.answer_backend == "vllm-prefix" and not ns.kv_enable_prefix_caching:
+        parser.error(
+            "--answer-backend vllm-prefix requires prefix caching; pass --kv-prefix-caching "
+            "or unset LOCOMO_KV_ENABLE_PREFIX_CACHING."
+        )
+    if ns.kv_staging_slots < 1:
+        parser.error("--kv-staging-slots must be >= 1.")
     if ns.skip_judge and ns.judge_provider is not None:
         parser.error("--skip-judge cannot be combined with --judge.")
     try:

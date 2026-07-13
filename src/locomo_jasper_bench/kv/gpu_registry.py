@@ -1,17 +1,50 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from .gpu_memory_store import GPUMemoryStore
 
 _STORES: dict[str, Any] = {}
+_BACKENDS: dict[str, str] = {}
+
+_KNOWN_BACKENDS = ("gpu", "cpu-pinned")
 
 
-def get_gpu_memory_store(namespace: str = "default") -> Any:
-    """Return the process-local GPU memory store for a connector namespace."""
-    if namespace not in _STORES:
-        _STORES[namespace] = GPUMemoryStore()
-    return _STORES[namespace]
+def get_gpu_memory_store(
+    namespace: str = "default",
+    *,
+    backend: str | None = None,
+    num_staging_slots: int | None = None,
+) -> Any:
+    """Return the process-local KV memory store for a connector namespace.
+
+    The driver (worker/answer client) and the in-process connector both
+    resolve the same namespace; whichever runs first creates the store, so
+    both pass the backend explicitly and a mismatch fails fast.
+    """
+    resolved = backend or os.environ.get("LOCOMO_KV_STORE_BACKEND") or "gpu"
+    if resolved not in _KNOWN_BACKENDS:
+        raise ValueError(f"Unknown KV store backend: {resolved!r}; expected one of {_KNOWN_BACKENDS}.")
+
+    if namespace in _STORES:
+        existing = _BACKENDS.get(namespace, "gpu")
+        if backend is not None and existing != resolved:
+            raise RuntimeError(
+                f"KV store namespace {namespace!r} already exists with backend "
+                f"{existing!r}; requested {resolved!r}."
+            )
+        return _STORES[namespace]
+
+    if resolved == "cpu-pinned":
+        from .cpu_memory_store import CpuPinnedMemoryStore
+
+        store: Any = CpuPinnedMemoryStore(num_staging_slots=int(num_staging_slots or 4))
+    else:
+        store = GPUMemoryStore()
+    _STORES[namespace] = store
+    _BACKENDS[namespace] = resolved
+    return store
 
 
 def register_user_memory(
@@ -48,10 +81,45 @@ def clear_namespace(namespace: str) -> None:
 def drop_namespace(namespace: str) -> None:
     clear_namespace(namespace)
     _STORES.pop(namespace, None)
+    _BACKENDS.pop(namespace, None)
 
 
 def namespace_stats(namespace: str) -> dict[str, Any]:
     store = _STORES.get(namespace)
     if store is None:
-        return {"num_users": 0, "total_tokens": 0, "total_gpu_mb": 0.0}
+        return {"num_users": 0, "total_tokens": 0, "total_gpu_mb": 0.0, "total_host_mb": 0.0}
     return dict(store.get_stats())
+
+
+def namespace_bench_summary(namespace: str) -> dict[str, Any]:
+    """Transfer metrics for stores that track them; empty for the GPU store."""
+    store = _STORES.get(namespace)
+    summary = getattr(store, "get_bench_summary", None)
+    if not callable(summary):
+        return {}
+    return dict(summary())
+
+
+def reset_namespace_bench_metrics(namespace: str) -> None:
+    store = _STORES.get(namespace)
+    reset = getattr(store, "reset_bench_metrics", None)
+    if callable(reset):
+        reset()
+
+
+def namespace_last_transfer(namespace: str) -> Any:
+    """Most recent TransferRecord, or None for the GPU store."""
+    store = _STORES.get(namespace)
+    last = getattr(store, "last_transfer_record", None)
+    if not callable(last):
+        return None
+    return last()
+
+
+def namespace_transfer_count(namespace: str) -> int:
+    """Lifetime transfer count; 0 for the GPU store."""
+    store = _STORES.get(namespace)
+    count = getattr(store, "transfer_count", None)
+    if not callable(count):
+        return 0
+    return int(count())

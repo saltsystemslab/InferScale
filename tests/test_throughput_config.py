@@ -135,3 +135,56 @@ def test_worker_config_rejects_removed_vector_distance_field(tmp_path: Path) -> 
 
     with pytest.raises(TypeError, match="vector_distance"):
         type(config).from_json_file(path)
+
+
+def test_parse_args_kv_store_backend_round_trips(tmp_path: Path) -> None:
+    config, _ = parse_args(
+        [
+            "--model",
+            "test/model",
+            "--kv-store-backend",
+            "cpu-pinned",
+            "--kv-staging-slots",
+            "8",
+        ]
+    )
+
+    assert config.kv_store_backend == "cpu-pinned"
+    assert config.kv_staging_slots == 8
+
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config.to_jsonable()), encoding="utf-8")
+    restored = type(config).from_json_file(path)
+    assert restored.kv_store_backend == "cpu-pinned"
+    assert restored.kv_staging_slots == 8
+
+
+def test_parse_args_defaults_to_gpu_store_with_prefix_caching() -> None:
+    config, _ = parse_args(["--model", "test/model"])
+
+    assert config.kv_store_backend == "gpu"
+    assert config.kv_staging_slots == 4
+    assert config.kv_enable_prefix_caching is True
+
+
+def test_parse_args_no_kv_prefix_caching_flag() -> None:
+    config, _ = parse_args(["--model", "test/model", "--no-kv-prefix-caching"])
+
+    assert config.kv_enable_prefix_caching is False
+
+
+def test_parse_args_rejects_non_positive_staging_slots() -> None:
+    with pytest.raises(SystemExit):
+        parse_args(["--model", "test/model", "--kv-staging-slots", "0"])
+
+
+def test_cli_overrides_env_prefix_caching_in_both_directions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LOCOMO_KV_ENABLE_PREFIX_CACHING", "0")
+    config, _ = parse_args(["--model", "test/model", "--kv-prefix-caching"])
+    assert config.kv_enable_prefix_caching is True
+
+    monkeypatch.setenv("LOCOMO_KV_ENABLE_PREFIX_CACHING", "1")
+    config, _ = parse_args(["--model", "test/model", "--no-kv-prefix-caching"])
+    assert config.kv_enable_prefix_caching is False

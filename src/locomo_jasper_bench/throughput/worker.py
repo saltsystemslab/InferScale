@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import random
 import shutil
 import time
 import uuid
@@ -101,7 +103,7 @@ def _run_no_memory(
             ]
             prompt_build_time_s = time.perf_counter() - prompt_started
             _validate_prompt_lengths(config, prompts)
-            _warm_up(llm, prompts, sampling_params, config.warmup_batches)
+            _warm_up(llm, prompts, sampling_params, config.warmup_batches, seed=config.seed)
             measured = _measure_batch(llm, prompts, sampling_params)
             results.append(
                 _result_row(
@@ -140,7 +142,14 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
     import torch
 
     from ..kv.chunked_rope import ChunkedRopeEncoder
-    from ..kv.gpu_registry import drop_namespace, namespace_stats, register_user_memory
+    from ..kv.gpu_registry import (
+        drop_namespace,
+        get_gpu_memory_store,
+        namespace_bench_summary,
+        namespace_stats,
+        register_user_memory,
+        reset_namespace_bench_metrics,
+    )
     from ..kv.vllm_runtime import build_strict_gpu_kv_transfer_config, force_vllm_inprocess_mode
 
     connector_module = importlib.import_module(config.kv_connector_module)
@@ -162,6 +171,13 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
     }
 
     namespace = f"throughput-{config.run_id}-{uuid.uuid4().hex}"
+    # Create the namespace's store with the configured backend before any
+    # registration; the in-process connector resolves the same namespace.
+    get_gpu_memory_store(
+        namespace,
+        backend=config.kv_store_backend,
+        num_staging_slots=config.kv_staging_slots,
+    )
     mem0_store_root = config.run_dir / "worker-results" / f"kv-stores-{num_users}u"
     if mem0_store_root.exists():
         shutil.rmtree(mem0_store_root)
@@ -223,6 +239,8 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
             default_user_id=None,
             allow_prefix_scan=True,
             log_memory_hits=False,
+            store_backend=config.kv_store_backend,
+            num_staging_slots=config.kv_staging_slots,
         )
         llm, sampling_params, engine_startup_time_s = _start_llm(
             config,
@@ -233,10 +251,12 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
         retrieval_time_s = 0.0
         vector_search_time_s = 0.0
         kv_compose_time_s = 0.0
+        kv_store_write_time_s = 0.0
         kv_verify_time_s = 0.0
         prompt_build_time_s = 0.0
         fact_count_total = 0
         prompts: list[dict[str, list[int]]] = []
+        first_memory_token_ids: list[int] | None = None
         request_index = 0
         requests_by_user: dict[int, list[LocomoRequest]] = {
             user_index: [] for user_index in range(num_users)
@@ -283,6 +303,15 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
                         for chunk in composed_chunks
                         for token_id in chunk.token_ids
                     ]
+                    torch.cuda.synchronize()
+                    kv_compose_time_s += time.perf_counter() - compose_started
+
+                    # Registration is a store write (a D2H copy into pinned
+                    # RAM for the cpu-pinned backend); timed apart from
+                    # compose so the PCIe write cost is visible.
+                    store_write_started = time.perf_counter()
+                    if first_memory_token_ids is None:
+                        first_memory_token_ids = list(memory_token_ids)
                     register_user_memory(
                         namespace,
                         user_id=f"request-{request_index:05d}",
@@ -291,7 +320,7 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
                         token_ids=memory_token_ids,
                     )
                     torch.cuda.synchronize()
-                    kv_compose_time_s += time.perf_counter() - compose_started
+                    kv_store_write_time_s += time.perf_counter() - store_write_started
 
                     # Token-equivalence verification is benchmark bookkeeping,
                     # not part of the serving path; its cost is reported
@@ -330,17 +359,49 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
 
         store_stats = namespace_stats(namespace)
         _validate_prompt_lengths(config, prompts)
-        _warm_up(llm, prompts, sampling_params, config.warmup_batches)
+        kv_warmup_prompts = (
+            [
+                _build_kv_warmup_prompt(
+                    first_memory_token_ids,
+                    vocab_size=_tokenizer_vocab_size(tokenizer),
+                    seed=config.seed,
+                )
+            ]
+            if first_memory_token_ids
+            else []
+        )
+        _warm_up(
+            llm,
+            prompts,
+            sampling_params,
+            config.warmup_batches,
+            seed=config.seed,
+            extra_prompts=kv_warmup_prompts,
+        )
         connector_module.reset_load_stats()
+        reset_namespace_bench_metrics(namespace)
         measured = _measure_batch(llm, prompts, sampling_params)
         load_stats = connector_module.snapshot_load_stats()
-        # Preemption can re-load a request, so more loads than prompts are
-        # legitimate; fewer means some request generated without its KV.
-        if load_stats["requests_loaded"] < len(prompts):
+        bench_summary = namespace_bench_summary(namespace)
+        kv_store_gpu_mb = float(store_stats.get("total_gpu_mb", 0.0))
+        if config.kv_store_backend == "cpu-pinned":
+            # Instantaneous staging is zero outside a step (slots release
+            # after every injection), so report the steady-state staging-pool
+            # footprint: slots x the average transfer size.
+            transfers = int(bench_summary.get("total_transfers", 0))
+            if transfers > 0:
+                avg_transfer_bytes = float(bench_summary.get("total_bytes_transferred", 0)) / transfers
+                kv_store_gpu_mb = config.kv_staging_slots * avg_transfer_bytes / (1024 * 1024)
+        # requests_covered counts distinct request ids that either had memory
+        # injected or whose memory region was fully served by the native
+        # prefix cache (a legitimate no-load), so the check stays exact per
+        # request even with prefix caching enabled and preemption re-loads.
+        if load_stats["requests_covered"] < len(prompts):
             raise RuntimeError(
-                "KV connector loaded memory for "
-                f"{load_stats['requests_loaded']} of {len(prompts)} requests; "
-                "some requests generated without injected KV."
+                "KV memory covered "
+                f"{load_stats['requests_covered']} of {len(prompts)} requests "
+                "(injected or natively cached); "
+                "some requests generated without their memory."
             )
         return _result_row(
             config,
@@ -358,7 +419,15 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
             kv_compose_time_s=kv_compose_time_s,
             kv_verify_time_s=kv_verify_time_s,
             engine_startup_time_s=engine_startup_time_s,
-            kv_store_gpu_mb=float(store_stats.get("total_gpu_mb", 0.0)),
+            kv_store_gpu_mb=kv_store_gpu_mb,
+            kv_store_backend=config.kv_store_backend,
+            kv_store_host_mb=float(store_stats.get("total_host_mb", 0.0)),
+            kv_store_write_time_s=kv_store_write_time_s,
+            kv_h2d_bytes=int(bench_summary.get("total_bytes_transferred", 0)),
+            kv_h2d_avg_ms=float(bench_summary.get("avg_h2d_latency_ms", 0.0)),
+            kv_h2d_p95_ms=float(bench_summary.get("p95_h2d_latency_ms", 0.0)),
+            kv_h2d_overlap_ratio=float(bench_summary.get("avg_overlap_ratio", 0.0)),
+            kv_staging_stall_ms=float(bench_summary.get("total_staging_stall_ms", 0.0)),
             kv_requests_loaded=int(load_stats["requests_loaded"]),
             total_input_tokens=measured["total_input_tokens"],
             total_output_tokens=measured["total_output_tokens"],
@@ -490,7 +559,7 @@ def _run_mem0(
             accumulator = accumulators[count]
             prompts = accumulator["prompts"]
             _validate_prompt_lengths(config, prompts)
-            _warm_up(llm, prompts, sampling_params, config.warmup_batches)
+            _warm_up(llm, prompts, sampling_params, config.warmup_batches, seed=config.seed)
             measured = _measure_batch(llm, prompts, sampling_params)
             results.append(
                 _result_row(
@@ -707,6 +776,39 @@ def _check_kv_gpu_projection(
 
     device_total = torch.cuda.get_device_properties(0).total_memory
     vllm_pool = config.kv_gpu_memory_utilization * device_total
+
+    if config.kv_store_backend == "cpu-pinned":
+        # Composed memories live in pinned host RAM; HBM only holds the
+        # staging pool (one composed copy per slot) beside sources + pool.
+        staging_bytes = config.kv_staging_slots * composed_tokens * bytes_per_token
+        projected_gpu_peak = vllm_pool + staging_bytes + source_bytes
+        budget = 0.97 * device_total
+        if projected_gpu_peak > budget:
+            raise RuntimeError(
+                "Projected KV GPU footprint exceeds device memory: "
+                f"vllm_pool={vllm_pool / 2**30:.1f}GiB "
+                f"staging={staging_bytes / 2**30:.1f}GiB "
+                f"sources={source_bytes / 2**30:.1f}GiB "
+                f"device={device_total / 2**30:.1f}GiB "
+                f"(users={num_users}, requests={total_requests}). "
+                "Shrink the user count, lower --top-k, --kv-staging-slots, or "
+                "--gpu-memory-utilization."
+            )
+        try:
+            host_total = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+        except (ValueError, OSError, AttributeError):
+            return
+        # Pinned allocations are non-swappable; keep a conservative margin.
+        if composed_bytes > 0.8 * host_total:
+            raise RuntimeError(
+                "Projected pinned-host KV footprint exceeds 80% of system RAM: "
+                f"composed={composed_bytes / 2**30:.1f}GiB "
+                f"host={host_total / 2**30:.1f}GiB "
+                f"(users={num_users}, requests={total_requests}). "
+                "Shrink the user count or lower --top-k."
+            )
+        return
+
     projected_peak = vllm_pool + composed_bytes + source_bytes
     budget = 0.97 * device_total
     if projected_peak > budget:
@@ -750,10 +852,92 @@ def _start_llm(
     return llm, sampling_params, startup_time_s
 
 
-def _warm_up(llm: Any, prompts: list[dict[str, list[int]]], sampling_params: Any, batches: int) -> None:
-    warmup_prompts = prompts[: min(10, len(prompts))]
-    for _ in range(batches):
-        llm.generate(warmup_prompts, sampling_params, use_tqdm=False)
+def _warm_up(
+    llm: Any,
+    prompts: list[dict[str, list[int]]],
+    sampling_params: Any,
+    batches: int,
+    *,
+    seed: int,
+    extra_prompts: list[dict[str, list[int]]] | None = None,
+) -> None:
+    """Warm up with random tokens so no real prompt lands in the prefix cache.
+
+    Prefix caching is enabled, so warming up with the measured prompts would
+    let the measured batch hit the cache (inflated QPS) and, worse, let the
+    native cache satisfy memory prefixes so the connector never injects KV.
+    Warmup only needs to exercise kernels, allocator, and scheduler; token
+    identity is irrelevant.
+    """
+    if batches > 0 and prompts:
+        vocab_size = _tokenizer_vocab_size(llm.get_tokenizer())
+        warmup_prompts = _build_warmup_prompts(prompts, vocab_size=vocab_size, seed=seed)
+        if extra_prompts:
+            warmup_prompts = [*warmup_prompts, *extra_prompts]
+        for _ in range(batches):
+            llm.generate(warmup_prompts, sampling_params, use_tqdm=False)
+    # Reset even with warmup disabled: conditions that measure several user
+    # counts against one engine must not let count N's prompts serve count
+    # N+1 from the native cache.
+    _reset_prefix_cache(llm)
+
+
+def _tokenizer_vocab_size(tokenizer: Any) -> int:
+    return int(getattr(tokenizer, "vocab_size", 0) or 0) or len(tokenizer)
+
+
+def _build_kv_warmup_prompt(
+    memory_token_ids: list[int],
+    *,
+    vocab_size: int,
+    seed: int,
+    tail_tokens: int = 8,
+) -> dict[str, list[int]]:
+    """One warmup prompt whose prefix IS a registered memory.
+
+    Random warmup prompts match no memory, so without this the connector's
+    match/inject path (scatter kernels, staging) first runs inside the
+    measured batch. The prompt must be strictly longer than the memory for
+    the prefix match to fire; the tail is seeded-random so it shares nothing
+    with real queries.
+    """
+    if vocab_size < 1:
+        raise ValueError("vocab_size must be >= 1 to build the KV warmup prompt.")
+    rng = random.Random(seed)
+    tail = [rng.randrange(vocab_size) for _ in range(max(1, tail_tokens))]
+    return {"prompt_token_ids": [*memory_token_ids, *tail]}
+
+
+def _build_warmup_prompts(
+    prompts: list[dict[str, list[int]]],
+    *,
+    vocab_size: int,
+    seed: int,
+) -> list[dict[str, list[int]]]:
+    if vocab_size < 1:
+        raise ValueError("vocab_size must be >= 1 to build warmup prompts.")
+    rng = random.Random(seed)
+    return [
+        {"prompt_token_ids": [rng.randrange(vocab_size) for _ in prompt["prompt_token_ids"]]}
+        for prompt in prompts[: min(10, len(prompts))]
+    ]
+
+
+def _reset_prefix_cache(llm: Any) -> None:
+    # Fail closed: measurement isolation depends on this reset (the KV warmup
+    # prompt shares blocks with a measured request's memory, and prompts
+    # repeat across user counts), so a stale cache must abort, not warn.
+    reset = getattr(llm, "reset_prefix_cache", None)
+    if not callable(reset):
+        raise RuntimeError(
+            "vLLM LLM has no reset_prefix_cache(); cannot clear the prefix cache "
+            "before the measured batch."
+        )
+    if reset() is False:
+        raise RuntimeError(
+            "reset_prefix_cache() reported failure; cached warmup blocks would "
+            "contaminate the measured batch."
+        )
 
 
 def _measure_batch(
@@ -797,6 +981,14 @@ def _result_row(
     kv_verify_time_s: float = 0.0,
     engine_startup_time_s: float = 0.0,
     kv_store_gpu_mb: float = 0.0,
+    kv_store_backend: str = "gpu",
+    kv_store_host_mb: float = 0.0,
+    kv_store_write_time_s: float = 0.0,
+    kv_h2d_bytes: int = 0,
+    kv_h2d_avg_ms: float = 0.0,
+    kv_h2d_p95_ms: float = 0.0,
+    kv_h2d_overlap_ratio: float = 0.0,
+    kv_staging_stall_ms: float = 0.0,
     kv_requests_loaded: int = 0,
     total_input_tokens: int,
     total_output_tokens: int,
@@ -826,7 +1018,16 @@ def _result_row(
         "memory_setup_time_s": memory_setup_time_s,
         "kv_precompute_time_s": kv_precompute_time_s,
         "engine_startup_time_s": engine_startup_time_s,
+        "kv_prefix_caching": int(getattr(config, "kv_enable_prefix_caching", True)),
         "kv_store_gpu_mb": kv_store_gpu_mb,
+        "kv_store_backend": kv_store_backend,
+        "kv_store_host_mb": kv_store_host_mb,
+        "kv_store_write_time_s": kv_store_write_time_s,
+        "kv_h2d_bytes": kv_h2d_bytes,
+        "kv_h2d_avg_ms": kv_h2d_avg_ms,
+        "kv_h2d_p95_ms": kv_h2d_p95_ms,
+        "kv_h2d_overlap_ratio": kv_h2d_overlap_ratio,
+        "kv_staging_stall_ms": kv_staging_stall_ms,
         "kv_requests_loaded": kv_requests_loaded,
         "total_input_tokens": total_input_tokens,
         "total_output_tokens": total_output_tokens,

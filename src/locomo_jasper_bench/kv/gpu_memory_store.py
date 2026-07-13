@@ -59,6 +59,10 @@ class GPUMemoryStore:
         with self._lock:
             return self._memories.get(user_id)
 
+    def peek_user_memory(self, user_id: str) -> UserMemory | None:
+        """Metadata read; identical to get_user_memory for the GPU store."""
+        return self.get_user_memory(user_id)
+
     def remove_user_memory(self, user_id: str) -> bool:
         with self._lock:
             removed = self._remove_locked(user_id)

@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from ..config import ANSWER_MODEL_NAME_ALIASES, MAX_JASPER_BEAM_WIDTH, resolve_answer_model
+from ..config import ANSWER_MODEL_NAME_ALIASES, MAX_JASPER_BEAM_WIDTH, _env_flag, resolve_answer_model
 from ..runtime_paths import (
     default_embedding_cache_dir,
     default_memory_llm_cache_dir,
@@ -64,6 +64,9 @@ class ThroughputConfig:
     kv_device: str = "cuda:0"
     kv_block_size: int = 16
     kv_connector_module: str = "locomo_jasper_bench.kv.gpu_connector"
+    kv_enable_prefix_caching: bool = True
+    kv_store_backend: str = "gpu"
+    kv_staging_slots: int = 4
     embedding_model: str = "text-embedding-3-small"
     embedding_api_key: str | None = None
     embedding_base_url: str | None = None
@@ -200,6 +203,28 @@ def parse_args(argv: list[str] | None = None) -> tuple[ThroughputConfig, bool]:
         "--kv-connector-module",
         default=os.environ.get("LOCOMO_KV_CONNECTOR_MODULE", "locomo_jasper_bench.kv.gpu_connector"),
     )
+    parser.add_argument(
+        "--kv-prefix-caching",
+        action=argparse.BooleanOptionalAction,
+        dest="kv_enable_prefix_caching",
+        default=_env_flag("LOCOMO_KV_ENABLE_PREFIX_CACHING", True),
+        help=(
+            "vLLM automatic prefix caching. The CLI overrides the "
+            "LOCOMO_KV_ENABLE_PREFIX_CACHING env default in both directions."
+        ),
+    )
+    parser.add_argument(
+        "--kv-store-backend",
+        choices=["gpu", "cpu-pinned"],
+        default=os.environ.get("LOCOMO_KV_STORE_BACKEND", "gpu"),
+        help="Where pre-encoded KV embeddings live: GPU HBM, or pinned host RAM streamed over PCIe.",
+    )
+    parser.add_argument(
+        "--kv-staging-slots",
+        type=int,
+        default=int(os.environ.get("LOCOMO_KV_STAGING_SLOTS", "4")),
+        help="GPU staging buffers kept in flight by the cpu-pinned KV store.",
+    )
     parser.add_argument("--embedding-model", default=os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"))
     parser.add_argument("--embedding-api-key", default=os.environ.get("OPENAI_API_KEY"))
     parser.add_argument("--embedding-base-url", default=os.environ.get("OPENAI_BASE_URL"))
@@ -252,6 +277,9 @@ def parse_args(argv: list[str] | None = None) -> tuple[ThroughputConfig, bool]:
         kv_device=ns.kv_device,
         kv_block_size=ns.kv_block_size,
         kv_connector_module=ns.kv_connector_module,
+        kv_enable_prefix_caching=ns.kv_enable_prefix_caching,
+        kv_store_backend=ns.kv_store_backend,
+        kv_staging_slots=ns.kv_staging_slots,
         embedding_model=ns.embedding_model,
         embedding_api_key=ns.embedding_api_key,
         embedding_base_url=ns.embedding_base_url,
@@ -276,6 +304,7 @@ def _validate_positive_options(ns: argparse.Namespace) -> None:
         "kv_max_model_len",
         "kv_max_position",
         "kv_block_size",
+        "kv_staging_slots",
         "jasper_n_neighbors",
         "jasper_beam_width",
     ):

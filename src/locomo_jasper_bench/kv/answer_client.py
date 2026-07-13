@@ -12,10 +12,14 @@ from ..data import ConversationSample, QuestionAnswer
 from ..vector_types import SearchHit
 from .chunked_rope import ChunkedRopeEncoder, ChunkedRopeSampleComposer
 from .context import memory_context_metrics
+from .cpu_memory_store import overlap_ratio
 from .gpu_registry import (
     clear_namespace,
     drop_namespace,
+    get_gpu_memory_store,
+    namespace_last_transfer,
     namespace_stats,
+    namespace_transfer_count,
     register_user_memory,
     remove_user_memory,
 )
@@ -46,6 +50,13 @@ class VLLMChunkedKVAnswerClient:
         self.config = config
         self.namespace = f"{config.run_id}-{uuid.uuid4().hex}"
         self.active_user_id = f"{self.namespace}-active"
+        # Create the namespace's store with the configured backend before any
+        # registration; the in-process connector resolves the same namespace.
+        get_gpu_memory_store(
+            self.namespace,
+            backend=config.kv_store_backend,
+            num_staging_slots=config.kv_staging_slots,
+        )
         self._llm: Any | None = None
         self._tokenizer: Any | None = None
         self._sampling_cls: Any | None = None
@@ -133,6 +144,8 @@ class VLLMChunkedKVAnswerClient:
                     connector_module=self.config.kv_connector_module,
                     namespace=self.namespace,
                     default_user_id=self.active_user_id,
+                    store_backend=self.config.kv_store_backend,
+                    num_staging_slots=self.config.kv_staging_slots,
                 ),
             )
             self._tokenizer = self._llm.get_tokenizer()
@@ -206,6 +219,10 @@ class VLLMChunkedKVAnswerClient:
         _require_same_memory_token_ids(composed.token_ids, live_memory.token_ids)
         verify_ms = (time.perf_counter() - verify_started) * 1000
         user_id = self.active_user_id
+        # Registration is a store write (a full D2H copy into pinned RAM for
+        # the cpu-pinned backend), not part of the serving path; time it
+        # separately and exclude it from the latency metrics like verify.
+        store_write_started = time.perf_counter()
         register_user_memory(
             self.namespace,
             user_id=user_id,
@@ -213,6 +230,8 @@ class VLLMChunkedKVAnswerClient:
             num_tokens=composed.num_tokens,
             token_ids=composed.token_ids,
         )
+        store_write_ms = (time.perf_counter() - store_write_started) * 1000
+        excluded_prep_ms = verify_ms + store_write_ms
         try:
             prompt = build_kv_equivalence_prompt_from_query_tokens(
                 list(composed.token_ids),
@@ -223,11 +242,13 @@ class VLLMChunkedKVAnswerClient:
                 "kv_memory_tokens": composed.num_tokens,
                 "kv_compose_time_ms": composed.compose_time_ms,
                 "kv_verify_time_ms": verify_ms,
+                "kv_store_write_time_ms": store_write_ms,
                 "kv_context_window": composed.context_window,
                 "kv_query_tokens": len(prompt.query_token_ids),
                 "kv_query_bos_stripped": int(prompt.stripped_query_bos),
                 "kv_selected_fact_ids": composed.selected_fact_ids,
                 "kv_block_size": self.config.kv_block_size,
+                "kv_prefix_caching": int(self.config.kv_enable_prefix_caching),
                 "kv_loaded_memory_tokens": composed.loaded_memory_tokens,
                 "kv_recomputed_memory_tail_tokens": composed.recomputed_memory_tail_tokens,
                 "kv_fact_tokens_end": composed.fact_tokens_end,
@@ -238,6 +259,7 @@ class VLLMChunkedKVAnswerClient:
                 top_p=top_p,
                 max_tokens=max_tokens,
             )
+            transfers_before = namespace_transfer_count(self.namespace)
             generate_started = time.perf_counter()
             outputs = self._llm.generate(
                 [{"prompt_token_ids": prompt.prompt_token_ids}],
@@ -246,18 +268,18 @@ class VLLMChunkedKVAnswerClient:
             )
             finished = time.perf_counter()
             generate_ms = (finished - generate_started) * 1000
-            total_ms = max(0.0, (finished - request_started) * 1000 - verify_ms)
+            total_ms = max(0.0, (finished - request_started) * 1000 - excluded_prep_ms)
             if query_started_at is not None:
                 metrics["query_to_answer_ms"] = max(
-                    0.0, (finished - query_started_at) * 1000 - verify_ms
+                    0.0, (finished - query_started_at) * 1000 - excluded_prep_ms
                 )
             ttft_ms = require_engine_ttft_ms(outputs[0])
-            prep_ms = max(0.0, (generate_started - request_started) * 1000 - verify_ms)
+            prep_ms = max(0.0, (generate_started - request_started) * 1000 - excluded_prep_ms)
             metrics["kv_engine_time_to_first_token_ms"] = ttft_ms
             metrics["answer_time_to_first_token_ms"] = prep_ms + ttft_ms
             if query_started_at is not None:
                 metrics["query_to_first_token_ms"] = (
-                    max(0.0, (generate_started - query_started_at) * 1000 - verify_ms)
+                    max(0.0, (generate_started - query_started_at) * 1000 - excluded_prep_ms)
                     + ttft_ms
                 )
             text = outputs[0].outputs[0].text.strip()
@@ -267,8 +289,34 @@ class VLLMChunkedKVAnswerClient:
                     "answer_generate_time_ms": generate_ms,
                     "answer_total_time_ms": total_ms,
                     "kv_store_gpu_mb": stats.get("total_gpu_mb", 0.0),
+                    "kv_store_host_mb": stats.get("total_host_mb", 0.0),
                 }
             )
+            # Attribute a transfer to this request only if one actually
+            # happened during its generate: a natively prefix-cached request
+            # performs no connector load, and the store's last record would
+            # belong to an earlier request.
+            transfer = namespace_last_transfer(self.namespace)
+            if transfer is not None:
+                if namespace_transfer_count(self.namespace) > transfers_before:
+                    metrics.update(
+                        {
+                            "kv_h2d_latency_ms": transfer.h2d_latency_ms,
+                            "kv_h2d_bytes": transfer.num_bytes,
+                            "kv_h2d_overlap_ratio": overlap_ratio(transfer),
+                            "kv_staging_stall_ms": transfer.staging_stall_ms,
+                        }
+                    )
+                else:
+                    # Explicit zeros mark a natively-served request.
+                    metrics.update(
+                        {
+                            "kv_h2d_latency_ms": 0.0,
+                            "kv_h2d_bytes": 0,
+                            "kv_h2d_overlap_ratio": 0.0,
+                            "kv_staging_stall_ms": 0.0,
+                        }
+                    )
             return ChatResult(
                 content=text,
                 ttft_ms=ttft_ms,

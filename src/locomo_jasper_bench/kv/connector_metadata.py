@@ -19,6 +19,12 @@ class MemoryLoadMeta:
     user_id: str
     slot_mapping: torch.Tensor
     num_tokens: int
+    # Memory tokens covered by a native prefix-cache hit; the injected KV
+    # starts at this offset into the user's stored memory.
+    skip_tokens: int = 0
+    # Originating vLLM request, so load accounting can be per request rather
+    # than per event.
+    request_id: str = ""
 
 
 @dataclass
@@ -32,6 +38,8 @@ class MemoryConnectorMetadata(KVConnectorMetadata):
         block_ids: list[int],
         block_size: int,
         num_tokens: int,
+        skip_tokens: int = 0,
+        request_id: str = "",
     ) -> None:
         slot_mapping = build_slot_mapping(block_ids, block_size, num_tokens)
         self.loads.append(
@@ -39,5 +47,7 @@ class MemoryConnectorMetadata(KVConnectorMetadata):
                 user_id=user_id,
                 slot_mapping=torch.tensor(slot_mapping, dtype=torch.long),
                 num_tokens=num_tokens,
+                skip_tokens=skip_tokens,
+                request_id=request_id,
             )
         )

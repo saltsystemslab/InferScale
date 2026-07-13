@@ -7,6 +7,8 @@ cd "${PROJECT_ROOT}"
 
 # shellcheck source=scripts/load_env.sh
 source "${SCRIPT_DIR}/load_env.sh"
+# shellcheck source=scripts/runpod_cuda_cmake.sh
+source "${SCRIPT_DIR}/runpod_cuda_cmake.sh"
 
 CUDA_MODULE="${CUDA_MODULE-cuda/12.8}"
 PYTORCH_INDEX="${PYTORCH_INDEX:-https://download.pytorch.org/whl/cu128}"
@@ -99,12 +101,16 @@ fi
 
 python -m pip install -c "${CONSTRAINTS_FILE}" torch torchvision torchaudio --index-url "${PYTORCH_INDEX}"
 python -m pip install -c "${CONSTRAINTS_FILE}" -e ".[dev,jasper]"
-python -m pip install -c "${CONSTRAINTS_FILE}" vllm accelerate --extra-index-url "${PYTORCH_INDEX}"
+python -m pip install -c "${CONSTRAINTS_FILE}" vllm accelerate hf_transfer --extra-index-url "${PYTORCH_INDEX}"
+
+declare -a JASPER_CMAKE_PLATFORM_ARGS=()
+configure_runpod_cuda_cmake_args
 
 cmake -S jasperpy -B jasperpy/build \
   -DJASPER_BUILD_FFI=ON \
   -DJASPER_BUILD_CMD=ON \
-  -DCMAKE_CUDA_ARCHITECTURES="${JASPER_CUDA_ARCHITECTURES}"
+  -DCMAKE_CUDA_ARCHITECTURES="${JASPER_CUDA_ARCHITECTURES}" \
+  "${JASPER_CMAKE_PLATFORM_ARGS[@]}"
 cmake --build jasperpy/build --parallel
 cmake --install jasperpy/build
 python -m pip install -e jasperpy/python

@@ -201,3 +201,112 @@ def test_warmup_missing_reset_api_raises() -> None:
 
     with pytest.raises(RuntimeError, match="no reset_prefix_cache"):
         _reset_prefix_cache(object())
+
+
+class _FakeSamplingParams:
+    def __init__(self, extra_args: dict | None = None) -> None:
+        self.extra_args = extra_args
+
+    def clone(self) -> "_FakeSamplingParams":
+        return _FakeSamplingParams(
+            dict(self.extra_args) if self.extra_args is not None else None
+        )
+
+
+def test_routed_sampling_params_carry_memory_user_ids() -> None:
+    from locomo_jasper_bench.kv.connector_utils import MEMORY_USER_ID_EXTRA_ARG
+    from locomo_jasper_bench.throughput.worker import _sampling_params_with_memory_user_ids
+
+    base = _FakeSamplingParams(extra_args={"existing": 1})
+    routed = _sampling_params_with_memory_user_ids(base, ["request-00000", "request-00001"])
+
+    assert [params.extra_args[MEMORY_USER_ID_EXTRA_ARG] for params in routed] == [
+        "request-00000",
+        "request-00001",
+    ]
+    # Cloned per request: existing extra args preserved, base untouched.
+    assert all(params.extra_args["existing"] == 1 for params in routed)
+    assert MEMORY_USER_ID_EXTRA_ARG not in base.extra_args
+    assert routed[0] is not routed[1]
+
+
+def test_routed_sampling_params_require_clone() -> None:
+    from locomo_jasper_bench.throughput.worker import _sampling_params_with_memory_user_ids
+
+    with pytest.raises(RuntimeError, match="clone"):
+        _sampling_params_with_memory_user_ids(object(), ["request-00000"])
+
+
+def test_extract_user_id_reads_sampling_extra_args() -> None:
+    from types import SimpleNamespace
+
+    from locomo_jasper_bench.kv.connector_utils import (
+        MEMORY_USER_ID_EXTRA_ARG,
+        extract_user_id,
+    )
+
+    request = SimpleNamespace(
+        user=None,
+        sampling_params=SimpleNamespace(
+            user=None,
+            extra_args={MEMORY_USER_ID_EXTRA_ARG: "request-00042"},
+        ),
+        metadata=None,
+    )
+    assert extract_user_id(request) == "request-00042"
+
+    unrouted = SimpleNamespace(
+        user=None,
+        sampling_params=SimpleNamespace(user=None, extra_args=None),
+        metadata=None,
+    )
+    assert extract_user_id(unrouted) is None
+    assert extract_user_id(unrouted, "fallback") == "fallback"
+
+
+def test_warmup_aligns_extra_sampling_params(monkeypatch: pytest.MonkeyPatch) -> None:
+    from locomo_jasper_bench.throughput.worker import _warm_up
+
+    class _RecordingLLM(_FakeWarmupLLM):
+        def __init__(self) -> None:
+            super().__init__()
+            self.seen_params: list[object] = []
+
+        def generate(self, prompts, sampling_params, use_tqdm=False):
+            self.generate_calls += 1
+            self.seen_params.append(sampling_params)
+
+    llm = _RecordingLLM()
+    base = _FakeSamplingParams()
+    routed = _FakeSamplingParams(extra_args={"locomo_memory_user_id": "request-00000"})
+
+    _warm_up(
+        llm,
+        _prompts([4, 6]),
+        base,
+        batches=1,
+        seed=7,
+        extra_prompts=[{"prompt_token_ids": [1, 2, 3]}],
+        extra_sampling_params=[routed],
+    )
+
+    (params_list,) = llm.seen_params
+    assert isinstance(params_list, list)
+    assert len(params_list) == 3
+    assert params_list[0] is base and params_list[1] is base
+    assert params_list[2] is routed
+
+
+def test_warmup_rejects_misaligned_extra_sampling_params() -> None:
+    from locomo_jasper_bench.throughput.worker import _warm_up
+
+    with pytest.raises(ValueError, match="align"):
+        _warm_up(
+            _FakeWarmupLLM(),
+            _prompts([4]),
+            _FakeSamplingParams(),
+            batches=1,
+            seed=7,
+            extra_prompts=[{"prompt_token_ids": [1]}, {"prompt_token_ids": [2]}],
+            extra_sampling_params=[_FakeSamplingParams()],
+        )

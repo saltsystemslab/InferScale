@@ -39,6 +39,12 @@ def extra_config(kv_transfer_config: Any, key: str, default: Any = None) -> Any:
     return extra.get(key, default)
 
 
+# SamplingParams.extra_args key carrying a request's memory user id, so the
+# connector routes each request to its registered memory directly instead of
+# prefix-scanning every stored user.
+MEMORY_USER_ID_EXTRA_ARG = "locomo_memory_user_id"
+
+
 def extract_user_id(request: Any, default_user_id: str | None = None) -> str | None:
     user_id = getattr(request, "user", None)
     if user_id:
@@ -49,6 +55,11 @@ def extract_user_id(request: Any, default_user_id: str | None = None) -> str | N
         user_id = getattr(sampling_params, "user", None)
         if user_id:
             return str(user_id)
+        extra_args = getattr(sampling_params, "extra_args", None)
+        if isinstance(extra_args, dict):
+            user_id = extra_args.get(MEMORY_USER_ID_EXTRA_ARG)
+            if user_id:
+                return str(user_id)
 
     metadata = getattr(request, "metadata", None)
     if metadata:

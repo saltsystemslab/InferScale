@@ -592,11 +592,19 @@ def _load_hf_model_and_tokenizer(
     *, model: str, dtype: Any, device: str
 ) -> tuple[Any, Any]:
     import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoModelForCausalLM
+
+    # Chunk token ids must be byte-identical to the ids the vLLM engine sees
+    # (the connector matches registered chunks as a prompt prefix), so load
+    # the tokenizer through vLLM's resolver rather than AutoTokenizer. With
+    # transformers>=4.56 plus mistral_common installed, AutoTokenizer resolves
+    # Mistral models to MistralCommonTokenizer while the engine uses the HF
+    # fast tokenizer, and the two encode differently from the first token.
+    from vllm.transformers_utils.tokenizer import get_tokenizer
 
     logger.info("Loading pre-RoPE encoder model=%s device=%s", model, device)
     started = time.perf_counter()
-    tokenizer = AutoTokenizer.from_pretrained(model)
+    tokenizer = get_tokenizer(model)
     # The encoder never pads (chunks are encoded one sequence at a time); this
     # fixup only keeps HF tokenizers usable elsewhere. vLLM's MistralTokenizer
     # wrapper exposes no pad_token attribute, so skip it there.

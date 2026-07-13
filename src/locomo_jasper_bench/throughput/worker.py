@@ -17,6 +17,7 @@ from ..kv.prompting import (
     extract_memory_scaffold_token_ids,
     format_memory_fact,
 )
+from ..kv.connector_utils import MEMORY_USER_ID_EXTRA_ARG
 from ..kv.tokenization import encode_text_no_special
 from ..results import write_json
 from ..retrieval.fact_catalog import FactCatalogStore, MemoryFact
@@ -229,6 +230,9 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
                 f"({len(fact_chunks)} facts)",
                 flush=True,
             )
+        encoder_probe_token_ids = encode_text_no_special(
+            encoder.tokenizer, _TOKENIZER_PARITY_PROBE_TEXT
+        )
         encoder.release_model()
         torch.cuda.synchronize()
         kv_precompute_time_s = time.perf_counter() - precompute_started
@@ -237,7 +241,11 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
             connector_module=config.kv_connector_module,
             namespace=namespace,
             default_user_id=None,
-            allow_prefix_scan=True,
+            # Requests carry their memory's user id via SamplingParams
+            # extra_args, so matching is a direct lookup; scanning every
+            # registered user per request is both slow and ambiguous for
+            # duplicate memory sequences.
+            allow_prefix_scan=False,
             log_memory_hits=False,
             store_backend=config.kv_store_backend,
             num_staging_slots=config.kv_staging_slots,
@@ -246,6 +254,7 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
             config,
             kv_transfer_config=transfer_config,
         )
+        _require_tokenizer_parity(encoder_probe_token_ids, llm.get_tokenizer())
 
         memory_setup_time_s = 0.0
         retrieval_time_s = 0.0
@@ -256,7 +265,9 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
         prompt_build_time_s = 0.0
         fact_count_total = 0
         prompts: list[dict[str, list[int]]] = []
+        prompt_memory_user_ids: list[str] = []
         first_memory_token_ids: list[int] | None = None
+        first_memory_user_id: str | None = None
         request_index = 0
         requests_by_user: dict[int, list[LocomoRequest]] = {
             user_index: [] for user_index in range(num_users)
@@ -310,11 +321,13 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
                     # RAM for the cpu-pinned backend); timed apart from
                     # compose so the PCIe write cost is visible.
                     store_write_started = time.perf_counter()
+                    memory_user_id = f"request-{request_index:05d}"
                     if first_memory_token_ids is None:
                         first_memory_token_ids = list(memory_token_ids)
+                        first_memory_user_id = memory_user_id
                     register_user_memory(
                         namespace,
-                        user_id=f"request-{request_index:05d}",
+                        user_id=memory_user_id,
                         kv_by_layer=kv_by_layer,
                         num_tokens=len(memory_token_ids),
                         token_ids=memory_token_ids,
@@ -349,6 +362,7 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
                             ).prompt_token_ids
                         }
                     )
+                    prompt_memory_user_ids.append(memory_user_id)
                     prompt_build_time_s += time.perf_counter() - prompt_started
                     request_index += 1
             finally:
@@ -359,17 +373,27 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
 
         store_stats = namespace_stats(namespace)
         _validate_prompt_lengths(config, prompts)
-        kv_warmup_prompts = (
-            [
+        routed_sampling_params = _sampling_params_with_memory_user_ids(
+            sampling_params,
+            prompt_memory_user_ids,
+        )
+        # With prefix scan off, the KV warmup prompt reaches its memory via
+        # the same explicit routing as measured requests; the random warmup
+        # prompts stay unrouted so they match nothing.
+        kv_warmup_prompts: list[dict[str, list[int]]] = []
+        kv_warmup_sampling_params: list[Any] = []
+        if first_memory_token_ids and first_memory_user_id:
+            kv_warmup_prompts = [
                 _build_kv_warmup_prompt(
                     first_memory_token_ids,
                     vocab_size=_tokenizer_vocab_size(tokenizer),
                     seed=config.seed,
                 )
             ]
-            if first_memory_token_ids
-            else []
-        )
+            kv_warmup_sampling_params = _sampling_params_with_memory_user_ids(
+                sampling_params,
+                [first_memory_user_id],
+            )
         _warm_up(
             llm,
             prompts,
@@ -377,10 +401,11 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
             config.warmup_batches,
             seed=config.seed,
             extra_prompts=kv_warmup_prompts,
+            extra_sampling_params=kv_warmup_sampling_params or None,
         )
         connector_module.reset_load_stats()
         reset_namespace_bench_metrics(namespace)
-        measured = _measure_batch(llm, prompts, sampling_params)
+        measured = _measure_batch(llm, prompts, routed_sampling_params)
         load_stats = connector_module.snapshot_load_stats()
         bench_summary = namespace_bench_summary(namespace)
         kv_store_gpu_mb = float(store_stats.get("total_gpu_mb", 0.0))
@@ -860,6 +885,7 @@ def _warm_up(
     *,
     seed: int,
     extra_prompts: list[dict[str, list[int]]] | None = None,
+    extra_sampling_params: list[Any] | None = None,
 ) -> None:
     """Warm up with random tokens so no real prompt lands in the prefix cache.
 
@@ -867,15 +893,26 @@ def _warm_up(
     let the measured batch hit the cache (inflated QPS) and, worse, let the
     native cache satisfy memory prefixes so the connector never injects KV.
     Warmup only needs to exercise kernels, allocator, and scheduler; token
-    identity is irrelevant.
+    identity is irrelevant. extra_prompts (with optionally aligned
+    extra_sampling_params, e.g. explicit memory routing) run alongside them.
     """
     if batches > 0 and prompts:
         vocab_size = _tokenizer_vocab_size(llm.get_tokenizer())
         warmup_prompts = _build_warmup_prompts(prompts, vocab_size=vocab_size, seed=seed)
+        warmup_sampling: Any = sampling_params
         if extra_prompts:
+            if extra_sampling_params is not None:
+                if len(extra_sampling_params) != len(extra_prompts):
+                    raise ValueError(
+                        "extra_sampling_params must align one-to-one with extra_prompts."
+                    )
+                warmup_sampling = [
+                    *([sampling_params] * len(warmup_prompts)),
+                    *extra_sampling_params,
+                ]
             warmup_prompts = [*warmup_prompts, *extra_prompts]
         for _ in range(batches):
-            llm.generate(warmup_prompts, sampling_params, use_tqdm=False)
+            llm.generate(warmup_prompts, warmup_sampling, use_tqdm=False)
     # Reset even with warmup disabled: conditions that measure several user
     # counts against one engine must not let count N's prompts serve count
     # N+1 from the native cache.
@@ -884,6 +921,57 @@ def _warm_up(
 
 def _tokenizer_vocab_size(tokenizer: Any) -> int:
     return int(getattr(tokenizer, "vocab_size", 0) or 0) or len(tokenizer)
+
+
+def _sampling_params_with_memory_user_ids(
+    sampling_params: Any,
+    memory_user_ids: list[str],
+) -> list[Any]:
+    """Clone the base params once per request, routing each to its memory."""
+    routed: list[Any] = []
+    for memory_user_id in memory_user_ids:
+        clone = getattr(sampling_params, "clone", None)
+        if not callable(clone):
+            raise RuntimeError(
+                "Pinned vLLM SamplingParams must provide clone() for request routing."
+            )
+        request_params = clone()
+        extra_args = dict(getattr(request_params, "extra_args", None) or {})
+        extra_args[MEMORY_USER_ID_EXTRA_ARG] = memory_user_id
+        request_params.extra_args = extra_args
+        routed.append(request_params)
+    return routed
+
+
+# Mixed-script probe so tokenizer stacks that differ in template, whitespace,
+# byte-fallback, or unicode handling cannot encode it identically by accident.
+_TOKENIZER_PARITY_PROBE_TEXT = (
+    "SPEAKER Caroline (2023-05-08): I'll re-check trip #42 - cost $1,300.50; "
+    "email caroline@example.com, emoji \U0001f642, CJK 你好, newline\nend.\n"
+)
+
+
+def _require_tokenizer_parity(
+    encoder_probe_token_ids: list[int],
+    engine_tokenizer: Any,
+) -> None:
+    """The connector matches chunk ids as a prompt prefix, so the encoder and
+    engine tokenizers must produce identical ids."""
+    engine_probe_token_ids = encode_text_no_special(
+        engine_tokenizer, _TOKENIZER_PARITY_PROBE_TEXT
+    )
+    if encoder_probe_token_ids == engine_probe_token_ids:
+        return
+    raise RuntimeError(
+        "Encoder and engine tokenizers disagree; KV chunk token ids will not "
+        "match prompt token ids and injection cannot work. "
+        f"encoder_probe_tokens={len(encoder_probe_token_ids)} "
+        f"engine_probe_tokens={len(engine_probe_token_ids)} "
+        f"engine_tokenizer={type(engine_tokenizer).__name__}. "
+        "Ensure ChunkedRopeEncoder loads its tokenizer via "
+        "vllm.transformers_utils.tokenizer.get_tokenizer and that the "
+        "transformers/vllm/mistral_common versions match the engine's."
+    )
 
 
 def _build_kv_warmup_prompt(

@@ -204,6 +204,15 @@ class SampleMemoryBuilder:
                     if fact.id not in seen_fact_ids:
                         facts.append(fact)
                         seen_fact_ids.add(fact.id)
+            # Mem0's merge phase can store a final fact text that differs
+            # from the string it embedded (e.g. an update rewrites the text
+            # after the add-path embedding), so a catalog replay would miss
+            # the read-mode cache. Write-through-embed every final text so
+            # catalogs are replay-complete by construction; cache hits make
+            # this free for the common case.
+            embedder = memory_embedder(memory)
+            for fact in facts:
+                embedder.embed(fact.text, "add")
             catalog_path = self._fact_catalog_store.write(sample, facts)
             memory._locomo_fact_catalog = tuple(facts)
             logger.info(

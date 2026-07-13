@@ -264,7 +264,7 @@ def test_extract_user_id_reads_sampling_extra_args() -> None:
     assert extract_user_id(unrouted, "fallback") == "fallback"
 
 
-def test_warmup_aligns_extra_sampling_params(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_warmup_routes_the_kv_warmup_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
     from locomo_jasper_bench.throughput.worker import _warm_up
 
     class _RecordingLLM(_FakeWarmupLLM):
@@ -286,8 +286,7 @@ def test_warmup_aligns_extra_sampling_params(monkeypatch: pytest.MonkeyPatch) ->
         base,
         batches=1,
         seed=7,
-        extra_prompts=[{"prompt_token_ids": [1, 2, 3]}],
-        extra_sampling_params=[routed],
+        kv_warmup=({"prompt_token_ids": [1, 2, 3]}, routed),
     )
 
     (params_list,) = llm.seen_params
@@ -295,18 +294,3 @@ def test_warmup_aligns_extra_sampling_params(monkeypatch: pytest.MonkeyPatch) ->
     assert len(params_list) == 3
     assert params_list[0] is base and params_list[1] is base
     assert params_list[2] is routed
-
-
-def test_warmup_rejects_misaligned_extra_sampling_params() -> None:
-    from locomo_jasper_bench.throughput.worker import _warm_up
-
-    with pytest.raises(ValueError, match="align"):
-        _warm_up(
-            _FakeWarmupLLM(),
-            _prompts([4]),
-            _FakeSamplingParams(),
-            batches=1,
-            seed=7,
-            extra_prompts=[{"prompt_token_ids": [1]}, {"prompt_token_ids": [2]}],
-            extra_sampling_params=[_FakeSamplingParams()],
-        )

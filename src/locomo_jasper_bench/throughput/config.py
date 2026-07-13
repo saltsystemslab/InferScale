@@ -10,7 +10,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from ..config import ANSWER_MODEL_NAME_ALIASES, MAX_JASPER_BEAM_WIDTH, _env_flag, resolve_answer_model
+from ..config import ANSWER_MODEL_NAME_ALIASES, MAX_JASPER_BEAM_WIDTH, env_flag, resolve_answer_model
+from ..kv.connector_utils import (
+    DEFAULT_KV_STAGING_SLOTS,
+    DEFAULT_KV_STORE_BACKEND,
+    KNOWN_KV_STORE_BACKENDS,
+)
 from ..runtime_paths import (
     default_embedding_cache_dir,
     default_memory_llm_cache_dir,
@@ -65,8 +70,8 @@ class ThroughputConfig:
     kv_block_size: int = 16
     kv_connector_module: str = "locomo_jasper_bench.kv.gpu_connector"
     kv_enable_prefix_caching: bool = True
-    kv_store_backend: str = "gpu"
-    kv_staging_slots: int = 4
+    kv_store_backend: str = DEFAULT_KV_STORE_BACKEND
+    kv_staging_slots: int = DEFAULT_KV_STAGING_SLOTS
     embedding_model: str = "text-embedding-3-small"
     embedding_api_key: str | None = None
     embedding_base_url: str | None = None
@@ -207,7 +212,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[ThroughputConfig, bool]:
         "--kv-prefix-caching",
         action=argparse.BooleanOptionalAction,
         dest="kv_enable_prefix_caching",
-        default=_env_flag("LOCOMO_KV_ENABLE_PREFIX_CACHING", True),
+        default=env_flag("LOCOMO_KV_ENABLE_PREFIX_CACHING", True),
         help=(
             "vLLM automatic prefix caching. The CLI overrides the "
             "LOCOMO_KV_ENABLE_PREFIX_CACHING env default in both directions."
@@ -215,14 +220,14 @@ def parse_args(argv: list[str] | None = None) -> tuple[ThroughputConfig, bool]:
     )
     parser.add_argument(
         "--kv-store-backend",
-        choices=["gpu", "cpu-pinned"],
-        default=os.environ.get("LOCOMO_KV_STORE_BACKEND", "gpu"),
+        choices=list(KNOWN_KV_STORE_BACKENDS),
+        default=os.environ.get("LOCOMO_KV_STORE_BACKEND", DEFAULT_KV_STORE_BACKEND),
         help="Where pre-encoded KV embeddings live: GPU HBM, or pinned host RAM streamed over PCIe.",
     )
     parser.add_argument(
         "--kv-staging-slots",
         type=int,
-        default=int(os.environ.get("LOCOMO_KV_STAGING_SLOTS", "4")),
+        default=int(os.environ.get("LOCOMO_KV_STAGING_SLOTS", str(DEFAULT_KV_STAGING_SLOTS))),
         help="GPU staging buffers kept in flight by the cpu-pinned KV store.",
     )
     parser.add_argument("--embedding-model", default=os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"))

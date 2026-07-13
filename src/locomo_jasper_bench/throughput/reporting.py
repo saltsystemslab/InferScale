@@ -5,6 +5,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
+from ..kv.connector_utils import DEFAULT_KV_STORE_BACKEND
 from ..results import write_json
 from .config import ALL_CONDITIONS, ThroughputConfig
 
@@ -240,7 +241,7 @@ def _coerce_row(row: dict[str, Any]) -> dict[str, Any]:
     if normalized.get("vector_backend") == "":
         normalized["vector_backend"] = None
     if not normalized.get("kv_store_backend"):
-        normalized["kv_store_backend"] = "gpu"
+        normalized["kv_store_backend"] = DEFAULT_KV_STORE_BACKEND
     for column in (
         "num_users",
         "requests_per_user",

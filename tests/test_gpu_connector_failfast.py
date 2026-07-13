@@ -18,11 +18,21 @@ torch = pytest.importorskip("torch")
 
 
 class _FakeStore:
+    # The connector calls the staging protocol unconditionally; mirror the
+    # GPUMemoryStore no-op defaults.
+    num_staging_slots = 0
+
     def __init__(self, memories: dict[str, object]) -> None:
         self._memories = memories
 
     def get_user_memory(self, user_id: str):
         return self._memories.get(user_id)
+
+    def prefetch_user_to_gpu(self, user_id: str) -> bool:
+        return False
+
+    def release_staging(self, user_id: str) -> None:
+        return None
 
 
 def _connector(memories: dict[str, object], loads: list) -> MemoryKVConnector:
@@ -168,11 +178,10 @@ def test_staging_store_gets_prefetch_and_release(monkeypatch: pytest.MonkeyPatch
     reset_load_stats()
     connector.start_load_kv(_forward_context(attn_metadata=object(), layers=layers))
 
-    # Release fires once inside the loop and once in the idempotent
-    # finally sweep that covers the error path.
+    # Exactly-once release: in-loop after injection; the finally sweep only
+    # covers loads that never reached their in-loop release.
     assert store.calls == [
         ("prefetch", "user-0"),
-        ("release", "user-0"),
         ("release", "user-0"),
     ]
 

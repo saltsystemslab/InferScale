@@ -37,7 +37,7 @@ class GPUMemoryStore:
             layer_name: _contiguous_on_device(tensor, self._device)
             for layer_name, tensor in kv_by_layer.items()
         }
-        byte_count = _kv_nbytes(device_kv)
+        byte_count = kv_nbytes(device_kv)
         with self._lock:
             self._remove_locked(user_id)
             self._memories[user_id] = UserMemory(
@@ -79,8 +79,34 @@ class GPUMemoryStore:
             return {
                 "num_users": len(self._memories),
                 "total_tokens": self._total_tokens,
-                "total_gpu_mb": self._total_bytes / (1024 * 1024),
+                "total_gpu_mb": bytes_to_mb(self._total_bytes),
             }
+
+    # ── Staging/metrics protocol ──────────────────────────────────
+    # Concrete no-op defaults: memories are already GPU-resident, so there is
+    # nothing to stage, and no transfers to meter. CpuPinnedMemoryStore
+    # overrides every member; callers use plain calls, never getattr probes.
+
+    num_staging_slots = 0
+
+    def prefetch_user_to_gpu(self, user_id: str) -> bool:
+        del user_id
+        return False
+
+    def release_staging(self, user_id: str) -> None:
+        del user_id
+
+    def get_bench_summary(self) -> dict[str, float | int]:
+        return {}
+
+    def last_transfer_record(self) -> Any:
+        return None
+
+    def transfer_count(self) -> int:
+        return 0
+
+    def reset_bench_metrics(self) -> None:
+        return
 
     def _remove_locked(self, user_id: str) -> bool:
         memory = self._memories.pop(user_id, None)
@@ -105,7 +131,11 @@ def _contiguous_on_device(tensor: Any, device: str) -> Any:
     return tensor
 
 
-def _kv_nbytes(kv_by_layer: dict[str, Any]) -> int:
+def bytes_to_mb(byte_count: int | float) -> float:
+    return byte_count / (1024 * 1024)
+
+
+def kv_nbytes(kv_by_layer: dict[str, Any]) -> int:
     return sum(_tensor_nbytes(tensor) for tensor in kv_by_layer.values())
 
 

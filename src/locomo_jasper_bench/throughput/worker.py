@@ -380,19 +380,17 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
         # With prefix scan off, the KV warmup prompt reaches its memory via
         # the same explicit routing as measured requests; the random warmup
         # prompts stay unrouted so they match nothing.
-        kv_warmup_prompts: list[dict[str, list[int]]] = []
-        kv_warmup_sampling_params: list[Any] = []
+        kv_warmup: tuple[dict[str, list[int]], Any] | None = None
         if first_memory_token_ids and first_memory_user_id:
-            kv_warmup_prompts = [
+            kv_warmup = (
                 _build_kv_warmup_prompt(
                     first_memory_token_ids,
                     vocab_size=_tokenizer_vocab_size(tokenizer),
                     seed=config.seed,
-                )
-            ]
-            kv_warmup_sampling_params = _sampling_params_with_memory_user_ids(
-                sampling_params,
-                [first_memory_user_id],
+                ),
+                _sampling_params_with_memory_user_ids(
+                    sampling_params, [first_memory_user_id]
+                )[0],
             )
         _warm_up(
             llm,
@@ -400,23 +398,20 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
             sampling_params,
             config.warmup_batches,
             seed=config.seed,
-            extra_prompts=kv_warmup_prompts,
-            extra_sampling_params=kv_warmup_sampling_params or None,
+            kv_warmup=kv_warmup,
         )
         connector_module.reset_load_stats()
         reset_namespace_bench_metrics(namespace)
         measured = _measure_batch(llm, prompts, routed_sampling_params)
         load_stats = connector_module.snapshot_load_stats()
         bench_summary = namespace_bench_summary(namespace)
-        kv_store_gpu_mb = float(store_stats.get("total_gpu_mb", 0.0))
-        if config.kv_store_backend == "cpu-pinned":
-            # Instantaneous staging is zero outside a step (slots release
-            # after every injection), so report the steady-state staging-pool
-            # footprint: slots x the average transfer size.
-            transfers = int(bench_summary.get("total_transfers", 0))
-            if transfers > 0:
-                avg_transfer_bytes = float(bench_summary.get("total_bytes_transferred", 0)) / transfers
-                kv_store_gpu_mb = config.kv_staging_slots * avg_transfer_bytes / (1024 * 1024)
+        # The store owns how its staging pool is sized and reports its
+        # steady-state HBM footprint in the bench summary; the GPU store has
+        # no staging pool, so fall back to its resident total.
+        kv_store_gpu_mb = float(
+            bench_summary.get("steady_state_staging_mb")
+            or store_stats.get("total_gpu_mb", 0.0)
+        )
         # requests_covered counts distinct request ids that either had memory
         # injected or whose memory region was fully served by the native
         # prefix cache (a legitimate no-load), so the check stays exact per
@@ -802,23 +797,31 @@ def _check_kv_gpu_projection(
     device_total = torch.cuda.get_device_properties(0).total_memory
     vllm_pool = config.kv_gpu_memory_utilization * device_total
 
+    # Per-backend HBM-resident component: cpu-pinned holds composed memories
+    # in pinned host RAM and only stages one copy per slot; the GPU store
+    # keeps every composed copy resident.
     if config.kv_store_backend == "cpu-pinned":
-        # Composed memories live in pinned host RAM; HBM only holds the
-        # staging pool (one composed copy per slot) beside sources + pool.
-        staging_bytes = config.kv_staging_slots * composed_tokens * bytes_per_token
-        projected_gpu_peak = vllm_pool + staging_bytes + source_bytes
-        budget = 0.97 * device_total
-        if projected_gpu_peak > budget:
-            raise RuntimeError(
-                "Projected KV GPU footprint exceeds device memory: "
-                f"vllm_pool={vllm_pool / 2**30:.1f}GiB "
-                f"staging={staging_bytes / 2**30:.1f}GiB "
-                f"sources={source_bytes / 2**30:.1f}GiB "
-                f"device={device_total / 2**30:.1f}GiB "
-                f"(users={num_users}, requests={total_requests}). "
-                "Shrink the user count, lower --top-k, --kv-staging-slots, or "
-                "--gpu-memory-utilization."
-            )
+        resident_label = "staging"
+        resident_bytes = config.kv_staging_slots * composed_tokens * bytes_per_token
+        remediation = "Shrink the user count, lower --top-k, --kv-staging-slots, or --gpu-memory-utilization."
+    else:
+        resident_label = "composed"
+        resident_bytes = composed_bytes
+        remediation = "Shrink the user count, lower --top-k, or reduce --gpu-memory-utilization."
+
+    projected_peak = vllm_pool + resident_bytes + source_bytes
+    if projected_peak > 0.97 * device_total:
+        raise RuntimeError(
+            "Projected KV GPU footprint exceeds device memory: "
+            f"vllm_pool={vllm_pool / 2**30:.1f}GiB "
+            f"{resident_label}={resident_bytes / 2**30:.1f}GiB "
+            f"sources={source_bytes / 2**30:.1f}GiB "
+            f"device={device_total / 2**30:.1f}GiB "
+            f"(users={num_users}, requests={total_requests}). "
+            f"{remediation}"
+        )
+
+    if config.kv_store_backend == "cpu-pinned":
         try:
             host_total = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
         except (ValueError, OSError, AttributeError):
@@ -832,21 +835,6 @@ def _check_kv_gpu_projection(
                 f"(users={num_users}, requests={total_requests}). "
                 "Shrink the user count or lower --top-k."
             )
-        return
-
-    projected_peak = vllm_pool + composed_bytes + source_bytes
-    budget = 0.97 * device_total
-    if projected_peak > budget:
-        raise RuntimeError(
-            "Projected KV GPU footprint exceeds device memory: "
-            f"vllm_pool={vllm_pool / 2**30:.1f}GiB "
-            f"composed={composed_bytes / 2**30:.1f}GiB "
-            f"sources={source_bytes / 2**30:.1f}GiB "
-            f"device={device_total / 2**30:.1f}GiB "
-            f"(users={num_users}, requests={total_requests}). "
-            "Shrink the user count, lower --top-k, or reduce "
-            "--gpu-memory-utilization."
-        )
 
 
 def _start_llm(
@@ -884,8 +872,7 @@ def _warm_up(
     batches: int,
     *,
     seed: int,
-    extra_prompts: list[dict[str, list[int]]] | None = None,
-    extra_sampling_params: list[Any] | None = None,
+    kv_warmup: tuple[dict[str, list[int]], Any] | None = None,
 ) -> None:
     """Warm up with random tokens so no real prompt lands in the prefix cache.
 
@@ -893,24 +880,17 @@ def _warm_up(
     let the measured batch hit the cache (inflated QPS) and, worse, let the
     native cache satisfy memory prefixes so the connector never injects KV.
     Warmup only needs to exercise kernels, allocator, and scheduler; token
-    identity is irrelevant. extra_prompts (with optionally aligned
-    extra_sampling_params, e.g. explicit memory routing) run alongside them.
+    identity is irrelevant. kv_warmup is one (prompt, sampling_params) pair
+    carrying explicit memory routing so the injection path warms too.
     """
     if batches > 0 and prompts:
         vocab_size = _tokenizer_vocab_size(llm.get_tokenizer())
         warmup_prompts = _build_warmup_prompts(prompts, vocab_size=vocab_size, seed=seed)
         warmup_sampling: Any = sampling_params
-        if extra_prompts:
-            if extra_sampling_params is not None:
-                if len(extra_sampling_params) != len(extra_prompts):
-                    raise ValueError(
-                        "extra_sampling_params must align one-to-one with extra_prompts."
-                    )
-                warmup_sampling = [
-                    *([sampling_params] * len(warmup_prompts)),
-                    *extra_sampling_params,
-                ]
-            warmup_prompts = [*warmup_prompts, *extra_prompts]
+        if kv_warmup is not None:
+            kv_prompt, kv_sampling = kv_warmup
+            warmup_sampling = [*([sampling_params] * len(warmup_prompts)), kv_sampling]
+            warmup_prompts = [*warmup_prompts, kv_prompt]
         for _ in range(batches):
             llm.generate(warmup_prompts, warmup_sampling, use_tqdm=False)
     # Reset even with warmup disabled: conditions that measure several user
@@ -928,13 +908,13 @@ def _sampling_params_with_memory_user_ids(
     memory_user_ids: list[str],
 ) -> list[Any]:
     """Clone the base params once per request, routing each to its memory."""
+    clone = getattr(sampling_params, "clone", None)
+    if not callable(clone):
+        raise RuntimeError(
+            "Pinned vLLM SamplingParams must provide clone() for request routing."
+        )
     routed: list[Any] = []
     for memory_user_id in memory_user_ids:
-        clone = getattr(sampling_params, "clone", None)
-        if not callable(clone):
-            raise RuntimeError(
-                "Pinned vLLM SamplingParams must provide clone() for request routing."
-            )
         request_params = clone()
         extra_args = dict(getattr(request_params, "extra_args", None) or {})
         extra_args[MEMORY_USER_ID_EXTRA_ARG] = memory_user_id
@@ -979,20 +959,19 @@ def _build_kv_warmup_prompt(
     *,
     vocab_size: int,
     seed: int,
-    tail_tokens: int = 8,
 ) -> dict[str, list[int]]:
     """One warmup prompt whose prefix IS a registered memory.
 
     Random warmup prompts match no memory, so without this the connector's
     match/inject path (scatter kernels, staging) first runs inside the
     measured batch. The prompt must be strictly longer than the memory for
-    the prefix match to fire; the tail is seeded-random so it shares nothing
-    with real queries.
+    the match to fire; the tail is seeded-random so it shares nothing with
+    real queries.
     """
     if vocab_size < 1:
         raise ValueError("vocab_size must be >= 1 to build the KV warmup prompt.")
     rng = random.Random(seed)
-    tail = [rng.randrange(vocab_size) for _ in range(max(1, tail_tokens))]
+    tail = [rng.randrange(vocab_size) for _ in range(8)]
     return {"prompt_token_ids": [*memory_token_ids, *tail]}
 
 
@@ -1106,7 +1085,7 @@ def _result_row(
         "memory_setup_time_s": memory_setup_time_s,
         "kv_precompute_time_s": kv_precompute_time_s,
         "engine_startup_time_s": engine_startup_time_s,
-        "kv_prefix_caching": int(getattr(config, "kv_enable_prefix_caching", True)),
+        "kv_prefix_caching": int(config.kv_enable_prefix_caching),
         "kv_store_gpu_mb": kv_store_gpu_mb,
         "kv_store_backend": kv_store_backend,
         "kv_store_host_mb": kv_store_host_mb,

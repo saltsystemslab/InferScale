@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ..kv.connector_utils import DEFAULT_KV_STAGING_SLOTS, DEFAULT_KV_STORE_BACKEND
 from ..results import write_json
 from ..runtime_paths import project_root
 from ..system import collect_system_metadata
@@ -178,8 +179,8 @@ def _validate_runtime_requirements(config: ThroughputConfig) -> None:
 # caching hard-off and the GPU store.
 _LEGACY_CONFIG_DEFAULTS: dict[str, Any] = {
     "kv_enable_prefix_caching": False,
-    "kv_store_backend": "gpu",
-    "kv_staging_slots": 4,
+    "kv_store_backend": DEFAULT_KV_STORE_BACKEND,
+    "kv_staging_slots": DEFAULT_KV_STAGING_SLOTS,
 }
 
 

@@ -216,16 +216,16 @@ def _numeric_summary(values: Iterable[Any]) -> dict[str, float | int | None]:
         "count": len(numbers),
         "avg": sum(numbers) / len(numbers),
         "min": numbers[0],
-        "p50": _percentile(numbers, 0.50),
-        "p95": _percentile(numbers, 0.95),
+        "p50": percentile(numbers, 0.50),
+        "p95": percentile(numbers, 0.95),
         "max": numbers[-1],
     }
 
 
-def _percentile(sorted_numbers: list[float], percentile: float) -> float:
+def percentile(sorted_numbers: list[float], fraction: float) -> float:
     if len(sorted_numbers) == 1:
         return sorted_numbers[0]
-    index = (len(sorted_numbers) - 1) * percentile
+    index = (len(sorted_numbers) - 1) * fraction
     lower = int(index)
     upper = min(lower + 1, len(sorted_numbers) - 1)
     weight = index - lower

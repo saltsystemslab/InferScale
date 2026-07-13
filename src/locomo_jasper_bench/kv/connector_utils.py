@@ -44,6 +44,12 @@ def extra_config(kv_transfer_config: Any, key: str, default: Any = None) -> Any:
 # prefix-scanning every stored user.
 MEMORY_USER_ID_EXTRA_ARG = "locomo_memory_user_id"
 
+# Single home for the KV store backend names and defaults; the CLIs, the
+# registry, the connector, and the reporting backfill all reference these.
+DEFAULT_KV_STORE_BACKEND = "gpu"
+KNOWN_KV_STORE_BACKENDS = ("gpu", "cpu-pinned")
+DEFAULT_KV_STAGING_SLOTS = 4
+
 
 def extract_user_id(request: Any, default_user_id: str | None = None) -> str | None:
     user_id = getattr(request, "user", None)

@@ -8,6 +8,7 @@ from typing import Any, Iterable
 
 import numpy as np
 
+from ..kv.gpu_memory_store import bytes_to_mb
 from ..vector_types import SearchHit, SearchMetrics, VECTOR_DISTANCE, VectorStoreConfig
 from .store_utils import payload_matches
 
@@ -473,4 +474,4 @@ def _positive_delta(before: int | None, after: int | None) -> int | None:
 def _bytes_to_mb(byte_count: int | None) -> float | None:
     if byte_count is None:
         return None
-    return int(byte_count) / (1024 * 1024)
+    return bytes_to_mb(int(byte_count))

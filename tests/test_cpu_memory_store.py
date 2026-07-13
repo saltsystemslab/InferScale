@@ -276,8 +276,8 @@ class TestCpuPinnedMemoryStoreOnGpu:
         store.add_user_memory("u1", self._kv(), num_tokens=8, token_ids=list(range(8)))
         store.prefetch_user_to_gpu("u0")
         store.prefetch_user_to_gpu("u1")
-        assert "u0" not in store._staging
-        assert "u1" in store._staging
+        assert "u0" not in store._slots
+        assert "u1" in store._slots
 
     def test_reset_bench_metrics(self) -> None:
         store = self._store()
@@ -297,7 +297,7 @@ class TestCpuPinnedMemoryStoreOnGpu:
         assert peeked is not None
         assert peeked.num_tokens == 8
         assert peeked.token_ids == list(range(8))
-        assert store._staging == {}
+        assert store._slots == {}
         assert store.get_bench_summary()["total_transfers"] == 0
         assert store.peek_user_memory("missing") is None
 

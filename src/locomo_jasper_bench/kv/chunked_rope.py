@@ -14,6 +14,7 @@ from .context import (
     reverse_ranked_memory_facts,
     unique_memory_facts,
 )
+from .gpu_memory_store import bytes_to_mb
 from .prompting import extract_memory_scaffold_token_ids, format_memory_fact
 from .rope import extract_cos_sin_from_model
 from .tokenization import encode_text_no_special
@@ -389,13 +390,13 @@ class ChunkedRopeSampleComposer:
             "kv_precomputed_devices": ",".join(sorted(devices)),
             "llama_kv_chunk_count": len(fact_chunks),
             "llama_kv_chunk_map_cpu_bytes": chunk_map_cpu_bytes,
-            "llama_kv_chunk_map_cpu_mb": _bytes_to_mb(chunk_map_cpu_bytes),
+            "llama_kv_chunk_map_cpu_mb": bytes_to_mb(chunk_map_cpu_bytes),
             "llama_kv_chunk_tensor_gpu_bytes": fact_chunk_tensor_bytes,
-            "llama_kv_chunk_tensor_gpu_mb": _bytes_to_mb(fact_chunk_tensor_bytes),
+            "llama_kv_chunk_tensor_gpu_mb": bytes_to_mb(fact_chunk_tensor_bytes),
             "llama_kv_prefix_tensor_gpu_bytes": prefix_tensor_bytes,
-            "llama_kv_prefix_tensor_gpu_mb": _bytes_to_mb(prefix_tensor_bytes),
+            "llama_kv_prefix_tensor_gpu_mb": bytes_to_mb(prefix_tensor_bytes),
             "llama_kv_total_tensor_gpu_bytes": total_bytes,
-            "llama_kv_total_tensor_gpu_mb": _bytes_to_mb(total_bytes),
+            "llama_kv_total_tensor_gpu_mb": bytes_to_mb(total_bytes),
         }
 
     def close(self) -> None:
@@ -582,10 +583,6 @@ def _encoded_chunk_cpu_bytes(chunk: EncodedChunk) -> int:
     total += sys.getsizeof(chunk.kv_by_layer)
     total += sum(sys.getsizeof(layer_name) for layer_name in chunk.kv_by_layer)
     return total
-
-
-def _bytes_to_mb(byte_count: int) -> float:
-    return byte_count / (1024 * 1024)
 
 
 def _load_hf_model_and_tokenizer(

@@ -6,6 +6,9 @@ import os
 import sys
 from typing import Any
 
+from ..config import is_truthy as _env_truthy
+from .connector_utils import DEFAULT_KV_STAGING_SLOTS, DEFAULT_KV_STORE_BACKEND
+
 logger = logging.getLogger(__name__)
 
 _REPO_OWNED_VLLM_ENV_TO_CLEAR = (
@@ -27,8 +30,8 @@ def build_strict_gpu_kv_transfer_config(
     default_user_id: str | None = "default",
     allow_prefix_scan: bool = False,
     log_memory_hits: bool = True,
-    store_backend: str = "gpu",
-    num_staging_slots: int = 4,
+    store_backend: str = DEFAULT_KV_STORE_BACKEND,
+    num_staging_slots: int = DEFAULT_KV_STAGING_SLOTS,
 ) -> dict[str, Any]:
     extra_config: dict[str, Any] = {
         "memory_namespace": namespace,
@@ -105,5 +108,3 @@ def empty_cuda_cache(*, collect_ipc: bool = False) -> None:
         return
 
 
-def _env_truthy(value: str | None) -> bool:
-    return value is not None and value.strip().lower() in {"1", "true", "yes", "on"}

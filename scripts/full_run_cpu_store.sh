@@ -29,6 +29,7 @@ set -uo pipefail
 MODELS="${MODELS:-llama mistral qwen qwen3-14b}"
 TOPKS="${TOPKS:-5 10 20 50 100}"
 KV_WINDOWS="${KV_WINDOWS:-${WINDOWS:-0 5 20 50}}"
+# Default mirrors DEFAULT_KV_STAGING_SLOTS in kv/connector_utils.py.
 KV_STAGING_SLOTS="${KV_STAGING_SLOTS:-4}"
 DATASET="${DATASET:-data/locomo10.json}"
 DRY_RUN="${DRY_RUN:-0}"

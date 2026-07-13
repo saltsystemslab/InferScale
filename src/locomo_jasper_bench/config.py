@@ -21,6 +21,11 @@ from .protocol import (
     MEMORY_EXTRACTION_RESPONSE_PROTOCOL,
     MEMORY_INGESTION_PROTOCOL,
 )
+from .kv.connector_utils import (
+    DEFAULT_KV_STAGING_SLOTS,
+    DEFAULT_KV_STORE_BACKEND,
+    KNOWN_KV_STORE_BACKENDS,
+)
 from .runtime_paths import default_embedding_cache_dir as runtime_default_embedding_cache_dir
 from .runtime_paths import default_memory_llm_cache_dir as runtime_default_memory_llm_cache_dir
 from .runtime_paths import default_results_root
@@ -148,11 +153,15 @@ def _env_or_default(name: str, default: str) -> str:
     return os.environ.get(name) or default
 
 
-def _env_flag(name: str, default: bool) -> bool:
+def is_truthy(value: str | None) -> bool:
+    return value is not None and value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def env_flag(name: str, default: bool) -> bool:
     value = os.environ.get(name)
     if value is None or not value.strip():
         return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+    return is_truthy(value)
 
 
 def _arg_present(argv: list[str], option: str) -> bool:
@@ -244,8 +253,8 @@ class BenchmarkConfig:
     kv_dtype: str = "bfloat16"
     kv_device: str = "cuda:0"
     kv_enable_prefix_caching: bool = True
-    kv_store_backend: str = "gpu"
-    kv_staging_slots: int = 4
+    kv_store_backend: str = DEFAULT_KV_STORE_BACKEND
+    kv_staging_slots: int = DEFAULT_KV_STAGING_SLOTS
 
     max_samples: int | None = None
     max_questions: int | None = None
@@ -411,7 +420,7 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
         "--kv-prefix-caching",
         action=argparse.BooleanOptionalAction,
         dest="kv_enable_prefix_caching",
-        default=_env_flag("LOCOMO_KV_ENABLE_PREFIX_CACHING", True),
+        default=env_flag("LOCOMO_KV_ENABLE_PREFIX_CACHING", True),
         help=(
             "vLLM automatic prefix caching (vllm-prefix requires it). The CLI "
             "overrides the LOCOMO_KV_ENABLE_PREFIX_CACHING env default in both directions."
@@ -419,14 +428,14 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
     )
     parser.add_argument(
         "--kv-store-backend",
-        choices=["gpu", "cpu-pinned"],
-        default=os.environ.get("LOCOMO_KV_STORE_BACKEND", "gpu"),
+        choices=list(KNOWN_KV_STORE_BACKENDS),
+        default=os.environ.get("LOCOMO_KV_STORE_BACKEND", DEFAULT_KV_STORE_BACKEND),
         help="Where pre-encoded KV embeddings live: GPU HBM, or pinned host RAM streamed over PCIe.",
     )
     parser.add_argument(
         "--kv-staging-slots",
         type=int,
-        default=int(os.environ.get("LOCOMO_KV_STAGING_SLOTS", "4")),
+        default=int(os.environ.get("LOCOMO_KV_STAGING_SLOTS", str(DEFAULT_KV_STAGING_SLOTS))),
         help="GPU staging buffers kept in flight by the cpu-pinned KV store.",
     )
 

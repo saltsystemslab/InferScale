@@ -295,28 +295,19 @@ class VLLMChunkedKVAnswerClient:
             # Attribute a transfer to this request only if one actually
             # happened during its generate: a natively prefix-cached request
             # performs no connector load, and the store's last record would
-            # belong to an earlier request.
+            # belong to an earlier request. Explicit zeros mark such
+            # natively-served requests.
             transfer = namespace_last_transfer(self.namespace)
             if transfer is not None:
-                if namespace_transfer_count(self.namespace) > transfers_before:
-                    metrics.update(
-                        {
-                            "kv_h2d_latency_ms": transfer.h2d_latency_ms,
-                            "kv_h2d_bytes": transfer.num_bytes,
-                            "kv_h2d_overlap_ratio": overlap_ratio(transfer),
-                            "kv_staging_stall_ms": transfer.staging_stall_ms,
-                        }
-                    )
-                else:
-                    # Explicit zeros mark a natively-served request.
-                    metrics.update(
-                        {
-                            "kv_h2d_latency_ms": 0.0,
-                            "kv_h2d_bytes": 0,
-                            "kv_h2d_overlap_ratio": 0.0,
-                            "kv_staging_stall_ms": 0.0,
-                        }
-                    )
+                transferred = namespace_transfer_count(self.namespace) > transfers_before
+                metrics.update(
+                    {
+                        "kv_h2d_latency_ms": transfer.h2d_latency_ms if transferred else 0.0,
+                        "kv_h2d_bytes": transfer.num_bytes if transferred else 0,
+                        "kv_h2d_overlap_ratio": overlap_ratio(transfer) if transferred else 0.0,
+                        "kv_staging_stall_ms": transfer.staging_stall_ms if transferred else 0.0,
+                    }
+                )
             return ChatResult(
                 content=text,
                 ttft_ms=ttft_ms,

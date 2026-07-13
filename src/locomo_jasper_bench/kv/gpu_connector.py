@@ -21,6 +21,7 @@ from .connector_metadata import (
     extra_config as _extra_config,
     extract_user_id as _extract_user_id,
 )
+from .connector_utils import DEFAULT_KV_STAGING_SLOTS, DEFAULT_KV_STORE_BACKEND
 from .gpu_registry import get_gpu_memory_store
 
 from vllm.model_executor.layers.attention.mla_attention import MLACommonMetadata
@@ -104,8 +105,12 @@ class MemoryKVConnector(KVConnectorBase_V1):
         )
 
         namespace = str(_extra_config(self._kv_transfer_config, "memory_namespace", "default"))
-        store_backend = str(_extra_config(self._kv_transfer_config, "memory_store_backend", "gpu"))
-        num_staging_slots = int(_extra_config(self._kv_transfer_config, "num_staging_slots", 4))
+        store_backend = str(
+            _extra_config(self._kv_transfer_config, "memory_store_backend", DEFAULT_KV_STORE_BACKEND)
+        )
+        num_staging_slots = int(
+            _extra_config(self._kv_transfer_config, "num_staging_slots", DEFAULT_KV_STAGING_SLOTS)
+        )
         self._memory_store = get_gpu_memory_store(
             namespace,
             backend=store_backend,
@@ -193,11 +198,10 @@ class MemoryKVConnector(KVConnectorBase_V1):
         if memory is None or memory.token_ids is None:
             return None
 
-        memory_token_ids = list(memory.token_ids)
-        num_memory_tokens = len(memory_token_ids)
+        num_memory_tokens = len(memory.token_ids)
         if len(prompt_token_ids) <= num_memory_tokens:
             return None
-        if prompt_token_ids[:num_memory_tokens] != memory_token_ids:
+        if prompt_token_ids[:num_memory_tokens] != memory.token_ids:
             return None
 
         aligned_tokens = align_to_block_size(num_memory_tokens, self._block_size)
@@ -342,31 +346,25 @@ class MemoryKVConnector(KVConnectorBase_V1):
         # pool. Staging every load up front would evict just-prefetched
         # users whenever one step carries more loads than slots; instead
         # each release below frees the slot the next pending load fills.
-        # No-ops for the GPU store.
+        # No-ops for the GPU store (num_staging_slots == 0 -> full window).
         loads = metadata.loads
-        prefetch = getattr(self._memory_store, "prefetch_user_to_gpu", None)
-        release = getattr(self._memory_store, "release_staging", None)
-        window = len(loads)
-        if callable(prefetch):
-            slots = int(getattr(self._memory_store, "num_staging_slots", 0) or 0)
-            if slots > 0:
-                window = min(slots, len(loads))
-            for load in loads[:window]:
-                prefetch(load.user_id)
+        slots = int(self._memory_store.num_staging_slots or 0)
+        window = min(slots, len(loads)) if slots > 0 else len(loads)
+        for load in loads[:window]:
+            self._memory_store.prefetch_user_to_gpu(load.user_id)
 
+        released = 0
         try:
             for index, load in enumerate(loads):
                 self._inject_one_load(load, forward_context, attn_metadata)
-                if callable(release):
-                    release(load.user_id)
-                if callable(prefetch) and index + window < len(loads):
-                    prefetch(loads[index + window].user_id)
+                self._memory_store.release_staging(load.user_id)
+                released = index + 1
+                if index + window < len(loads):
+                    self._memory_store.prefetch_user_to_gpu(loads[index + window].user_id)
         finally:
-            # release_staging is idempotent; sweeping every load covers the
-            # error path without double-recording the successful ones.
-            if callable(release):
-                for load in loads:
-                    release(load.user_id)
+            # Error path only: free the slots of loads that never released.
+            for load in loads[released:]:
+                self._memory_store.release_staging(load.user_id)
 
     def _inject_one_load(
         self,
@@ -382,8 +380,8 @@ class MemoryKVConnector(KVConnectorBase_V1):
 
         # Probe one layer for the device; the pinned-host view waits on a
         # layer's copy event on first access, so touch exactly one.
-        layer_names = list(memory.kv_by_layer.keys())
-        first_tensor = memory.kv_by_layer[layer_names[0]] if layer_names else None
+        first_layer = next(iter(memory.kv_by_layer), None)
+        first_tensor = memory.kv_by_layer[first_layer] if first_layer is not None else None
         if first_tensor is None:
             raise RuntimeError(
                 f"Strict GPU memory for user {load.user_id} has no layer tensors."

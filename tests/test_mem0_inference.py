@@ -49,6 +49,9 @@ class _FakeMemory:
     def __init__(self, response: str | None = None) -> None:
         self.llm = _RecordingLlm(response)
         self.add_calls: list[tuple[Any, dict[str, Any]]] = []
+        # Materialization write-through-embeds every final fact text so
+        # catalogs are replay-complete; record those calls.
+        self.embedding_model = _RecordingEmbedder()
         self.vector_store = SimpleNamespace(
             config=SimpleNamespace(backend="qdrant"),
             memory_stats=lambda: {},
@@ -67,6 +70,15 @@ class _FakeMemory:
                 }
             ]
         }
+
+
+class _RecordingEmbedder:
+    def __init__(self) -> None:
+        self.embed_calls: list[tuple[Any, str | None]] = []
+
+    def embed(self, text: Any, purpose: str | None = None) -> list[float]:
+        self.embed_calls.append((text, purpose))
+        return [1.0, 0.0, 0.0]
 
 
 class _DeterministicEmbedder:
@@ -443,6 +455,9 @@ def test_sample_builder_materializes_catalog_and_read_mode_never_reruns_inferenc
     assert write_metrics["memory_inferred_record_count"] == 1
     assert write_metrics["memory_llm_cache_hits"] == 0
     assert write_metrics["memory_llm_cache_misses"] == 1
+    # Every materialized fact text is write-through-embedded so catalog
+    # replay can never miss the read-mode cache.
+    assert ("Alice likes tea.", "add") in write_memory.embedding_model.embed_calls
 
     messages, add_kwargs = write_memory.add_calls[0]
     assert messages == [{"role": "user", "content": "Alice: I like tea."}]

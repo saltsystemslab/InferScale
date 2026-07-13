@@ -26,8 +26,9 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator
 
-from ..results import _percentile
-from .gpu_memory_store import UserMemory, _kv_nbytes
+from ..results import percentile
+from .connector_utils import DEFAULT_KV_STAGING_SLOTS
+from .gpu_memory_store import UserMemory, bytes_to_mb, kv_nbytes
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +108,16 @@ class _LayerKVView:
 
 
 @dataclass(slots=True)
+class _StagingSlot:
+    """One user's staged GPU buffers plus everything released with them."""
+
+    gpu_tensors: dict[str, Any]
+    start_event: Any
+    end_event: Any
+    view: _LayerKVView
+
+
+@dataclass(slots=True)
 class TransferRecord:
     """One user's H2D staging transfer.
 
@@ -129,74 +140,61 @@ def overlap_ratio(record: TransferRecord) -> float:
     return max(0.0, min(1.0, 1.0 - record.staging_stall_ms / record.h2d_latency_ms))
 
 
+def _avg(values: list[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
+
+
+def _pct(sorted_values: list[float], fraction: float) -> float:
+    return percentile(sorted_values, fraction) if sorted_values else 0.0
+
+
 @dataclass
 class _BenchMetrics:
     """Transfer metrics for the pinned-host store.
 
-    Records are unbounded so the summary's percentiles and totals cover the
-    same population as the lifetime counters; a full run's records cost on
-    the order of 100 bytes each.
+    The records deque is the single source of truth (unbounded, ~100 bytes
+    per record); totals are derived from it so counters can never drift.
     """
 
     records: deque = field(default_factory=deque)
-    total_bytes: int = 0
-    total_transfers: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def add(self, record: TransferRecord) -> None:
         with self.lock:
             self.records.append(record)
-            self.total_bytes += record.num_bytes
-            self.total_transfers += 1
 
     def last_record(self) -> TransferRecord | None:
         with self.lock:
             return self.records[-1] if self.records else None
 
+    def transfer_count(self) -> int:
+        with self.lock:
+            return len(self.records)
+
     def summary(self) -> dict[str, float | int]:
         with self.lock:
-            if not self.records:
-                return {
-                    "total_transfers": 0,
-                    "total_bytes_transferred": 0,
-                    "avg_h2d_latency_ms": 0.0,
-                    "p50_h2d_latency_ms": 0.0,
-                    "p95_h2d_latency_ms": 0.0,
-                    "p99_h2d_latency_ms": 0.0,
-                    "avg_overlap_ratio": 0.0,
-                    "avg_effective_bandwidth_gb_per_s": 0.0,
-                    "total_staging_stall_ms": 0.0,
-                    "avg_staging_stall_ms": 0.0,
-                    "p95_staging_stall_ms": 0.0,
-                }
-            latencies = sorted(record.h2d_latency_ms for record in self.records)
-            stalls = sorted(record.staging_stall_ms for record in self.records)
-            overlaps = [
-                overlap_ratio(record)
-                for record in self.records
-                if record.h2d_latency_ms > 0
-            ]
-            bandwidths = [
-                (record.num_bytes / 1e9) / (record.h2d_latency_ms / 1e3)
-                for record in self.records
-                if record.h2d_latency_ms > 0
-            ]
+            records = list(self.records)
+        latencies = sorted(record.h2d_latency_ms for record in records)
+        stalls = sorted(record.staging_stall_ms for record in records)
+        timed = [record for record in records if record.h2d_latency_ms > 0]
+        overlaps = [overlap_ratio(record) for record in timed]
+        bandwidths = [
+            (record.num_bytes / 1e9) / (record.h2d_latency_ms / 1e3) for record in timed
+        ]
 
-            return {
-                "total_transfers": self.total_transfers,
-                "total_bytes_transferred": self.total_bytes,
-                "avg_h2d_latency_ms": sum(latencies) / len(latencies),
-                "p50_h2d_latency_ms": _percentile(latencies, 0.50),
-                "p95_h2d_latency_ms": _percentile(latencies, 0.95),
-                "p99_h2d_latency_ms": _percentile(latencies, 0.99),
-                "avg_overlap_ratio": sum(overlaps) / len(overlaps) if overlaps else 0.0,
-                "avg_effective_bandwidth_gb_per_s": (
-                    sum(bandwidths) / len(bandwidths) if bandwidths else 0.0
-                ),
-                "total_staging_stall_ms": sum(stalls),
-                "avg_staging_stall_ms": sum(stalls) / len(stalls),
-                "p95_staging_stall_ms": _percentile(stalls, 0.95),
-            }
+        return {
+            "total_transfers": len(records),
+            "total_bytes_transferred": sum(record.num_bytes for record in records),
+            "avg_h2d_latency_ms": _avg(latencies),
+            "p50_h2d_latency_ms": _pct(latencies, 0.50),
+            "p95_h2d_latency_ms": _pct(latencies, 0.95),
+            "p99_h2d_latency_ms": _pct(latencies, 0.99),
+            "avg_overlap_ratio": _avg(overlaps),
+            "avg_effective_bandwidth_gb_per_s": _avg(bandwidths),
+            "total_staging_stall_ms": sum(stalls),
+            "avg_staging_stall_ms": _avg(stalls),
+            "p95_staging_stall_ms": _pct(stalls, 0.95),
+        }
 
 
 class CpuPinnedMemoryStore:
@@ -208,7 +206,9 @@ class CpuPinnedMemoryStore:
     request so the slot returns to the pool and metrics get recorded.
     """
 
-    def __init__(self, device: str = "cuda:0", num_staging_slots: int = 4) -> None:
+    def __init__(
+        self, device: str = "cuda:0", num_staging_slots: int = DEFAULT_KV_STAGING_SLOTS
+    ) -> None:
         import torch
 
         if not torch.cuda.is_available():
@@ -222,10 +222,7 @@ class CpuPinnedMemoryStore:
             self._copy_stream = torch.cuda.Stream(device=self._device)
 
         self._host: dict[str, _HostUserMemory] = {}
-        self._staging: dict[str, dict[str, Any]] = {}
-        self._layer_events: dict[str, dict[str, Any]] = {}
-        self._xfer_events: dict[str, tuple[Any, Any]] = {}
-        self._views: dict[str, _LayerKVView] = {}
+        self._slots: dict[str, _StagingSlot] = {}
         # Public: the connector sizes its sliding prefetch window to this.
         self.num_staging_slots = num_staging_slots
         self._lock = threading.Lock()
@@ -266,7 +263,7 @@ class CpuPinnedMemoryStore:
             user_id,
             num_tokens,
             len(pinned),
-            nbytes / (1024 * 1024),
+            bytes_to_mb(nbytes),
         )
 
     def peek_user_memory(self, user_id: str) -> UserMemory | None:
@@ -293,14 +290,14 @@ class CpuPinnedMemoryStore:
 
         self.prefetch_user_to_gpu(user_id)
         with self._lock:
-            view = self._views.get(user_id)
-        if view is None:
+            slot = self._slots.get(user_id)
+        if slot is None:
             raise RuntimeError(
                 f"Staging slot for user {user_id} was evicted before use; "
                 "increase --kv-staging-slots."
             )
         return UserMemory(
-            kv_by_layer=view,  # type: ignore[arg-type]  # duck-typed dict view
+            kv_by_layer=slot.view,  # type: ignore[arg-type]  # duck-typed dict view
             num_tokens=host_memory.num_tokens,
             token_ids=host_memory.token_ids,
         )
@@ -336,7 +333,7 @@ class CpuPinnedMemoryStore:
             host_memory = self._host.get(user_id)
             if host_memory is None:
                 return False
-            if user_id in self._staging:
+            if user_id in self._slots:
                 return True
 
         staging: dict[str, Any] = {}
@@ -358,13 +355,15 @@ class CpuPinnedMemoryStore:
             end_event.record(self._copy_stream)
 
         with self._lock:
-            self._staging[user_id] = staging
-            self._layer_events[user_id] = layer_events
-            self._xfer_events[user_id] = (start_event, end_event)
-            self._views[user_id] = _LayerKVView(
+            self._slots[user_id] = _StagingSlot(
                 gpu_tensors=staging,
-                layer_events=layer_events,
-                compute_stream_fn=self._current_compute_stream,
+                start_event=start_event,
+                end_event=end_event,
+                view=_LayerKVView(
+                    gpu_tensors=staging,
+                    layer_events=layer_events,
+                    compute_stream_fn=self._current_compute_stream,
+                ),
             )
 
         self._maybe_evict_staging(exclude=user_id)
@@ -373,20 +372,14 @@ class CpuPinnedMemoryStore:
     def release_staging(self, user_id: str) -> None:
         """Free the user's staging slot and record the transfer's metrics."""
         with self._lock:
-            staging = self._staging.pop(user_id, None)
-            self._layer_events.pop(user_id, None)
-            xfer_events = self._xfer_events.pop(user_id, None)
-            view = self._views.pop(user_id, None)
+            slot = self._slots.pop(user_id, None)
             host_memory = self._host.get(user_id)
 
-        if staging is None:
+        if slot is None:
             return
 
-        h2d_latency_ms = 0.0
-        if xfer_events is not None:
-            start_event, end_event = xfer_events
-            end_event.synchronize()
-            h2d_latency_ms = float(start_event.elapsed_time(end_event))
+        slot.end_event.synchronize()
+        h2d_latency_ms = float(slot.start_event.elapsed_time(slot.end_event))
 
         self._metrics.add(
             TransferRecord(
@@ -394,16 +387,16 @@ class CpuPinnedMemoryStore:
                 num_tokens=host_memory.num_tokens if host_memory is not None else 0,
                 num_bytes=host_memory.nbytes if host_memory is not None else 0,
                 h2d_latency_ms=h2d_latency_ms,
-                staging_stall_ms=view.stall_ms if view is not None else 0.0,
+                staging_stall_ms=slot.view.stall_ms,
             )
         )
 
     def _maybe_evict_staging(self, exclude: str) -> None:
         with self._lock:
-            if len(self._staging) <= self.num_staging_slots:
+            if len(self._slots) <= self.num_staging_slots:
                 return
             victim = next(
-                (candidate for candidate in self._staging if candidate != exclude), None
+                (candidate for candidate in self._slots if candidate != exclude), None
             )
         if victim is None:
             return
@@ -419,28 +412,40 @@ class CpuPinnedMemoryStore:
 
     def get_stats(self) -> dict[str, int | float]:
         with self._lock:
-            staging_bytes = sum(
-                _kv_nbytes(slot) for slot in self._staging.values()
+            staging_mb = bytes_to_mb(
+                sum(kv_nbytes(slot.gpu_tensors) for slot in self._slots.values())
             )
             return {
                 "num_users": len(self._host),
                 "total_tokens": sum(memory.num_tokens for memory in self._host.values()),
                 # total_gpu_mb keeps the GPU-store meaning of "resident HBM":
                 # for this store that is the staging pool, not the payload.
-                "total_gpu_mb": staging_bytes / (1024 * 1024),
-                "gpu_staging_mb": staging_bytes / (1024 * 1024),
-                "total_host_mb": sum(memory.nbytes for memory in self._host.values())
-                / (1024 * 1024),
+                "total_gpu_mb": staging_mb,
+                "gpu_staging_mb": staging_mb,
+                "total_host_mb": bytes_to_mb(
+                    sum(memory.nbytes for memory in self._host.values())
+                ),
             }
 
     def get_bench_summary(self) -> dict[str, float | int]:
-        return self._metrics.summary()
+        summary = self._metrics.summary()
+        # The store owns how its staging pool is sized, so it reports the
+        # steady-state HBM footprint (slots x average transfer) itself;
+        # instantaneous staging is zero outside an injection step.
+        transfers = int(summary["total_transfers"])
+        avg_transfer_bytes = (
+            summary["total_bytes_transferred"] / transfers if transfers else 0.0
+        )
+        summary["steady_state_staging_mb"] = bytes_to_mb(
+            self.num_staging_slots * avg_transfer_bytes
+        )
+        return summary
 
     def last_transfer_record(self) -> TransferRecord | None:
         return self._metrics.last_record()
 
     def transfer_count(self) -> int:
-        return self._metrics.total_transfers
+        return self._metrics.transfer_count()
 
     def reset_bench_metrics(self) -> None:
         self._metrics = _BenchMetrics()

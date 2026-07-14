@@ -10,7 +10,11 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from ..data import ConversationSample, QuestionAnswer, load_locomo
-from ..kv.context import reverse_ranked_memory_facts
+from ..kv.context import (
+    build_fact_context_encoding_plan,
+    reverse_ranked_memory_facts,
+    unique_memory_facts,
+)
 from ..kv.prompting import (
     build_kv_equivalence_prompt_token_ids,
     build_memory_prompt_token_ids,
@@ -20,7 +24,7 @@ from ..kv.prompting import (
 from ..kv.connector_utils import MEMORY_USER_ID_EXTRA_ARG
 from ..kv.tokenization import encode_text_no_special
 from ..results import write_json
-from ..retrieval.fact_catalog import FactCatalogStore, MemoryFact
+from ..retrieval.fact_catalog import FactCatalogStore, MemoryFact, fact_catalog_hits
 from ..retrieval.mem0_provider import MEMORY_LLM_TEMPERATURE, create_mem0_memory
 from ..retrieval.memory_builder import embed_mem0_query, load_facts_into_memory
 from ..embedding.cache import CachedEmbedder
@@ -204,17 +208,27 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
         footer_chunk = encoder.encode_token_ids_chunk("scaffold:footer", scaffold.footer_token_ids)
         chunks_by_sample: dict[str, dict[str, Any]] = {}
         for sample_number, sample in enumerate(used_samples, start=1):
-            facts = facts_by_sample[sample.sample_id]
+            kv_facts = unique_memory_facts(fact_catalog_hits(facts_by_sample[sample.sample_id]))
+            fact_token_ids = {
+                fact.memory_id: encode_text_no_special(tokenizer, format_memory_fact(fact))
+                for fact in kv_facts
+            }
+            turn_token_ids: dict[str, list[int]] = {}
             fact_chunks: dict[str, Any] = {}
-            for fact in facts:
-                fact_token_ids = encode_text_no_special(
-                    tokenizer,
-                    format_memory_fact(fact),
+            for fact in kv_facts:
+                # Chunk values are conditioned on the preceding context_window
+                # turns; only the fact-token KV slice is kept (prefix-discard),
+                # matching the accuracy path's vllm-kv encoding semantics.
+                plan = build_fact_context_encoding_plan(
+                    fact,
+                    sample,
+                    tokenizer=tokenizer,
+                    context_window=config.context_window,
+                    max_input_tokens=config.kv_max_position,
+                    fact_token_ids=fact_token_ids,
+                    turn_token_ids=turn_token_ids,
                 )
-                fact_chunks[fact.id] = encoder.encode_token_ids_chunk(
-                    f"{sample.sample_id}:{fact.id}",
-                    fact_token_ids,
-                )
+                fact_chunks[fact.memory_id] = encoder.encode_fact_chunk(plan)
             chunks_by_sample[sample.sample_id] = fact_chunks
             if sample_number == 1:
                 _check_kv_gpu_projection(

@@ -32,7 +32,7 @@ DRY_RUN="${DRY_RUN:-0}"
 
 # Grid -- only used when RUNIDS_FROM=grid. Must match the sweep that produced results.
 MODELS="${MODELS:-llama mistral qwen qwen3-14b}"
-TOPKS="${TOPKS:-5 10 20 50 100}"
+TOPKS="${TOPKS:-5 10 20 50}"
 KV_WINDOWS="${KV_WINDOWS:-${WINDOWS:-0 5 20 50}}"
 
 # ----- Build list of run-ids -----------------------------------------------

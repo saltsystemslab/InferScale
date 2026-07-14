@@ -60,7 +60,8 @@ class ThroughputConfig:
     requests_per_user: int = 2
     max_output_tokens: int = 50
     warmup_batches: int = 2
-    top_k: int = 10
+    top_k: int = 50
+    context_window: int = 50
     seed: int = 42
     kv_gpu_memory_utilization: float = 0.30
     kv_max_model_len: int = 32768
@@ -191,7 +192,16 @@ def parse_args(argv: list[str] | None = None) -> tuple[ThroughputConfig, bool]:
     parser.add_argument("--requests-per-user", type=int, default=int(os.environ.get("THROUGHPUT_REQUESTS_PER_USER", "2")))
     parser.add_argument("--max-output-tokens", type=int, default=int(os.environ.get("THROUGHPUT_MAX_OUTPUT_TOKENS", "50")))
     parser.add_argument("--warmup-batches", type=int, default=int(os.environ.get("THROUGHPUT_WARMUP_BATCHES", "2")))
-    parser.add_argument("--top-k", type=int, default=int(os.environ.get("THROUGHPUT_TOP_K", "10")))
+    parser.add_argument("--top-k", type=int, default=int(os.environ.get("THROUGHPUT_TOP_K", "50")))
+    parser.add_argument(
+        "--context-window",
+        type=int,
+        default=int(os.environ.get("THROUGHPUT_CONTEXT_WINDOW", "50")),
+        help=(
+            "Turns preceding each retrieved fact used as an encoding prefix for "
+            "kv_injection chunks (encoding-prefix-discard); text conditions ignore it."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=int(os.environ.get("THROUGHPUT_SEED", "42")))
     parser.add_argument(
         "--gpu-memory-utilization",
@@ -274,6 +284,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[ThroughputConfig, bool]:
         max_output_tokens=ns.max_output_tokens,
         warmup_batches=ns.warmup_batches,
         top_k=ns.top_k,
+        context_window=ns.context_window,
         seed=ns.seed,
         kv_gpu_memory_utilization=ns.kv_gpu_memory_utilization,
         kv_max_model_len=ns.kv_max_model_len,
@@ -317,6 +328,8 @@ def _validate_positive_options(ns: argparse.Namespace) -> None:
             raise ValueError(f"--{name.replace('_', '-')} must be greater than zero.")
     if ns.warmup_batches < 0:
         raise ValueError("--warmup-batches must be at least zero.")
+    if ns.context_window < 0:
+        raise ValueError("--context-window must be at least zero.")
     if not 0 < ns.kv_gpu_memory_utilization < 1:
         raise ValueError("--gpu-memory-utilization must be between zero and one.")
     uses_jasper = any(condition_vector_backend(condition) == "jasper" for condition in ns.conditions)

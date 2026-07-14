@@ -14,7 +14,6 @@ SCRIPT_CASES = (
     ("gpu1_topk10.sh", "1", 10),
     ("gpu2_topk20.sh", "2", 20),
     ("gpu3_topk50.sh", "3", 50),
-    ("gpu4_topk100.sh", "4", 100),
 )
 
 

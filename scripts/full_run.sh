@@ -2,14 +2,14 @@
 #
 # Sweep the LoCoMo Jasper benchmark across:
 #   models  = {llama, mistral, qwen, qwen3-14b}
-#   top-k   = {5, 10, 20, 50, 100}
+#   top-k   = {5, 10, 20, 50}
 #   context window = {0, 5, 20, 50} turns preceding each retrieved fact
 #
 # Per (model, top-k) it runs:
 #   - vllm-kv     + jasper, once per window W (--context-window W) -> 4 runs
 #   - vllm-prefix + qdrant, once as a separate baseline           -> 1 run
 #   - vllm-prefix + jasper, once as a separate baseline           -> 1 run
-# => 4 models x 5 top-k x (4 + 2) = 120 runs.
+# => 4 models x 4 top-k x (4 + 2) = 96 runs.
 #
 # Usage:
 #   BENCHMARK_RESULTS_ROOT=/path/to/results bash scripts/full_run.sh
@@ -29,7 +29,7 @@ set -uo pipefail
 
 # ----- Config (override via environment) -----------------------------------
 MODELS="${MODELS:-llama mistral qwen qwen3-14b}"
-TOPKS="${TOPKS:-5 10 20 50 100}"
+TOPKS="${TOPKS:-5 10 20 50}"
 KV_WINDOWS="${KV_WINDOWS:-${WINDOWS:-0 5 20 50}}"
 DATASET="${DATASET:-data/locomo10.json}"
 DRY_RUN="${DRY_RUN:-0}"

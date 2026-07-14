@@ -178,6 +178,29 @@ def test_parse_args_rejects_non_positive_staging_slots() -> None:
         parse_args(["--model", "test/model", "--kv-staging-slots", "0"])
 
 
+def test_parse_args_defaults_to_topk50_window50() -> None:
+    config, _ = parse_args(["--model", "test/model"])
+
+    assert config.top_k == 50
+    assert config.context_window == 50
+
+
+def test_parse_args_context_window_round_trips(tmp_path: Path) -> None:
+    config, _ = parse_args(["--model", "test/model", "--context-window", "0"])
+
+    assert config.context_window == 0
+
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config.to_jsonable()), encoding="utf-8")
+    restored = type(config).from_json_file(path)
+    assert restored.context_window == 0
+
+
+def test_parse_args_rejects_negative_context_window() -> None:
+    with pytest.raises(SystemExit):
+        parse_args(["--model", "test/model", "--context-window", "-1"])
+
+
 def test_cli_overrides_env_prefix_caching_in_both_directions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

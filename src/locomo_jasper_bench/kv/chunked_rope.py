@@ -3,15 +3,22 @@ from __future__ import annotations
 import sys
 import time
 import logging
+from collections.abc import Sequence
 from typing import Any
 
-from ..data import ConversationSample, Turn
+from ..data import ConversationSample
 from ..vector_types import SearchHit
-from .context import build_turn_context_encoding_plan, format_memory_turn
-from .prompting import extract_memory_scaffold_token_ids, selected_turn_ids
+from .context import (
+    build_fact_context_encoding_plan,
+    build_memory_fact_plan,
+    reverse_ranked_memory_facts,
+    unique_memory_facts,
+)
+from .gpu_memory_store import bytes_to_mb
+from .prompting import extract_memory_scaffold_token_ids, format_memory_fact
 from .rope import extract_cos_sin_from_model
 from .tokenization import encode_text_no_special
-from .types import ComposedMemory, EncodedChunk
+from .types import ComposedMemory, EncodedChunk, FactContextEncodingPlan, MemoryFact
 
 logger = logging.getLogger(__name__)
 
@@ -39,14 +46,11 @@ class ChunkedRopeEncoder:
         dtype: str,
         device: str,
         max_position: int,
-        context_window: int = 0,
     ) -> None:
         import torch
 
         if not torch.cuda.is_available():
             raise RuntimeError("KV injection requires a CUDA device.")
-        if context_window < 0:
-            raise ValueError("context_window must be >= 0.")
 
         self.model = model
         self.device = device
@@ -58,7 +62,9 @@ class ChunkedRopeEncoder:
         )
 
         cfg = self.hf_model.config
-        self.head_dim = cfg.hidden_size // cfg.num_attention_heads
+        self.head_dim = getattr(cfg, "head_dim", None)
+        if self.head_dim is None:
+            self.head_dim = cfg.hidden_size // cfg.num_attention_heads
         positions = torch.arange(max_position, device=device)
         self.cos_table, self.sin_table = extract_cos_sin_from_model(
             self.hf_model,
@@ -66,11 +72,16 @@ class ChunkedRopeEncoder:
             self.head_dim,
         )
 
-    def encode_token_ids_chunk(self, turn_id: str, token_ids: list[int]) -> EncodedChunk:
+    def encode_token_ids_chunk(self, chunk_id: str, token_ids: list[int]) -> EncodedChunk:
         if self.hf_model is None:
             raise RuntimeError("Cannot encode KV chunk because the HF encoder has been released.")
         if not token_ids:
-            raise RuntimeError(f"Memory chunk tokenized to zero tokens: {turn_id}")
+            raise RuntimeError(f"Memory chunk tokenized to zero tokens: {chunk_id}")
+        if len(token_ids) > self.max_position:
+            raise RuntimeError(
+                f"Memory chunk {chunk_id} has {len(token_ids)} tokens, "
+                f"exceeding kv_max_position={self.max_position}."
+            )
         return EncodedChunk(
             token_ids=list(token_ids),
             kv_by_layer=_detach_kv_by_layer_to_device(
@@ -84,26 +95,23 @@ class ChunkedRopeEncoder:
             ),
         )
 
-    def encode_turn_chunk(
-        self,
-        sample: ConversationSample,
-        turn: Turn,
-        *,
-        context_window: int,
-        turn_token_ids: dict[str, list[int]],
-    ) -> EncodedChunk:
-        if self.tokenizer is None or self.hf_model is None:
-            raise RuntimeError("Cannot encode KV chunk because the HF encoder has been released.")
-        plan = build_turn_context_encoding_plan(
-            self.tokenizer,
-            sample,
-            turn,
-            context_window=context_window,
-            max_input_tokens=self.max_position,
-            turn_token_ids=turn_token_ids,
+    def compose_chunks(self, chunks: list[EncodedChunk]) -> dict[str, Any]:
+        """Compose pre-RoPE chunks into position-correct GPU KV tensors."""
+        if not chunks:
+            raise ValueError("At least one encoded chunk is required.")
+        return _compose_encoded_chunks(
+            chunks,
+            device=self.device,
+            max_position=self.max_position,
+            cos_table=self.cos_table,
+            sin_table=self.sin_table,
         )
+
+    def encode_fact_chunk(self, plan: FactContextEncodingPlan) -> EncodedChunk:
+        if self.hf_model is None:
+            raise RuntimeError("Cannot encode KV chunk because the HF encoder has been released.")
         return EncodedChunk(
-            token_ids=plan.target_token_ids,
+            token_ids=list(plan.target_token_ids),
             kv_by_layer=_detach_kv_by_layer_to_device(
                 _encode_token_chunk_pre_rope(
                     self.hf_model,
@@ -113,10 +121,10 @@ class ChunkedRopeEncoder:
                 ),
                 self.device,
             ),
-            context_window=context_window,
+            context_turn_ids=plan.context_turn_ids,
             context_prefix_tokens=len(plan.context_token_ids),
-            raw_context_prefix_tokens=plan.raw_context_prefix_tokens,
-            context_prefix_truncated_tokens=plan.context_prefix_truncated_tokens,
+            raw_context_prefix_tokens=plan.raw_context_tokens,
+            context_prefix_truncated_tokens=plan.context_truncated_tokens,
         )
 
     def release_model(self) -> None:
@@ -156,99 +164,205 @@ class ChunkedRopeSampleComposer:
         *,
         encoder: ChunkedRopeEncoder,
         context_window: int = 0,
+        block_size: int = 16,
     ) -> None:
         if context_window < 0:
             raise ValueError("context_window must be >= 0.")
+        if block_size < 1:
+            raise ValueError("block_size must be >= 1.")
 
         self.encoder = encoder
         self.model = encoder.model
         self.device = encoder.device
         self.max_position = encoder.max_position
         self.context_window = context_window
+        self.block_size = block_size
         self.chunks: dict[str, EncodedChunk] = {}
+        self._fact_token_ids: dict[str, list[int]] = {}
         self._turn_token_ids: dict[str, list[int]] = {}
+        self._facts: list[MemoryFact] = []
+        self._facts_by_id: dict[str, MemoryFact] = {}
+        self._sample: ConversationSample | None = None
+        self.header_chunk: EncodedChunk | None = None
+        self.memory_list_header_chunk: EncodedChunk | None = None
+        self.empty_memory_chunk: EncodedChunk | None = None
+        self.footer_chunk: EncodedChunk | None = None
         if encoder.tokenizer is None:
             raise RuntimeError("Cannot create sample composer because the HF encoder has been released.")
-        scaffold = extract_memory_scaffold_token_ids(encoder.tokenizer)
-        self.header_chunk = encoder.encode_token_ids_chunk("__header__", scaffold.header_token_ids)
-        self.footer_chunk = (
-            encoder.encode_token_ids_chunk("__footer__", scaffold.footer_token_ids)
-            if scaffold.footer_token_ids
-            else None
-        )
 
-    def encode_sample(self, sample: ConversationSample, turn_ids: set[str] | None = None) -> None:
+    def encode_sample(
+        self,
+        sample: ConversationSample,
+        facts: Sequence[SearchHit],
+    ) -> None:
         if self.encoder.tokenizer is None:
             raise RuntimeError("Cannot encode sample because the HF encoder has been released.")
-        self._turn_token_ids = _encode_sample_turn_tokens(self.encoder.tokenizer, sample)
-        turns = sample.turns
-        if turn_ids is not None:
-            turns = [turn for turn in sample.turns if turn.id in turn_ids]
+        self._sample = sample
+        self._facts = unique_memory_facts(facts)
+        self._facts_by_id = {fact.memory_id: fact for fact in self._facts}
+        scaffold = extract_memory_scaffold_token_ids(
+            self.encoder.tokenizer,
+            sample,
+            block_size=self.block_size,
+        )
+        self.header_chunk = self.encoder.encode_token_ids_chunk(
+            "__header__",
+            scaffold.header_token_ids,
+        )
+        if scaffold.memory_list_header_token_ids:
+            self.memory_list_header_chunk = self.encoder.encode_token_ids_chunk(
+                "__memory_list_header__",
+                scaffold.memory_list_header_token_ids,
+            )
+        else:
+            # The scaffold renders retrieved facts without a list heading, so
+            # there is no chunk to encode; compose() treats None as zero tokens.
+            self.memory_list_header_chunk = None
+        self.empty_memory_chunk = self.encoder.encode_token_ids_chunk(
+            "__empty_memory__",
+            scaffold.empty_memory_token_ids,
+        )
+        self.footer_chunk = self.encoder.encode_token_ids_chunk(
+            "__footer__",
+            scaffold.footer_token_ids,
+        )
+        self._fact_token_ids = {
+            fact.memory_id: encode_text_no_special(
+                self.encoder.tokenizer,
+                format_memory_fact(fact),
+            )
+            for fact in self._facts
+        }
         logger.info(
-            "Pre-RoPE encoding %d memory chunks for sample_id=%s context_window=%d",
-            len(turns),
+            "Pre-RoPE encoding %d unique Mem0 fact chunks for sample_id=%s context_window=%d",
+            len(self._facts),
             sample.sample_id,
             self.context_window,
         )
-        for turn in turns:
-            self.chunks[turn.id] = self._encode_turn_chunk(sample, turn)
+        for fact in self._facts:
+            self.chunks[fact.memory_id] = self._encode_fact_chunk(fact)
         logger.info("Pre-RoPE encoded %d chunks for sample_id=%s", len(self.chunks), sample.sample_id)
 
-    def compose(self, hits: list[SearchHit]) -> ComposedMemory:
+    def compose(
+        self,
+        hits: list[SearchHit],
+        *,
+        memory_token_budget: int | None = None,
+    ) -> ComposedMemory:
         started = time.perf_counter()
-        turn_ids = selected_turn_ids(hits)
-        if not turn_ids:
-            raise RuntimeError("Cannot compose KV memory because retrieval returned no turn ids.")
+        if self._sample is None:
+            raise RuntimeError("Cannot compose KV memory before encoding a sample.")
+        if (
+            self.header_chunk is None
+            or self.empty_memory_chunk is None
+            or self.footer_chunk is None
+        ):
+            raise RuntimeError("Cannot compose KV memory before encoding its prompt scaffold.")
+        retrieved_facts = unique_memory_facts(hits)
+        selected_facts = reverse_ranked_memory_facts(hits)
+        for fact in selected_facts:
+            cached = self._facts_by_id.get(fact.memory_id)
+            if cached is None:
+                raise RuntimeError(
+                    f"Retrieved Mem0 fact was not present in the precompute catalog: {fact.memory_id}."
+                )
+            if cached != fact:
+                raise RuntimeError(
+                    f"Retrieved Mem0 fact changed after precompute: {fact.memory_id}."
+                )
 
-        selected = []
-        missing = []
-        for turn_id in turn_ids:
-            chunk = self.chunks.get(turn_id)
-            if chunk is None:
-                missing.append(turn_id)
-            else:
-                selected.append(chunk)
-        if missing:
+        effective_memory_token_budget = min(
+            self.max_position,
+            self.max_position if memory_token_budget is None else memory_token_budget,
+        )
+        if selected_facts:
+            memory_heading_chunks = (
+                [self.memory_list_header_chunk]
+                if self.memory_list_header_chunk is not None
+                else []
+            )
+        else:
+            memory_heading_chunks = [self.empty_memory_chunk]
+        memory_heading_tokens = sum(
+            len(chunk.token_ids) for chunk in memory_heading_chunks
+        )
+        scaffold_token_count = (
+            len(self.header_chunk.token_ids)
+            + memory_heading_tokens
+            + len(self.footer_chunk.token_ids)
+        )
+        fact_plan = build_memory_fact_plan(
+            selected_facts,
+            retrieved_facts=retrieved_facts,
+            context_window=self.context_window,
+            memory_token_budget=effective_memory_token_budget,
+            scaffold_token_count=scaffold_token_count,
+            fact_token_ids=self._fact_token_ids,
+            encoded_chunks=self.chunks,
+        )
+        if fact_plan.memory_tokens > effective_memory_token_budget:
+            raise AssertionError("Planned KV memory exceeds its token budget.")
+
+        fact_tokens_end = (
+            len(self.header_chunk.token_ids)
+            + memory_heading_tokens
+            + fact_plan.fact_tokens
+        )
+        loaded_memory_tokens = (
+            fact_plan.memory_tokens // self.block_size
+        ) * self.block_size
+        recomputed_memory_tail_tokens = fact_plan.memory_tokens - loaded_memory_tokens
+        if loaded_memory_tokens < fact_tokens_end:
             raise RuntimeError(
-                "Retrieved memory chunks were not pre-encoded: " + ", ".join(missing[:5])
+                "The block-aligned KV prefix would leave retrieved fact tokens in the "
+                "recomputed tail: "
+                f"loaded={loaded_memory_tokens} facts_end={fact_tokens_end} "
+                f"memory={fact_plan.memory_tokens} block_size={self.block_size}."
             )
 
-        chunks = [self.header_chunk, *selected]
-        if self.footer_chunk is not None:
-            chunks.append(self.footer_chunk)
+        selected: list[EncodedChunk] = []
+        for fact in selected_facts:
+            selected.append(self.chunks[fact.memory_id])
+
+        chunks = [self.header_chunk, *memory_heading_chunks, *selected]
+        chunks.append(self.footer_chunk)
         kv_by_layer = self._compose_chunks(chunks)
         token_ids: list[int] = []
         for chunk in chunks:
             token_ids.extend(chunk.token_ids)
-        if len(token_ids) > self.max_position:
-            raise RuntimeError(
-                f"Composed memory has {len(token_ids)} tokens, exceeding kv_max_position={self.max_position}."
+        if len(token_ids) != fact_plan.memory_tokens:
+            raise AssertionError(
+                "Planned memory token count does not match the composed KV memory."
             )
-        selected_context_tokens = [chunk.context_prefix_tokens for chunk in selected]
         return ComposedMemory(
             kv_by_layer=kv_by_layer,
             token_ids=token_ids,
             num_tokens=len(token_ids),
             compose_time_ms=(time.perf_counter() - started) * 1000,
-            selected_turn_ids=turn_ids,
-            context_window=self.context_window,
-            context_prefix_tokens_total=sum(selected_context_tokens),
-            context_prefix_tokens_max=max(selected_context_tokens, default=0),
-            context_prefix_truncated_tokens=sum(chunk.context_prefix_truncated_tokens for chunk in selected),
+            fact_plan=fact_plan,
+            loaded_memory_tokens=loaded_memory_tokens,
+            recomputed_memory_tail_tokens=recomputed_memory_tail_tokens,
+            fact_tokens_end=fact_tokens_end,
         )
 
     def cache_stats(self) -> dict[str, Any]:
         scaffold_chunks = []
         header_chunk = getattr(self, "header_chunk", None)
         footer_chunk = getattr(self, "footer_chunk", None)
+        memory_list_header_chunk = getattr(self, "memory_list_header_chunk", None)
+        empty_memory_chunk = getattr(self, "empty_memory_chunk", None)
         if header_chunk is not None:
             scaffold_chunks.append(header_chunk)
+        if memory_list_header_chunk is not None:
+            scaffold_chunks.append(memory_list_header_chunk)
+        if empty_memory_chunk is not None:
+            scaffold_chunks.append(empty_memory_chunk)
         if footer_chunk is not None:
             scaffold_chunks.append(footer_chunk)
-        turn_chunks_by_id = getattr(self, "chunks", {}) or {}
-        turn_chunks = list(turn_chunks_by_id.values())
+        fact_chunks_by_id = getattr(self, "chunks", {}) or {}
+        fact_chunks = list(fact_chunks_by_id.values())
         chunks = list(scaffold_chunks)
-        chunks.extend(turn_chunks)
+        chunks.extend(fact_chunks)
 
         total_bytes = 0
         total_tokens = 0
@@ -263,8 +377,8 @@ class ChunkedRopeSampleComposer:
                 if device is not None:
                     devices.add(str(device))
         prefix_tensor_bytes = sum(_chunk_tensor_bytes(chunk) for chunk in scaffold_chunks)
-        turn_chunk_tensor_bytes = sum(_chunk_tensor_bytes(chunk) for chunk in turn_chunks)
-        chunk_map_cpu_bytes = _chunk_map_cpu_bytes(turn_chunks_by_id)
+        fact_chunk_tensor_bytes = sum(_chunk_tensor_bytes(chunk) for chunk in fact_chunks)
+        chunk_map_cpu_bytes = _chunk_map_cpu_bytes(fact_chunks_by_id)
 
         return {
             "kv_chunk_cache_residency": "gpu",
@@ -274,15 +388,15 @@ class ChunkedRopeSampleComposer:
             "kv_precomputed_layers": layer_count,
             "kv_precomputed_gpu_mb": total_bytes / (1024 * 1024),
             "kv_precomputed_devices": ",".join(sorted(devices)),
-            "llama_kv_chunk_count": len(turn_chunks),
+            "llama_kv_chunk_count": len(fact_chunks),
             "llama_kv_chunk_map_cpu_bytes": chunk_map_cpu_bytes,
-            "llama_kv_chunk_map_cpu_mb": _bytes_to_mb(chunk_map_cpu_bytes),
-            "llama_kv_chunk_tensor_gpu_bytes": turn_chunk_tensor_bytes,
-            "llama_kv_chunk_tensor_gpu_mb": _bytes_to_mb(turn_chunk_tensor_bytes),
+            "llama_kv_chunk_map_cpu_mb": bytes_to_mb(chunk_map_cpu_bytes),
+            "llama_kv_chunk_tensor_gpu_bytes": fact_chunk_tensor_bytes,
+            "llama_kv_chunk_tensor_gpu_mb": bytes_to_mb(fact_chunk_tensor_bytes),
             "llama_kv_prefix_tensor_gpu_bytes": prefix_tensor_bytes,
-            "llama_kv_prefix_tensor_gpu_mb": _bytes_to_mb(prefix_tensor_bytes),
+            "llama_kv_prefix_tensor_gpu_mb": bytes_to_mb(prefix_tensor_bytes),
             "llama_kv_total_tensor_gpu_bytes": total_bytes,
-            "llama_kv_total_tensor_gpu_mb": _bytes_to_mb(total_bytes),
+            "llama_kv_total_tensor_gpu_mb": bytes_to_mb(total_bytes),
         }
 
     def close(self) -> None:
@@ -293,8 +407,14 @@ class ChunkedRopeSampleComposer:
             "encoder",
             "chunks",
             "header_chunk",
+            "memory_list_header_chunk",
+            "empty_memory_chunk",
             "footer_chunk",
+            "_fact_token_ids",
             "_turn_token_ids",
+            "_facts",
+            "_facts_by_id",
+            "_sample",
         ):
             if hasattr(self, attr):
                 try:
@@ -304,31 +424,22 @@ class ChunkedRopeSampleComposer:
         gc.collect()
         torch.cuda.empty_cache()
 
-    def _encode_turn_chunk(self, sample: ConversationSample, turn: Turn) -> EncodedChunk:
-        return self.encoder.encode_turn_chunk(
-            sample,
-            turn,
+    def _encode_fact_chunk(self, fact: MemoryFact) -> EncodedChunk:
+        if self._sample is None:
+            raise RuntimeError("Cannot encode a fact chunk before encode_sample().")
+        plan = build_fact_context_encoding_plan(
+            fact,
+            self._sample,
+            tokenizer=self.encoder.tokenizer,
             context_window=self.context_window,
+            max_input_tokens=self.max_position,
+            fact_token_ids=self._fact_token_ids,
             turn_token_ids=self._turn_token_ids,
         )
-
-    def _encode_text_chunk(self, turn_id: str, text: str) -> EncodedChunk:
-        if self.encoder.tokenizer is None:
-            raise RuntimeError("Cannot encode text chunk because the HF encoder has been released.")
-        token_ids = encode_text_no_special(self.encoder.tokenizer, text)
-        return self._encode_token_ids_chunk(turn_id, token_ids)
-
-    def _encode_token_ids_chunk(self, turn_id: str, token_ids: list[int]) -> EncodedChunk:
-        return self.encoder.encode_token_ids_chunk(turn_id, token_ids)
+        return self.encoder.encode_fact_chunk(plan)
 
     def _compose_chunks(self, chunks: list[EncodedChunk]) -> dict[str, Any]:
-        return _compose_encoded_chunks(
-            chunks,
-            device=self.device,
-            max_position=self.max_position,
-            cos_table=self.encoder.cos_table,
-            sin_table=self.encoder.sin_table,
-        )
+        return self.encoder.compose_chunks(chunks)
 
 
 def _compose_encoded_chunks(
@@ -474,22 +585,32 @@ def _encoded_chunk_cpu_bytes(chunk: EncodedChunk) -> int:
     return total
 
 
-def _bytes_to_mb(byte_count: int) -> float:
-    return byte_count / (1024 * 1024)
-
-
 def _load_hf_model_and_tokenizer(
     *, model: str, dtype: Any, device: str
 ) -> tuple[Any, Any]:
     import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoModelForCausalLM
+
+    # Chunk token ids must be byte-identical to the ids the vLLM engine sees
+    # (the connector matches registered chunks as a prompt prefix), so load
+    # the tokenizer through vLLM's resolver rather than AutoTokenizer. With
+    # transformers>=4.56 plus mistral_common installed, AutoTokenizer resolves
+    # Mistral models to MistralCommonTokenizer while the engine uses the HF
+    # fast tokenizer, and the two encode differently from the first token.
+    from vllm.transformers_utils.tokenizer import get_tokenizer
 
     logger.info("Loading pre-RoPE encoder model=%s device=%s", model, device)
     started = time.perf_counter()
-    tokenizer = AutoTokenizer.from_pretrained(model)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.pad_token_id = tokenizer.eos_token_id
+    tokenizer = get_tokenizer(model)
+    # The encoder never pads (chunks are encoded one sequence at a time); this
+    # fixup only keeps HF tokenizers usable elsewhere. vLLM's MistralTokenizer
+    # wrapper exposes no pad_token attribute, so skip it there.
+    if getattr(tokenizer, "pad_token", None) is None and hasattr(tokenizer, "eos_token"):
+        try:
+            tokenizer.pad_token = tokenizer.eos_token
+            tokenizer.pad_token_id = tokenizer.eos_token_id
+        except AttributeError:
+            pass
 
     hf_model = AutoModelForCausalLM.from_pretrained(
         model,
@@ -504,12 +625,3 @@ def _load_hf_model_and_tokenizer(
         torch.cuda.memory_allocated() / 1e9,
     )
     return tokenizer, hf_model
-
-
-def _encode_sample_turn_tokens(
-    tokenizer: Any, sample: ConversationSample
-) -> dict[str, list[int]]:
-    return {
-        turn.id: encode_text_no_special(tokenizer, format_memory_turn(turn))
-        for turn in sample.turns
-    }

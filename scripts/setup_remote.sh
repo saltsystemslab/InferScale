@@ -7,6 +7,8 @@ cd "${PROJECT_ROOT}"
 
 # shellcheck source=scripts/load_env.sh
 source "${SCRIPT_DIR}/load_env.sh"
+# shellcheck source=scripts/runpod_cuda_cmake.sh
+source "${SCRIPT_DIR}/runpod_cuda_cmake.sh"
 
 CUDA_MODULE="${CUDA_MODULE-cuda/12.8}"
 PYTORCH_INDEX="${PYTORCH_INDEX:-https://download.pytorch.org/whl/cu128}"
@@ -99,12 +101,16 @@ fi
 
 python -m pip install -c "${CONSTRAINTS_FILE}" torch torchvision torchaudio --index-url "${PYTORCH_INDEX}"
 python -m pip install -c "${CONSTRAINTS_FILE}" -e ".[dev,jasper]"
-python -m pip install -c "${CONSTRAINTS_FILE}" vllm accelerate --extra-index-url "${PYTORCH_INDEX}"
+python -m pip install -c "${CONSTRAINTS_FILE}" vllm accelerate hf_transfer --extra-index-url "${PYTORCH_INDEX}"
+
+declare -a JASPER_CMAKE_PLATFORM_ARGS=()
+configure_runpod_cuda_cmake_args
 
 cmake -S jasperpy -B jasperpy/build \
   -DJASPER_BUILD_FFI=ON \
   -DJASPER_BUILD_CMD=ON \
-  -DCMAKE_CUDA_ARCHITECTURES="${JASPER_CUDA_ARCHITECTURES}"
+  -DCMAKE_CUDA_ARCHITECTURES="${JASPER_CUDA_ARCHITECTURES}" \
+  "${JASPER_CMAKE_PLATFORM_ARGS[@]}"
 cmake --build jasperpy/build --parallel
 cmake --install jasperpy/build
 python -m pip install -e jasperpy/python
@@ -124,10 +130,7 @@ print("transformers:", transformers.__version__)
 print("vllm:", vllm.__version__)
 PY
 
-PREEMBED_RUN_ID="${PREEMBED_RUN_ID:-setup-preembed-$(date -u +%Y%m%dT%H%M%SZ)}"
-locomo-jasper-bench \
-  --dataset "${LOCOMO_DATASET_PATH}" \
-  --results-dir "${BENCHMARK_RESULTS_ROOT}" \
-  --max-samples 10 \
-  --preembed-only \
-  --run-id "${PREEMBED_RUN_ID}"
+# Fact extraction is a separate step so it can run in parallel across pods;
+# see "Extract the fact catalogs" in README.md (scripts/individual/extract_<model>.sh,
+# or scripts/extract_facts.sh for the serial all-models run).
+echo "Setup complete. Next: extract the Mem0 fact catalogs (see README.md, e.g. scripts/individual/extract_llama.sh)."

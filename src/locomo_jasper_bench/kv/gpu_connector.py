@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -20,6 +21,7 @@ from .connector_metadata import (
     extra_config as _extra_config,
     extract_user_id as _extract_user_id,
 )
+from .connector_utils import DEFAULT_KV_STAGING_SLOTS, DEFAULT_KV_STORE_BACKEND
 from .gpu_registry import get_gpu_memory_store
 
 from vllm.model_executor.layers.attention.mla_attention import MLACommonMetadata
@@ -33,6 +35,48 @@ if TYPE_CHECKING:
     from vllm.v1.request import Request
 
 logger = init_logger(__name__)
+
+# Strict GPU mode runs the vLLM engine in-process, so the benchmark worker can
+# read these counters to verify that every measured request actually had its
+# KV loaded (a load that never happens would otherwise be invisible).
+_LOAD_STATS_LOCK = threading.Lock()
+_LOAD_STATS = {"requests_loaded": 0, "tokens_loaded": 0}
+# Request ids that had memory injected, and request ids whose memory region
+# was fully covered by the native prefix cache (a legitimate no-load). Their
+# union is the set of requests that generated WITH their memory available,
+# which is what the benchmark's fail-fast check needs to be exact.
+_LOADED_REQUEST_IDS: set[str] = set()
+_NATIVE_COVERED_REQUEST_IDS: set[str] = set()
+
+
+def reset_load_stats() -> None:
+    with _LOAD_STATS_LOCK:
+        _LOAD_STATS["requests_loaded"] = 0
+        _LOAD_STATS["tokens_loaded"] = 0
+        _LOADED_REQUEST_IDS.clear()
+        _NATIVE_COVERED_REQUEST_IDS.clear()
+
+
+def snapshot_load_stats() -> dict[str, int]:
+    with _LOAD_STATS_LOCK:
+        return {
+            **_LOAD_STATS,
+            "requests_covered": len(_LOADED_REQUEST_IDS | _NATIVE_COVERED_REQUEST_IDS),
+        }
+
+
+def _record_load(num_tokens: int, request_id: str = "") -> None:
+    with _LOAD_STATS_LOCK:
+        _LOAD_STATS["requests_loaded"] += 1
+        _LOAD_STATS["tokens_loaded"] += int(num_tokens)
+        if request_id:
+            _LOADED_REQUEST_IDS.add(str(request_id))
+
+
+def _record_native_covered(request_id: str) -> None:
+    with _LOAD_STATS_LOCK:
+        if request_id:
+            _NATIVE_COVERED_REQUEST_IDS.add(str(request_id))
 
 
 def _is_mla_metadata(value: Any) -> bool:
@@ -61,10 +105,21 @@ class MemoryKVConnector(KVConnectorBase_V1):
         )
 
         namespace = str(_extra_config(self._kv_transfer_config, "memory_namespace", "default"))
-        self._memory_store = get_gpu_memory_store(namespace)
+        store_backend = str(
+            _extra_config(self._kv_transfer_config, "memory_store_backend", DEFAULT_KV_STORE_BACKEND)
+        )
+        num_staging_slots = int(
+            _extra_config(self._kv_transfer_config, "num_staging_slots", DEFAULT_KV_STAGING_SLOTS)
+        )
+        self._memory_store = get_gpu_memory_store(
+            namespace,
+            backend=store_backend,
+            num_staging_slots=num_staging_slots,
+        )
         self._default_user_id = _extra_config(self._kv_transfer_config, "default_user_id")
         self._allow_prefix_scan = bool(_extra_config(self._kv_transfer_config, "allow_prefix_scan", False))
-        self._requests_need_load: dict[str, tuple[str, int]] = {}
+        self._log_memory_hits = bool(_extra_config(self._kv_transfer_config, "log_memory_hits", True))
+        self._requests_need_load: dict[str, tuple[str, int, int]] = {}
 
         if self._allow_prefix_scan:
             logger.warning(
@@ -90,13 +145,19 @@ class MemoryKVConnector(KVConnectorBase_V1):
         user_id = _extract_user_id(request, self._default_user_id)
         if user_id is not None:
             match = self._try_match_user(user_id, prompt_token_ids)
+            if match is None:
+                raise RuntimeError(
+                    "Explicit strict GPU memory routing failed: "
+                    f"user_id={user_id!r} request_id={request.request_id!r}."
+                )
         elif self._allow_prefix_scan:
             match = None
             for candidate_user_id in self._memory_store.get_all_user_ids():
                 match = self._try_match_user(candidate_user_id, prompt_token_ids)
                 if match is not None:
                     user_id = candidate_user_id
-                    logger.warning(
+                    log_match = logger.warning if self._log_memory_hits else logger.debug
+                    log_match(
                         "Prefix scan matched strict GPU memory user %s for a request with no explicit user id.",
                         candidate_user_id,
                     )
@@ -110,10 +171,18 @@ class MemoryKVConnector(KVConnectorBase_V1):
         aligned_tokens, raw_memory_tokens = match
         new_tokens = aligned_tokens - num_computed_tokens
         if new_tokens <= 0:
+            # The native prefix cache fully covers this request's memory
+            # region: a legitimate no-load that still counts as covered.
+            _record_native_covered(str(request.request_id))
             return 0, False
 
         request._memory_user_id = user_id  # type: ignore[attr-defined]
-        logger.info(
+        # With prefix caching enabled, num_computed_tokens can cover a
+        # block-aligned front of the memory region; the load must then skip
+        # those tokens and target the blocks after the cached ones.
+        request._memory_skip_tokens = int(num_computed_tokens)  # type: ignore[attr-defined]
+        log_hit = logger.info if self._log_memory_hits else logger.debug
+        log_hit(
             "Strict GPU memory hit user=%s aligned_tokens=%d raw_tokens=%d new_tokens=%d",
             user_id,
             aligned_tokens,
@@ -123,15 +192,16 @@ class MemoryKVConnector(KVConnectorBase_V1):
         return new_tokens, False
 
     def _try_match_user(self, user_id: str, prompt_token_ids: list[int]) -> tuple[int, int] | None:
-        memory = self._memory_store.get_user_memory(user_id)
+        # Metadata-only read: matching must never stage KV (the cpu-pinned
+        # store's get_user_memory issues a full H2D prefetch).
+        memory = self._memory_store.peek_user_memory(user_id)
         if memory is None or memory.token_ids is None:
             return None
 
-        memory_token_ids = list(memory.token_ids)
-        num_memory_tokens = len(memory_token_ids)
+        num_memory_tokens = len(memory.token_ids)
         if len(prompt_token_ids) <= num_memory_tokens:
             return None
-        if prompt_token_ids[:num_memory_tokens] != memory_token_ids:
+        if prompt_token_ids[:num_memory_tokens] != memory.token_ids:
             return None
 
         aligned_tokens = align_to_block_size(num_memory_tokens, self._block_size)
@@ -155,12 +225,18 @@ class MemoryKVConnector(KVConnectorBase_V1):
         if user_id is None:
             return
 
-        self._requests_need_load[request.request_id] = (str(user_id), int(num_external_tokens))
+        skip_tokens = int(getattr(request, "_memory_skip_tokens", 0))
+        self._requests_need_load[request.request_id] = (
+            str(user_id),
+            int(num_external_tokens),
+            skip_tokens,
+        )
         logger.debug(
-            "Scheduled strict GPU memory load req=%s user=%s tokens=%d",
+            "Scheduled strict GPU memory load req=%s user=%s tokens=%d skip=%d",
             request.request_id,
             user_id,
             num_external_tokens,
+            skip_tokens,
         )
 
     def build_connector_meta(self, scheduler_output: SchedulerOutput) -> KVConnectorMetadata:
@@ -171,14 +247,40 @@ class MemoryKVConnector(KVConnectorBase_V1):
             req_id = new_req.req_id
             if req_id not in self._requests_need_load:
                 continue
-            user_id, num_memory_tokens = self._requests_need_load[req_id]
+            user_id, num_memory_tokens, skip_tokens = self._requests_need_load[req_id]
+            if skip_tokens % self._block_size != 0:
+                raise RuntimeError(
+                    f"Native prefix-cache hit of {skip_tokens} tokens for req {req_id} "
+                    f"is not block-aligned (block_size={self._block_size})."
+                )
+            skip_blocks = skip_tokens // self._block_size
             num_memory_blocks = (num_memory_tokens + self._block_size - 1) // self._block_size
-            memory_block_ids = new_req.block_ids[0][:num_memory_blocks]
+            memory_block_ids = new_req.block_ids[0][skip_blocks : skip_blocks + num_memory_blocks]
+            if len(memory_block_ids) != num_memory_blocks:
+                # Fires if vLLM's NewRequestData.block_ids does not include the
+                # natively cached front blocks; the offset assumption must then
+                # be revisited rather than injecting into the wrong blocks.
+                raise RuntimeError(
+                    f"Request {req_id} exposes {len(new_req.block_ids[0])} block(s); "
+                    f"expected at least {skip_blocks + num_memory_blocks} "
+                    f"(skip={skip_blocks}, load={num_memory_blocks})."
+                )
+            if skip_tokens > 0:
+                logger.info(
+                    "Partial native prefix hit: skipping %d cached tokens (%d blocks) "
+                    "before injecting %d memory tokens for user %s",
+                    skip_tokens,
+                    skip_blocks,
+                    num_memory_tokens,
+                    user_id,
+                )
             meta.add_load(
                 user_id=user_id,
                 block_ids=memory_block_ids,
                 block_size=self._block_size,
                 num_tokens=num_memory_tokens,
+                skip_tokens=skip_tokens,
+                request_id=str(req_id),
             )
             handled_req_ids.append(req_id)
 
@@ -192,7 +294,15 @@ class MemoryKVConnector(KVConnectorBase_V1):
             if new_block_ids is None:
                 continue
 
-            user_id, num_memory_tokens = self._requests_need_load[req_id]
+            user_id, num_memory_tokens, skip_tokens = self._requests_need_load[req_id]
+            if skip_tokens > 0:
+                # A resumed request whose memory region was partially covered by
+                # the native prefix cache has no verified block layout; fail
+                # closed instead of guessing where the tail blocks landed.
+                raise RuntimeError(
+                    f"Resumed request {req_id} has a partial native prefix hit "
+                    f"({skip_tokens} tokens); this combination is unsupported."
+                )
             num_memory_blocks = (num_memory_tokens + self._block_size - 1) // self._block_size
             memory_block_ids = new_block_ids[0][:num_memory_blocks]
             meta.add_load(
@@ -200,6 +310,7 @@ class MemoryKVConnector(KVConnectorBase_V1):
                 block_ids=memory_block_ids,
                 block_size=self._block_size,
                 num_tokens=num_memory_tokens,
+                request_id=str(req_id),
             )
             handled_req_ids.append(req_id)
 
@@ -215,50 +326,104 @@ class MemoryKVConnector(KVConnectorBase_V1):
         metadata = self._get_connector_metadata()
         if not isinstance(metadata, MemoryConnectorMetadata):
             raise TypeError(f"Unexpected connector metadata type: {type(metadata)!r}")
-
-        attn_metadata = forward_context.attn_metadata
-        if attn_metadata is None:
-            logger.warning("start_load_kv called with no attention metadata.")
+        if not metadata.loads:
+            # Decode-only steps must stay zero-cost: no staging traffic and
+            # no store interaction of any kind.
             return
 
-        for load in metadata.loads:
-            memory = self._memory_store.get_user_memory(load.user_id)
-            if memory is None:
-                logger.warning("Strict GPU memory for user %s was not found during load.", load.user_id)
+        # By the time start_load_kv runs, the scheduler has already credited
+        # the memory tokens as externally computed and skipped their prefill,
+        # so any failure to load below must fail closed: continuing would let
+        # the request attend over uninitialized KV.
+        attn_metadata = forward_context.attn_metadata
+        if attn_metadata is None:
+            raise RuntimeError(
+                "start_load_kv called with no attention metadata while "
+                f"{len(metadata.loads)} strict GPU memory load(s) are pending."
+            )
+
+        # Pinned-host store: slide a prefetch window sized to the staging
+        # pool. Staging every load up front would evict just-prefetched
+        # users whenever one step carries more loads than slots; instead
+        # each release below frees the slot the next pending load fills.
+        # No-ops for the GPU store (num_staging_slots == 0 -> full window).
+        loads = metadata.loads
+        slots = int(self._memory_store.num_staging_slots or 0)
+        window = min(slots, len(loads)) if slots > 0 else len(loads)
+        for load in loads[:window]:
+            self._memory_store.prefetch_user_to_gpu(load.user_id)
+
+        released = 0
+        try:
+            for index, load in enumerate(loads):
+                self._inject_one_load(load, forward_context, attn_metadata)
+                self._memory_store.release_staging(load.user_id)
+                released = index + 1
+                if index + window < len(loads):
+                    self._memory_store.prefetch_user_to_gpu(loads[index + window].user_id)
+        finally:
+            # Error path only: free the slots of loads that never released.
+            for load in loads[released:]:
+                self._memory_store.release_staging(load.user_id)
+
+    def _inject_one_load(
+        self,
+        load: "MemoryLoadMeta",
+        forward_context: "ForwardContext",
+        attn_metadata: AttentionMetadata,
+    ) -> None:
+        memory = self._memory_store.get_user_memory(load.user_id)
+        if memory is None:
+            raise RuntimeError(
+                f"Strict GPU memory for user {load.user_id} was not found during load."
+            )
+
+        # Probe one layer for the device; the pinned-host view waits on a
+        # layer's copy event on first access, so touch exactly one.
+        first_layer = next(iter(memory.kv_by_layer), None)
+        first_tensor = memory.kv_by_layer[first_layer] if first_layer is not None else None
+        if first_tensor is None:
+            raise RuntimeError(
+                f"Strict GPU memory for user {load.user_id} has no layer tensors."
+            )
+
+        slot_mapping = load.slot_mapping.to(device=first_tensor.device, dtype=torch.long)
+        log_injection = logger.info if self._log_memory_hits else logger.debug
+        log_injection("Injecting %d strict GPU memory tokens for user %s", load.num_tokens, load.user_id)
+
+        injected_layers = 0
+        for layer_name, layer in forward_context.no_compile_layers.items():
+            kv_cache_attr = getattr(layer, "kv_cache", None)
+            if kv_cache_attr is None:
                 continue
 
-            first_tensor = next(iter(memory.kv_by_layer.values()), None)
-            if first_tensor is None:
-                logger.warning("Strict GPU memory for user %s has no layer tensors.", load.user_id)
-                continue
-
-            slot_mapping = load.slot_mapping.to(device=first_tensor.device, dtype=torch.long)
-            logger.info("Injecting %d strict GPU memory tokens for user %s", load.num_tokens, load.user_id)
-
-            for layer_name, layer in forward_context.no_compile_layers.items():
-                kv_cache_attr = getattr(layer, "kv_cache", None)
-                if kv_cache_attr is None:
-                    continue
-
-                src_kv = memory.kv_by_layer.get(layer_name)
-                if src_kv is None:
-                    logger.warning("Layer %s not found in strict GPU memory for user %s", layer_name, load.user_id)
-                    continue
-
-                kv_cache_layer = kv_cache_attr
-                self._inject_kv_into_layer(
-                    dst_kv_cache_layer=kv_cache_layer,
-                    src_kv_cache=self._truncate_kv(src_kv, load.num_tokens),
-                    slot_mapping=slot_mapping,
-                    attn_metadata=attn_metadata,
-                    layer_name=layer_name,
+            src_kv = memory.kv_by_layer.get(layer_name)
+            if src_kv is None:
+                raise RuntimeError(
+                    f"Layer {layer_name} not found in strict GPU memory for "
+                    f"user {load.user_id}."
                 )
 
+            self._inject_kv_into_layer(
+                dst_kv_cache_layer=kv_cache_attr,
+                src_kv_cache=self._slice_kv(src_kv, load.skip_tokens, load.num_tokens),
+                slot_mapping=slot_mapping,
+                attn_metadata=attn_metadata,
+                layer_name=layer_name,
+            )
+            injected_layers += 1
+
+        if injected_layers == 0:
+            raise RuntimeError(
+                f"No KV cache layers were injected for user {load.user_id}."
+            )
+        _record_load(load.num_tokens, load.request_id)
+
     @staticmethod
-    def _truncate_kv(src_kv: torch.Tensor, num_tokens: int) -> torch.Tensor:
+    def _slice_kv(src_kv: torch.Tensor, skip_tokens: int, num_tokens: int) -> torch.Tensor:
         if src_kv.ndim >= 4 and src_kv.shape[0] == 2:
-            return src_kv[:, :num_tokens]
-        return src_kv[:num_tokens]
+            return src_kv[:, skip_tokens : skip_tokens + num_tokens]
+        return src_kv[skip_tokens : skip_tokens + num_tokens]
 
     def _inject_kv_into_layer(
         self,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import math
 from pathlib import Path
 from typing import Any, Iterable
@@ -18,12 +19,27 @@ QUERY_METRICS_COLUMNS = [
     "memory_tokens",
     "query_tokens",
     "total_prompt_tokens",
+    "memory_context_window",
+    "memory_retrieved_fact_ids",
+    "memory_retrieved_fact_text_hashes",
+    "memory_injected_fact_ids",
+    "memory_context_turn_ids",
+    "memory_context_turn_count",
+    "memory_context_encoding_tokens_total",
+    "memory_context_encoding_tokens_max",
+    "memory_context_encoding_truncated_tokens",
+    "memory_context_text_tokens",
+    "memory_token_budget",
+    "kv_block_size",
+    "kv_loaded_memory_tokens",
+    "kv_recomputed_memory_tail_tokens",
+    "kv_fact_tokens_end",
+    "kv_verify_time_ms",
     "time_to_first_token_ms",
     "query_to_first_token_ms",
     "query_to_answer_ms",
     "judge_correct",
     "retrieved_count",
-    "selected_turn_count",
 ]
 
 ACCURACY_BIN_COLUMNS = [
@@ -46,6 +62,11 @@ SAMPLE_SETUP_COLUMNS = [
     "vector_backend",
     "memory_create_time_ms",
     "embedding_memory_build_time_ms",
+    "memory_input_turn_count",
+    "memory_inferred_record_count",
+    "memory_fact_catalog_loaded",
+    "memory_llm_cache_hits",
+    "memory_llm_cache_misses",
     "vector_index_build_time_ms",
     "jasper_vector_count",
     "jasper_embedding_dim",
@@ -173,7 +194,13 @@ def query_metric_rows(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]
                 judge_correct = 0
 
         retrieved = record.get("retrieved_memories")
-        selected_turn_ids = metrics.get("kv_selected_turn_ids")
+        retrieved_fact_ids = _list(metrics.get("memory_retrieved_fact_ids"))
+        retrieved_fact_text_hashes = _list(metrics.get("memory_retrieved_fact_text_hashes"))
+        injected_fact_ids = _list(metrics.get("memory_injected_fact_ids"))
+        context_turn_ids = _list(metrics.get("memory_context_turn_ids"))
+        context_window = metrics.get("memory_context_window")
+        if context_window is None:
+            context_window = metrics.get("kv_context_window")
         rows.append(
             {
                 "run_id": record.get("run_id"),
@@ -186,12 +213,35 @@ def query_metric_rows(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]
                 "memory_tokens": memory_tokens,
                 "query_tokens": query_tokens,
                 "total_prompt_tokens": total_prompt_tokens,
+                "memory_context_window": _number(context_window),
+                "memory_retrieved_fact_ids": retrieved_fact_ids,
+                "memory_retrieved_fact_text_hashes": retrieved_fact_text_hashes,
+                "memory_injected_fact_ids": injected_fact_ids,
+                "memory_context_turn_ids": context_turn_ids,
+                "memory_context_turn_count": _number(metrics.get("memory_context_turn_count")),
+                "memory_context_encoding_tokens_total": _number(
+                    metrics.get("memory_context_encoding_tokens_total")
+                ),
+                "memory_context_encoding_tokens_max": _number(
+                    metrics.get("memory_context_encoding_tokens_max")
+                ),
+                "memory_context_encoding_truncated_tokens": _number(
+                    metrics.get("memory_context_encoding_truncated_tokens")
+                ),
+                "memory_context_text_tokens": _number(metrics.get("memory_context_text_tokens")),
+                "memory_token_budget": _number(metrics.get("memory_token_budget")),
+                "kv_block_size": _number(metrics.get("kv_block_size")),
+                "kv_loaded_memory_tokens": _number(metrics.get("kv_loaded_memory_tokens")),
+                "kv_recomputed_memory_tail_tokens": _number(
+                    metrics.get("kv_recomputed_memory_tail_tokens")
+                ),
+                "kv_fact_tokens_end": _number(metrics.get("kv_fact_tokens_end")),
+                "kv_verify_time_ms": _number(metrics.get("kv_verify_time_ms")),
                 "time_to_first_token_ms": _number(metrics.get("time_to_first_token_ms")),
                 "query_to_first_token_ms": _number(metrics.get("query_to_first_token_ms")),
                 "query_to_answer_ms": _number(metrics.get("query_to_answer_ms")),
                 "judge_correct": judge_correct,
                 "retrieved_count": len(retrieved) if isinstance(retrieved, list) else None,
-                "selected_turn_count": len(selected_turn_ids) if isinstance(selected_turn_ids, list) else None,
             }
         )
     return rows
@@ -393,6 +443,8 @@ def _number(value: Any) -> float | None:
 def _csv_value(value: Any) -> Any:
     if value is None:
         return ""
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     return value
 
 
@@ -401,3 +453,9 @@ def _csv_read_number(value: Any) -> Any:
         return None
     number = _number(value)
     return number
+
+
+def _list(value: Any) -> list[Any] | None:
+    if isinstance(value, list):
+        return value
+    return None

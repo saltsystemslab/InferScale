@@ -3,8 +3,8 @@
 This repository runs a LoCoMo benchmark comparison between in-process vLLM answer backends.
 On Runpod, runtime files are kept under `/workspace` so model downloads, caches, temp files, and results persist on the hosted partition.
 
-- `vllm-kv`: retrieved memories are encoded with the package's chunked-RoPE helpers, then injected through the top-level GPU KV connector.
-- `vllm-prefix`: the same retrieved memory tokens are included as a normal vLLM prompt prefix.
+- `vllm-kv`: retrieved Mem0 facts are encoded with the package's chunked-RoPE helpers, then injected through the top-level GPU KV connector.
+- `vllm-prefix`: the same type of retrieved Mem0 facts are included as a normal vLLM prompt prefix.
 
 ## 1. Configure
 
@@ -12,7 +12,8 @@ On Runpod, runtime files are kept under `/workspace` so model downloads, caches,
 cp .env.example .env
 ```
 
-Edit `.env` for your session. The common values are:
+Edit `.env` for your session.
+The common values are:
 
 - `MODEL_LLAMA=meta-llama/Llama-3.1-8B-Instruct`
 - `MODEL_MISTRAL=mistralai/Mistral-7B-Instruct-v0.3`
@@ -22,9 +23,10 @@ Edit `.env` for your session. The common values are:
 - `BENCHMARK_RUNTIME_ROOT=/workspace`
 - `JUDGE_PROVIDER=vllm`
 - `JUDGE_MODEL=google/gemma-2-9b-it`
-- `OPENAI_JUDGE_MODEL=gpt-5.4`
+- `MEM0_LLM_BASE_URL=http://localhost:8000/v1`
+- `LOCOMO_KV_CONTEXT_WINDOW=0`
 - `CUDA_MODULE=` for Runpod containers without environment modules
-- `OPENAI_API_KEY=...` for embeddings and OpenAI judging
+- `OPENAI_API_KEY=...` for embeddings and Mem0 inference
 - `HF_TOKEN=...` if the model is gated
 
 By default, runtime storage is rooted at `${BENCHMARK_RUNTIME_ROOT:-/workspace}` on Runpod:
@@ -46,19 +48,11 @@ Load the environment in each shell that will run project commands:
 source scripts/load_env.sh
 ```
 
-The answer-model CLI accepts a Hugging Face id, a local model path, or one of
-the configured aliases: `llama`, `mistral`, `qwen`, `qwen3-14b`. The `qwen`
-alias resolves to `Qwen/Qwen2.5-7B-Instruct`; `qwen3-14b` resolves to
-`Qwen/Qwen3-14B`.
-
 ## 2. Install
 
 ```bash
 bash scripts/setup_remote.sh
 ```
-
-The setup script initializes Jasper, installs the benchmark, Jasper, vLLM, and CUDA wheel constraints, downloads LoCoMo to `data/locomo10.json` when needed, and precomputes embeddings into `${BENCHMARK_CACHE_ROOT}/embeddings`.
-Pre-embedding is required and setup fails if embedding credentials or network access are missing.
 
 Activate the environment before running benchmark commands:
 
@@ -66,22 +60,53 @@ Activate the environment before running benchmark commands:
 source .venv/bin/activate
 ```
 
-Timed runs read from that cache and fail if an embedding is missing.
+## Extract the fact catalogs
 
-## 3. Run Jasper KV And Qdrant Prefix
+Timed runs require the immutable fact catalogs and embedding-cache entries produced by `--preembed-only`.
+Extraction is not part of `scripts/setup_remote.sh`; run it as a separate step after setup.
+
+With three pods sharing the results network volume, extract the three primary models in parallel, one model per pod:
+
+```bash
+# Pod 1
+bash scripts/individual/extract_llama.sh
+
+# Pod 2
+bash scripts/individual/extract_qwen.sh
+
+# Pod 3
+bash scripts/individual/extract_mistral.sh
+```
+
+Each script serves its own model on the pod's GPU and writes only that model's catalogs, so the runs never conflict on the shared volume.
+The three runs share the embedding cache, which is safe: identical conversations produce identical cache entries regardless of which run writes them first.
+The `qwen3-14b` catalogs are not covered by these scripts; extract them afterward on whichever pod frees up first with `EXTRACTION_MODELS="qwen3-14b" bash scripts/extract_facts.sh`.
+To extract every model serially on one pod instead, run `bash scripts/extract_facts.sh` with no arguments.
+
+`scripts/extract_facts.sh` runs a fixed bounded extraction protocol for each answer model.
+The extraction vLLM server uses a 16,384-token context and each request allows at most 4,096 output tokens, 20 facts, and 600 characters per fact.
+The benchmark replaces Mem0's unbounded JSON-object request with a strict JSON schema, validates every cached and fresh response, and aborts instead of caching malformed JSON or silently dropping facts.
+The extraction protocol is part of inference-cache and fact-catalog identity, so artifacts from older extraction limits are ignored automatically and must be regenerated.
+The embedding cache remains compatible and reusable.
+
+Mem0 stores the facts produced by inference as searchable memory records.
+Accordingly, `--top-k` counts inferred records rather than raw conversation turns.
+Both `vllm-prefix` and `vllm-kv` retrieve and answer from these inferred fact texts.
+Each inferred record retains source metadata that the KV path uses to identify its LoCoMo session context.
+
+## 3. Run Mem0 Fact Benchmarks
 
 Run answer generation with judging skipped.
 This keeps the GPU focused on the in-process answer backend; judge result files afterward.
 
-The `w5`, `w20`, and `w50` variants condition the retained target-turn KV on the immediately preceding 5, 20, or 50 turns, so they are KV turn-context ablations rather than information-equivalent prefix comparisons.
 `--jasper-beam-width` is a minimum search width, and the benchmark automatically uses at least `top_k` candidates.
 
 ```bash
 RUN_STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 ANSWER_MODEL="${ANSWER_MODEL:-llama}"
-KV_WINDOW="${KV_WINDOW:-0}"
-KV_RUN_ID="${ANSWER_MODEL}-kv-gpu-jasper10-k50-w${KV_WINDOW}-${RUN_STAMP}"
-QDRANT_PREFIX_RUN_ID="${ANSWER_MODEL}-prefix-qdrant10-k50-${RUN_STAMP}"
+CONTEXT_WINDOW="${CONTEXT_WINDOW:-0}"
+KV_RUN_ID="${ANSWER_MODEL}-kv-mem0-jasper10-k50-s${CONTEXT_WINDOW}-${RUN_STAMP}"
+PREFIX_RUN_ID="${ANSWER_MODEL}-prefix-mem0-qdrant10-k50-s0-${RUN_STAMP}"
 
 locomo-jasper-bench \
   --dataset data/locomo10.json \
@@ -90,8 +115,8 @@ locomo-jasper-bench \
   --answer-backend vllm-kv \
   --vector-backend jasper \
   --top-k 50 \
-  --context-window "${KV_WINDOW}" \
-  --kv-gpu-memory-utilization 0.38 \
+  --context-window "${CONTEXT_WINDOW}" \
+  --kv-gpu-memory-utilization 0.30 \
   --max-samples 10 \
   --log-every 1 \
   --skip-judge \
@@ -107,11 +132,11 @@ locomo-jasper-bench \
   --vector-backend qdrant \
   --top-k 50 \
   --context-window 0 \
-  --kv-gpu-memory-utilization 0.38 \
+  --kv-gpu-memory-utilization 0.30 \
   --max-samples 10 \
   --log-every 1 \
   --skip-judge \
-  --run-id "${QDRANT_PREFIX_RUN_ID}"
+  --run-id "${PREFIX_RUN_ID}"
 ```
 
 Both runs write query-start-to-answer-complete latency as `metrics.query_to_answer_ms`.
@@ -119,20 +144,20 @@ This is a single stopwatch around query embedding, vector retrieval, prompt/KV c
 It does not include memory storage/index construction, KV precompute, vLLM startup, or judging.
 
 TTFT metrics come from vLLM request timing on the real answer `generate()` call.
-They are populated only when vLLM returns usable per-request metrics on `RequestOutput.metrics`; no one-token probe or synthetic fallback is used.
-
-The standard sweep runs four Jasper-KV windows and one Qdrant-prefix baseline for every model and top-k pair, for `4 models x 5 top-k values x 5 variants = 100 runs`.
 
 ```bash
 DRY_RUN=1 BENCHMARK_RESULTS_ROOT="${BENCHMARK_RESULTS_ROOT}" bash scripts/full_run.sh
 BENCHMARK_RESULTS_ROOT="${BENCHMARK_RESULTS_ROOT}" bash scripts/full_run.sh
 ```
 
+`scripts/full_run_cpu_store.sh` repeats only the vllm-kv+jasper grid with the pinned-host KV store (`--kv-store-backend cpu-pinned`).
+Its run ids use the `kvcpu` marker (e.g. `llama-kvcpu-mem0-jasper10-k50-s0-<stamp>`), so they never collide with the standard sweep and remain judge-discoverable.
+The vllm-prefix baselines never touch the KV store, so compare cpu-store runs against the standard sweep's rows.
+Tune the staging pool with `KV_STAGING_SLOTS` (default 4).
+
 
 ## 4. Judge Accuracy
 
-The CLI selects a judge with `--judge vllm|openai|none`.
-`--skip-judge` is still accepted as an alias for `--judge none`.
 
 For local Gemma/vLLM judging on the same GPU, start the judge after answer runs finish:
 
@@ -154,20 +179,8 @@ locomo-jasper-bench \
   --judge-model "${JUDGE_MODEL}"
 ```
 
-OpenAI judging uses `OPENAI_API_KEY` and `OPENAI_JUDGE_MODEL`, runs through the OpenAI Batch API, and does not require `scripts/serve_vllm.sh`.
-
-```bash
-locomo-jasper-bench \
-  --results-dir "${BENCHMARK_RESULTS_ROOT}" \
-  --run-id "${RUN_ID}" \
-  --judge-only \
-  --judge openai \
-  --judge-model "${OPENAI_JUDGE_MODEL:-gpt-5.4}"
-```
-
 `--judge-only` fills only rows that are still unjudged, preserves already judged rows, and regenerates `summary.json`.
 Add `--rejudge` with `--judge-only` to replace existing judge results for every row in the run.
-OpenAI batch judging persists `openai_judge_batch_input.jsonl`, `openai_judge_batch_output.jsonl`, `openai_judge_batch_errors.jsonl`, and `openai_judge_batch.json` in the run directory.
 
 ## 5. Compare Results
 
@@ -186,13 +199,12 @@ Each run writes to `${BENCHMARK_RESULTS_ROOT}/<run-id>/`:
 - `plots/tokens_vs_accuracy_binned.csv`
 
 `query_metrics.csv` is derived from `predictions.jsonl` after normal generation and after `--judge-only`.
-It uses `metrics.kv_memory_tokens` as the retrieved memory token count and computes total input prompt tokens as `memory + query tokens`.
 
 Read the primary metrics:
 
 ```bash
 cat "${BENCHMARK_RESULTS_ROOT}/${KV_RUN_ID}/summary.json"
-cat "${BENCHMARK_RESULTS_ROOT}/${QDRANT_PREFIX_RUN_ID}/summary.json"
+cat "${BENCHMARK_RESULTS_ROOT}/${PREFIX_RUN_ID}/summary.json"
 ```
 
 Primary summary metrics:
@@ -202,6 +214,29 @@ Primary summary metrics:
 - `metrics.query_to_first_token_ms`: query-start-to-generate-start wall time plus vLLM time to first token, when vLLM exposes request timing metrics.
 - `metrics.query_to_answer_ms`: query embedding, retrieval, prompt/KV composition, and full answer generation measured with one stopwatch.
 - `metrics.sample_setup_time_ms`: per-sample setup before the first query, including memory/index construction, KV precompute when applicable, and sample activation.
+- Mem0 fact identity fields in `query_metrics.csv`: `memory_retrieved_fact_ids` and `memory_retrieved_fact_text_hashes` identify the exact retrieved records and content without duplicating fact text.
+- Context-window fields: `memory_context_window`, `memory_context_turn_ids`, `memory_context_turn_count`, `memory_context_encoding_tokens_total`, `memory_context_encoding_tokens_max`, `memory_context_encoding_truncated_tokens`, and `memory_context_text_tokens` expose the preceding turns used for KV fact encoding or rendered in the prefix prompt.
+- Mem0 setup metrics in `summary.json` and `sample_setup_metrics.csv`: `memory_input_turn_count`, `memory_inferred_record_count`, and `memory_fact_catalog_loaded` record immutable catalog replay; `preembedding.json` records extraction-cache hits and misses.
 - `metrics.vector_db_query_time_ms`: raw backend vector search latency.
 - Jasper graph and embedding metrics in `summary.json` and `sample_setup_metrics.csv`: `jasper_graph_gpu_mb` is the packed serialized graph size matching Jasper `total_file_size`, while `jasper_embedding_matrix_gpu_logical_mb` and `jasper_embedding_matrix_cpu_mb` describe embedding matrix storage.
 - Llama KV chunk metrics in `summary.json` and `sample_setup_metrics.csv`: `llama_kv_total_tensor_gpu_mb`, `llama_kv_chunk_tensor_gpu_mb`, `llama_kv_prefix_tensor_gpu_mb`, and `llama_kv_chunk_map_cpu_mb`.
+
+
+## 6. Run Multi-User Throughput
+
+The throughput benchmark measures multi-user serving performance over the LoCoMo dataset across four conditions:
+
+- `no_memory`: question-only prompts, the upper-bound baseline.
+- `mem0_qdrant`: per-request query embedding + Qdrant top-k retrieval over the sample's Mem0-extracted facts, injected as prompt text.
+- `mem0_jasper`: the same retrieval pipeline on the Jasper vector store, prompt injection.
+- `kv_injection`: the identical Jasper retrieval per request, but the retrieved facts' pre-encoded chunked-RoPE KV is composed and injected through the GPU connector instead of prompt tokens.
+
+Run all configured model aliases:
+
+```bash
+MODELS="llama mistral qwen" bash scripts/full_throughput.sh
+```
+
+`scripts/full_throughput_cpu_store.sh` repeats only the `kv_injection` condition with the pinned-host KV store (`--kv-store-backend cpu-pinned`), since the other conditions never touch the KV store.
+Its run ids are prefixed `throughput-cpu-<stamp>`; compare the rows against the standard sweep's `kv_injection` rows via the `kv_store_backend` and `kv_h2d_*` columns.
+Tune the staging pool with `KV_STAGING_SLOTS` (default 4).

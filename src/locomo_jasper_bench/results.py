@@ -6,9 +6,24 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
+# Upstream memory-benchmarks LoCoMo category names; 5 (adversarial) is excluded
+# from runs but kept here so historical records still summarize cleanly.
+CATEGORY_NAMES = {
+    "1": "multi-hop",
+    "2": "temporal",
+    "3": "open-domain",
+    "4": "single-hop",
+    "5": "adversarial",
+}
+
 SETUP_METRIC_KEYS = (
     "memory_create_time_ms",
     "embedding_memory_build_time_ms",
+    "memory_input_turn_count",
+    "memory_inferred_record_count",
+    "memory_fact_catalog_loaded",
+    "memory_llm_cache_hits",
+    "memory_llm_cache_misses",
     "vector_index_build_time_ms",
     "jasper_vector_count",
     "jasper_embedding_dim",
@@ -39,6 +54,43 @@ SETUP_METRIC_KEYS = (
     "llama_kv_total_tensor_gpu_mb",
     "answer_prepare_sample_time_ms",
     "sample_setup_time_ms",
+)
+
+MEMORY_AUDIT_NUMERIC_METRIC_KEYS = (
+    "memory_context_window",
+    "memory_context_turn_count",
+    "memory_context_encoding_tokens_total",
+    "memory_context_encoding_tokens_max",
+    "memory_context_encoding_truncated_tokens",
+    "memory_context_text_tokens",
+    "memory_token_budget",
+)
+
+LEGACY_KV_QUERY_METRIC_KEYS = (
+    "kv_memory_tokens",
+    "kv_compose_time_ms",
+    "kv_verify_time_ms",
+    "kv_store_write_time_ms",
+    "answer_generate_time_ms",
+    "answer_total_time_ms",
+    "answer_time_to_first_token_ms",
+    "kv_engine_time_to_first_token_ms",
+    "kv_query_tokens",
+    "kv_query_bos_stripped",
+    "kv_context_window",
+    "kv_block_size",
+    "kv_loaded_memory_tokens",
+    "kv_recomputed_memory_tail_tokens",
+    "kv_fact_tokens_end",
+    "kv_prefix_caching",
+    "kv_store_gpu_mb",
+    "kv_store_host_mb",
+    "kv_h2d_latency_ms",
+    "kv_h2d_bytes",
+    "kv_h2d_overlap_ratio",
+    "kv_staging_stall_ms",
+    "jasper_effective_beam_width",
+    "prefix_engine_time_to_first_token_ms",
 )
 
 
@@ -79,12 +131,14 @@ def summarize_records(
     setup_rows = list(sample_setup_metrics or [])
     judged = [row for row in rows if row.get("judge", {}).get("correct") is not None]
     correct = sum(1 for row in judged if row.get("judge", {}).get("correct") is True)
+    accuracy_by_category = _accuracy_by_category(judged)
     vector_query_times = _number_values(_metric_values(rows, "vector_db_query_time_ms"))
     vector_query_total_ms = sum(vector_query_times)
     vector_query_count = len(vector_query_times)
 
     metrics = {
         "accuracy": _safe_div(correct, len(judged)),
+        "accuracy_by_category": accuracy_by_category,
         "time_to_first_token_ms": _numeric_summary(_metric_values(rows, "time_to_first_token_ms")),
         "query_to_first_token_ms": _numeric_summary(_metric_values(rows, "query_to_first_token_ms")),
         "query_to_answer_ms": _numeric_summary(_metric_values(rows, "query_to_answer_ms")),
@@ -95,23 +149,7 @@ def summarize_records(
         "vector_db_query_time_total_ms": vector_query_total_ms,
         "vector_db_queries_per_sec": _queries_per_second(vector_query_count, vector_query_total_ms),
     }
-    for key in (
-        "kv_memory_tokens",
-        "kv_compose_time_ms",
-        "answer_generate_time_ms",
-        "answer_total_time_ms",
-        "answer_time_to_first_token_ms",
-        "kv_engine_time_to_first_token_ms",
-        "kv_query_tokens",
-        "kv_query_bos_stripped",
-        "kv_context_window",
-        "kv_context_prefix_tokens_total",
-        "kv_context_prefix_tokens_max",
-        "kv_context_prefix_truncated_tokens",
-        "kv_store_gpu_mb",
-        "jasper_effective_beam_width",
-        "prefix_engine_time_to_first_token_ms",
-    ):
+    for key in (*MEMORY_AUDIT_NUMERIC_METRIC_KEYS, *LEGACY_KV_QUERY_METRIC_KEYS):
         summary = _numeric_summary(_metric_values(rows, key))
         if summary["count"]:
             metrics[key] = summary
@@ -131,6 +169,25 @@ def summarize_records(
         "metrics": metrics,
         "config": config,
         "system": system_metadata,
+    }
+
+
+def _accuracy_by_category(judged: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    by_category: dict[str, dict[str, int]] = {}
+    for row in judged:
+        category = str(row.get("category") or "")
+        counters = by_category.setdefault(category, {"total": 0, "correct": 0})
+        counters["total"] += 1
+        if row.get("judge", {}).get("correct") is True:
+            counters["correct"] += 1
+    return {
+        category: {
+            "name": CATEGORY_NAMES.get(category, "unknown"),
+            "total": counters["total"],
+            "correct": counters["correct"],
+            "accuracy": _safe_div(counters["correct"], counters["total"]),
+        }
+        for category, counters in sorted(by_category.items())
     }
 
 
@@ -159,16 +216,16 @@ def _numeric_summary(values: Iterable[Any]) -> dict[str, float | int | None]:
         "count": len(numbers),
         "avg": sum(numbers) / len(numbers),
         "min": numbers[0],
-        "p50": _percentile(numbers, 0.50),
-        "p95": _percentile(numbers, 0.95),
+        "p50": percentile(numbers, 0.50),
+        "p95": percentile(numbers, 0.95),
         "max": numbers[-1],
     }
 
 
-def _percentile(sorted_numbers: list[float], percentile: float) -> float:
+def percentile(sorted_numbers: list[float], fraction: float) -> float:
     if len(sorted_numbers) == 1:
         return sorted_numbers[0]
-    index = (len(sorted_numbers) - 1) * percentile
+    index = (len(sorted_numbers) - 1) * fraction
     lower = int(index)
     upper = min(lower + 1, len(sorted_numbers) - 1)
     weight = index - lower

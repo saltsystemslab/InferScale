@@ -12,8 +12,10 @@ from .data import ConversationSample, QuestionAnswer, load_locomo
 from .evaluation import QuestionEvaluator
 from .judging import judge_label
 from .modes import result_mode
+from .retrieval.fact_catalog import fact_catalog_hits
 from .retrieval.memory_builder import SampleMemoryBuilder
 from .results import JsonlWriter
+from .vector_types import SearchHit
 
 
 @dataclass(slots=True)
@@ -21,6 +23,7 @@ class PreparedSample:
     index: int
     sample: ConversationSample
     questions: list[QuestionAnswer]
+    fact_catalog: list[SearchHit]
 
 
 @dataclass(slots=True)
@@ -115,10 +118,18 @@ def run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> 
             len(samples),
             sample.sample_id,
         )
-        prepared_samples.append(PreparedSample(index=sample_index, sample=sample, questions=list(sample_questions)))
+        facts = fact_catalog_hits(memory_builder.load_fact_catalog(sample))
+        prepared_samples.append(
+            PreparedSample(
+                index=sample_index,
+                sample=sample,
+                questions=list(sample_questions),
+                fact_catalog=facts,
+            )
+        )
         setup_row = _base_sample_setup_row(config, sample, len(sample_questions))
         if active_sample_gpu_cache:
-            kv_metrics = precompute_sample_cache(sample) or {}
+            kv_metrics = precompute_sample_cache(sample, facts) or {}
             setup_row["kv_precompute_time_ms"] = _number(kv_metrics.get("kv_precompute_time_ms"))
             for key in KV_PRECOMPUTE_SETUP_KEYS:
                 setup_row[key] = _number(kv_metrics.get(key))
@@ -148,7 +159,7 @@ def run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> 
         for prepared in prepared_samples:
             sample = prepared.sample
             setup_row = sample_setup_by_key[id(sample)]
-            memory, memory_metrics = memory_builder.build_with_metrics(sample)
+            retriever, memory_metrics = memory_builder.build_retriever_with_metrics(sample)
             setup_row.update(memory_metrics)
             try:
                 prepare_started = time.perf_counter()
@@ -168,7 +179,10 @@ def run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> 
                             qa.category,
                         )
                     query_started_at = time.perf_counter()
-                    hits, retrieval_metrics = question_evaluator.retrieve_mem0_memory(memory, qa.question)
+                    hits, retrieval_metrics = retriever.search(
+                        qa.question,
+                        top_k=config.top_k,
+                    )
                     record = question_evaluator.answer_from_hits(
                         sample,
                         qa,
@@ -196,8 +210,8 @@ def run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> 
                     sample.sample_id,
                 )
             finally:
-                memory_builder.log_embedding_cache_stats(memory, sample.sample_id)
-                memory_builder.close(memory)
+                memory_builder.log_embedding_cache_stats(retriever.memory, sample.sample_id)
+                retriever.close()
                 close_sample()
 
     logger.info("Wrote {} prepared vLLM prediction records to {}", len(all_records), output_path)
@@ -218,6 +232,11 @@ def _base_sample_setup_row(
         "vector_backend": config.vector_backend,
         "memory_create_time_ms": None,
         "embedding_memory_build_time_ms": None,
+        "memory_input_turn_count": None,
+        "memory_inferred_record_count": None,
+        "memory_fact_catalog_loaded": None,
+        "memory_llm_cache_hits": None,
+        "memory_llm_cache_misses": None,
         "vector_index_build_time_ms": None,
         "jasper_vector_count": None,
         "jasper_embedding_dim": None,
@@ -279,8 +298,12 @@ def planned_question_count(samples: list[ConversationSample], max_questions: int
     return min(total, max_questions)
 
 
+# Upstream memory-benchmarks scores categories 1-4 only (5 is adversarial).
+_ELIGIBLE_CATEGORIES = frozenset({"1", "2", "3", "4"})
+
+
 def _eligible_questions(questions: list[QuestionAnswer]) -> list[QuestionAnswer]:
-    return [qa for qa in questions if str(qa.category).strip() != "5"]
+    return [qa for qa in questions if str(qa.category).strip() in _ELIGIBLE_CATEGORIES]
 
 
 def should_log_progress(index: int, total: int, interval: int) -> bool:

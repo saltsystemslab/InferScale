@@ -9,11 +9,11 @@ from .runtime_paths import configure_runtime_environment
 
 configure_runtime_environment()
 
-from .config import parse_args
-from .runner import judge_existing_run, run_benchmark
-
 
 def main(argv: list[str] | None = None) -> None:
+    from .config import parse_args
+    from .runner import judge_existing_run, run_benchmark
+
     config = parse_args(argv)
     _configure_logging()
     if config.judge_only:
@@ -25,14 +25,36 @@ def main(argv: list[str] | None = None) -> None:
         else:
             print(f"questions={summary['question_count']} judged={summary['judged_count']}")
         return
+    if config.check_catalogs:
+        from .retrieval.memory_builder import missing_fact_catalogs
+
+        missing = missing_fact_catalogs(config)
+        if missing:
+            print(
+                f"missing Mem0 fact catalogs for model {config.memory_llm_model} "
+                f"({len(missing)} sample(s)):",
+                file=sys.stderr,
+            )
+            for sample_id, path in missing:
+                print(f"  {sample_id}: {path}", file=sys.stderr)
+            print(
+                "Extraction always uses the answer model; materialize them with:\n"
+                f'  EXTRACTION_MODELS="{config.model}" bash scripts/extract_facts.sh',
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+        print(f"fact catalogs complete for model {config.memory_llm_model}")
+        return
     if config.preembed_only:
         from .embedding.preembed import preembed_locomo_embeddings
 
         summary = preembed_locomo_embeddings(config)
-        print(f"preembedded embeddings to {summary['cache']['cache_dir']}")
+        print(f"materialized Mem0 fact catalogs and embeddings in {summary['cache']['cache_dir']}")
         print(
             f"samples={summary['sample_count']} turns={summary['turn_embedding_count']} "
-            f"questions={summary['question_embedding_count']} cache_misses={summary['cache']['misses']}"
+            f"inferred_memories={summary['inferred_memory_count']} "
+            f"questions={summary['question_embedding_count']} cache_misses={summary['cache']['misses']} "
+            f"inference_cache_misses={summary['memory_inference_cache']['misses']}"
         )
         return
     summary = run_benchmark(config)

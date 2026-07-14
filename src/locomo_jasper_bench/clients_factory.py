@@ -5,7 +5,7 @@ from typing import Any
 
 from loguru import logger
 
-from .clients import ChatClient, OpenAICompatibleChatClient, OpenAIResponsesJudgeClient
+from .clients import ChatClient, OpenAICompatibleChatClient
 from .config import BenchmarkConfig
 
 
@@ -37,14 +37,6 @@ def build_clients(config: BenchmarkConfig) -> RuntimeClients:
 def build_judge_client(config: BenchmarkConfig) -> ChatClient | None:
     if config.skip_judge or config.judge_provider == "none":
         return None
-    if config.judge_provider == "openai":
-        if not config.judge_api_key:
-            raise RuntimeError("OPENAI_API_KEY is required to use --judge openai.")
-        return OpenAIResponsesJudgeClient(
-            api_key=config.judge_api_key,
-            base_url=config.judge_base_url,
-            model=config.judge_model,
-        )
     if config.judge_provider == "vllm":
         if not config.judge_base_url:
             raise RuntimeError("JUDGE_BASE_URL is required to use --judge vllm.")

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import time
+import hashlib
 from typing import Any
 
 from .clients_factory import RuntimeClients
@@ -8,7 +8,7 @@ from .config import BenchmarkConfig
 from .data import ConversationSample, QuestionAnswer
 from .judging import judge_qa, skipped_judge_payload
 from .modes import result_mode
-from .vector_types import RetrievalMetrics, SearchHit, SearchMetrics
+from .vector_types import RetrievalMetrics, SearchHit
 
 
 class QuestionEvaluator:
@@ -39,6 +39,7 @@ class QuestionEvaluator:
             ttft_started_at=ttft_started_at,
             query_started_at=query_started_at,
         )
+        answer.content = _final_answer_text(answer.content)
         return self.record_answer(
             sample,
             qa,
@@ -61,9 +62,19 @@ class QuestionEvaluator:
         else:
             if self.clients.judge_client is None:
                 raise RuntimeError("Judge client is not configured. Use --skip-judge to write unjudged predictions.")
-            judge_payload = judge_qa(self.config, self.clients.judge_client, qa, answer.content)
+            judge_payload = judge_qa(
+                self.config,
+                self.clients.judge_client,
+                qa,
+                answer.content,
+                evidence_context=_evidence_context(sample, qa) if self.config.with_evidence else "",
+            )
 
         metrics: dict[str, Any] = {**getattr(answer, "metrics", {})}
+        metrics["memory_retrieved_fact_ids"] = [hit.id for hit in hits]
+        metrics["memory_retrieved_fact_text_hashes"] = [
+            _memory_text_hash(hit) for hit in hits
+        ]
         if answer.ttft_ms is not None:
             metrics["time_to_first_token_ms"] = answer.ttft_ms
         if retrieval_metrics is not None:
@@ -88,6 +99,7 @@ class QuestionEvaluator:
             "gold_answer": qa.answer,
             "predicted_answer": answer.content,
             "evidence": qa.evidence,
+            "evidence_context": _evidence_context(sample, qa),
             "retrieved_memories": [
                 {
                     "id": hit.id,
@@ -95,6 +107,14 @@ class QuestionEvaluator:
                     "score": hit.score,
                     "distance": hit.distance,
                     "memory": hit.payload.get("memory") or hit.payload.get("text") or "",
+                    "created_at": hit.payload.get("created_at"),
+                    "source_session_id": _payload_value(hit.payload, "source_session_id", "session_id"),
+                    "source_session_index": _payload_value(
+                        hit.payload,
+                        "source_session_index",
+                        "session_index",
+                    ),
+                    "source_turn_id": _payload_value(hit.payload, "source_turn_id", "turn_id"),
                     "metadata": hit.payload.get("metadata", {}),
                 }
                 for hit in hits
@@ -103,36 +123,50 @@ class QuestionEvaluator:
             "metrics": metrics,
         }
 
-    def retrieve_mem0_memory(self, memory: Any, query: str) -> tuple[list[SearchHit], RetrievalMetrics]:
-        from .retrieval.memory_builder import embed_mem0_query
+def _final_answer_text(content: str) -> str:
+    text = str(content).strip()
+    if "ANSWER:" in text:
+        return text.rsplit("ANSWER:", 1)[-1].strip()
+    return text
 
-        vector_store = getattr(memory, "vector_store", None)
-        search = getattr(vector_store, "search", None)
-        if not callable(search):
-            raise RuntimeError("Mem0 memory has no searchable vector_store.")
 
-        started = time.perf_counter()
-        embedding_started = time.perf_counter()
-        query_embedding = embed_mem0_query(memory, query)
-        embedding_time_ms = (time.perf_counter() - embedding_started) * 1000
-        hits = list(reversed(search(query=query, vectors=query_embedding, top_k=self.config.top_k)))
-        total_time_ms = (time.perf_counter() - started) * 1000
-        store_metrics = self._mem0_store_search_metrics(memory)
-        return hits, RetrievalMetrics(
-            embedding_time_ms=embedding_time_ms,
-            search_time_ms=store_metrics.search_time_ms,
-            total_time_ms=total_time_ms,
-            vector_backend=store_metrics.vector_backend,
-            jasper_effective_beam_width=store_metrics.jasper_effective_beam_width,
+def _memory_text_hash(hit: SearchHit) -> str:
+    text = str(hit.payload.get("memory") or hit.payload.get("text") or "")
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _payload_value(payload: dict[str, Any], primary: str, legacy: str) -> Any:
+    value = payload.get(primary)
+    if value is not None:
+        return value
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        value = metadata.get(primary)
+        if value is not None:
+            return value
+        return metadata.get(legacy)
+    return payload.get(legacy)
+
+
+def _evidence_context(sample: ConversationSample, qa: QuestionAnswer) -> str:
+    evidence = qa.evidence
+    if isinstance(evidence, str):
+        evidence_ids = [evidence]
+    elif isinstance(evidence, list):
+        evidence_ids = [str(item) for item in evidence]
+    else:
+        return ""
+    requested = set(evidence_ids)
+    if not requested:
+        return ""
+    by_id: dict[str, str] = {}
+    for turn in sample.turns:
+        raw = turn.raw if isinstance(turn.raw, dict) else {}
+        dialogue_id = str(raw.get("dia_id") or "")
+        if not dialogue_id or dialogue_id not in requested:
+            continue
+        date_suffix = f", said on {turn.timestamp}" if turn.timestamp else ""
+        by_id[dialogue_id] = (
+            f'[{dialogue_id}{date_suffix}] {turn.speaker}: "{turn.text}"'
         )
-
-    def _mem0_store_search_metrics(self, memory: Any) -> SearchMetrics:
-        vector_store = getattr(memory, "vector_store", None)
-        metrics = getattr(vector_store, "last_search_metrics", None)
-        if isinstance(metrics, SearchMetrics):
-            return metrics
-        return SearchMetrics(
-            search_time_ms=float(getattr(metrics, "search_time_ms", 0.0) or 0.0),
-            vector_backend=getattr(metrics, "vector_backend", None),
-            jasper_effective_beam_width=getattr(metrics, "jasper_effective_beam_width", None),
-        )
+    return "\n".join(by_id[evidence_id] for evidence_id in evidence_ids if evidence_id in by_id)

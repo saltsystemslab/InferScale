@@ -25,6 +25,7 @@ from ..kv.connector_utils import MEMORY_USER_ID_EXTRA_ARG
 from ..kv.tokenization import encode_text_no_special
 from ..results import write_json
 from ..retrieval.fact_catalog import FactCatalogStore, MemoryFact, fact_catalog_hits
+from ..runtime_paths import local_store_scratch_dir
 from ..retrieval.mem0_provider import MEMORY_LLM_TEMPERATURE, create_mem0_memory
 from ..retrieval.memory_builder import embed_mem0_query, load_facts_into_memory
 from ..embedding.cache import CachedEmbedder
@@ -39,7 +40,6 @@ from .reporting import RESULT_COLUMNS
 from .workload import (
     LocomoRequest,
     build_locomo_requests,
-    build_no_memory_prompt,
     user_id,
 )
 
@@ -70,8 +70,6 @@ def run_condition(
     condition: str,
     user_counts: tuple[int, ...],
 ) -> list[dict[str, Any]]:
-    if condition == "no_memory":
-        return _run_no_memory(config, user_counts)
     if condition == "kv_injection":
         if len(user_counts) != 1:
             raise ValueError("A KV worker must receive exactly one user count.")
@@ -82,49 +80,6 @@ def run_condition(
             raise ValueError(f"Condition {condition} has no vector backend.")
         return _run_mem0(config, user_counts, condition=condition, backend=backend)
     raise ValueError(f"Unsupported condition: {condition}")
-
-
-def _run_no_memory(
-    config: ThroughputConfig,
-    user_counts: tuple[int, ...],
-) -> list[dict[str, Any]]:
-    samples = _load_samples(config)
-    llm: Any | None = None
-    try:
-        llm, sampling_params, engine_startup_time_s = _start_llm(config)
-        tokenizer = llm.get_tokenizer()
-        results: list[dict[str, Any]] = []
-        for num_users in user_counts:
-            print(f"no_memory: users={num_users}", flush=True)
-            prompt_started = time.perf_counter()
-            prompts = [
-                {"prompt_token_ids": build_no_memory_prompt(tokenizer, request.query)}
-                for request in build_locomo_requests(
-                    samples,
-                    num_users=num_users,
-                    requests_per_user=config.requests_per_user,
-                    seed=config.seed,
-                )
-            ]
-            prompt_build_time_s = time.perf_counter() - prompt_started
-            _validate_prompt_lengths(config, prompts)
-            _warm_up(llm, prompts, sampling_params, config.warmup_batches, seed=config.seed)
-            measured = _measure_batch(llm, prompts, sampling_params)
-            results.append(
-                _result_row(
-                    config,
-                    num_users,
-                    condition="no_memory",
-                    generation_time_s=measured["generation_time_s"],
-                    prompt_build_time_s=prompt_build_time_s,
-                    engine_startup_time_s=engine_startup_time_s,
-                    total_input_tokens=measured["total_input_tokens"],
-                    total_output_tokens=measured["total_output_tokens"],
-                )
-            )
-        return results
-    finally:
-        _release_llm(llm)
 
 
 def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]:
@@ -183,7 +138,7 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
         backend=config.kv_store_backend,
         num_staging_slots=config.kv_staging_slots,
     )
-    mem0_store_root = config.run_dir / "worker-results" / f"kv-stores-{num_users}u"
+    mem0_store_root = local_store_scratch_dir(config.run_id) / f"kv-stores-{num_users}u"
     if mem0_store_root.exists():
         shutil.rmtree(mem0_store_root)
     encoder: Any | None = None
@@ -494,7 +449,7 @@ def _run_mem0(
 
     llm: Any | None = None
     open_memory: Any | None = None
-    mem0_store_root = config.run_dir / "worker-results" / f"{condition}-stores"
+    mem0_store_root = local_store_scratch_dir(config.run_id) / f"{condition}-stores"
     if mem0_store_root.exists():
         shutil.rmtree(mem0_store_root)
     try:

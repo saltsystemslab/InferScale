@@ -23,7 +23,7 @@ for argument in "$@"; do
 done
 
 MODELS="${MODELS:-llama mistral qwen}"
-CONDITIONS="${CONDITIONS:-no_memory mem0_qdrant mem0_jasper kv_injection}"
+CONDITIONS="${CONDITIONS:-mem0_qdrant mem0_jasper kv_injection}"
 RESULTS_DIR="${RESULTS_DIR:-${BENCHMARK_RESULTS_ROOT}}"
 DRY_RUN="${DRY_RUN:-0}"
 RUN_STAMP="$(date -u +%Y%m%dT%H%M%SZ)"

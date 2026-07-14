@@ -149,8 +149,8 @@ def render_markdown_report(config: ThroughputConfig, rows: Iterable[dict[str, An
         "registration, token-equivalence verification, memory setup, per-fact KV precomputation, "
         "and model startup are reported separately in the timing table and excluded from QPS.",
         "",
-        "| Users | Facts/user | No memory QPS | Mem0 Qdrant QPS | Mem0 Jasper QPS | KV QPS | KV / Mem0 Jasper |",
-        "| ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Users | Facts/user | Mem0 Qdrant QPS | Mem0 Jasper QPS | KV QPS | KV / Mem0 Jasper |",
+        "| ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for count in config.user_counts:
         group = by_count.get(count, {})
@@ -168,7 +168,6 @@ def render_markdown_report(config: ThroughputConfig, rows: Iterable[dict[str, An
                 (
                     str(count),
                     facts_per_user,
-                    _format_qps(_qps(group.get("no_memory"))),
                     _format_qps(_qps(group.get("mem0_qdrant"))),
                     _format_qps(mem0_jasper_qps),
                     _format_qps(kv_qps),

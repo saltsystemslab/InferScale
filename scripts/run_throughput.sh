@@ -23,8 +23,8 @@ for argument in "$@"; do
 done
 
 MODEL="${MODEL:-llama}"
-CONDITIONS="${CONDITIONS:-no_memory mem0_qdrant mem0_jasper kv_injection}"
-USER_COUNTS="${USER_COUNTS:-10,25,50,100}"
+CONDITIONS="${CONDITIONS:-mem0_qdrant mem0_jasper kv_injection}"
+USER_COUNTS="${USER_COUNTS:-150,200,250,300,350,400,450}"
 DATASET="${DATASET:-data/locomo10.json}"
 RESULTS_DIR="${RESULTS_DIR:-${BENCHMARK_RESULTS_ROOT}}"
 DRY_RUN="${DRY_RUN:-0}"

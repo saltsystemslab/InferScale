@@ -31,7 +31,7 @@ def test_parse_args_resolves_model_alias_and_user_counts(monkeypatch: pytest.Mon
             "--model",
             "llama",
             "--conditions",
-            "no_memory",
+            "mem0_jasper",
             "mem0_qdrant",
             "--user-counts",
             "2,3",
@@ -47,15 +47,15 @@ def test_parse_args_resolves_model_alias_and_user_counts(monkeypatch: pytest.Mon
     assert config.model_label == "llama"
     assert config.user_counts == (2, 3)
     assert config.dataset_path == Path("data/other.json")
-    assert config.conditions == ("no_memory", "mem0_qdrant")
+    assert config.conditions == ("mem0_jasper", "mem0_qdrant")
     assert dry_run is True
 
 
-def test_default_conditions_are_the_four_way_comparison() -> None:
+def test_default_conditions_are_the_three_way_comparison() -> None:
     config, _ = parse_args(["--model", "test/model", "--dry-run"])
 
     assert config.conditions == ALL_CONDITIONS
-    assert ALL_CONDITIONS == ("no_memory", "mem0_qdrant", "mem0_jasper", "kv_injection")
+    assert ALL_CONDITIONS == ("mem0_qdrant", "mem0_jasper", "kv_injection")
     assert config.user_counts == DEFAULT_USER_COUNTS
     assert config.memory_llm_provider == "vllm"
     assert config.memory_llm_model == config.model
@@ -86,7 +86,6 @@ def test_memory_llm_model_always_matches_the_answer_model(tmp_path: Path) -> Non
 
 
 def test_condition_vector_backends_pair_kv_with_jasper() -> None:
-    assert condition_vector_backend("no_memory") is None
     assert condition_vector_backend("mem0_qdrant") == "qdrant"
     assert condition_vector_backend("mem0_jasper") == "jasper"
     assert condition_vector_backend("kv_injection") == "jasper"

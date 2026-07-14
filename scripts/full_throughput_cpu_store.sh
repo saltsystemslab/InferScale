@@ -2,7 +2,7 @@
 #
 # Throughput sweep with the pinned-host (cpu-pinned) KV memory store.
 # Runs only the kv_injection condition - the sole condition that uses the KV
-# store; the no_memory/mem0 text baselines never touch it, so they come from
+# store; the mem0 text baselines never touch it, so they come from
 # the standard scripts/full_throughput.sh sweep on the gpu store.
 #
 # Usage:

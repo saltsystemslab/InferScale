@@ -23,17 +23,15 @@ from ..runtime_paths import (
 )
 
 ALL_CONDITIONS = (
-    "no_memory",
     "mem0_qdrant",
     "mem0_jasper",
     "kv_injection",
 )
 
-# Which vector backend a condition retrieves with. no_memory does no retrieval;
-# kv_injection performs the same Jasper top-k search as mem0_jasper and injects
-# the retrieved chunks' KV instead of their text.
+# Which vector backend a condition retrieves with. kv_injection performs the
+# same Jasper top-k search as mem0_jasper and injects the retrieved chunks'
+# KV instead of their text.
 CONDITION_VECTOR_BACKENDS: dict[str, str | None] = {
-    "no_memory": None,
     "mem0_qdrant": "qdrant",
     "mem0_jasper": "jasper",
     "kv_injection": "jasper",
@@ -44,7 +42,7 @@ def condition_vector_backend(condition: str) -> str | None:
     return CONDITION_VECTOR_BACKENDS[condition]
 
 
-DEFAULT_USER_COUNTS = (10, 25, 50, 100)
+DEFAULT_USER_COUNTS = (150, 200, 250, 300, 350, 400, 450)
 DEFAULT_USER_COUNTS_TEXT = ",".join(str(count) for count in DEFAULT_USER_COUNTS)
 
 

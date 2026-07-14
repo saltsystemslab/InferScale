@@ -17,7 +17,7 @@ from pathlib import Path
 from ..config import BenchmarkConfig
 from ..data import ConversationSample, format_turn_for_memory, load_locomo
 from ..embedding.cache import CacheMode, CachedEmbedder
-from ..runtime_paths import default_mem0_dir_string
+from ..runtime_paths import default_mem0_dir_string, local_store_scratch_dir
 from ..vector_types import VectorStoreConfig
 from .fact_catalog import FactCatalogStore, MemoryFact, make_memory_fact, source_metadata
 from .mem0_provider import MEMORY_LLM_TEMPERATURE, create_mem0_memory, resolved_mem0_backend
@@ -120,7 +120,7 @@ class SampleMemoryBuilder:
             return self._extract_and_materialize_catalog(sample)
 
         facts = self.load_fact_catalog(sample)
-        store_root = self.config.run_dir / "mem0" / sample.sample_id
+        store_root = local_store_scratch_dir(self.config.run_id) / "mem0" / sample.sample_id
         total_started = time.perf_counter()
         create_started = time.perf_counter()
         memory = self._create_memory(
@@ -169,7 +169,7 @@ class SampleMemoryBuilder:
     ) -> tuple[Any, dict[str, Any]]:
         total_started = time.perf_counter()
         create_started = time.perf_counter()
-        store_root = self.config.run_dir / "mem0-extraction" / sample.sample_id
+        store_root = local_store_scratch_dir(self.config.run_id) / "mem0-extraction" / sample.sample_id
         # Mem0 persists a messages table (last 10 messages feed the extraction
         # prompt) in history.sqlite under the store root; wipe the whole staging
         # directory so a repeated extraction run starts clean.

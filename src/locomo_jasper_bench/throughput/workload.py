@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..data import ConversationSample
-from ..kv.prompting import tokenize_messages
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,16 +56,6 @@ def build_locomo_requests(
                 )
             )
     return requests
-
-
-def build_no_memory_prompt(tokenizer: Any, query: str) -> list[int]:
-    return tokenize_messages(
-        tokenizer,
-        [
-            {"role": "system", "content": "You are a helpful assistant. Answer concisely."},
-            {"role": "user", "content": query},
-        ],
-    )
 
 
 def user_id(user_index: int) -> str:

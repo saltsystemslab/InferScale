@@ -91,7 +91,7 @@ def test_result_row_rejects_non_positive_generation_time(tmp_path: Path) -> None
         _result_row(
             _config(tmp_path),
             10,
-            condition="no_memory",
+            condition="mem0_jasper",
             generation_time_s=0.0,
             total_input_tokens=1,
             total_output_tokens=1,

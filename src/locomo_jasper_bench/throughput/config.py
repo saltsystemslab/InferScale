@@ -198,8 +198,9 @@ def parse_args(argv: list[str] | None = None) -> tuple[ThroughputConfig, bool]:
         type=int,
         default=int(os.environ.get("THROUGHPUT_CONTEXT_WINDOW", "50")),
         help=(
-            "Turns preceding each retrieved fact used as an encoding prefix for "
-            "kv_injection chunks (encoding-prefix-discard); text conditions ignore it."
+            "Turns preceding each fact whose extracted facts form the encoding prefix "
+            "for kv_injection chunks (fact-encoding-prefix-discard); text conditions "
+            "ignore it."
         ),
     )
     parser.add_argument("--seed", type=int, default=int(os.environ.get("THROUGHPUT_SEED", "42")))

@@ -160,11 +160,10 @@ def build_fact_context_encoding_plan(
     target: MemoryFact,
     sample: ConversationSample,
     *,
-    tokenizer: Any,
     context_window: int,
     max_input_tokens: int,
     fact_token_ids: Mapping[str, list[int]],
-    turn_token_ids: MutableMapping[str, list[int]] | None = None,
+    sample_facts: Sequence[MemoryFact],
 ) -> FactContextEncodingPlan:
     if context_window < 0:
         raise ValueError("context_window must be >= 0.")
@@ -180,16 +179,24 @@ def build_fact_context_encoding_plan(
             f"exceeding kv_max_position={max_input_tokens} without context."
         )
 
+    # fact-encoding-prefix-discard-v1: the prefix is the catalog facts
+    # extracted from the window turns, not the turns' raw text. Facts from the
+    # target's own turn stay excluded, matching the strictly-before turn window.
     context_turns = previous_turn_context_turns(
         sample,
         target.source_turn_id,
         context_window,
     )
+    window_turn_ids = {turn.id for turn in context_turns}
+    context_facts = [fact for fact in sample_facts if fact.source_turn_id in window_turn_ids]
     context_token_ids: list[int] = []
-    for context_turn in context_turns:
-        context_token_ids.extend(
-            context_turn_token_ids(tokenizer, context_turn, turn_token_ids)
-        )
+    for context_fact in context_facts:
+        tokens = fact_token_ids.get(context_fact.memory_id)
+        if not tokens:
+            raise RuntimeError(
+                f"Mem0 context fact tokenized to zero tokens: {context_fact.memory_id}"
+            )
+        context_token_ids.extend(tokens)
 
     raw_context_tokens = len(context_token_ids)
     overflow = raw_context_tokens + len(target_token_ids) - max_input_tokens
@@ -206,7 +213,9 @@ def build_fact_context_encoding_plan(
         input_token_ids=input_token_ids,
         slice_start=slice_start,
         slice_end=len(input_token_ids),
-        context_turn_ids=tuple(turn.id for turn in context_turns),
+        context_turn_ids=tuple(
+            _unique_in_order([fact.source_turn_id for fact in context_facts])
+        ),
         raw_context_tokens=raw_context_tokens,
         context_truncated_tokens=context_truncated_tokens,
     )

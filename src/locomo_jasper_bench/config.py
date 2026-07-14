@@ -85,7 +85,7 @@ MemoryLlmProvider = Literal["vllm"]
 VectorBackend = Literal["jasper", "qdrant"]
 MEMORY_UNIT = "mem0-fact"
 CONTEXT_WINDOW_UNIT = "turns"
-CONTEXT_WINDOW_SEMANTICS = "encoding-prefix-discard-v1"
+CONTEXT_WINDOW_SEMANTICS = "fact-encoding-prefix-discard-v1"
 MAX_JASPER_BEAM_WIDTH = 959
 
 
@@ -242,7 +242,7 @@ class BenchmarkConfig:
     kv_connector_module: str = "locomo_jasper_bench.kv.gpu_connector"
     context_window: int = 0
     context_window_unit: Literal["turns"] = field(default=CONTEXT_WINDOW_UNIT, init=False)
-    context_window_semantics: Literal["encoding-prefix-discard-v1"] = field(
+    context_window_semantics: Literal["fact-encoding-prefix-discard-v1"] = field(
         default=CONTEXT_WINDOW_SEMANTICS,
         init=False,
     )
@@ -398,9 +398,10 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
         type=int,
         default=int(os.environ.get("LOCOMO_KV_CONTEXT_WINDOW", "0")),
         help=(
-            "Use this many conversation turns immediately preceding each retrieved Mem0 fact's "
-            "source turn as context. vllm-kv uses them as an encoding-only prefix and discards "
-            "the prefix KV; vllm-prefix renders the deduplicated turns in the prompt."
+            "Window of conversation turns immediately preceding each retrieved Mem0 fact's "
+            "source turn. vllm-kv uses the catalog facts extracted from those turns as an "
+            "encoding-only prefix and discards the prefix KV; vllm-prefix renders the "
+            "deduplicated raw turns in the prompt."
         ),
     )
     parser.add_argument(

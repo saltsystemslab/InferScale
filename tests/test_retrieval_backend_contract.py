@@ -423,11 +423,11 @@ def test_effective_beam_expands_to_top_k_and_is_recorded(monkeypatch: pytest.Mon
 
     assert config.context_window == 0
     assert config.context_window_unit == "turns"
-    assert config.context_window_semantics == "encoding-prefix-discard-v1"
+    assert config.context_window_semantics == "fact-encoding-prefix-discard-v1"
     assert config.memory_unit == "mem0-fact"
     assert config.mem0_infer is True
     assert config.jasper_effective_beam_width == 100
-    assert config.to_jsonable()["context_window_semantics"] == "encoding-prefix-discard-v1"
+    assert config.to_jsonable()["context_window_semantics"] == "fact-encoding-prefix-discard-v1"
     assert config.to_jsonable()["memory_unit"] == "mem0-fact"
     assert config.to_jsonable()["mem0_infer"] is True
     assert config.to_jsonable()["jasper_effective_beam_width"] == 100

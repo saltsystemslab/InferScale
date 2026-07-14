@@ -140,52 +140,96 @@ def test_conflicting_duplicate_fact_ids_are_rejected() -> None:
         )
 
 
-def test_window_selects_immediately_preceding_turns_across_sessions() -> None:
+def test_window_selects_facts_of_immediately_preceding_turns_across_sessions() -> None:
     sample = _sample()
     target = memory_fact_from_hit(_hit("target", "target", 3))
-    tokenizer = _DeterministicTokenizer()
-    expected_context = [
-        token_id
-        for turn in (sample.turns[0], sample.turns[1])
-        for token_id in encode_text_no_special(tokenizer, format_memory_turn(turn))
-    ]
+    sample_facts = unique_memory_facts(
+        [
+            _hit("a1", "first fact of turn one", 1),
+            _hit("a2", "second fact of turn one", 1),
+            _hit("b1", "fact of turn two", 2),
+            _hit("target", "target", 3),
+            _hit("c1", "other fact of the target's own turn", 3),
+            _hit("d1", "fact of a later turn", 4),
+        ]
+    )
+    fact_token_ids = {
+        "a1": [10, 11],
+        "a2": [12],
+        "b1": [20, 21],
+        "target": [30, 31],
+        "c1": [40],
+        "d1": [50],
+    }
 
     plan = build_fact_context_encoding_plan(
         target,
         sample,
-        tokenizer=tokenizer,
         context_window=2,
         max_input_tokens=10_000,
-        fact_token_ids={"target": [30, 31]},
+        fact_token_ids=fact_token_ids,
+        sample_facts=sample_facts,
     )
 
-    assert plan.context_token_ids == expected_context
-    assert plan.input_token_ids == expected_context + [30, 31]
-    assert (plan.slice_start, plan.slice_end) == (
-        len(expected_context),
-        len(expected_context) + 2,
-    )
+    assert plan.context_token_ids == [10, 11, 12, 20, 21]
+    assert plan.input_token_ids == [10, 11, 12, 20, 21, 30, 31]
+    assert (plan.slice_start, plan.slice_end) == (5, 7)
     assert plan.context_turn_ids == (sample.turns[0].id, sample.turns[1].id)
 
 
 def test_window_excludes_source_turn_and_uses_available_prefix_at_start() -> None:
     sample = _sample()
     first = memory_fact_from_hit(_hit("first", "first", 1))
-    tokenizer = _DeterministicTokenizer()
+    sample_facts = unique_memory_facts([_hit("first", "first", 1), _hit("later", "later", 2)])
 
     assert previous_turn_context_turns(sample, first.source_turn_id, 3) == []
     plan = build_fact_context_encoding_plan(
         first,
         sample,
-        tokenizer=tokenizer,
         context_window=3,
         max_input_tokens=10_000,
-        fact_token_ids={"first": [10]},
+        fact_token_ids={"first": [10], "later": [20]},
+        sample_facts=sample_facts,
     )
 
     assert plan.context_token_ids == []
     assert plan.context_turn_ids == ()
     assert plan.input_token_ids == [10]
+
+
+def test_window_turns_without_facts_contribute_no_context() -> None:
+    sample = _sample()
+    target = memory_fact_from_hit(_hit("target", "target", 3))
+    sample_facts = unique_memory_facts([_hit("target", "target", 3), _hit("d1", "future", 4)])
+
+    plan = build_fact_context_encoding_plan(
+        target,
+        sample,
+        context_window=2,
+        max_input_tokens=10_000,
+        fact_token_ids={"target": [30, 31], "d1": [50]},
+        sample_facts=sample_facts,
+    )
+
+    assert plan.context_token_ids == []
+    assert plan.context_turn_ids == ()
+    assert plan.input_token_ids == [30, 31]
+
+
+def test_context_fact_without_tokens_fails_closed() -> None:
+    sample = _sample()
+    target = memory_fact_from_hit(_hit("target", "target", 2))
+    sample_facts = unique_memory_facts([_hit("a1", "one", 1), _hit("target", "target", 2)])
+
+    with pytest.raises(RuntimeError, match="context fact tokenized to zero tokens"):
+        build_fact_context_encoding_plan(
+            target,
+            sample,
+            context_window=1,
+            max_input_tokens=100,
+            fact_token_ids={"target": [30]},
+            sample_facts=sample_facts,
+        )
 
 
 def test_zero_window_returns_no_context_and_negative_raises() -> None:
@@ -201,21 +245,20 @@ def test_zero_window_returns_no_context_and_negative_raises() -> None:
 def test_context_overflow_truncates_oldest_tokens_and_never_target() -> None:
     sample = _sample()
     target = memory_fact_from_hit(_hit("target", "target", 3))
-    tokenizer = _DeterministicTokenizer()
-    full_context = [
-        token_id
-        for turn in (sample.turns[0], sample.turns[1])
-        for token_id in encode_text_no_special(tokenizer, format_memory_turn(turn))
-    ]
+    sample_facts = unique_memory_facts(
+        [_hit("a1", "one", 1), _hit("b1", "two", 2), _hit("target", "target", 3)]
+    )
+    fact_token_ids = {"a1": [10, 11, 12, 13], "b1": [20, 21, 22], "target": [30, 31]}
+    full_context = [10, 11, 12, 13, 20, 21, 22]
     max_input_tokens = len(full_context) - 3 + 2  # force a 3-token overflow
 
     plan = build_fact_context_encoding_plan(
         target,
         sample,
-        tokenizer=tokenizer,
         context_window=2,
         max_input_tokens=max_input_tokens,
-        fact_token_ids={"target": [30, 31]},
+        fact_token_ids=fact_token_ids,
+        sample_facts=sample_facts,
     )
 
     assert plan.raw_context_tokens == len(full_context)
@@ -233,10 +276,10 @@ def test_target_fact_larger_than_encoding_limit_fails() -> None:
         build_fact_context_encoding_plan(
             target,
             _sample(),
-            tokenizer=_DeterministicTokenizer(),
             context_window=5,
             max_input_tokens=1,
             fact_token_ids={"target": [1, 2]},
+            sample_facts=[],
         )
 
 

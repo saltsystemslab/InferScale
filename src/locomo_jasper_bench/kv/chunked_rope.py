@@ -179,7 +179,6 @@ class ChunkedRopeSampleComposer:
         self.block_size = block_size
         self.chunks: dict[str, EncodedChunk] = {}
         self._fact_token_ids: dict[str, list[int]] = {}
-        self._turn_token_ids: dict[str, list[int]] = {}
         self._facts: list[MemoryFact] = []
         self._facts_by_id: dict[str, MemoryFact] = {}
         self._sample: ConversationSample | None = None
@@ -411,7 +410,6 @@ class ChunkedRopeSampleComposer:
             "empty_memory_chunk",
             "footer_chunk",
             "_fact_token_ids",
-            "_turn_token_ids",
             "_facts",
             "_facts_by_id",
             "_sample",
@@ -430,11 +428,10 @@ class ChunkedRopeSampleComposer:
         plan = build_fact_context_encoding_plan(
             fact,
             self._sample,
-            tokenizer=self.encoder.tokenizer,
             context_window=self.context_window,
             max_input_tokens=self.max_position,
             fact_token_ids=self._fact_token_ids,
-            turn_token_ids=self._turn_token_ids,
+            sample_facts=self._facts,
         )
         return self.encoder.encode_fact_chunk(plan)
 

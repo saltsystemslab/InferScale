@@ -213,20 +213,19 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
                 fact.memory_id: encode_text_no_special(tokenizer, format_memory_fact(fact))
                 for fact in kv_facts
             }
-            turn_token_ids: dict[str, list[int]] = {}
             fact_chunks: dict[str, Any] = {}
             for fact in kv_facts:
-                # Chunk values are conditioned on the preceding context_window
-                # turns; only the fact-token KV slice is kept (prefix-discard),
-                # matching the accuracy path's vllm-kv encoding semantics.
+                # Chunk values are conditioned on the facts extracted from the
+                # preceding context_window turns; only the fact-token KV slice
+                # is kept (prefix-discard), matching the accuracy path's
+                # vllm-kv encoding semantics.
                 plan = build_fact_context_encoding_plan(
                     fact,
                     sample,
-                    tokenizer=tokenizer,
                     context_window=config.context_window,
                     max_input_tokens=config.kv_max_position,
                     fact_token_ids=fact_token_ids,
-                    turn_token_ids=turn_token_ids,
+                    sample_facts=kv_facts,
                 )
                 fact_chunks[fact.memory_id] = encoder.encode_fact_chunk(plan)
             chunks_by_sample[sample.sample_id] = fact_chunks

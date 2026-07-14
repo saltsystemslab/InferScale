@@ -391,9 +391,18 @@ class SampleMemoryBuilder:
         return {}
 
 
-def load_facts_into_memory(memory: Any, facts: tuple[MemoryFact, ...]) -> None:
-    """Replay immutable catalog facts into a live Mem0 store with infer=False."""
-    link_entity = getattr(memory, "_link_entities_for_memory", None)
+def load_facts_into_memory(
+    memory: Any,
+    facts: tuple[MemoryFact, ...],
+    *,
+    link_entities: bool = True,
+) -> None:
+    """Replay immutable catalog facts into a live Mem0 store with infer=False.
+
+    link_entities=False skips populating the entity store; callers that search
+    the vector store directly (the throughput worker) never read it.
+    """
+    link_entity = getattr(memory, "_link_entities_for_memory", None) if link_entities else None
     for fact in facts:
         result = memory.add(
             [{"role": "user", "content": fact.text}],

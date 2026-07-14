@@ -7,6 +7,8 @@ from locomo_jasper_bench.throughput.config import ThroughputConfig
 from locomo_jasper_bench.throughput.reporting import RESULT_COLUMNS, validate_result_row
 from locomo_jasper_bench.throughput.worker import (
     _build_warmup_prompts,
+    _check_pinned_host_projection,
+    _parse_mem_available_bytes,
     _result_row,
     _select_chunks_for_fact_ids,
     run_condition,
@@ -34,6 +36,56 @@ def _config(tmp_path: Path) -> ThroughputConfig:
         model_label="test",
         results_dir=tmp_path,
         run_id="worker-test",
+    )
+
+
+def test_mem_available_parser_reads_meminfo_kilobytes() -> None:
+    text = "MemTotal:       1000 kB\nMemAvailable:   2048 kB\nSwapTotal: 0 kB\n"
+
+    assert _parse_mem_available_bytes(text) == 2048 * 1024
+    assert _parse_mem_available_bytes("MemTotal: 1000 kB\n") is None
+    assert _parse_mem_available_bytes("MemAvailable: garbage kB\n") is None
+
+
+def test_pinned_host_projection_rejects_footprint_above_available_ram(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "locomo_jasper_bench.throughput.worker._available_host_memory_bytes",
+        lambda: 10 * 2**30,
+    )
+
+    with pytest.raises(RuntimeError, match="pinned-host KV footprint exceeds available RAM"):
+        _check_pinned_host_projection(
+            _config(tmp_path),
+            composed_bytes=9.5 * 2**30,
+            num_users=100,
+            total_requests=200,
+        )
+
+    _check_pinned_host_projection(
+        _config(tmp_path),
+        composed_bytes=8 * 2**30,
+        num_users=100,
+        total_requests=200,
+    )
+
+
+def test_pinned_host_projection_skips_without_a_memory_signal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "locomo_jasper_bench.throughput.worker._available_host_memory_bytes",
+        lambda: None,
+    )
+
+    _check_pinned_host_projection(
+        _config(tmp_path),
+        composed_bytes=float("inf"),
+        num_users=1,
+        total_requests=2,
     )
 
 

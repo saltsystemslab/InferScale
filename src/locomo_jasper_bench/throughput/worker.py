@@ -40,7 +40,6 @@ from .reporting import RESULT_COLUMNS
 from .workload import (
     LocomoRequest,
     build_locomo_requests,
-    user_id,
 )
 
 
@@ -143,7 +142,7 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
         shutil.rmtree(mem0_store_root)
     encoder: Any | None = None
     llm: Any | None = None
-    open_memory: Any | None = None
+    stores_by_sample: dict[str, Any] = {}
     try:
         print(f"kv_injection: users={num_users} precompute starting", flush=True)
         precompute_started = time.perf_counter()
@@ -244,99 +243,101 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
         for request in requests:
             requests_by_user[request.user_index].append(request)
 
+        # Users round-robin over the same samples and a store's contents
+        # depend only on the sample, so one store per sample serves all of
+        # its users.
+        setup_started = time.perf_counter()
+        for sample in used_samples:
+            stores_by_sample[sample.sample_id] = _build_user_store(
+                config,
+                backend="jasper",
+                store_root=mem0_store_root / sample.sample_id,
+                facts=facts_by_sample[sample.sample_id],
+            )
+        memory_setup_time_s = time.perf_counter() - setup_started
+
         for user_index in range(num_users):
             sample = samples_by_user[user_index]
             facts = facts_by_sample[sample.sample_id]
             fact_count_total += len(facts)
-            setup_started = time.perf_counter()
-            open_memory = _build_user_store(
-                config,
-                backend="jasper",
-                store_root=mem0_store_root / user_id(user_index),
-                facts=facts,
-            )
-            memory_setup_time_s += time.perf_counter() - setup_started
-            try:
-                for request in requests_by_user[user_index]:
-                    hits, elapsed_s, search_s = _search_store(
-                        open_memory,
-                        request.query,
-                        top_k=config.top_k,
-                    )
-                    retrieval_time_s += elapsed_s
-                    vector_search_time_s += search_s
+            open_memory = stores_by_sample[sample.sample_id]
+            for request in requests_by_user[user_index]:
+                hits, elapsed_s, search_s = _search_store(
+                    open_memory,
+                    request.query,
+                    top_k=config.top_k,
+                )
+                retrieval_time_s += elapsed_s
+                vector_search_time_s += search_s
 
-                    # Compose launches asynchronous CUDA work; synchronize on
-                    # both sides of the timer so it measures the GPU time, not
-                    # just the kernel-enqueue time.
-                    torch.cuda.synchronize()
-                    compose_started = time.perf_counter()
-                    selected_facts = reverse_ranked_memory_facts(hits)
-                    selected = _select_chunks_for_fact_ids(
-                        [fact.memory_id for fact in selected_facts],
-                        chunks_by_sample[sample.sample_id],
-                    )
-                    composed_chunks = [header_chunk, *selected, footer_chunk]
-                    kv_by_layer = encoder.compose_chunks(composed_chunks)
-                    memory_token_ids = [
-                        token_id
-                        for chunk in composed_chunks
-                        for token_id in chunk.token_ids
-                    ]
-                    torch.cuda.synchronize()
-                    kv_compose_time_s += time.perf_counter() - compose_started
+                # Compose launches asynchronous CUDA work; synchronize on
+                # both sides of the timer so it measures the GPU time, not
+                # just the kernel-enqueue time.
+                torch.cuda.synchronize()
+                compose_started = time.perf_counter()
+                selected_facts = reverse_ranked_memory_facts(hits)
+                selected = _select_chunks_for_fact_ids(
+                    [fact.memory_id for fact in selected_facts],
+                    chunks_by_sample[sample.sample_id],
+                )
+                composed_chunks = [header_chunk, *selected, footer_chunk]
+                kv_by_layer = encoder.compose_chunks(composed_chunks)
+                memory_token_ids = [
+                    token_id
+                    for chunk in composed_chunks
+                    for token_id in chunk.token_ids
+                ]
+                torch.cuda.synchronize()
+                kv_compose_time_s += time.perf_counter() - compose_started
 
-                    # Registration is a store write (a D2H copy into pinned
-                    # RAM for the cpu-pinned backend); timed apart from
-                    # compose so the PCIe write cost is visible.
-                    store_write_started = time.perf_counter()
-                    memory_user_id = f"request-{request_index:05d}"
-                    if first_memory_token_ids is None:
-                        first_memory_token_ids = list(memory_token_ids)
-                        first_memory_user_id = memory_user_id
-                    register_user_memory(
-                        namespace,
-                        user_id=memory_user_id,
-                        kv_by_layer=kv_by_layer,
-                        num_tokens=len(memory_token_ids),
-                        token_ids=memory_token_ids,
-                    )
-                    torch.cuda.synchronize()
-                    kv_store_write_time_s += time.perf_counter() - store_write_started
+                # Registration is a store write (a D2H copy into pinned
+                # RAM for the cpu-pinned backend); timed apart from
+                # compose so the PCIe write cost is visible.
+                store_write_started = time.perf_counter()
+                memory_user_id = f"request-{request_index:05d}"
+                if first_memory_token_ids is None:
+                    first_memory_token_ids = list(memory_token_ids)
+                    first_memory_user_id = memory_user_id
+                register_user_memory(
+                    namespace,
+                    user_id=memory_user_id,
+                    kv_by_layer=kv_by_layer,
+                    num_tokens=len(memory_token_ids),
+                    token_ids=memory_token_ids,
+                )
+                torch.cuda.synchronize()
+                kv_store_write_time_s += time.perf_counter() - store_write_started
 
-                    # Token-equivalence verification is benchmark bookkeeping,
-                    # not part of the serving path; its cost is reported
-                    # separately and excluded from QPS.
-                    verify_started = time.perf_counter()
-                    canonical_memory = build_memory_prompt_token_ids(
-                        tokenizer,
-                        sample,
-                        hits,
-                        context_window=0,
-                        memory_scaffold=scaffold,
-                    )
-                    _require_canonical_memory_tokens(memory_token_ids, canonical_memory.token_ids)
-                    kv_verify_time_s += time.perf_counter() - verify_started
+                # Token-equivalence verification is benchmark bookkeeping,
+                # not part of the serving path; its cost is reported
+                # separately and excluded from QPS.
+                verify_started = time.perf_counter()
+                canonical_memory = build_memory_prompt_token_ids(
+                    tokenizer,
+                    sample,
+                    hits,
+                    context_window=0,
+                    memory_scaffold=scaffold,
+                )
+                _require_canonical_memory_tokens(memory_token_ids, canonical_memory.token_ids)
+                kv_verify_time_s += time.perf_counter() - verify_started
 
-                    prompt_started = time.perf_counter()
-                    qa = _request_question_answer(request)
-                    prompts.append(
-                        {
-                            "prompt_token_ids": build_kv_equivalence_prompt_token_ids(
-                                tokenizer,
-                                memory_token_ids,
-                                sample,
-                                qa,
-                                memory_scaffold=scaffold,
-                            ).prompt_token_ids
-                        }
-                    )
-                    prompt_memory_user_ids.append(memory_user_id)
-                    prompt_build_time_s += time.perf_counter() - prompt_started
-                    request_index += 1
-            finally:
-                _close_mem0(open_memory)
-                open_memory = None
+                prompt_started = time.perf_counter()
+                qa = _request_question_answer(request)
+                prompts.append(
+                    {
+                        "prompt_token_ids": build_kv_equivalence_prompt_token_ids(
+                            tokenizer,
+                            memory_token_ids,
+                            sample,
+                            qa,
+                            memory_scaffold=scaffold,
+                        ).prompt_token_ids
+                    }
+                )
+                prompt_memory_user_ids.append(memory_user_id)
+                prompt_build_time_s += time.perf_counter() - prompt_started
+                request_index += 1
             if (user_index + 1) % 10 == 0 or user_index + 1 == num_users:
                 print(f"kv_injection: retrieved {user_index + 1}/{num_users} users", flush=True)
 
@@ -422,8 +423,8 @@ def _run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any
             total_output_tokens=measured["total_output_tokens"],
         )
     finally:
-        if open_memory is not None:
-            _close_mem0(open_memory)
+        for store in stores_by_sample.values():
+            _close_mem0(store)
         _release_llm(llm)
         if encoder is not None:
             encoder.close()
@@ -448,7 +449,7 @@ def _run_mem0(
     facts_by_sample: dict[str, tuple[MemoryFact, ...]] = {}
 
     llm: Any | None = None
-    open_memory: Any | None = None
+    stores_by_sample: dict[str, Any] = {}
     mem0_store_root = local_store_scratch_dir(config.run_id) / f"{condition}-stores"
     if mem0_store_root.exists():
         shutil.rmtree(mem0_store_root)
@@ -484,62 +485,70 @@ def _run_mem0(
         ):
             requests_by_user[request.user_index].append(request)
 
-        print(f"{condition}: preparing {max_users} user stores", flush=True)
-        for user_index in range(max_users):
-            sample = samples[user_index % len(samples)]
-            if sample.sample_id not in facts_by_sample:
-                facts_by_sample[sample.sample_id] = catalog_store.load(sample)
-            facts = facts_by_sample[sample.sample_id]
-
+        # Users round-robin over the same samples and a store's contents
+        # depend only on the sample, so one store per sample serves all of
+        # its users; each request is searched once and its measured cost is
+        # attributed to every count whose batch includes it.
+        used_samples = [samples[index % len(samples)] for index in range(min(max_users, len(samples)))]
+        print(
+            f"{condition}: preparing {len(used_samples)} sample stores for {max_users} users",
+            flush=True,
+        )
+        sample_store_build_s: dict[str, float] = {}
+        for sample in used_samples:
+            facts_by_sample[sample.sample_id] = catalog_store.load(sample)
             setup_started = time.perf_counter()
-            open_memory = _build_user_store(
+            stores_by_sample[sample.sample_id] = _build_user_store(
                 config,
                 backend=backend,
-                store_root=mem0_store_root / user_id(user_index),
-                facts=facts,
+                store_root=mem0_store_root / sample.sample_id,
+                facts=facts_by_sample[sample.sample_id],
             )
-            setup_time_s = time.perf_counter() - setup_started
+            sample_store_build_s[sample.sample_id] = time.perf_counter() - setup_started
+        for count in user_counts:
+            accumulators[count]["memory_setup_time_s"] = sum(
+                sample_store_build_s[samples[index % len(samples)].sample_id]
+                for index in range(min(count, len(samples)))
+            )
 
-            try:
-                for count in user_counts:
-                    if user_index >= count:
-                        continue
+        for user_index in range(max_users):
+            sample = samples[user_index % len(samples)]
+            facts = facts_by_sample[sample.sample_id]
+            open_memory = stores_by_sample[sample.sample_id]
+            applicable_counts = [count for count in user_counts if user_index < count]
+            for count in applicable_counts:
+                accumulators[count]["fact_count_total"] += len(facts)
+            for request in requests_by_user[user_index]:
+                hits, elapsed_s, search_s = _search_store(
+                    open_memory,
+                    request.query,
+                    top_k=config.top_k,
+                )
+
+                prompt_started = time.perf_counter()
+                memory_prompt = build_memory_prompt_token_ids(
+                    tokenizer,
+                    sample,
+                    hits,
+                    context_window=0,
+                    memory_scaffold=scaffold,
+                )
+                qa = _request_question_answer(request)
+                prompt_token_ids = build_kv_equivalence_prompt_token_ids(
+                    tokenizer,
+                    memory_prompt.token_ids,
+                    sample,
+                    qa,
+                    memory_scaffold=scaffold,
+                ).prompt_token_ids
+                prompt_build_s = time.perf_counter() - prompt_started
+
+                for count in applicable_counts:
                     accumulator = accumulators[count]
-                    accumulator["memory_setup_time_s"] += setup_time_s
-                    accumulator["fact_count_total"] += len(facts)
-                    for request in requests_by_user[user_index]:
-                        hits, elapsed_s, search_s = _search_store(
-                            open_memory,
-                            request.query,
-                            top_k=config.top_k,
-                        )
-                        accumulator["retrieval_time_s"] += elapsed_s
-                        accumulator["vector_search_time_s"] += search_s
-
-                        prompt_started = time.perf_counter()
-                        memory_prompt = build_memory_prompt_token_ids(
-                            tokenizer,
-                            sample,
-                            hits,
-                            context_window=0,
-                            memory_scaffold=scaffold,
-                        )
-                        qa = _request_question_answer(request)
-                        accumulator["prompts"].append(
-                            {
-                                "prompt_token_ids": build_kv_equivalence_prompt_token_ids(
-                                    tokenizer,
-                                    memory_prompt.token_ids,
-                                    sample,
-                                    qa,
-                                    memory_scaffold=scaffold,
-                                ).prompt_token_ids
-                            }
-                        )
-                        accumulator["prompt_build_time_s"] += time.perf_counter() - prompt_started
-            finally:
-                _close_mem0(open_memory)
-                open_memory = None
+                    accumulator["retrieval_time_s"] += elapsed_s
+                    accumulator["vector_search_time_s"] += search_s
+                    accumulator["prompts"].append({"prompt_token_ids": prompt_token_ids})
+                    accumulator["prompt_build_time_s"] += prompt_build_s
             if (user_index + 1) % 10 == 0 or user_index + 1 == max_users:
                 print(f"{condition}: prepared {user_index + 1}/{max_users} users", flush=True)
 
@@ -575,8 +584,8 @@ def _run_mem0(
 
         return results
     finally:
-        if open_memory is not None:
-            _close_mem0(open_memory)
+        for store in stores_by_sample.values():
+            _close_mem0(store)
         shutil.rmtree(mem0_store_root, ignore_errors=True)
         _release_llm(llm)
 
@@ -637,7 +646,9 @@ def _build_user_store(
         if hasattr(memory, "embedder"):
             memory.embedder = cached
     try:
-        load_facts_into_memory(memory, facts)
+        # _search_store queries the vector store directly and never reads the
+        # entity store, so entity linking would be pure setup overhead here.
+        load_facts_into_memory(memory, facts, link_entities=False)
         _finalize_mem0(memory)
     except BaseException:
         _close_mem0(memory)
@@ -791,19 +802,64 @@ def _check_kv_gpu_projection(
         )
 
     if config.kv_store_backend == "cpu-pinned":
-        try:
-            host_total = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
-        except (ValueError, OSError, AttributeError):
-            return
-        # Pinned allocations are non-swappable; keep a conservative margin.
-        if composed_bytes > 0.8 * host_total:
-            raise RuntimeError(
-                "Projected pinned-host KV footprint exceeds 80% of system RAM: "
-                f"composed={composed_bytes / 2**30:.1f}GiB "
-                f"host={host_total / 2**30:.1f}GiB "
-                f"(users={num_users}, requests={total_requests}). "
-                "Shrink the user count or lower --top-k."
-            )
+        _check_pinned_host_projection(
+            config,
+            composed_bytes=composed_bytes,
+            num_users=num_users,
+            total_requests=total_requests,
+        )
+
+
+def _parse_mem_available_bytes(meminfo_text: str) -> int | None:
+    for line in meminfo_text.splitlines():
+        if line.startswith("MemAvailable:"):
+            parts = line.split()
+            if len(parts) >= 2 and parts[1].isdigit():
+                return int(parts[1]) * 1024
+    return None
+
+
+def _available_host_memory_bytes() -> int | None:
+    try:
+        available = _parse_mem_available_bytes(
+            Path("/proc/meminfo").read_text(encoding="ascii")
+        )
+    except OSError:
+        available = None
+    if available is not None:
+        return available
+    # Without MemAvailable, treat 80% of physical RAM as available; the
+    # kernel, page cache, and resident processes own an unknown share.
+    try:
+        return int(os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") * 0.8)
+    except (ValueError, OSError, AttributeError):
+        return None
+
+
+def _check_pinned_host_projection(
+    config: ThroughputConfig,
+    *,
+    composed_bytes: float,
+    num_users: int,
+    total_requests: int,
+) -> None:
+    """Fail before precompute if the pinned KV pool cannot fit in host RAM.
+
+    Pinned allocations are non-swappable, so the ceiling is memory that is
+    actually available now, with headroom for the vLLM engine's own host
+    allocations after this check.
+    """
+    available = _available_host_memory_bytes()
+    if available is None:
+        return
+    if composed_bytes > 0.9 * available:
+        raise RuntimeError(
+            "Projected pinned-host KV footprint exceeds available RAM: "
+            f"composed={composed_bytes / 2**30:.1f}GiB "
+            f"available={available / 2**30:.1f}GiB "
+            f"(users={num_users}, requests={total_requests}). "
+            "Shrink the user count, lower --top-k, or free host memory."
+        )
 
 
 def _start_llm(

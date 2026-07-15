@@ -192,7 +192,7 @@ class MemoryKVConnector(KVConnectorBase_V1):
         return new_tokens, False
 
     def _try_match_user(self, user_id: str, prompt_token_ids: list[int]) -> tuple[int, int] | None:
-        # Metadata-only read: matching must never stage KV (the cpu-pinned
+        # Metadata-only read: matching must never stage KV (the cpu
         # store's get_user_memory issues a full H2D prefetch).
         memory = self._memory_store.peek_user_memory(user_id)
         if memory is None or memory.token_ids is None:

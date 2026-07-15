@@ -436,7 +436,7 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
         "--kv-staging-slots",
         type=int,
         default=int(os.environ.get("LOCOMO_KV_STAGING_SLOTS", str(DEFAULT_KV_STAGING_SLOTS))),
-        help="GPU staging buffers kept in flight by the cpu-pinned KV store.",
+        help="GPU staging buffers kept in flight by the cpu KV store.",
     )
 
     parser.add_argument("--max-samples", type=int)

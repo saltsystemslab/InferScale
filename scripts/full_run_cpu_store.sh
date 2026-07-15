@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Sweep the LoCoMo Jasper benchmark with the pinned-host (cpu-pinned) KV
+# Sweep the LoCoMo Jasper benchmark with the pinned-host (cpu) KV
 # memory store. Same grid as scripts/full_run.sh but ONLY the vllm-kv+jasper
 # runs: the vllm-prefix baselines never touch the KV store, so they come from
 # the standard sweep.
@@ -110,7 +110,7 @@ for MODEL in ${MODELS}; do
             --answer-model "${MODEL}" \
             --answer-backend vllm-kv \
             --vector-backend jasper \
-            --kv-store-backend cpu-pinned \
+            --kv-store-backend cpu \
             --kv-staging-slots "${KV_STAGING_SLOTS}" \
             --top-k "${TOP_K}" \
             --context-window "${W}" \

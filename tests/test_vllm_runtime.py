@@ -37,12 +37,12 @@ def test_kv_transfer_config_carries_cpu_pinned_backend() -> None:
     config = build_strict_gpu_kv_transfer_config(
         connector_module="example.connector",
         namespace="ns",
-        store_backend="cpu-pinned",
+        store_backend="cpu",
         num_staging_slots=8,
     )
 
     extra = config["kv_connector_extra_config"]
-    assert extra["memory_store_backend"] == "cpu-pinned"
+    assert extra["memory_store_backend"] == "cpu"
     assert extra["num_staging_slots"] == 8
 
 

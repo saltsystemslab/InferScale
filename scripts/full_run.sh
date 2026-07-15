@@ -73,7 +73,9 @@ mkdir -p "${LOG_DIR}"
 n_models=$(wc -w <<<"${MODELS}")
 n_topks=$(wc -w <<<"${TOPKS}")
 n_windows=$(wc -w <<<"${KV_WINDOWS}")
-TOTAL=$(( n_models * n_topks * (n_windows + 2) ))
+# Per (model, topk): one KV run per window plus the single prefix-qdrant
+# prompt-injection baseline.
+TOTAL=$(( n_models * n_topks * (n_windows + 1) ))
 idx=0
 declare -a FAILURES=()
 
@@ -139,22 +141,6 @@ for MODEL in ${MODELS}; do
         --log-every 1 \
         --skip-judge \
         --run-id "${prefix_id}"
-
-    prefix_jasper_id="${MODEL}-prefix-mem0-jasper10-k${TOP_K}-s0-${RUN_STAMP}"
-    run_one "${MODEL} k=${TOP_K} mem0-prefix jasper" \
-      locomo-jasper-bench \
-        --dataset "${DATASET}" \
-        --results-dir "${BENCHMARK_RESULTS_ROOT}" \
-        --answer-model "${MODEL}" \
-        --answer-backend vllm-prefix \
-        --vector-backend jasper \
-        --top-k "${TOP_K}" \
-        --context-window 0 \
-        --kv-gpu-memory-utilization 0.30 \
-        --max-samples 10 \
-        --log-every 1 \
-        --skip-judge \
-        --run-id "${prefix_jasper_id}"
   done
 done
 

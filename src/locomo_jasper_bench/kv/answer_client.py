@@ -220,7 +220,7 @@ class VLLMChunkedKVAnswerClient:
         verify_ms = (time.perf_counter() - verify_started) * 1000
         user_id = self.active_user_id
         # Registration is a store write (a full D2H copy into pinned RAM for
-        # the cpu-pinned backend), not part of the serving path; time it
+        # the cpu backend), not part of the serving path; time it
         # separately and exclude it from the latency metrics like verify.
         store_write_started = time.perf_counter()
         register_user_memory(

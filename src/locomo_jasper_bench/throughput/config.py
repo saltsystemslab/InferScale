@@ -42,7 +42,7 @@ def condition_vector_backend(condition: str) -> str | None:
     return CONDITION_VECTOR_BACKENDS[condition]
 
 
-DEFAULT_USER_COUNTS = (150, 200, 250, 300, 350, 400, 450)
+DEFAULT_USER_COUNTS = (50, 100, 150, 200)
 DEFAULT_USER_COUNTS_TEXT = ",".join(str(count) for count in DEFAULT_USER_COUNTS)
 
 
@@ -236,7 +236,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[ThroughputConfig, bool]:
         "--kv-staging-slots",
         type=int,
         default=int(os.environ.get("LOCOMO_KV_STAGING_SLOTS", str(DEFAULT_KV_STAGING_SLOTS))),
-        help="GPU staging buffers kept in flight by the cpu-pinned KV store.",
+        help="GPU staging buffers kept in flight by the cpu KV store.",
     )
     parser.add_argument("--embedding-model", default=os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"))
     parser.add_argument("--embedding-api-key", default=os.environ.get("OPENAI_API_KEY"))

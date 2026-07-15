@@ -255,6 +255,7 @@ class BenchmarkConfig:
     kv_enable_prefix_caching: bool = True
     kv_store_backend: str = DEFAULT_KV_STORE_BACKEND
     kv_staging_slots: int = DEFAULT_KV_STAGING_SLOTS
+    kv_chunk_cache_enabled: bool = True
 
     max_samples: int | None = None
     max_questions: int | None = None
@@ -262,6 +263,7 @@ class BenchmarkConfig:
     log_every: int = 5
     check_catalogs: bool = False
     preembed_only: bool = False
+    precompute_kv_only: bool = False
     skip_judge: bool = False
     judge_only: bool = False
     rejudge: bool = False
@@ -430,13 +432,16 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
         "--kv-store-backend",
         choices=list(KNOWN_KV_STORE_BACKENDS),
         default=os.environ.get("LOCOMO_KV_STORE_BACKEND", DEFAULT_KV_STORE_BACKEND),
-        help="Where pre-encoded KV embeddings live: GPU HBM, or pinned host RAM streamed over PCIe.",
+        help=(
+            "Where the pre-encoded fact-chunk corpus lives: GPU HBM, or pinned host "
+            "RAM staged over PCIe at composition time."
+        ),
     )
     parser.add_argument(
         "--kv-staging-slots",
         type=int,
         default=int(os.environ.get("LOCOMO_KV_STAGING_SLOTS", str(DEFAULT_KV_STAGING_SLOTS))),
-        help="GPU staging buffers kept in flight by the cpu KV store.",
+        help="Staging pool floor for the cpu chunk store (raised to at least top-k + 4).",
     )
 
     parser.add_argument("--max-samples", type=int)
@@ -463,6 +468,20 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkConfig:
             "Materialize backend-independent Mem0 fact catalogs and precompute all required "
             "embeddings, then exit."
         ),
+    )
+    parser.add_argument(
+        "--precompute-kv-only",
+        action="store_true",
+        help=(
+            "Pre-encode every sample's per-fact KV chunks into the chunk cache for this "
+            "model and context window, then exit (see scripts/precompute_kv_chunks.sh)."
+        ),
+    )
+    parser.add_argument(
+        "--no-kv-chunk-cache",
+        dest="kv_chunk_cache_enabled",
+        action="store_false",
+        help="Disable the pre-encoded KV chunk disk cache (always re-encode).",
     )
     parser.add_argument(
         "--skip-judge",

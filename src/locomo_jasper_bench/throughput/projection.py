@@ -26,11 +26,12 @@ def check_kv_gpu_projection(
 ) -> None:
     """Fail before the expensive precompute if the KV footprint cannot fit.
 
-    kv_injection runs setup (retrieve + compose) fully before the engine
-    starts and then drops the source chunks, so the peaks to check are:
-    setup holds source chunks + jasper graphs + composed copies, and
-    generation holds the vLLM pool + the backend's resident KV + the
-    still-open jasper graphs.
+    kv_injection composes every request before the engine starts and keeps
+    the composed memories GPU-resident in the in-flight registry through
+    generation under BOTH backends. The corpus chunk store occupies HBM
+    only under the gpu backend (under cpu it is pinned host RAM plus a
+    transient staged working set of one composition) and closes before the
+    engine claims its pool.
     """
     import torch
 
@@ -56,23 +57,19 @@ def check_kv_gpu_projection(
     device_total = torch.cuda.get_device_properties(0).total_memory
     vllm_pool = config.kv_gpu_memory_utilization * device_total
 
-    # Per-backend HBM-resident component: cpu holds composed memories
-    # in pinned host RAM (one transient copy while composing, one staged
-    # copy per slot while generating); the GPU store keeps every composed
-    # copy resident from composition until generation ends.
+    # The backend only moves the corpus: HBM-resident under gpu, pinned
+    # host RAM under cpu where the GPU sees just the staged working set of
+    # one composition. Composed memories are GPU-resident either way.
     if config.kv_store_backend == "cpu":
-        compose_resident_bytes = composed_tokens * bytes_per_token
-        generate_resident_bytes = config.kv_staging_slots * composed_tokens * bytes_per_token
-        remediation = "Shrink the user count, lower --top-k, --kv-staging-slots, or --gpu-memory-utilization."
+        corpus_resident_bytes = composed_tokens * bytes_per_token
     else:
-        compose_resident_bytes = composed_bytes
-        generate_resident_bytes = composed_bytes
-        remediation = "Shrink the user count, lower --top-k, or reduce --gpu-memory-utilization."
+        corpus_resident_bytes = source_bytes
+    remediation = "Shrink the user count, lower --top-k, or reduce --gpu-memory-utilization."
 
     graph_bytes = unique_sample_count * JASPER_GRAPH_DEVICE_BYTES
     phase_peaks = {
-        "setup": source_bytes + graph_bytes + compose_resident_bytes,
-        "generate": vllm_pool + generate_resident_bytes + graph_bytes,
+        "setup": graph_bytes + composed_bytes + corpus_resident_bytes,
+        "generate": vllm_pool + composed_bytes + graph_bytes,
     }
     for phase, projected_peak in phase_peaks.items():
         if projected_peak > 0.97 * device_total:
@@ -91,7 +88,7 @@ def check_kv_gpu_projection(
     if config.kv_store_backend == "cpu":
         check_pinned_host_projection(
             config,
-            composed_bytes=composed_bytes,
+            corpus_bytes=source_bytes,
             num_users=num_users,
             total_requests=total_requests,
         )
@@ -126,24 +123,25 @@ def available_host_memory_bytes() -> int | None:
 def check_pinned_host_projection(
     config: ThroughputConfig,
     *,
-    composed_bytes: float,
+    corpus_bytes: float,
     num_users: int,
     total_requests: int,
 ) -> None:
-    """Fail before precompute if the pinned KV pool cannot fit in host RAM.
+    """Fail before precompute if the pinned corpus cannot fit in host RAM.
 
-    Pinned allocations are non-swappable, so the ceiling is memory that is
-    actually available now, with headroom for the vLLM engine's own host
-    allocations after this check.
+    The cpu backend pins the fact-chunk corpus; pinned allocations are
+    non-swappable, so the ceiling is memory that is actually available now,
+    with headroom for the vLLM engine's own host allocations after this
+    check.
     """
     available = available_host_memory_bytes()
     if available is None:
         return
-    if composed_bytes > 0.9 * available:
+    if corpus_bytes > 0.9 * available:
         raise RuntimeError(
-            "Projected pinned-host KV footprint exceeds available RAM: "
-            f"composed={composed_bytes / 2**30:.1f}GiB "
+            "Projected pinned-host KV corpus exceeds available RAM: "
+            f"corpus={corpus_bytes / 2**30:.1f}GiB "
             f"available={available / 2**30:.1f}GiB "
             f"(users={num_users}, requests={total_requests}). "
-            "Shrink the user count, lower --top-k, or free host memory."
+            "Reduce the corpus or free host memory."
         )

@@ -71,6 +71,7 @@ class ThroughputConfig:
     kv_enable_prefix_caching: bool = True
     kv_store_backend: str = DEFAULT_KV_STORE_BACKEND
     kv_staging_slots: int = DEFAULT_KV_STAGING_SLOTS
+    kv_chunk_cache_enabled: bool = True
     embedding_model: str = "text-embedding-3-small"
     embedding_api_key: str | None = None
     embedding_base_url: str | None = None
@@ -230,13 +231,22 @@ def parse_args(argv: list[str] | None = None) -> tuple[ThroughputConfig, bool]:
         "--kv-store-backend",
         choices=list(KNOWN_KV_STORE_BACKENDS),
         default=os.environ.get("LOCOMO_KV_STORE_BACKEND", DEFAULT_KV_STORE_BACKEND),
-        help="Where pre-encoded KV embeddings live: GPU HBM, or pinned host RAM streamed over PCIe.",
+        help=(
+            "Where the pre-encoded fact-chunk corpus lives: GPU HBM, or pinned host "
+            "RAM staged over PCIe at composition time."
+        ),
     )
     parser.add_argument(
         "--kv-staging-slots",
         type=int,
         default=int(os.environ.get("LOCOMO_KV_STAGING_SLOTS", str(DEFAULT_KV_STAGING_SLOTS))),
-        help="GPU staging buffers kept in flight by the cpu KV store.",
+        help="Staging pool floor for the cpu chunk store (raised to at least top-k + 4).",
+    )
+    parser.add_argument(
+        "--no-kv-chunk-cache",
+        dest="kv_chunk_cache_enabled",
+        action="store_false",
+        help="Disable the pre-encoded KV chunk disk cache (always re-encode).",
     )
     parser.add_argument("--embedding-model", default=os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"))
     parser.add_argument("--embedding-api-key", default=os.environ.get("OPENAI_API_KEY"))
@@ -294,6 +304,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[ThroughputConfig, bool]:
         kv_enable_prefix_caching=ns.kv_enable_prefix_caching,
         kv_store_backend=ns.kv_store_backend,
         kv_staging_slots=ns.kv_staging_slots,
+        kv_chunk_cache_enabled=ns.kv_chunk_cache_enabled,
         embedding_model=ns.embedding_model,
         embedding_api_key=ns.embedding_api_key,
         embedding_base_url=ns.embedding_base_url,

@@ -57,6 +57,16 @@ def main(argv: list[str] | None = None) -> None:
             f"inference_cache_misses={summary['memory_inference_cache']['misses']}"
         )
         return
+    if config.precompute_kv_only:
+        from .kv.precompute import precompute_kv_chunks
+
+        summary = precompute_kv_chunks(config)
+        print(
+            f"kv chunk cache ready in {summary['cache_dir']}: "
+            f"encoded={summary['encoded']} already_cached={summary['skipped']} "
+            f"samples={summary['samples']}"
+        )
+        return
     summary = run_benchmark(config)
     print(f"wrote results to {config.run_dir}")
     accuracy = summary.get("metrics", {}).get("accuracy")

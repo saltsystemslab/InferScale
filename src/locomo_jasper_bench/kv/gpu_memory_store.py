@@ -105,6 +105,9 @@ class GPUMemoryStore:
     def transfer_count(self) -> int:
         return 0
 
+    def transfer_totals(self) -> dict[str, float]:
+        return {}
+
     def reset_bench_metrics(self) -> None:
         return
 

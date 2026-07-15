@@ -8,7 +8,6 @@ import pytest
 
 from locomo_jasper_bench.throughput.config import ThroughputConfig
 from locomo_jasper_bench.throughput.engine import build_warmup_prompts
-from locomo_jasper_bench.throughput.kv_condition import _select_chunks_for_fact_ids
 from locomo_jasper_bench.throughput.projection import (
     check_kv_gpu_projection,
     check_pinned_host_projection,
@@ -20,21 +19,6 @@ from locomo_jasper_bench.throughput.reporting import (
     validate_result_row,
 )
 from locomo_jasper_bench.throughput.worker import run_condition
-
-
-def test_select_chunks_preserves_reverse_ranked_fact_order() -> None:
-    chunks = {"fact-a": "chunk-a", "fact-b": "chunk-b", "fact-c": "chunk-c"}
-
-    selected = _select_chunks_for_fact_ids(["fact-c", "fact-a"], chunks)
-
-    assert selected == ["chunk-c", "chunk-a"]
-
-
-def test_select_chunks_rejects_missing_chunk_or_empty_retrieval() -> None:
-    with pytest.raises(RuntimeError, match="no pre-encoded KV chunk"):
-        _select_chunks_for_fact_ids(["fact-z"], {"fact-a": "chunk-a"})
-    with pytest.raises(RuntimeError, match="no facts"):
-        _select_chunks_for_fact_ids([], {"fact-a": "chunk-a"})
 
 
 def _config(tmp_path: Path) -> ThroughputConfig:
@@ -63,17 +47,17 @@ def test_pinned_host_projection_rejects_footprint_above_available_ram(
         lambda: 10 * 2**30,
     )
 
-    with pytest.raises(RuntimeError, match="pinned-host KV footprint exceeds available RAM"):
+    with pytest.raises(RuntimeError, match="pinned-host KV corpus exceeds available RAM"):
         check_pinned_host_projection(
             _config(tmp_path),
-            composed_bytes=9.5 * 2**30,
+            corpus_bytes=9.5 * 2**30,
             num_users=100,
             total_requests=200,
         )
 
     check_pinned_host_projection(
         _config(tmp_path),
-        composed_bytes=8 * 2**30,
+        corpus_bytes=8 * 2**30,
         num_users=100,
         total_requests=200,
     )
@@ -90,7 +74,7 @@ def test_pinned_host_projection_skips_without_a_memory_signal(
 
     check_pinned_host_projection(
         _config(tmp_path),
-        composed_bytes=float("inf"),
+        corpus_bytes=float("inf"),
         num_users=1,
         total_requests=2,
     )
@@ -184,8 +168,9 @@ def test_kv_gpu_projection_accepts_cpu_backend_at_scale(
     config = _config(tmp_path)
     config.kv_store_backend = "cpu"
 
-    # The same 20-request workload passes with cpu: only the staging
-    # slots stay device-resident during generation.
+    # The same 20-request workload passes with cpu: the corpus is pinned
+    # host RAM, so the GPU carries only the composed memories plus one
+    # composition's staged working set.
     check_kv_gpu_projection(
         config,
         **_projection_kwargs(

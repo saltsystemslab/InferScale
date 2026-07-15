@@ -7,6 +7,21 @@ import time
 import uuid
 from typing import Any
 
+from ..kv.chunk_cache import (
+    CachedSampleEncode,
+    cache_meta,
+    cache_path_for,
+    load_sample_chunks,
+    save_sample_chunks,
+    scaffold_chunks_match,
+)
+from ..kv.chunk_store import (
+    build_chunk_store,
+    close_chunk_store,
+    fetch_fact_chunks,
+    register_fact_chunks,
+    release_fact_chunks,
+)
 from ..kv.context import (
     build_fact_context_encoding_plan,
     reverse_ranked_memory_facts,
@@ -52,9 +67,12 @@ def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]
     memories reach the model as composed KV tensors instead of prompt text.
 
     Runs as ordered phases - encode, retrieve+compose, generate - and frees
-    the encoder weights and source chunks before the engine allocates its
-    pool; the jasper stores stay resident for the whole run (segments are
-    small on the current jasperpy branch) until the finally block.
+    the encoder weights and the fact-chunk corpus store before the engine
+    allocates its pool; the jasper stores stay resident for the whole run
+    (segments are small on the current jasperpy branch) until the finally
+    block. The corpus lives in the --kv-store-backend store (HBM or pinned
+    host RAM); composed request memories are ephemeral GPU products held
+    only in the connector's in-flight registry.
     """
     if config.kv_device not in {"cuda", "cuda:0"}:
         raise RuntimeError("The current strict GPU registry requires --device cuda:0.")
@@ -68,14 +86,12 @@ def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]
 
     import torch
 
-    from ..kv.chunked_rope import ChunkedRopeEncoder
+    from ..kv.chunked_rope import ChunkedRopeEncoder, load_encoder_tokenizer
     from ..kv.gpu_registry import (
         drop_namespace,
         get_gpu_memory_store,
-        namespace_bench_summary,
         namespace_stats,
         register_user_memory,
-        reset_namespace_bench_metrics,
     )
     from ..kv.vllm_runtime import build_strict_gpu_kv_transfer_config, force_vllm_inprocess_mode
 
@@ -98,60 +114,173 @@ def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]
     }
 
     namespace = f"throughput-{config.run_id}-{uuid.uuid4().hex}"
-    # Create the namespace's store with the configured backend before any
-    # registration; the in-process connector resolves the same namespace.
-    get_gpu_memory_store(
-        namespace,
-        backend=config.kv_store_backend,
-        num_staging_slots=config.kv_staging_slots,
-    )
+    # The namespace registry holds in-flight per-request compositions for the
+    # connector handoff and is always GPU-resident; it is NOT the memory
+    # store. --kv-store-backend selects where the fact-chunk corpus lives
+    # (the chunk store built below).
+    get_gpu_memory_store(namespace, backend="gpu")
     mem0_store_root = local_store_scratch_dir(config.run_id) / f"kv-stores-{num_users}u"
     if mem0_store_root.exists():
         shutil.rmtree(mem0_store_root)
     encoder: Any | None = None
     llm: Any | None = None
+    chunk_store: Any | None = None
     stores_by_sample: dict[str, Any] = {}
     try:
         print(f"kv_injection: users={num_users} precompute starting", flush=True)
         precompute_started = time.perf_counter()
-        encoder = ChunkedRopeEncoder(
-            model=config.model,
-            dtype=config.kv_dtype,
-            device=config.kv_device,
-            max_position=config.kv_max_position,
-        )
-        tokenizer = encoder.tokenizer
+        tokenizer = load_encoder_tokenizer(config.model)
         scaffold = extract_memory_scaffold_token_ids(
             tokenizer,
             used_samples[0],
             block_size=config.kv_block_size,
         )
-        header_chunk = encoder.encode_token_ids_chunk("scaffold:header", scaffold.header_token_ids)
-        footer_chunk = encoder.encode_token_ids_chunk("scaffold:footer", scaffold.footer_token_ids)
+
+        kv_facts_by_sample = {
+            sample.sample_id: unique_memory_facts(
+                fact_catalog_hits(facts_by_sample[sample.sample_id])
+            )
+            for sample in used_samples
+        }
+
+        def sample_cache_key(sample: Any) -> tuple[Any, dict[str, Any]]:
+            key_kwargs = dict(
+                model=config.model,
+                dtype=config.kv_dtype,
+                context_window=config.context_window,
+                max_position=config.kv_max_position,
+                block_size=config.kv_block_size,
+                sample=sample,
+                facts=kv_facts_by_sample[sample.sample_id],
+            )
+            return cache_path_for(**key_kwargs), cache_meta(**key_kwargs)
+
+        # Fact chunks head into the backend chunk store: under the cpu
+        # backend they load from disk straight to host and get pinned by the
+        # store, never touching the GPU; scaffold chunks and RoPE tables are
+        # compose-side and always land on the device.
+        chunk_device = "cpu" if config.kv_store_backend == "cpu" else config.kv_device
+        cached_by_sample: dict[str, CachedSampleEncode] = {}
+        if config.kv_chunk_cache_enabled:
+            for sample in used_samples:
+                cache_path, payload_meta = sample_cache_key(sample)
+                cached = load_sample_chunks(
+                    cache_path,
+                    device=chunk_device,
+                    scaffold_device=config.kv_device,
+                    expected_meta=payload_meta,
+                    expected_fact_ids=[
+                        fact.memory_id for fact in kv_facts_by_sample[sample.sample_id]
+                    ],
+                )
+                if cached is not None and scaffold_chunks_match(cached.scaffold_chunks, scaffold):
+                    cached_by_sample[sample.sample_id] = cached
+
+        if all(sample.sample_id in cached_by_sample for sample in used_samples):
+            # Every sample came from the chunk cache: build the encoder from
+            # the cached RoPE tables and never load the HF weights.
+            first_cached = cached_by_sample[used_samples[0].sample_id]
+            encoder = ChunkedRopeEncoder.from_tables(
+                model=config.model,
+                device=config.kv_device,
+                max_position=config.kv_max_position,
+                tokenizer=tokenizer,
+                cos_table=first_cached.cos_table,
+                sin_table=first_cached.sin_table,
+            )
+            header_chunk = first_cached.scaffold_chunks["header"]
+            footer_chunk = first_cached.scaffold_chunks["footer"]
+            memory_list_header_chunk = first_cached.scaffold_chunks.get("memory_list_header")
+            empty_memory_chunk = first_cached.scaffold_chunks.get("empty_memory")
+        else:
+            encoder = ChunkedRopeEncoder(
+                model=config.model,
+                dtype=config.kv_dtype,
+                device=config.kv_device,
+                max_position=config.kv_max_position,
+            )
+            tokenizer = encoder.tokenizer
+            header_chunk = encoder.encode_token_ids_chunk("scaffold:header", scaffold.header_token_ids)
+            footer_chunk = encoder.encode_token_ids_chunk("scaffold:footer", scaffold.footer_token_ids)
+            # The condition composes with header/footer only, but the cache
+            # payload is shared with the accuracy composer, which needs all
+            # four scaffold slots.
+            memory_list_header_chunk = (
+                encoder.encode_token_ids_chunk(
+                    "scaffold:memory_list_header", scaffold.memory_list_header_token_ids
+                )
+                if scaffold.memory_list_header_token_ids
+                else None
+            )
+            empty_memory_chunk = encoder.encode_token_ids_chunk(
+                "scaffold:empty_memory", scaffold.empty_memory_token_ids
+            )
+
+        chunk_store = build_chunk_store(
+            config.kv_store_backend,
+            device=config.kv_device,
+            top_k=config.top_k,
+            staging_slots=config.kv_staging_slots,
+        )
+        # Values are metadata-only chunk maps once registration moves each
+        # sample's KV into the chunk store below.
         chunks_by_sample: dict[str, dict[str, Any]] = {}
         for sample_number, sample in enumerate(used_samples, start=1):
-            kv_facts = unique_memory_facts(fact_catalog_hits(facts_by_sample[sample.sample_id]))
-            fact_token_ids = {
-                fact.memory_id: encode_text_no_special(tokenizer, format_memory_fact(fact))
-                for fact in kv_facts
-            }
-            turn_token_ids: dict[str, list[int]] = {}
-            fact_chunks: dict[str, Any] = {}
-            for fact in kv_facts:
-                # Chunk values are conditioned on the preceding context_window
-                # turns; only the fact-token KV slice is kept (prefix-discard),
-                # matching the accuracy path's vllm-kv encoding semantics.
-                plan = build_fact_context_encoding_plan(
-                    fact,
-                    sample,
-                    tokenizer=tokenizer,
-                    context_window=config.context_window,
-                    max_input_tokens=config.kv_max_position,
-                    fact_token_ids=fact_token_ids,
-                    turn_token_ids=turn_token_ids,
+            cached = cached_by_sample.get(sample.sample_id)
+            if cached is not None:
+                fact_chunks = cached.fact_chunks
+                print(
+                    f"kv_injection: loaded sample {sample_number}/{len(used_samples)} "
+                    f"from chunk cache ({len(fact_chunks)} facts)",
+                    flush=True,
                 )
-                fact_chunks[fact.memory_id] = encoder.encode_fact_chunk(plan)
-            chunks_by_sample[sample.sample_id] = fact_chunks
+            else:
+                kv_facts = kv_facts_by_sample[sample.sample_id]
+                fact_token_ids = {
+                    fact.memory_id: encode_text_no_special(tokenizer, format_memory_fact(fact))
+                    for fact in kv_facts
+                }
+                turn_token_ids: dict[str, list[int]] = {}
+                fact_chunks = {}
+                for fact in kv_facts:
+                    # Chunk values are conditioned on the preceding context_window
+                    # turns; only the fact-token KV slice is kept (prefix-discard),
+                    # matching the accuracy path's vllm-kv encoding semantics.
+                    plan = build_fact_context_encoding_plan(
+                        fact,
+                        sample,
+                        tokenizer=tokenizer,
+                        context_window=config.context_window,
+                        max_input_tokens=config.kv_max_position,
+                        fact_token_ids=fact_token_ids,
+                        turn_token_ids=turn_token_ids,
+                    )
+                    fact_chunks[fact.memory_id] = encoder.encode_fact_chunk(plan)
+                if config.kv_chunk_cache_enabled:
+                    cache_path, payload_meta = sample_cache_key(sample)
+                    try:
+                        save_sample_chunks(
+                            cache_path,
+                            meta=payload_meta,
+                            fact_chunks=fact_chunks,
+                            scaffold_chunks={
+                                "header": header_chunk,
+                                "memory_list_header": memory_list_header_chunk,
+                                "empty_memory": empty_memory_chunk,
+                                "footer": footer_chunk,
+                            },
+                            cos_table=encoder.cos_table,
+                            sin_table=encoder.sin_table,
+                        )
+                    except Exception as exc:
+                        # The cache is an accelerator, never a correctness
+                        # dependency; a full disk must not kill the run.
+                        print(f"kv_injection: chunk cache save failed: {exc}", flush=True)
+                print(
+                    f"kv_injection: encoded sample {sample_number}/{len(used_samples)} "
+                    f"({len(fact_chunks)} facts)",
+                    flush=True,
+                )
             if sample_number == 1:
                 check_kv_gpu_projection(
                     config,
@@ -161,13 +290,11 @@ def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]
                     scaffold_chunks=(header_chunk, footer_chunk),
                     first_sample_chunks=fact_chunks,
                 )
-            print(
-                f"kv_injection: encoded sample {sample_number}/{len(used_samples)} "
-                f"({len(fact_chunks)} facts)",
-                flush=True,
-            )
+            # Move the corpus into the backend store; keep metadata-only
+            # chunks locally for lookups and error messages.
+            chunks_by_sample[sample.sample_id] = register_fact_chunks(chunk_store, fact_chunks)
         encoder_probe_token_ids = encode_text_no_special(
-            encoder.tokenizer, _TOKENIZER_PARITY_PROBE_TEXT
+            tokenizer, _TOKENIZER_PARITY_PROBE_TEXT
         )
         encoder.release_model()
         torch.cuda.synchronize()
@@ -228,9 +355,14 @@ def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]
                 torch.cuda.synchronize()
                 compose_started = time.perf_counter()
                 selected_facts = reverse_ranked_memory_facts(hits)
-                selected = _select_chunks_for_fact_ids(
-                    [fact.memory_id for fact in selected_facts],
-                    chunks_by_sample[sample.sample_id],
+                selected_ids = [fact.memory_id for fact in selected_facts]
+                if not selected_ids:
+                    raise RuntimeError("Retrieval returned no facts for a kv_injection request.")
+                # Stages the selected chunks out of the corpus store (async
+                # H2D under the cpu backend), so compose time carries the
+                # PCIe cost of host-resident sources.
+                selected = fetch_fact_chunks(
+                    chunk_store, chunks_by_sample[sample.sample_id], selected_ids
                 )
                 composed_chunks = [header_chunk, *selected, footer_chunk]
                 kv_by_layer = encoder.compose_chunks(composed_chunks)
@@ -241,10 +373,11 @@ def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]
                 ]
                 torch.cuda.synchronize()
                 kv_compose_time_s += time.perf_counter() - compose_started
+                release_fact_chunks(chunk_store, selected_ids)
 
-                # Registration is a store write (a D2H copy into pinned
-                # RAM for the cpu backend); timed apart from
-                # compose so the PCIe write cost is visible.
+                # Registration hands the composed memory to the GPU-resident
+                # in-flight registry (a dict insert, no transfer); timed for
+                # parity with the other setup metrics.
                 store_write_started = time.perf_counter()
                 memory_user_id = f"request-{request_index:05d}"
                 if first_memory_token_ids is None:
@@ -293,12 +426,17 @@ def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]
             if (user_index + 1) % 10 == 0 or user_index + 1 == num_users:
                 print(f"kv_injection: retrieved {user_index + 1}/{num_users} users", flush=True)
 
-        # The source chunks' only consumer is composition; free them before
-        # the engine claims its pool. The jasper stores stay open (a graph
-        # segment is ~13.5MiB on the current jasperpy branch) until the
-        # finally block closes them.
+        # The corpus's only consumer is composition; capture its stats and
+        # transfer metrics for the result row, then free it before the
+        # engine claims its pool (the disk cache is the durable layer
+        # across runs). The jasper stores stay open (a graph segment is
+        # ~13.5MiB on the current jasperpy branch) until the finally block.
+        chunk_store_stats = chunk_store.get_stats()
+        chunk_bench_summary = chunk_store.get_bench_summary()
+        close_chunk_store(chunk_store)
         chunks_by_sample.clear()
-        del header_chunk, footer_chunk
+        cached_by_sample.clear()
+        del header_chunk, footer_chunk, memory_list_header_chunk, empty_memory_chunk
         torch.cuda.empty_cache()
 
         transfer_config = build_strict_gpu_kv_transfer_config(
@@ -311,8 +449,10 @@ def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]
             # duplicate memory sequences.
             allow_prefix_scan=False,
             log_memory_hits=False,
-            store_backend=config.kv_store_backend,
-            num_staging_slots=config.kv_staging_slots,
+            # The connector's namespace registry holds in-flight composed
+            # memories and is always GPU-resident; the corpus backend is the
+            # chunk store's concern, not the connector's.
+            store_backend="gpu",
         )
         llm, sampling_params, engine_startup_time_s = start_llm(
             config,
@@ -350,17 +490,12 @@ def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]
             kv_warmup=kv_warmup,
         )
         connector_module.reset_load_stats()
-        reset_namespace_bench_metrics(namespace)
         measured = measure_batch(llm, prompts, routed_sampling_params)
         load_stats = connector_module.snapshot_load_stats()
-        bench_summary = namespace_bench_summary(namespace)
-        # The store owns how its staging pool is sized and reports its
-        # steady-state HBM footprint in the bench summary; the GPU store has
-        # no staging pool, so fall back to its resident total.
-        kv_store_gpu_mb = float(
-            bench_summary.get("steady_state_staging_mb")
-            or store_stats.get("total_gpu_mb", 0.0)
-        )
+        # Composed memories are GPU-resident in the registry under both
+        # backends; the corpus footprint and its H2D transfers were captured
+        # from the chunk store before it closed.
+        kv_store_gpu_mb = float(store_stats.get("total_gpu_mb", 0.0))
         # requests_covered counts distinct request ids that either had memory
         # injected or whose memory region was fully served by the native
         # prefix cache (a legitimate no-load), so the check stays exact per
@@ -390,13 +525,13 @@ def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]
             engine_startup_time_s=engine_startup_time_s,
             kv_store_gpu_mb=kv_store_gpu_mb,
             kv_store_backend=config.kv_store_backend,
-            kv_store_host_mb=float(store_stats.get("total_host_mb", 0.0)),
+            kv_store_host_mb=float(chunk_store_stats.get("total_host_mb", 0.0)),
             kv_store_write_time_s=kv_store_write_time_s,
-            kv_h2d_bytes=int(bench_summary.get("total_bytes_transferred", 0)),
-            kv_h2d_avg_ms=float(bench_summary.get("avg_h2d_latency_ms", 0.0)),
-            kv_h2d_p95_ms=float(bench_summary.get("p95_h2d_latency_ms", 0.0)),
-            kv_h2d_overlap_ratio=float(bench_summary.get("avg_overlap_ratio", 0.0)),
-            kv_staging_stall_ms=float(bench_summary.get("total_staging_stall_ms", 0.0)),
+            kv_h2d_bytes=int(chunk_bench_summary.get("total_bytes_transferred", 0)),
+            kv_h2d_avg_ms=float(chunk_bench_summary.get("avg_h2d_latency_ms", 0.0)),
+            kv_h2d_p95_ms=float(chunk_bench_summary.get("p95_h2d_latency_ms", 0.0)),
+            kv_h2d_overlap_ratio=float(chunk_bench_summary.get("avg_overlap_ratio", 0.0)),
+            kv_staging_stall_ms=float(chunk_bench_summary.get("total_staging_stall_ms", 0.0)),
             kv_requests_loaded=int(load_stats["requests_loaded"]),
             total_input_tokens=measured["total_input_tokens"],
             total_output_tokens=measured["total_output_tokens"],
@@ -404,29 +539,13 @@ def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]
     finally:
         for store in stores_by_sample.values():
             close_mem0(store)
+        if chunk_store is not None:
+            close_chunk_store(chunk_store)
         release_llm(llm)
         if encoder is not None:
             encoder.close()
         drop_namespace(namespace)
         shutil.rmtree(mem0_store_root, ignore_errors=True)
-
-
-def _select_chunks_for_fact_ids(
-    fact_ids: list[str],
-    chunks_by_fact_id: dict[str, Any],
-) -> list[Any]:
-    """Map reverse-ranked fact ids to their pre-encoded KV chunks."""
-    if not fact_ids:
-        raise RuntimeError("Retrieval returned no facts for a kv_injection request.")
-    selected = []
-    for fact_id in fact_ids:
-        chunk = chunks_by_fact_id.get(fact_id)
-        if chunk is None:
-            raise RuntimeError(
-                f"Retrieved fact_id={fact_id} has no pre-encoded KV chunk."
-            )
-        selected.append(chunk)
-    return selected
 
 
 def _require_canonical_memory_tokens(

@@ -50,6 +50,17 @@ def default_mem0_dir(root: str | Path | None = None) -> Path:
     return default_cache_root(root) / "mem0"
 
 
+def local_store_scratch_dir(run_id: str) -> Path:
+    """Pod-local scratch root for rebuild-per-run vector stores.
+
+    Deliberately NOT TMPDIR-based: remote scratch env points TMPDIR at the
+    shared network volume, whose FUSE mount cannot support sqlite file
+    locking. /tmp is container-local on the pods.
+    """
+    root = os.environ.get("LOCOMO_LOCAL_STORE_DIR") or "/tmp"
+    return Path(root) / "locomo-jasper-stores" / run_id
+
+
 def default_embedding_cache_dir(root: str | Path | None = None) -> Path:
     return default_cache_root(root) / "embeddings"
 

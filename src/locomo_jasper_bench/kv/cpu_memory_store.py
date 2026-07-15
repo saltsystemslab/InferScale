@@ -171,6 +171,17 @@ class _BenchMetrics:
         with self.lock:
             return len(self.records)
 
+    def totals(self) -> dict[str, float]:
+        """Cheap running totals for before/after per-request attribution."""
+        with self.lock:
+            records = list(self.records)
+        return {
+            "total_transfers": float(len(records)),
+            "total_bytes_transferred": float(sum(record.num_bytes for record in records)),
+            "total_h2d_latency_ms": sum(record.h2d_latency_ms for record in records),
+            "total_staging_stall_ms": sum(record.staging_stall_ms for record in records),
+        }
+
     def summary(self) -> dict[str, float | int]:
         with self.lock:
             records = list(self.records)
@@ -446,6 +457,9 @@ class CpuPinnedMemoryStore:
 
     def transfer_count(self) -> int:
         return self._metrics.transfer_count()
+
+    def transfer_totals(self) -> dict[str, float]:
+        return self._metrics.totals()
 
     def reset_bench_metrics(self) -> None:
         self._metrics = _BenchMetrics()

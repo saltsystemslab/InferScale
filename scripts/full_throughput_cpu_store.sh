@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# Throughput sweep with the pinned-host (cpu-pinned) KV memory store.
+# Throughput sweep with the pinned-host (cpu) KV memory store.
 # Runs only the kv_injection condition - the sole condition that uses the KV
-# store; the no_memory/mem0 text baselines never touch it, so they come from
+# store; the mem0 text baselines never touch it, so they come from
 # the standard scripts/full_throughput.sh sweep on the gpu store.
 #
 # Usage:
@@ -20,5 +20,5 @@ export CONDITIONS="${CONDITIONS:-kv_injection}"
 export RUN_ID="${RUN_ID:-throughput-cpu-$(date -u +%Y%m%dT%H%M%SZ)}"
 
 exec bash "${SCRIPT_DIR}/full_throughput.sh" "$@" \
-  --kv-store-backend cpu-pinned \
+  --kv-store-backend cpu \
   --kv-staging-slots "${KV_STAGING_SLOTS:-4}"

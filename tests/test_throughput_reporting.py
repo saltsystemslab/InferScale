@@ -46,7 +46,7 @@ def _row(condition: str, qps: float, *, num_users: int = 10) -> dict[str, object
         "engine_startup_time_s": 2.0,
         "kv_prefix_caching": 1,
         "kv_store_gpu_mb": 10.0 if is_kv else 0.0,
-        "kv_store_backend": "cpu-pinned" if is_kv else "gpu",
+        "kv_store_backend": "cpu" if is_kv else "gpu",
         "kv_store_host_mb": 120.0 if is_kv else 0.0,
         "kv_store_write_time_s": 0.4 if is_kv else 0.0,
         "kv_h2d_bytes": 125_829_120 if is_kv else 0,

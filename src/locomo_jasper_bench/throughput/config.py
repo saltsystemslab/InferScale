@@ -23,17 +23,15 @@ from ..runtime_paths import (
 )
 
 ALL_CONDITIONS = (
-    "no_memory",
     "mem0_qdrant",
     "mem0_jasper",
     "kv_injection",
 )
 
-# Which vector backend a condition retrieves with. no_memory does no retrieval;
-# kv_injection performs the same Jasper top-k search as mem0_jasper and injects
-# the retrieved chunks' KV instead of their text.
+# Which vector backend a condition retrieves with. kv_injection performs the
+# same Jasper top-k search as mem0_jasper and injects the retrieved chunks'
+# KV instead of their text.
 CONDITION_VECTOR_BACKENDS: dict[str, str | None] = {
-    "no_memory": None,
     "mem0_qdrant": "qdrant",
     "mem0_jasper": "jasper",
     "kv_injection": "jasper",
@@ -44,7 +42,7 @@ def condition_vector_backend(condition: str) -> str | None:
     return CONDITION_VECTOR_BACKENDS[condition]
 
 
-DEFAULT_USER_COUNTS = (10, 25, 50, 100)
+DEFAULT_USER_COUNTS = (50, 100, 150, 200)
 DEFAULT_USER_COUNTS_TEXT = ",".join(str(count) for count in DEFAULT_USER_COUNTS)
 
 
@@ -60,7 +58,8 @@ class ThroughputConfig:
     requests_per_user: int = 2
     max_output_tokens: int = 50
     warmup_batches: int = 2
-    top_k: int = 10
+    top_k: int = 50
+    context_window: int = 50
     seed: int = 42
     kv_gpu_memory_utilization: float = 0.30
     kv_max_model_len: int = 32768
@@ -72,6 +71,7 @@ class ThroughputConfig:
     kv_enable_prefix_caching: bool = True
     kv_store_backend: str = DEFAULT_KV_STORE_BACKEND
     kv_staging_slots: int = DEFAULT_KV_STAGING_SLOTS
+    kv_chunk_cache_enabled: bool = True
     embedding_model: str = "text-embedding-3-small"
     embedding_api_key: str | None = None
     embedding_base_url: str | None = None
@@ -191,7 +191,16 @@ def parse_args(argv: list[str] | None = None) -> tuple[ThroughputConfig, bool]:
     parser.add_argument("--requests-per-user", type=int, default=int(os.environ.get("THROUGHPUT_REQUESTS_PER_USER", "2")))
     parser.add_argument("--max-output-tokens", type=int, default=int(os.environ.get("THROUGHPUT_MAX_OUTPUT_TOKENS", "50")))
     parser.add_argument("--warmup-batches", type=int, default=int(os.environ.get("THROUGHPUT_WARMUP_BATCHES", "2")))
-    parser.add_argument("--top-k", type=int, default=int(os.environ.get("THROUGHPUT_TOP_K", "10")))
+    parser.add_argument("--top-k", type=int, default=int(os.environ.get("THROUGHPUT_TOP_K", "50")))
+    parser.add_argument(
+        "--context-window",
+        type=int,
+        default=int(os.environ.get("THROUGHPUT_CONTEXT_WINDOW", "50")),
+        help=(
+            "Turns preceding each retrieved fact used as an encoding prefix for "
+            "kv_injection chunks (encoding-prefix-discard); text conditions ignore it."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=int(os.environ.get("THROUGHPUT_SEED", "42")))
     parser.add_argument(
         "--gpu-memory-utilization",
@@ -222,13 +231,22 @@ def parse_args(argv: list[str] | None = None) -> tuple[ThroughputConfig, bool]:
         "--kv-store-backend",
         choices=list(KNOWN_KV_STORE_BACKENDS),
         default=os.environ.get("LOCOMO_KV_STORE_BACKEND", DEFAULT_KV_STORE_BACKEND),
-        help="Where pre-encoded KV embeddings live: GPU HBM, or pinned host RAM streamed over PCIe.",
+        help=(
+            "Where the pre-encoded fact-chunk corpus lives: GPU HBM, or pinned host "
+            "RAM staged over PCIe at composition time."
+        ),
     )
     parser.add_argument(
         "--kv-staging-slots",
         type=int,
         default=int(os.environ.get("LOCOMO_KV_STAGING_SLOTS", str(DEFAULT_KV_STAGING_SLOTS))),
-        help="GPU staging buffers kept in flight by the cpu-pinned KV store.",
+        help="Staging pool floor for the cpu chunk store (raised to at least top-k + 4).",
+    )
+    parser.add_argument(
+        "--no-kv-chunk-cache",
+        dest="kv_chunk_cache_enabled",
+        action="store_false",
+        help="Disable the pre-encoded KV chunk disk cache (always re-encode).",
     )
     parser.add_argument("--embedding-model", default=os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"))
     parser.add_argument("--embedding-api-key", default=os.environ.get("OPENAI_API_KEY"))
@@ -274,6 +292,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[ThroughputConfig, bool]:
         max_output_tokens=ns.max_output_tokens,
         warmup_batches=ns.warmup_batches,
         top_k=ns.top_k,
+        context_window=ns.context_window,
         seed=ns.seed,
         kv_gpu_memory_utilization=ns.kv_gpu_memory_utilization,
         kv_max_model_len=ns.kv_max_model_len,
@@ -285,6 +304,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[ThroughputConfig, bool]:
         kv_enable_prefix_caching=ns.kv_enable_prefix_caching,
         kv_store_backend=ns.kv_store_backend,
         kv_staging_slots=ns.kv_staging_slots,
+        kv_chunk_cache_enabled=ns.kv_chunk_cache_enabled,
         embedding_model=ns.embedding_model,
         embedding_api_key=ns.embedding_api_key,
         embedding_base_url=ns.embedding_base_url,
@@ -317,6 +337,8 @@ def _validate_positive_options(ns: argparse.Namespace) -> None:
             raise ValueError(f"--{name.replace('_', '-')} must be greater than zero.")
     if ns.warmup_batches < 0:
         raise ValueError("--warmup-batches must be at least zero.")
+    if ns.context_window < 0:
+        raise ValueError("--context-window must be at least zero.")
     if not 0 < ns.kv_gpu_memory_utilization < 1:
         raise ValueError("--gpu-memory-utilization must be between zero and one.")
     uses_jasper = any(condition_vector_backend(condition) == "jasper" for condition in ns.conditions)

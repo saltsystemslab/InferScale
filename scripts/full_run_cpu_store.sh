@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
-# Sweep the LoCoMo Jasper benchmark with the pinned-host (cpu-pinned) KV
+# Sweep the LoCoMo Jasper benchmark with the pinned-host (cpu) KV
 # memory store. Same grid as scripts/full_run.sh but ONLY the vllm-kv+jasper
 # runs: the vllm-prefix baselines never touch the KV store, so they come from
 # the standard sweep.
 #   models  = {llama, mistral, qwen, qwen3-14b}
-#   top-k   = {5, 10, 20, 50, 100}
+#   top-k   = {5, 10, 20, 50}
 #   context window = {0, 5, 20, 50} turns preceding each retrieved fact
-# => 4 models x 5 top-k x 4 windows = 80 runs.
+# => 4 models x 4 top-k x 4 windows = 64 runs.
 #
 # Usage:
 #   BENCHMARK_RESULTS_ROOT=/path/to/results bash scripts/full_run_cpu_store.sh
@@ -27,7 +27,7 @@ set -uo pipefail
 
 # ----- Config (override via environment) -----------------------------------
 MODELS="${MODELS:-llama mistral qwen qwen3-14b}"
-TOPKS="${TOPKS:-5 10 20 50 100}"
+TOPKS="${TOPKS:-5 10 20 50}"
 KV_WINDOWS="${KV_WINDOWS:-${WINDOWS:-0 5 20 50}}"
 # Default mirrors DEFAULT_KV_STAGING_SLOTS in kv/connector_utils.py.
 KV_STAGING_SLOTS="${KV_STAGING_SLOTS:-4}"
@@ -110,7 +110,7 @@ for MODEL in ${MODELS}; do
             --answer-model "${MODEL}" \
             --answer-backend vllm-kv \
             --vector-backend jasper \
-            --kv-store-backend cpu-pinned \
+            --kv-store-backend cpu \
             --kv-staging-slots "${KV_STAGING_SLOTS}" \
             --top-k "${TOP_K}" \
             --context-window "${W}" \

@@ -20,6 +20,7 @@ from locomo_jasper_bench.retrieval.mem0_provider import build_mem0_config, creat
 from locomo_jasper_bench.retrieval.memory_builder import (
     SampleMemoryBuilder,
     _mem0_observation_date,
+    load_facts_into_memory,
 )
 from locomo_jasper_bench.protocol import (
     MEMORY_EXTRACTION_MAX_FACTS,
@@ -221,6 +222,44 @@ def test_mem0_observation_dates_are_isolated_across_threads() -> None:
 
     assert "## Observation Date\n2026-01-02" in first.result()
     assert "## Observation Date\n2026-02-03" in second.result()
+
+
+def test_replay_links_entities_by_default_and_skips_on_request() -> None:
+    fact = MemoryFact(
+        id="fact-1",
+        text="Alice likes tea.",
+        created_at="2026-01-02T00:00:00+00:00",
+        timestamp_epoch=1767312000,
+        sample_id="sample-1",
+        source_session_index=1,
+        source_session_id="session_1",
+        source_turn_index=0,
+        source_turn_id="sample-1:session_1:0",
+        speaker="Alice",
+        role="user",
+    )
+
+    class _RecordingMemory:
+        def __init__(self) -> None:
+            self.linked: list[str] = []
+            self.added: list[str] = []
+
+        def add(self, messages: list[dict[str, str]], **_: object) -> dict[str, object]:
+            self.added.append(messages[0]["content"])
+            return {"results": [{"id": "mem-1"}]}
+
+        def _link_entities_for_memory(self, fact_id: str, text: str, filters: dict) -> None:
+            self.linked.append(fact_id)
+
+    linking = _RecordingMemory()
+    load_facts_into_memory(linking, (fact,))
+    assert linking.added == [fact.text]
+    assert linking.linked == [fact.id]
+
+    skipping = _RecordingMemory()
+    load_facts_into_memory(skipping, (fact,), link_entities=False)
+    assert skipping.added == [fact.text]
+    assert skipping.linked == []
 
 
 def test_fact_catalog_hits_promote_stable_source_metadata() -> None:

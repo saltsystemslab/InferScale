@@ -23,8 +23,8 @@ for argument in "$@"; do
 done
 
 MODEL="${MODEL:-llama}"
-CONDITIONS="${CONDITIONS:-no_memory mem0_qdrant mem0_jasper kv_injection}"
-USER_COUNTS="${USER_COUNTS:-10,25,50,100}"
+CONDITIONS="${CONDITIONS:-mem0_qdrant kv_injection}"
+USER_COUNTS="${USER_COUNTS:-50,100,150,200}"
 DATASET="${DATASET:-data/locomo10.json}"
 RESULTS_DIR="${RESULTS_DIR:-${BENCHMARK_RESULTS_ROOT}}"
 DRY_RUN="${DRY_RUN:-0}"
@@ -56,7 +56,8 @@ COMMAND=(
   --requests-per-user "${REQUESTS_PER_USER:-2}"
   --max-output-tokens "${MAX_OUTPUT_TOKENS:-50}"
   --warmup-batches "${WARMUP_BATCHES:-2}"
-  --top-k "${TOP_K:-10}"
+  --top-k "${TOP_K:-50}"
+  --context-window "${CONTEXT_WINDOW:-50}"
   --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION:-0.30}"
   --max-model-len "${MAX_MODEL_LEN:-32768}"
   --kv-max-position "${KV_MAX_POSITION:-32768}"

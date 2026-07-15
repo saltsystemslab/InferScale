@@ -174,7 +174,7 @@ class TestRegistryBackendSelection:
 
     def test_env_var_resolves_backend(self, monkeypatch: pytest.MonkeyPatch) -> None:
         created: list[int] = []
-        monkeypatch.setenv("LOCOMO_KV_STORE_BACKEND", "cpu-pinned")
+        monkeypatch.setenv("LOCOMO_KV_STORE_BACKEND", "cpu")
         import locomo_jasper_bench.kv.cpu_memory_store as cpu_module
 
         monkeypatch.setattr(
@@ -194,13 +194,13 @@ class TestRegistryBackendSelection:
             "CpuPinnedMemoryStore",
             lambda num_staging_slots: created.append(num_staging_slots) or object(),
         )
-        gpu_registry.get_gpu_memory_store("ns-cpu", backend="cpu-pinned", num_staging_slots=8)
+        gpu_registry.get_gpu_memory_store("ns-cpu", backend="cpu", num_staging_slots=8)
         assert created == [8]
 
     def test_backend_mismatch_raises(self) -> None:
         gpu_registry.get_gpu_memory_store("ns-mismatch", backend="gpu")
         with pytest.raises(RuntimeError, match="already exists with backend 'gpu'"):
-            gpu_registry.get_gpu_memory_store("ns-mismatch", backend="cpu-pinned")
+            gpu_registry.get_gpu_memory_store("ns-mismatch", backend="cpu")
 
     def test_unknown_backend_raises(self) -> None:
         with pytest.raises(ValueError, match="Unknown KV store backend"):

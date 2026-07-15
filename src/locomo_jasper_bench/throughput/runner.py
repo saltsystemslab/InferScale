@@ -176,11 +176,12 @@ def _validate_runtime_requirements(config: ThroughputConfig) -> None:
 
 # Values a config.json written before these fields existed is treated as
 # having used, so old run dirs stay resumable. Pre-change behavior was prefix
-# caching hard-off and the GPU store.
+# caching hard-off, the GPU store, and context-free chunk encoding.
 _LEGACY_CONFIG_DEFAULTS: dict[str, Any] = {
     "kv_enable_prefix_caching": False,
     "kv_store_backend": DEFAULT_KV_STORE_BACKEND,
     "kv_staging_slots": DEFAULT_KV_STAGING_SLOTS,
+    "context_window": 0,
 }
 
 

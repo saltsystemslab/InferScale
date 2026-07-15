@@ -14,12 +14,11 @@ SCRIPT_CASES = (
     ("gpu1_topk10.sh", "1", 10),
     ("gpu2_topk20.sh", "2", 20),
     ("gpu3_topk50.sh", "3", 50),
-    ("gpu4_topk100.sh", "4", 100),
 )
 
 
 @pytest.mark.parametrize(("script_name", "gpu", "top_k"), SCRIPT_CASES)
-def test_individual_accuracy_script_emits_six_qwen3_runs(
+def test_individual_accuracy_script_emits_five_qwen3_runs(
     tmp_path: Path,
     script_name: str,
     gpu: str,
@@ -39,9 +38,11 @@ def test_individual_accuracy_script_emits_six_qwen3_runs(
     )
 
     assert completed.returncode == 0, completed.stderr or completed.stdout
-    assert "Sweep complete: 6 runs" in completed.stdout
+    # 4 KV windows plus the single prefix-qdrant prompt-injection baseline;
+    # the prompt-injection-jasper baseline was removed from the sweep.
+    assert "Sweep complete: 5 runs" in completed.stdout
     commands = [line for line in completed.stdout.splitlines() if "--run-id" in line]
-    assert len(commands) == 6
+    assert len(commands) == 5
     assert all(f"-k{top_k}-" in command for command in commands)
     assert {re.search(r"--answer-model ([^ ]+)", command).group(1) for command in commands} == {
         "qwen3-14b",

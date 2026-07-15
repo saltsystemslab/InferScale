@@ -141,7 +141,7 @@ def render_markdown_report(config: ThroughputConfig, rows: Iterable[dict[str, An
         "",
         f"Model: `{config.model}`.",
         "",
-        f"Dataset: `{config.dataset_path}`; users map to LoCoMo conversations round-robin and ask that conversation's own questions.",
+        f"Dataset: `{config.dataset_path}`; every user retrieves from the same LoCoMo conversation and asks that conversation's own questions.",
         "",
         "QPS for every condition times only the synchronous vLLM generation call over the prepared batch.",
         "",
@@ -149,8 +149,8 @@ def render_markdown_report(config: ThroughputConfig, rows: Iterable[dict[str, An
         "registration, token-equivalence verification, memory setup, per-fact KV precomputation, "
         "and model startup are reported separately in the timing table and excluded from QPS.",
         "",
-        "| Users | Facts/user | No memory QPS | Mem0 Qdrant QPS | Mem0 Jasper QPS | KV QPS | KV / Mem0 Jasper |",
-        "| ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Users | Facts/user | Mem0 Qdrant QPS | Mem0 Jasper QPS | KV QPS | KV / Mem0 Jasper |",
+        "| ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for count in config.user_counts:
         group = by_count.get(count, {})
@@ -168,7 +168,6 @@ def render_markdown_report(config: ThroughputConfig, rows: Iterable[dict[str, An
                 (
                     str(count),
                     facts_per_user,
-                    _format_qps(_qps(group.get("no_memory"))),
                     _format_qps(_qps(group.get("mem0_qdrant"))),
                     _format_qps(mem0_jasper_qps),
                     _format_qps(kv_qps),
@@ -306,3 +305,79 @@ def _format_ratio(numerator: float | None, denominator: float | None) -> str:
     if numerator is None or denominator is None or denominator <= 0:
         return "-"
     return f"{numerator / denominator:.2f}x"
+
+
+def build_result_row(
+    config: ThroughputConfig,
+    num_users: int,
+    *,
+    condition: str,
+    vector_backend: str | None = None,
+    jasper_effective_beam_width: int | None = None,
+    fact_count: float = 0.0,
+    generation_time_s: float,
+    retrieval_time_s: float = 0.0,
+    vector_search_time_s: float = 0.0,
+    prompt_build_time_s: float = 0.0,
+    memory_setup_time_s: float = 0.0,
+    kv_precompute_time_s: float = 0.0,
+    kv_compose_time_s: float = 0.0,
+    kv_verify_time_s: float = 0.0,
+    engine_startup_time_s: float = 0.0,
+    kv_store_gpu_mb: float = 0.0,
+    kv_store_backend: str = "gpu",
+    kv_store_host_mb: float = 0.0,
+    kv_store_write_time_s: float = 0.0,
+    kv_h2d_bytes: int = 0,
+    kv_h2d_avg_ms: float = 0.0,
+    kv_h2d_p95_ms: float = 0.0,
+    kv_h2d_overlap_ratio: float = 0.0,
+    kv_staging_stall_ms: float = 0.0,
+    kv_requests_loaded: int = 0,
+    total_input_tokens: int,
+    total_output_tokens: int,
+) -> dict[str, Any]:
+    total_requests = num_users * config.requests_per_user
+    if generation_time_s <= 0:
+        raise RuntimeError("Measured benchmark time must be greater than zero.")
+    row = {
+        "run_id": config.run_id,
+        "model": config.model,
+        "model_label": config.model_label,
+        "condition": condition,
+        "vector_backend": vector_backend,
+        "jasper_effective_beam_width": jasper_effective_beam_width,
+        "num_users": num_users,
+        "fact_count": fact_count,
+        "requests_per_user": config.requests_per_user,
+        "total_requests": total_requests,
+        "throughput_qps": total_requests / generation_time_s,
+        "avg_latency_ms": generation_time_s / total_requests * 1000,
+        "generation_time_s": generation_time_s,
+        "retrieval_time_s": retrieval_time_s,
+        "vector_search_time_s": vector_search_time_s,
+        "prompt_build_time_s": prompt_build_time_s,
+        "kv_compose_time_s": kv_compose_time_s,
+        "kv_verify_time_s": kv_verify_time_s,
+        "memory_setup_time_s": memory_setup_time_s,
+        "kv_precompute_time_s": kv_precompute_time_s,
+        "engine_startup_time_s": engine_startup_time_s,
+        "kv_prefix_caching": int(config.kv_enable_prefix_caching),
+        "kv_store_gpu_mb": kv_store_gpu_mb,
+        "kv_store_backend": kv_store_backend,
+        "kv_store_host_mb": kv_store_host_mb,
+        "kv_store_write_time_s": kv_store_write_time_s,
+        "kv_h2d_bytes": kv_h2d_bytes,
+        "kv_h2d_avg_ms": kv_h2d_avg_ms,
+        "kv_h2d_p95_ms": kv_h2d_p95_ms,
+        "kv_h2d_overlap_ratio": kv_h2d_overlap_ratio,
+        "kv_staging_stall_ms": kv_staging_stall_ms,
+        "kv_requests_loaded": kv_requests_loaded,
+        "total_input_tokens": total_input_tokens,
+        "total_output_tokens": total_output_tokens,
+        "input_tokens_per_second": total_input_tokens / generation_time_s,
+        "output_tokens_per_second": total_output_tokens / generation_time_s,
+    }
+    if tuple(row) != RESULT_COLUMNS:
+        raise AssertionError("Throughput result columns do not match the report schema.")
+    return row

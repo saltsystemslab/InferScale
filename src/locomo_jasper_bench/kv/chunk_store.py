@@ -1,6 +1,6 @@
 """Backend-selected store for the fact-chunk corpus.
 
-The memory stores are the home of the DURABLE memory corpus: fact chunks
+The memory stores are the home of the memory corpus: fact chunks
 encoded once (or loaded from the disk chunk cache) and reused across
 requests. `--kv-store-backend gpu` keeps the corpus HBM-resident
 (GPUMemoryStore); `cpu` keeps it in pinned host RAM (CpuPinnedMemoryStore)

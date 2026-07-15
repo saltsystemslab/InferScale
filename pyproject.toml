@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "locomo-jasper-bench"
 version = "0.1.0"
-description = "LoCoMo KV-cache benchmark harness for vLLM with Mem0 fact retrieval backed by Jasper or Qdrant"
+description = "InferScale: High-throughput and memory efficient GPU-Native KV Injection for Personalized LLM Serving"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

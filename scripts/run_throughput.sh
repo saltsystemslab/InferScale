@@ -58,7 +58,7 @@ COMMAND=(
   --warmup-batches "${WARMUP_BATCHES:-2}"
   --top-k "${TOP_K:-50}"
   --context-window "${CONTEXT_WINDOW:-50}"
-  --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION:-0.30}"
+  --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION:-0.50}"
   --max-model-len "${MAX_MODEL_LEN:-32768}"
   --kv-max-position "${KV_MAX_POSITION:-32768}"
   --kv-block-size "${KV_BLOCK_SIZE:-16}"

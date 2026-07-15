@@ -114,7 +114,7 @@ for MODEL in ${MODELS}; do
             --kv-staging-slots "${KV_STAGING_SLOTS}" \
             --top-k "${TOP_K}" \
             --context-window "${W}" \
-            --kv-gpu-memory-utilization 0.30 \
+            --kv-gpu-memory-utilization 0.40 \
             --max-samples 10 \
             --log-every 1 \
             --skip-judge \

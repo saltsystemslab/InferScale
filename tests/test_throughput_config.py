@@ -142,19 +142,19 @@ def test_parse_args_kv_store_backend_round_trips(tmp_path: Path) -> None:
             "--model",
             "test/model",
             "--kv-store-backend",
-            "cpu-pinned",
+            "cpu",
             "--kv-staging-slots",
             "8",
         ]
     )
 
-    assert config.kv_store_backend == "cpu-pinned"
+    assert config.kv_store_backend == "cpu"
     assert config.kv_staging_slots == 8
 
     path = tmp_path / "config.json"
     path.write_text(json.dumps(config.to_jsonable()), encoding="utf-8")
     restored = type(config).from_json_file(path)
-    assert restored.kv_store_backend == "cpu-pinned"
+    assert restored.kv_store_backend == "cpu"
     assert restored.kv_staging_slots == 8
 
 

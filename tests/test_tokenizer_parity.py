@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from locomo_jasper_bench.throughput.worker import (
+from locomo_jasper_bench.throughput.kv_condition import (
     _TOKENIZER_PARITY_PROBE_TEXT,
     _require_tokenizer_parity,
 )

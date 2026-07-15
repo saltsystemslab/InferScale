@@ -39,7 +39,7 @@ def get_gpu_memory_store(
             )
         return _STORES[namespace]
 
-    if resolved == "cpu-pinned":
+    if resolved == "cpu":
         from .cpu_memory_store import CpuPinnedMemoryStore
 
         store: Any = CpuPinnedMemoryStore(num_staging_slots=int(num_staging_slots or DEFAULT_KV_STAGING_SLOTS))

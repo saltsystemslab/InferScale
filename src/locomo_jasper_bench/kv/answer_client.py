@@ -10,16 +10,21 @@ from ..clients import ChatResult
 from ..config import BenchmarkConfig
 from ..data import ConversationSample, QuestionAnswer
 from ..vector_types import SearchHit
-from .chunked_rope import ChunkedRopeEncoder, ChunkedRopeSampleComposer
-from .context import memory_context_metrics
-from .cpu_memory_store import overlap_ratio
+from .chunk_cache import (
+    cache_meta,
+    cache_path_for,
+    load_sample_chunks,
+    save_sample_chunks,
+    scaffold_chunks_match,
+)
+from .chunk_store import build_chunk_store
+from .chunked_rope import ChunkedRopeEncoder, ChunkedRopeSampleComposer, load_encoder_tokenizer
+from .context import memory_context_metrics, unique_memory_facts
 from .gpu_registry import (
     clear_namespace,
     drop_namespace,
     get_gpu_memory_store,
-    namespace_last_transfer,
     namespace_stats,
-    namespace_transfer_count,
     register_user_memory,
     remove_user_memory,
 )
@@ -50,18 +55,17 @@ class VLLMChunkedKVAnswerClient:
         self.config = config
         self.namespace = f"{config.run_id}-{uuid.uuid4().hex}"
         self.active_user_id = f"{self.namespace}-active"
-        # Create the namespace's store with the configured backend before any
-        # registration; the in-process connector resolves the same namespace.
-        get_gpu_memory_store(
-            self.namespace,
-            backend=config.kv_store_backend,
-            num_staging_slots=config.kv_staging_slots,
-        )
+        # The namespace registry holds the in-flight composed memory for the
+        # connector handoff and is always GPU-resident; it is NOT the memory
+        # store. --kv-store-backend selects where the fact-chunk corpus
+        # lives (the per-sample chunk store).
+        get_gpu_memory_store(self.namespace, backend="gpu")
         self._llm: Any | None = None
         self._tokenizer: Any | None = None
         self._sampling_cls: Any | None = None
         self._sample_caches = GpuSampleCacheStore()
         self._encoder: ChunkedRopeEncoder | None = None
+        self._standalone_tokenizer: Any | None = None
 
     def precompute_sample_cache(
         self,
@@ -87,31 +91,122 @@ class VLLMChunkedKVAnswerClient:
         )
         started = time.perf_counter()
         composer: ChunkedRopeSampleComposer | None = None
-        try:
-            encoder = self._ensure_encoder()
-            composer = ChunkedRopeSampleComposer(
-                encoder=encoder,
+        cache_hit = False
+        cache_path = None
+        payload_meta = None
+        kv_facts = unique_memory_facts(facts)
+        # The fact-chunk corpus lives in the backend-selected store; under
+        # the cpu backend the disk cache loads straight to host and gets
+        # pinned by the store, never touching the GPU.
+        chunk_device = "cpu" if self.config.kv_store_backend == "cpu" else self.config.kv_device
+        chunk_store = build_chunk_store(
+            self.config.kv_store_backend,
+            device=self.config.kv_device,
+            top_k=self.config.top_k,
+            staging_slots=self.config.kv_staging_slots,
+        )
+        if self.config.kv_chunk_cache_enabled:
+            key_kwargs = dict(
+                model=self.config.model,
+                dtype=self.config.kv_dtype,
                 context_window=self.config.context_window,
+                max_position=self.config.kv_max_position,
                 block_size=self.config.kv_block_size,
+                sample=sample,
+                facts=kv_facts,
             )
-            composer.encode_sample(sample, facts)
-        except RuntimeError as exc:
-            if composer is not None:
-                composer.close()
-            raise RuntimeError(
-                f"GPU-resident KV precompute failed for sample_id={sample.sample_id}. "
-                "No CPU or disk KV fallback was used."
-            ) from exc
-        except BaseException:
-            if composer is not None:
-                composer.close()
-            raise
+            cache_path = cache_path_for(**key_kwargs)
+            payload_meta = cache_meta(**key_kwargs)
+            cached = load_sample_chunks(
+                cache_path,
+                device=chunk_device,
+                scaffold_device=self.config.kv_device,
+                expected_meta=payload_meta,
+                expected_fact_ids=[fact.memory_id for fact in kv_facts],
+            )
+            if cached is not None:
+                tokenizer = self._encoder_tokenizer()
+                scaffold = extract_memory_scaffold_token_ids(
+                    tokenizer,
+                    sample,
+                    block_size=self.config.kv_block_size,
+                )
+                if scaffold_chunks_match(cached.scaffold_chunks, scaffold):
+                    composer = ChunkedRopeSampleComposer.from_cached(
+                        encoder=ChunkedRopeEncoder.from_tables(
+                            model=self.config.model,
+                            device=self.config.kv_device,
+                            max_position=self.config.kv_max_position,
+                            tokenizer=tokenizer,
+                            cos_table=cached.cos_table,
+                            sin_table=cached.sin_table,
+                        ),
+                        cached=cached,
+                        sample=sample,
+                        facts=facts,
+                        context_window=self.config.context_window,
+                        block_size=self.config.kv_block_size,
+                        chunk_store=chunk_store,
+                    )
+                    cache_hit = True
+                    logger.info(
+                        "KV chunk cache hit sample_id=%s (%s)", sample.sample_id, cache_path.name
+                    )
+                else:
+                    logger.warning(
+                        "KV chunk cache scaffold mismatch for sample_id=%s; re-encoding",
+                        sample.sample_id,
+                    )
+        if composer is None:
+            try:
+                encoder = self._ensure_encoder()
+                composer = ChunkedRopeSampleComposer(
+                    encoder=encoder,
+                    context_window=self.config.context_window,
+                    block_size=self.config.kv_block_size,
+                    chunk_store=chunk_store,
+                )
+                composer.encode_sample(sample, facts)
+            except RuntimeError as exc:
+                if composer is not None:
+                    composer.close()
+                raise RuntimeError(
+                    f"GPU-resident KV precompute failed for sample_id={sample.sample_id}. "
+                    "No CPU or disk KV fallback was used."
+                ) from exc
+            except BaseException:
+                if composer is not None:
+                    composer.close()
+                raise
+            if self.config.kv_chunk_cache_enabled and cache_path is not None:
+                try:
+                    save_sample_chunks(
+                        cache_path,
+                        meta=payload_meta,
+                        fact_chunks=composer.chunks,
+                        scaffold_chunks={
+                            "header": composer.header_chunk,
+                            "memory_list_header": composer.memory_list_header_chunk,
+                            "empty_memory": composer.empty_memory_chunk,
+                            "footer": composer.footer_chunk,
+                        },
+                        cos_table=encoder.cos_table,
+                        sin_table=encoder.sin_table,
+                    )
+                except Exception as exc:
+                    # The cache is an accelerator, never a correctness
+                    # dependency; a full disk must not kill the run.
+                    logger.warning("Failed to save KV chunk cache %s: %s", cache_path, exc)
+            # The disk save above needed the real tensors; the store owns
+            # them from here (D2H into pinned buffers under the cpu backend).
+            composer.move_chunks_to_store()
 
         sample_metrics = composer.cache_stats()
         sample_metrics.update(
             {
                 "kv_precompute_time_ms": (time.perf_counter() - started) * 1000,
-                "kv_chunk_cache_residency_is_gpu": 1,
+                "kv_chunk_cache_residency_is_gpu": int(self.config.kv_store_backend == "gpu"),
+                "kv_chunk_cache_hit": int(cache_hit),
             }
         )
         self._sample_caches.put(sample_key, composer, sample_metrics)
@@ -144,8 +239,10 @@ class VLLMChunkedKVAnswerClient:
                     connector_module=self.config.kv_connector_module,
                     namespace=self.namespace,
                     default_user_id=self.active_user_id,
-                    store_backend=self.config.kv_store_backend,
-                    num_staging_slots=self.config.kv_staging_slots,
+                    # The connector's namespace registry holds the in-flight
+                    # composed memory and is always GPU-resident; the corpus
+                    # backend is the chunk store's concern.
+                    store_backend="gpu",
                 ),
             )
             self._tokenizer = self._llm.get_tokenizer()
@@ -204,7 +301,18 @@ class VLLMChunkedKVAnswerClient:
             query_tokens=query_tokens,
             memory_scaffold=scaffold,
         )
+        # Chunk staging during composition is the only H2D traffic under the
+        # cpu backend (the composed memory is GPU-resident and injects
+        # GPU->paged-cache), so this question's transfer metrics are the
+        # before/after deltas on the chunk store's counters.
+        chunk_store = getattr(composer, "chunk_store", None)
+        chunk_totals_before = (
+            chunk_store.transfer_totals() if chunk_store is not None else {}
+        )
         composed = composer.compose(hits, memory_token_budget=memory_token_budget)
+        chunk_totals_after = (
+            chunk_store.transfer_totals() if chunk_store is not None else {}
+        )
         # Token-equivalence verification is benchmark bookkeeping, not part of the
         # serving path, so its cost is timed separately and excluded from latency.
         verify_started = time.perf_counter()
@@ -219,9 +327,9 @@ class VLLMChunkedKVAnswerClient:
         _require_same_memory_token_ids(composed.token_ids, live_memory.token_ids)
         verify_ms = (time.perf_counter() - verify_started) * 1000
         user_id = self.active_user_id
-        # Registration is a store write (a full D2H copy into pinned RAM for
-        # the cpu-pinned backend), not part of the serving path; time it
-        # separately and exclude it from the latency metrics like verify.
+        # Registration hands the composed memory to the GPU-resident
+        # in-flight registry (a dict insert, no transfer); timed separately
+        # and excluded from the latency metrics like verify.
         store_write_started = time.perf_counter()
         register_user_memory(
             self.namespace,
@@ -259,7 +367,6 @@ class VLLMChunkedKVAnswerClient:
                 top_p=top_p,
                 max_tokens=max_tokens,
             )
-            transfers_before = namespace_transfer_count(self.namespace)
             generate_started = time.perf_counter()
             outputs = self._llm.generate(
                 [{"prompt_token_ids": prompt.prompt_token_ids}],
@@ -284,30 +391,32 @@ class VLLMChunkedKVAnswerClient:
                 )
             text = outputs[0].outputs[0].text.strip()
             stats = namespace_stats(self.namespace)
+            chunk_stats = chunk_store.get_stats() if chunk_store is not None else {}
+            chunk_h2d_ms = float(chunk_totals_after.get("total_h2d_latency_ms", 0.0)) - float(
+                chunk_totals_before.get("total_h2d_latency_ms", 0.0)
+            )
+            chunk_stall_ms = float(chunk_totals_after.get("total_staging_stall_ms", 0.0)) - float(
+                chunk_totals_before.get("total_staging_stall_ms", 0.0)
+            )
+            chunk_bytes = int(chunk_totals_after.get("total_bytes_transferred", 0)) - int(
+                chunk_totals_before.get("total_bytes_transferred", 0)
+            )
             metrics.update(
                 {
                     "answer_generate_time_ms": generate_ms,
                     "answer_total_time_ms": total_ms,
                     "kv_store_gpu_mb": stats.get("total_gpu_mb", 0.0),
-                    "kv_store_host_mb": stats.get("total_host_mb", 0.0),
+                    "kv_store_host_mb": chunk_stats.get("total_host_mb", 0.0),
+                    "kv_h2d_latency_ms": chunk_h2d_ms,
+                    "kv_h2d_bytes": chunk_bytes,
+                    "kv_h2d_overlap_ratio": (
+                        max(0.0, min(1.0, 1.0 - chunk_stall_ms / chunk_h2d_ms))
+                        if chunk_h2d_ms > 0
+                        else 0.0
+                    ),
+                    "kv_staging_stall_ms": chunk_stall_ms,
                 }
             )
-            # Attribute a transfer to this request only if one actually
-            # happened during its generate: a natively prefix-cached request
-            # performs no connector load, and the store's last record would
-            # belong to an earlier request. Explicit zeros mark such
-            # natively-served requests.
-            transfer = namespace_last_transfer(self.namespace)
-            if transfer is not None:
-                transferred = namespace_transfer_count(self.namespace) > transfers_before
-                metrics.update(
-                    {
-                        "kv_h2d_latency_ms": transfer.h2d_latency_ms if transferred else 0.0,
-                        "kv_h2d_bytes": transfer.num_bytes if transferred else 0,
-                        "kv_h2d_overlap_ratio": overlap_ratio(transfer) if transferred else 0.0,
-                        "kv_staging_stall_ms": transfer.staging_stall_ms if transferred else 0.0,
-                    }
-                )
             return ChatResult(
                 content=text,
                 ttft_ms=ttft_ms,
@@ -342,6 +451,19 @@ class VLLMChunkedKVAnswerClient:
                 max_position=self.config.kv_max_position,
             )
         return self._encoder
+
+    def _encoder_tokenizer(self) -> Any:
+        """Encoder-side tokenizer without forcing an HF weight load.
+
+        Reuses the live encoder's tokenizer when one exists; otherwise loads
+        the tokenizer standalone (memoized) so fully cached runs never touch
+        the model weights.
+        """
+        if self._encoder is not None and self._encoder.tokenizer is not None:
+            return self._encoder.tokenizer
+        if self._standalone_tokenizer is None:
+            self._standalone_tokenizer = load_encoder_tokenizer(self.config.model)
+        return self._standalone_tokenizer
 
     def _release_encoder_model(self) -> None:
         if self._encoder is not None:

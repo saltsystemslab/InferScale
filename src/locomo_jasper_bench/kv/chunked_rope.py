@@ -8,6 +8,13 @@ from typing import Any
 
 from ..data import ConversationSample
 from ..vector_types import SearchHit
+from .chunk_cache import CachedSampleEncode
+from .chunk_store import (
+    close_chunk_store,
+    fetch_fact_chunks,
+    register_fact_chunks,
+    release_fact_chunks,
+)
 from .context import (
     build_fact_context_encoding_plan,
     build_memory_fact_plan,
@@ -71,6 +78,33 @@ class ChunkedRopeEncoder:
             positions,
             self.head_dim,
         )
+
+    @classmethod
+    def from_tables(
+        cls,
+        *,
+        model: str,
+        device: str,
+        max_position: int,
+        tokenizer: Any,
+        cos_table: Any,
+        sin_table: Any,
+    ) -> "ChunkedRopeEncoder":
+        """Encoder in the post-release_model state, built from cached tables.
+
+        compose_chunks works and encode_* fail closed exactly as they do
+        after release_model, so chunk-cache hits never load the HF weights.
+        """
+        encoder = cls.__new__(cls)
+        encoder.model = model
+        encoder.device = device
+        encoder.max_position = max_position
+        encoder.tokenizer = tokenizer
+        encoder.hf_model = None
+        encoder.head_dim = int(cos_table.shape[-1])
+        encoder.cos_table = cos_table
+        encoder.sin_table = sin_table
+        return encoder
 
     def encode_token_ids_chunk(self, chunk_id: str, token_ids: list[int]) -> EncodedChunk:
         if self.hf_model is None:
@@ -165,6 +199,7 @@ class ChunkedRopeSampleComposer:
         encoder: ChunkedRopeEncoder,
         context_window: int = 0,
         block_size: int = 16,
+        chunk_store: Any | None = None,
     ) -> None:
         if context_window < 0:
             raise ValueError("context_window must be >= 0.")
@@ -177,7 +212,16 @@ class ChunkedRopeSampleComposer:
         self.max_position = encoder.max_position
         self.context_window = context_window
         self.block_size = block_size
+        # When set, the fact-chunk corpus lives in this backend store
+        # (GPUMemoryStore or CpuPinnedMemoryStore) after move_chunks_to_store;
+        # self.chunks then holds metadata-only chunks and compose() stages
+        # the selected chunks per request. Scaffold chunks stay local GPU
+        # tensors either way.
+        self.chunk_store = chunk_store
         self.chunks: dict[str, EncodedChunk] = {}
+        self._chunks_in_store = False
+        self._stored_chunk_bytes = 0
+        self._stored_chunk_layers = 0
         self._fact_token_ids: dict[str, list[int]] = {}
         self._turn_token_ids: dict[str, list[int]] = {}
         self._facts: list[MemoryFact] = []
@@ -189,6 +233,66 @@ class ChunkedRopeSampleComposer:
         self.footer_chunk: EncodedChunk | None = None
         if encoder.tokenizer is None:
             raise RuntimeError("Cannot create sample composer because the HF encoder has been released.")
+
+    @classmethod
+    def from_cached(
+        cls,
+        *,
+        encoder: ChunkedRopeEncoder,
+        cached: "CachedSampleEncode",
+        sample: ConversationSample,
+        facts: Sequence[SearchHit],
+        context_window: int = 0,
+        block_size: int = 16,
+        chunk_store: Any | None = None,
+    ) -> "ChunkedRopeSampleComposer":
+        """Composer over cache-loaded chunks, skipping the encode entirely.
+
+        The live facts are re-attached (not read from the cache) so
+        compose()'s retrieved-vs-precomputed equality checks compare against
+        the real catalog; fact token ids are recomputed from the tokenizer.
+        With a chunk_store, the cache-loaded KV moves straight into it.
+        """
+        composer = cls(
+            encoder=encoder,
+            context_window=context_window,
+            block_size=block_size,
+            chunk_store=chunk_store,
+        )
+        composer._sample = sample
+        composer._facts = unique_memory_facts(facts)
+        composer._facts_by_id = {fact.memory_id: fact for fact in composer._facts}
+        composer.chunks = dict(cached.fact_chunks)
+        composer.header_chunk = cached.scaffold_chunks.get("header")
+        composer.memory_list_header_chunk = cached.scaffold_chunks.get("memory_list_header")
+        composer.empty_memory_chunk = cached.scaffold_chunks.get("empty_memory")
+        composer.footer_chunk = cached.scaffold_chunks.get("footer")
+        composer._fact_token_ids = {
+            fact.memory_id: encode_text_no_special(
+                encoder.tokenizer,
+                format_memory_fact(fact),
+            )
+            for fact in composer._facts
+        }
+        composer.move_chunks_to_store()
+        return composer
+
+    def move_chunks_to_store(self) -> None:
+        """Move fact-chunk KV into the chunk store, keeping metadata locally.
+
+        No-op without a chunk store. Callers that save the disk cache must
+        do so BEFORE this move - afterwards the local chunks are
+        metadata-only and the store owns the tensors until close().
+        """
+        if self.chunk_store is None or self._chunks_in_store or not self.chunks:
+            return
+        first_chunk = next(iter(self.chunks.values()))
+        self._stored_chunk_layers = len(first_chunk.kv_by_layer)
+        self._stored_chunk_bytes = sum(
+            _chunk_tensor_bytes(chunk) for chunk in self.chunks.values()
+        )
+        self.chunks = register_fact_chunks(self.chunk_store, self.chunks)
+        self._chunks_in_store = True
 
     def encode_sample(
         self,
@@ -320,13 +424,23 @@ class ChunkedRopeSampleComposer:
                 f"memory={fact_plan.memory_tokens} block_size={self.block_size}."
             )
 
-        selected: list[EncodedChunk] = []
-        for fact in selected_facts:
-            selected.append(self.chunks[fact.memory_id])
+        selected_ids = [fact.memory_id for fact in selected_facts]
+        if self._chunks_in_store:
+            # Stages the selected chunks on the cpu store (async H2D with
+            # per-layer events); a plain lookup on the gpu store. The staging
+            # tensors are record_stream-protected, so releasing right after
+            # the compose kernels are enqueued is safe.
+            selected = fetch_fact_chunks(self.chunk_store, self.chunks, selected_ids)
+        else:
+            selected = [self.chunks[fact_id] for fact_id in selected_ids]
 
         chunks = [self.header_chunk, *memory_heading_chunks, *selected]
         chunks.append(self.footer_chunk)
-        kv_by_layer = self._compose_chunks(chunks)
+        try:
+            kv_by_layer = self._compose_chunks(chunks)
+        finally:
+            if self._chunks_in_store:
+                release_fact_chunks(self.chunk_store, selected_ids)
         token_ids: list[int] = []
         for chunk in chunks:
             token_ids.extend(chunk.token_ids)
@@ -364,7 +478,6 @@ class ChunkedRopeSampleComposer:
         chunks = list(scaffold_chunks)
         chunks.extend(fact_chunks)
 
-        total_bytes = 0
         total_tokens = 0
         layer_count = 0
         devices: set[str] = set()
@@ -372,16 +485,26 @@ class ChunkedRopeSampleComposer:
             total_tokens += len(chunk.token_ids)
             layer_count = max(layer_count, len(chunk.kv_by_layer))
             for tensor in chunk.kv_by_layer.values():
-                total_bytes += _tensor_nbytes(tensor)
                 device = getattr(tensor, "device", None)
                 if device is not None:
                     devices.add(str(device))
         prefix_tensor_bytes = sum(_chunk_tensor_bytes(chunk) for chunk in scaffold_chunks)
-        fact_chunk_tensor_bytes = sum(_chunk_tensor_bytes(chunk) for chunk in fact_chunks)
+        if self._chunks_in_store:
+            # The fact-chunk KV lives in the chunk store and the local
+            # chunks are metadata-only; report the sizes captured at move
+            # time and the store's residency.
+            fact_chunk_tensor_bytes = self._stored_chunk_bytes
+            layer_count = max(layer_count, self._stored_chunk_layers)
+            residency = "cpu" if getattr(self.chunk_store, "num_staging_slots", 0) else "gpu"
+            devices.add("cpu(pinned)" if residency == "cpu" else str(self.device))
+        else:
+            fact_chunk_tensor_bytes = sum(_chunk_tensor_bytes(chunk) for chunk in fact_chunks)
+            residency = "gpu"
+        total_bytes = prefix_tensor_bytes + fact_chunk_tensor_bytes
         chunk_map_cpu_bytes = _chunk_map_cpu_bytes(fact_chunks_by_id)
 
-        return {
-            "kv_chunk_cache_residency": "gpu",
+        stats = {
+            "kv_chunk_cache_residency": residency,
             "kv_precomputed_chunks": max(0, len(chunks) - len(scaffold_chunks)),
             "kv_precomputed_chunks_with_prefix": len(chunks),
             "kv_precomputed_tokens": total_tokens,
@@ -398,13 +521,21 @@ class ChunkedRopeSampleComposer:
             "llama_kv_total_tensor_gpu_bytes": total_bytes,
             "llama_kv_total_tensor_gpu_mb": bytes_to_mb(total_bytes),
         }
+        if self.chunk_store is not None:
+            for key, value in self.chunk_store.get_stats().items():
+                stats[f"kv_chunk_store_{key}"] = value
+        return stats
 
     def close(self) -> None:
         import gc
         import torch
 
+        chunk_store = getattr(self, "chunk_store", None)
+        if chunk_store is not None:
+            close_chunk_store(chunk_store)
         for attr in (
             "encoder",
+            "chunk_store",
             "chunks",
             "header_chunk",
             "memory_list_header_chunk",
@@ -585,22 +716,18 @@ def _encoded_chunk_cpu_bytes(chunk: EncodedChunk) -> int:
     return total
 
 
-def _load_hf_model_and_tokenizer(
-    *, model: str, dtype: Any, device: str
-) -> tuple[Any, Any]:
-    import torch
-    from transformers import AutoModelForCausalLM
+def load_encoder_tokenizer(model: str) -> Any:
+    """Load the encoder-side tokenizer without touching model weights.
 
-    # Chunk token ids must be byte-identical to the ids the vLLM engine sees
-    # (the connector matches registered chunks as a prompt prefix), so load
-    # the tokenizer through vLLM's resolver rather than AutoTokenizer. With
-    # transformers>=4.56 plus mistral_common installed, AutoTokenizer resolves
-    # Mistral models to MistralCommonTokenizer while the engine uses the HF
-    # fast tokenizer, and the two encode differently from the first token.
+    Chunk token ids must be byte-identical to the ids the vLLM engine sees
+    (the connector matches registered chunks as a prompt prefix), so load
+    the tokenizer through vLLM's resolver rather than AutoTokenizer. With
+    transformers>=4.56 plus mistral_common installed, AutoTokenizer resolves
+    Mistral models to MistralCommonTokenizer while the engine uses the HF
+    fast tokenizer, and the two encode differently from the first token.
+    """
     from vllm.transformers_utils.tokenizer import get_tokenizer
 
-    logger.info("Loading pre-RoPE encoder model=%s device=%s", model, device)
-    started = time.perf_counter()
     tokenizer = get_tokenizer(model)
     # The encoder never pads (chunks are encoded one sequence at a time); this
     # fixup only keeps HF tokenizers usable elsewhere. vLLM's MistralTokenizer
@@ -611,6 +738,18 @@ def _load_hf_model_and_tokenizer(
             tokenizer.pad_token_id = tokenizer.eos_token_id
         except AttributeError:
             pass
+    return tokenizer
+
+
+def _load_hf_model_and_tokenizer(
+    *, model: str, dtype: Any, device: str
+) -> tuple[Any, Any]:
+    import torch
+    from transformers import AutoModelForCausalLM
+
+    logger.info("Loading pre-RoPE encoder model=%s device=%s", model, device)
+    started = time.perf_counter()
+    tokenizer = load_encoder_tokenizer(model)
 
     hf_model = AutoModelForCausalLM.from_pretrained(
         model,

@@ -4,7 +4,7 @@ import random
 from dataclasses import dataclass
 from typing import Any
 
-from ..data import ConversationSample
+from ..data import ConversationSample, QuestionAnswer
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,3 +60,13 @@ def build_locomo_requests(
 
 def user_id(user_index: int) -> str:
     return f"user_{user_index:04d}"
+
+
+def request_question_answer(request: LocomoRequest) -> QuestionAnswer:
+    return QuestionAnswer(
+        sample_id=request.sample_id,
+        question_id=request.question_id,
+        question=request.query,
+        answer="",
+        category="",
+    )

@@ -9,9 +9,7 @@ from typing import Any
 from .config import ThroughputConfig
 
 # Device bytes one jasper sample graph allocates: one segment of
-# 1u << 12 slots x ~3,457 bytes/slot on the smaller-vectors-per-segment
-# jasperpy branch. Jasper sizes segments internally, so this is an
-# estimate tied to that branch, not a bound.
+# 1u << 12 slots x ~3,457 bytes/slot.
 JASPER_GRAPH_DEVICE_BYTES = 4096 * 3457
 
 

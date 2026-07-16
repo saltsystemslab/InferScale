@@ -3,7 +3,7 @@
 # Judge all LoCoMo Jasper results for a given run stamp.
 #
 # The sweep ran with --skip-judge, so this runs the judge pass (--judge-only)
-# over every run-id produced under a stamp (default: 20260706T073907Z).
+# over every run-id produced under a stamp (STAMP, required).
 #
 # Enumerating run-ids (set RUNIDS_FROM):
 #   discover (default) : scan BENCHMARK_RESULTS_ROOT for run-ids whose name contains STAMP.
@@ -11,17 +11,17 @@
 #   grid               : regenerate them from the current Mem0 fact sweep grid.
 #                        Use this if discovery finds nothing due to the results layout.
 #
-# Required env: BENCHMARK_RESULTS_ROOT  JUDGE_BASE_URL  JUDGE_API_KEY  JUDGE_MODEL
-# Optional:     STAMP  RUNIDS_FROM  DRY_RUN  MODELS/TOPKS/KV_WINDOWS
+# Required env: STAMP  BENCHMARK_RESULTS_ROOT  JUDGE_BASE_URL  JUDGE_API_KEY  JUDGE_MODEL
+# Optional:     RUNIDS_FROM  DRY_RUN  MODELS/TOPKS/KV_WINDOWS
 #
 # Usage:
-#   BENCHMARK_RESULTS_ROOT=/r JUDGE_BASE_URL=... JUDGE_API_KEY=... JUDGE_MODEL=... bash scripts/judge.sh
+#   STAMP=20260706T073907Z BENCHMARK_RESULTS_ROOT=/r JUDGE_BASE_URL=... JUDGE_API_KEY=... JUDGE_MODEL=... bash scripts/judge.sh
 #   DRY_RUN=1 ...            bash scripts/judge.sh   # preview run-id list + command shape
 #   RUNIDS_FROM=grid ...     bash scripts/judge.sh   # rebuild ids from the grid instead
 
 set -uo pipefail
 
-STAMP="${STAMP:-<RUN_STAMP>}"  # e.g. 20260706T073907Z
+: "${STAMP:?Set STAMP to the sweep run stamp to judge, e.g. 20260706T073907Z}"
 RUNIDS_FROM="${RUNIDS_FROM:-discover}"
 DRY_RUN="${DRY_RUN:-0}"
 
@@ -45,6 +45,7 @@ if [[ "${RUNIDS_FROM}" == "grid" ]]; then
         RUN_IDS+=("${MODEL}-kv-mem0-jasper10-k${TOP_K}-s${W}-${STAMP}")
       done
       RUN_IDS+=("${MODEL}-prefix-mem0-qdrant10-k${TOP_K}-s0-${STAMP}")
+      RUN_IDS+=("${MODEL}-prefix-mem0-jasper10-k${TOP_K}-s0-${STAMP}")
     done
   done
 elif [[ "${RUNIDS_FROM}" == "discover" ]]; then
@@ -56,7 +57,7 @@ elif [[ "${RUNIDS_FROM}" == "discover" ]]; then
   done < <(
     find "${BENCHMARK_RESULTS_ROOT}" -name "*${STAMP}*" 2>/dev/null \
       | grep -oE "[A-Za-z0-9]+(-[A-Za-z0-9]+)*-${STAMP}" \
-      | grep -E -- "-(kv-mem0-(jasper|qdrant)10|kvcpu-mem0-jasper10|prefix-mem0-qdrant10|kv-gpu-jasper10|prefix-qdrant10)-" \
+      | grep -E -- "-(kv-mem0-(jasper|qdrant)10|kvcpu-mem0-jasper10|prefix-mem0-(jasper|qdrant)10|kv-gpu-jasper10|prefix-qdrant10)-" \
       | sort -u
   )
 else

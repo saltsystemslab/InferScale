@@ -6,12 +6,11 @@ receives async H2D copies on a dedicated CUDA copy stream; per-layer CUDA
 events let the connector's per-layer scatter loop start on layer k as soon as
 layer k's bytes have landed, overlapping the remaining transfers with compute.
 
-Ported from ai-memory-code/memory_connector/cpu_memory_store.py with three
-fixes: staging tensors are registered on the consuming stream via
-``record_stream`` (the caching allocator must not reuse them while scatter
-kernels are in flight), the layer view is lazy (no all-layer sync from
-``values()``/``items()``), and the compute stream is resolved at use time
-instead of captured at construction.
+Three correctness details matter here: staging tensors are registered on the
+consuming stream via ``record_stream`` (the caching allocator must not reuse
+them while scatter kernels are in flight), the layer view is lazy (no
+all-layer sync from ``values()``/``items()``), and the compute stream is
+resolved at use time instead of captured at construction.
 
 torch is imported inside the class so this module stays importable (and the
 pure-python pieces unit-testable) on machines without torch.

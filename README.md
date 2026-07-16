@@ -1,19 +1,20 @@
-# GPU-Native KV Injection for Personalized LLM Serving
+# InferScale: GPU-Native KV Injection for Personalized LLM Serving
 
 This repository runs a LoCoMo benchmark comparison between in-process vLLM answer backends.
 
-- `vllm-kv`: retrieved Mem0 facts are encoded with the package's chunked-RoPE implementation, then injected through KV Injection.
-- `vllm-prefix`: the same type of retrieved Mem0 facts are included as a normal vLLM prompt injection.
+- `vllm-kv`: retrieved Mem0 facts are encoded with the package's chunked-RoPE implementation, then injected directly into the KV cache.
+- `vllm-prefix`: the same retrieved Mem0 facts are included as a normal prompt injection.
 
 ## 1. Requirements
 
 Benchmark runs target a Linux GPU host; the reference environment is a Runpod container with the persistent `/workspace` partition.
 
-- GPU: one NVIDIA GPU with CUDA >=12.8
-- Python >=3.10,<3.14
+- GPU: one NVIDIA GPU with CUDA >=12.8.
+- Python >=3.10,<3.14.
+- CMake and the CUDA toolkit, used to build the `jasperpy` submodule.
 - Hugging Face API key (`HF_TOKEN` for gated models such as Llama 3.1) and an OpenAI API key for `text-embedding-3-small` embedding calls.
 
-We configure all default parameters to run on a RTX Pro 6000 GPU with 96 GB of VRAM.
+We configure all default parameters to run on an RTX Pro 6000 GPU with 96 GB of VRAM.
 
 ## 2. Setup
 
@@ -49,8 +50,8 @@ source scripts/load_env.sh
 bash scripts/setup_remote.sh
 ```
 
-`scripts/setup_remote.sh` initializes the `jasperpy` submodule, downloads the LoCoMo dataset when missing, installs the pinned Python stack, 
-builds the Jasper native library, and extracts all Mem0 facts.
+`scripts/setup_remote.sh` initializes the `jasperpy` submodule, downloads the LoCoMo dataset when missing, installs the Python environment, builds the Jasper library, and extracts the Mem0 facts for every answer model.
+Fact extraction serves each answer model on a vLLM server; set `SKIP_EXTRACTION=1` to defer it and run `bash scripts/extract_facts.sh` separately.
 
 Activate the environment before running benchmark commands:
 
@@ -66,9 +67,22 @@ Now we are ready to run answer generation.
 bash scripts/full_run.sh
 ```
 
-To run the KV injection grid with the CPU KV store run:
+To repeat the KV injection grid with the CPU KV store, run:
+
 ```bash
 bash scripts/full_run_cpu_store.sh
+```
+
+To run the throughput experiments:
+
+```bash
+bash scripts/full_throughput.sh
+```
+
+To repeat the `kv_injection` condition with the CPU KV store, run:
+
+```bash
+bash scripts/full_throughput_cpu_store.sh
 ```
 
 ## 5. Judge Accuracy
@@ -80,17 +94,22 @@ source .venv/bin/activate
 bash scripts/serve_vllm.sh
 ```
 
-Then judge each run from another shell:
+Then judge each run from another shell that has sourced `scripts/load_env.sh`:
 
 ```bash
 STAMP=<stamp> bash scripts/judge.sh
 ```
 
+`STAMP` is the sweep stamp printed by `scripts/full_run.sh`, also visible in the `sweep-logs-<stamp>` directory name.
+
 ## 6. Compare Results
 
+Each run writes to `${BENCHMARK_RESULTS_ROOT}/<run-id>/`, where the run id encodes the swept axes:
+`<model>-kv-mem0-jasper10-k<topk>-s<window>-<stamp>` for KV runs and `<model>-prefix-mem0-<vector>10-k<topk>-s0-<stamp>` for the prompt baselines.
+
 ```bash
-cat "${BENCHMARK_RESULTS_ROOT}/${KV_RUN_ID}/summary.json"
-cat "${BENCHMARK_RESULTS_ROOT}/${PREFIX_RUN_ID}/summary.json"
+ls "${BENCHMARK_RESULTS_ROOT}"
+cat "${BENCHMARK_RESULTS_ROOT}/<run-id>/summary.json"
 ```
 
 Primary summary metrics:
@@ -100,19 +119,6 @@ Primary summary metrics:
 - `metrics.query_to_first_token_ms`: query-start-to-generate-start wall time plus vLLM time to first token.
 - `metrics.query_to_answer_ms`: query embedding, retrieval, prompt/KV composition, and full answer generation.
 - `metrics.sample_setup_time_ms`: per-sample setup before the first query, including memory/index construction, KV precompute when applicable, and sample activation.
-
-## 7. Run Multi-User Throughput
-
-The throughput benchmark measures multi-user serving performance over the LoCoMo dataset:
-
-```bash
-bash scripts/full_throughput.sh
-```
-
-To run the KV injection grid with the CPU KV store run:
-```bash
-bash scripts/full_throughput_cpu_store.sh
-```
 
 ## License
 

@@ -130,7 +130,15 @@ print("transformers:", transformers.__version__)
 print("vllm:", vllm.__version__)
 PY
 
-# Fact extraction is a separate step so it can run in parallel across pods;
-# see "Extract the fact catalogs" in README.md (scripts/individual/extract_<model>.sh,
-# or scripts/extract_facts.sh for the serial all-models run).
-echo "Setup complete. Next: extract the Mem0 fact catalogs (see README.md, e.g. scripts/individual/extract_llama.sh)."
+# Timed runs consume immutable Mem0 fact catalogs, so extraction is part of
+# setup: scripts/extract_facts.sh serves each answer model on a temporary
+# local vLLM server and runs the bounded --preembed-only protocol against it.
+# Set SKIP_EXTRACTION=1 to defer it, e.g. to extract in parallel across pods
+# with scripts/individual/extract_<model>.sh.
+if [[ "${SKIP_EXTRACTION:-0}" != "1" ]]; then
+  bash "${SCRIPT_DIR}/extract_facts.sh"
+else
+  echo "Skipping Mem0 fact extraction (SKIP_EXTRACTION=1); run scripts/extract_facts.sh before the benchmarks."
+fi
+
+echo "Setup complete. Next: run the sweep (bash scripts/full_run.sh)."

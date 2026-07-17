@@ -44,7 +44,21 @@ Load the environment in each shell that will run project commands:
 source scripts/load_env.sh
 ```
 
-## 3. Install
+## 3. Optimize Jasper
+
+There is a minor optimization we can make to Jasper. First initialize and update the Jasper submodule:
+
+```bash
+git submodule update --init --recursive jasperpy
+```
+
+To apply the optimization, edit `jasperpy/include/jasper/index/graph.cuh` and change line 70 to:
+
+```cpp
+static constexpr index_t vectors_per_segment = 1u << 12;
+```
+
+## 4. Install
 
 ```bash
 bash scripts/setup_remote.sh
@@ -59,7 +73,7 @@ Activate the environment before running benchmark commands:
 source .venv/bin/activate
 ```
 
-## 4. Run Experiments
+## 5. Run Experiments
 
 Now we are ready to run answer generation.
 
@@ -85,7 +99,7 @@ To repeat the `kv_injection` condition with the CPU KV store, run:
 bash scripts/full_throughput_cpu_store.sh
 ```
 
-## 5. Judge Accuracy
+## 6. Judge Accuracy
 
 For local Gemma/vLLM judging on the same GPU, start the judge after answer runs finish:
 
@@ -102,7 +116,7 @@ STAMP=<stamp> bash scripts/judge.sh
 
 `STAMP` is the sweep stamp printed by `scripts/full_run.sh`, also visible in the `sweep-logs-<stamp>` directory name.
 
-## 6. Compare Results
+## 7. Compare Results
 
 Each run writes to `${BENCHMARK_RESULTS_ROOT}/<run-id>/`, where the run id encodes the swept axes:
 `<model>-kv-mem0-jasper10-k<topk>-s<window>-<stamp>` for KV runs and `<model>-prefix-mem0-<vector>10-k<topk>-s0-<stamp>` for the prompt baselines.
@@ -122,4 +136,4 @@ Primary summary metrics:
 
 ## License
 
-This repository is released under the MIT License; see [LICENSE](LICENSE).
+This repository is released under the BSD 3-Clause License; see [LICENSE](LICENSE).

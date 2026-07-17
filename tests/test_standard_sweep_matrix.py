@@ -19,12 +19,11 @@ def _expected_full_run_ids(stamp: str) -> set[str]:
         for top_k in TOP_KS
         for window in KV_WINDOWS
     }
-    # Prompt injection runs as a baseline on both vector backends.
+    
     prefix_ids = {
-        f"{model}-prefix-mem0-{backend}10-k{top_k}-s0-{stamp}"
+        f"{model}-prefix-mem0-qdrant10-k{top_k}-s0-{stamp}"
         for model in MODELS
         for top_k in TOP_KS
-        for backend in ("qdrant", "jasper")
     }
     return kv_ids | prefix_ids
 
@@ -58,19 +57,19 @@ def _judge_run_ids(output: str) -> set[str]:
     return {line.strip() for line in run_id_block.splitlines() if line.strip()}
 
 
-def test_full_run_dry_run_emits_the_96_run_mem0_fact_matrix(tmp_path: Path) -> None:
+def test_full_run_dry_run_emits_the_80_run_mem0_fact_matrix(tmp_path: Path) -> None:
     output = _run_script("full_run.sh", tmp_path)
-    stamp_match = re.search(r"Sweep complete: 96 runs \(stamp ([^)]+)\)", output)
+    stamp_match = re.search(r"Sweep complete: 80 runs \(stamp ([^)]+)\)", output)
 
     assert stamp_match is not None
     run_ids = re.findall(r"--run-id ([^\s]+)", output)
-    assert len(run_ids) == 96
+    assert len(run_ids) == 80
     assert set(run_ids) == _expected_full_run_ids(stamp_match.group(1))
 
     kv_commands = [line for line in output.splitlines() if "--answer-backend vllm-kv" in line]
     prefix_commands = [line for line in output.splitlines() if "--answer-backend vllm-prefix" in line]
     assert len(kv_commands) == 64
-    assert len(prefix_commands) == 32
+    assert len(prefix_commands) == 16
     for window in KV_WINDOWS:
         assert any(
             f"--context-window {window}" in command and f"-s{window}-" in command
@@ -83,10 +82,7 @@ def test_full_run_dry_run_emits_the_96_run_mem0_fact_matrix(tmp_path: Path) -> N
     )
     assert all("-mem0-" in run_id for run_id in run_ids)
     assert all("--vector-backend jasper" in command for command in kv_commands)
-    prefix_qdrant = [command for command in prefix_commands if "--vector-backend qdrant" in command]
-    prefix_jasper = [command for command in prefix_commands if "--vector-backend jasper" in command]
-    assert len(prefix_qdrant) == 16
-    assert len(prefix_jasper) == 16
+    assert all("--vector-backend qdrant" in command for command in prefix_commands)
     assert all("--context-window 0" in command and "-s0-" in command for command in prefix_commands)
 
 
@@ -101,10 +97,9 @@ def test_full_run_honors_shared_run_stamp(tmp_path: Path) -> None:
         KV_WINDOWS="0",
     )
 
-    assert f"Sweep complete: 3 runs (stamp {stamp})" in output
+    assert f"Sweep complete: 2 runs (stamp {stamp})" in output
     assert f"qwen-kv-mem0-jasper10-k5-s0-{stamp}" in output
     assert f"qwen-prefix-mem0-qdrant10-k5-s0-{stamp}" in output
-    assert f"qwen-prefix-mem0-jasper10-k5-s0-{stamp}" in output
 
 
 def test_full_run_dry_run_omits_removed_comparison_steps(tmp_path: Path) -> None:
@@ -120,7 +115,7 @@ def test_full_run_dry_run_omits_removed_comparison_steps(tmp_path: Path) -> None
     assert all(marker not in output for marker in removed_outputs)
 
 
-def test_judge_grid_dry_run_emits_the_96_run_mem0_fact_matrix(tmp_path: Path) -> None:
+def test_judge_grid_dry_run_emits_the_80_run_mem0_fact_matrix(tmp_path: Path) -> None:
     stamp = "20260710T120000Z"
     output = _run_script(
         "judge.sh",
@@ -132,7 +127,7 @@ def test_judge_grid_dry_run_emits_the_96_run_mem0_fact_matrix(tmp_path: Path) ->
         JUDGE_MODEL="judge-model",
     )
 
-    assert f"Would judge 96 run(s) for stamp {stamp} (source: grid)." in output
+    assert f"Would judge 80 run(s) for stamp {stamp} (source: grid)." in output
     assert _judge_run_ids(output) == _expected_full_run_ids(stamp)
     assert "prefix-gpu-jasper" not in output
 

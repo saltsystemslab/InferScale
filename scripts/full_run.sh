@@ -8,8 +8,7 @@
 # Per (model, top-k) it runs:
 #   - vllm-kv     + jasper, once per window W (--context-window W) -> 4 runs
 #   - vllm-prefix + qdrant, once as a separate baseline           -> 1 run
-#   - vllm-prefix + jasper, once as a separate baseline           -> 1 run
-# => 4 models x 4 top-k x (4 + 2) = 96 runs.
+# => 4 models x 4 top-k x (4 + 1) = 80 runs.
 #
 # Usage:
 #   BENCHMARK_RESULTS_ROOT=/path/to/results bash scripts/full_run.sh
@@ -73,9 +72,9 @@ mkdir -p "${LOG_DIR}"
 n_models=$(wc -w <<<"${MODELS}")
 n_topks=$(wc -w <<<"${TOPKS}")
 n_windows=$(wc -w <<<"${KV_WINDOWS}")
-# Per (model, topk): one KV run per window plus the prefix-qdrant and
-# prefix-jasper prompt-injection baselines.
-TOTAL=$(( n_models * n_topks * (n_windows + 2) ))
+# Per (model, topk): one KV run per window plus the prefix-qdrant
+# prompt-injection baseline.
+TOTAL=$(( n_models * n_topks * (n_windows + 1) ))
 idx=0
 declare -a FAILURES=()
 
@@ -142,21 +141,23 @@ for MODEL in ${MODELS}; do
         --skip-judge \
         --run-id "${prefix_id}"
 
-    prefix_jasper_id="${MODEL}-prefix-mem0-jasper10-k${TOP_K}-s0-${RUN_STAMP}"
-    run_one "${MODEL} k=${TOP_K} mem0-prefix jasper" \
-      locomo-jasper-bench \
-        --dataset "${DATASET}" \
-        --results-dir "${BENCHMARK_RESULTS_ROOT}" \
-        --answer-model "${MODEL}" \
-        --answer-backend vllm-prefix \
-        --vector-backend jasper \
-        --top-k "${TOP_K}" \
-        --context-window 0 \
-        --kv-gpu-memory-utilization 0.40 \
-        --max-samples 10 \
-        --log-every 1 \
-        --skip-judge \
-        --run-id "${prefix_jasper_id}"
+    # Uncomment this block, count it in TOTAL above, and re-enable its judge.sh 
+    # grid line to restore it.
+    # prefix_jasper_id="${MODEL}-prefix-mem0-jasper10-k${TOP_K}-s0-${RUN_STAMP}"
+    # run_one "${MODEL} k=${TOP_K} mem0-prefix jasper" \
+    #   locomo-jasper-bench \
+    #     --dataset "${DATASET}" \
+    #     --results-dir "${BENCHMARK_RESULTS_ROOT}" \
+    #     --answer-model "${MODEL}" \
+    #     --answer-backend vllm-prefix \
+    #     --vector-backend jasper \
+    #     --top-k "${TOP_K}" \
+    #     --context-window 0 \
+    #     --kv-gpu-memory-utilization 0.40 \
+    #     --max-samples 10 \
+    #     --log-every 1 \
+    #     --skip-judge \
+    #     --run-id "${prefix_jasper_id}"
   done
 done
 

@@ -45,7 +45,7 @@ if [[ "${RUNIDS_FROM}" == "grid" ]]; then
         RUN_IDS+=("${MODEL}-kv-mem0-jasper10-k${TOP_K}-s${W}-${STAMP}")
       done
       RUN_IDS+=("${MODEL}-prefix-mem0-qdrant10-k${TOP_K}-s0-${STAMP}")
-      RUN_IDS+=("${MODEL}-prefix-mem0-jasper10-k${TOP_K}-s0-${STAMP}")
+      # RUN_IDS+=("${MODEL}-prefix-mem0-jasper10-k${TOP_K}-s0-${STAMP}")
     done
   done
 elif [[ "${RUNIDS_FROM}" == "discover" ]]; then

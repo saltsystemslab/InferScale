@@ -72,6 +72,7 @@ class ThroughputConfig:
     kv_store_backend: str = DEFAULT_KV_STORE_BACKEND
     kv_staging_slots: int = DEFAULT_KV_STAGING_SLOTS
     kv_chunk_cache_enabled: bool = True
+    jasper_device_kv_selection: bool = False
     embedding_model: str = "text-embedding-3-small"
     embedding_api_key: str | None = None
     embedding_base_url: str | None = None
@@ -248,6 +249,15 @@ def parse_args(argv: list[str] | None = None) -> tuple[ThroughputConfig, bool]:
         action="store_false",
         help="Disable the pre-encoded KV chunk disk cache (always re-encode).",
     )
+    parser.add_argument(
+        "--jasper-device-kv-selection",
+        action=argparse.BooleanOptionalAction,
+        default=env_flag("LOCOMO_JASPER_DEVICE_KV_SELECTION", False),
+        help=(
+            "Keep Jasper result IDs on CUDA while mapping and gathering from the GPU "
+            "fact-chunk corpus. Unsupported cases use the existing SearchHit path."
+        ),
+    )
     parser.add_argument("--embedding-model", default=os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"))
     parser.add_argument("--embedding-api-key", default=os.environ.get("OPENAI_API_KEY"))
     parser.add_argument("--embedding-base-url", default=os.environ.get("OPENAI_BASE_URL"))
@@ -305,6 +315,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[ThroughputConfig, bool]:
         kv_store_backend=ns.kv_store_backend,
         kv_staging_slots=ns.kv_staging_slots,
         kv_chunk_cache_enabled=ns.kv_chunk_cache_enabled,
+        jasper_device_kv_selection=ns.jasper_device_kv_selection,
         embedding_model=ns.embedding_model,
         embedding_api_key=ns.embedding_api_key,
         embedding_base_url=ns.embedding_base_url,

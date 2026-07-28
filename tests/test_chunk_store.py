@@ -8,10 +8,12 @@ from locomo_jasper_bench.kv.chunk_store import (
     build_chunk_store,
     close_chunk_store,
     fetch_fact_chunks,
+    finalize_chunk_store,
     register_fact_chunks,
     release_fact_chunks,
 )
 from locomo_jasper_bench.kv.gpu_memory_store import GPUMemoryStore
+from locomo_jasper_bench.kv.packed_gpu_memory_store import PackedGPUMemoryStore
 from locomo_jasper_bench.kv.types import EncodedChunk
 
 
@@ -27,8 +29,24 @@ def _chunk(seed: int) -> EncodedChunk:
 def test_build_chunk_store_selects_backend() -> None:
     store = build_chunk_store("gpu", device="cuda:0", top_k=50, staging_slots=4)
     assert isinstance(store, GPUMemoryStore)
+    packed = build_chunk_store(
+        "gpu",
+        device="cuda:0",
+        top_k=50,
+        staging_slots=4,
+        device_selection=True,
+    )
+    assert isinstance(packed, PackedGPUMemoryStore)
     with pytest.raises(ValueError, match="Unknown chunk store backend"):
         build_chunk_store("pinned", device="cuda:0", top_k=50, staging_slots=4)
+
+
+def test_finalize_is_a_noop_for_the_ordinary_gpu_store() -> None:
+    store = GPUMemoryStore(device="cuda:0")
+
+    finalize_chunk_store(store)
+
+    assert store.get_stats()["num_users"] == 0
 
 
 def test_register_moves_kv_and_returns_metadata_map() -> None:
@@ -43,6 +61,8 @@ def test_register_moves_kv_and_returns_metadata_map() -> None:
     assert meta["fact-a"].context_turn_ids == ("turn-1",)
     assert meta["fact-b"].context_prefix_tokens == 2
     assert store.get_user_memory("fact-b").token_ids == [2, 3]
+    assert chunks["fact-a"].kv_by_layer == {}
+    assert chunks["fact-b"].kv_by_layer == {}
 
 
 def test_fetch_preserves_order_and_rebuilds_chunks() -> None:

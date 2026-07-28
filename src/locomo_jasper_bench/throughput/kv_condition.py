@@ -16,9 +16,12 @@ from ..kv.chunk_cache import (
     scaffold_chunks_match,
 )
 from ..kv.chunk_store import (
+    build_device_chunk_row_map,
     build_chunk_store,
     close_chunk_store,
+    fetch_device_fact_chunk,
     fetch_fact_chunks,
+    finalize_chunk_store,
     register_fact_chunks,
     release_fact_chunks,
 )
@@ -33,6 +36,7 @@ from ..kv.prompting import (
     extract_memory_scaffold_token_ids,
     format_memory_fact,
 )
+from ..kv.packed_gpu_memory_store import DeviceChunkSelectionError
 from ..kv.tokenization import encode_text_no_special
 from ..retrieval.fact_catalog import fact_catalog_hits
 from ..runtime_paths import local_store_scratch_dir
@@ -54,7 +58,9 @@ from .stores import (
     close_mem0,
     fact_catalog_store,
     load_samples,
-    search_store,
+    materialize_store_device_result,
+    search_store_for_kv,
+    store_stable_id_items,
 )
 from .workload import LocomoRequest, build_locomo_requests, request_question_answer
 
@@ -126,6 +132,7 @@ def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]
     llm: Any | None = None
     chunk_store: Any | None = None
     stores_by_sample: dict[str, Any] = {}
+    device_row_maps_by_sample: dict[str, Any] = {}
     try:
         print(f"kv_injection: users={num_users} precompute starting", flush=True)
         precompute_started = time.perf_counter()
@@ -221,6 +228,10 @@ def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]
             device=config.kv_device,
             top_k=config.top_k,
             staging_slots=config.kv_staging_slots,
+            device_selection=(
+                config.jasper_device_kv_selection
+                and config.kv_store_backend == "gpu"
+            ),
         )
         # Values are metadata-only chunk maps once registration moves each
         # sample's KV into the chunk store below.
@@ -298,8 +309,13 @@ def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]
         )
         encoder.release_model()
         torch.cuda.synchronize()
-        # Return the released encoder weights to the driver: the jasper
-        # graph builds ahead allocate outside torch's caching allocator.
+        # Reclaim the encoder weights before allocating packed corpus slabs,
+        # then synchronize the packing work before Jasper graph setup.
+        torch.cuda.empty_cache()
+        finalize_chunk_store(chunk_store)
+        torch.cuda.synchronize()
+        # Return all released blocks to the driver: the Jasper graph builds
+        # ahead allocate outside torch's caching allocator.
         torch.cuda.empty_cache()
         kv_precompute_time_s = time.perf_counter() - precompute_started
 
@@ -333,6 +349,29 @@ def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]
                 store_root=mem0_store_root / sample.sample_id,
                 facts=facts_by_sample[sample.sample_id],
             )
+        device_selection_enabled = (
+            config.jasper_device_kv_selection
+            and config.kv_store_backend == "gpu"
+        )
+        if device_selection_enabled:
+            try:
+                for sample in used_samples:
+                    device_row_maps_by_sample[sample.sample_id] = (
+                        build_device_chunk_row_map(
+                            chunk_store,
+                            store_stable_id_items(
+                                stores_by_sample[sample.sample_id]
+                            ),
+                        )
+                    )
+            except (RuntimeError, ValueError) as exc:
+                device_row_maps_by_sample.clear()
+                device_selection_enabled = False
+                print(
+                    "kv_injection: Jasper device KV selection setup failed; "
+                    f"using SearchHit fallback ({exc})",
+                    flush=True,
+                )
         memory_setup_time_s = time.perf_counter() - setup_started
 
         for user_index in range(num_users):
@@ -341,30 +380,71 @@ def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]
             fact_count_total += len(facts)
             open_memory = stores_by_sample[sample.sample_id]
             for request in requests_by_user[user_index]:
-                hits, elapsed_s, search_s = search_store(
+                search_result = search_store_for_kv(
                     open_memory,
                     request.query,
                     top_k=config.top_k,
+                    prefer_device_result=(
+                        device_selection_enabled
+                        and sample.sample_id in device_row_maps_by_sample
+                    ),
                 )
-                retrieval_time_s += elapsed_s
-                vector_search_time_s += search_s
+                retrieval_time_s += search_result.elapsed_s
+                vector_search_time_s += search_result.search_s
+                hits = search_result.hits
+                device_result = search_result.device_result
 
                 # Compose launches asynchronous CUDA work; synchronize on
                 # both sides of the timer so it measures the GPU time, not
                 # just the kernel-enqueue time.
                 torch.cuda.synchronize()
                 compose_started = time.perf_counter()
-                selected_facts = reverse_ranked_memory_facts(hits)
-                selected_ids = [fact.memory_id for fact in selected_facts]
-                if not selected_ids:
-                    raise RuntimeError("Retrieval returned no facts for a kv_injection request.")
-                # Stages the selected chunks out of the corpus store (async
-                # H2D under the cpu backend), so compose time carries the
-                # PCIe cost of host-resident sources.
-                selected = fetch_fact_chunks(
-                    chunk_store, chunks_by_sample[sample.sample_id], selected_ids
-                )
-                composed_chunks = [header_chunk, *selected, footer_chunk]
+                selected_ids: list[str] = []
+                selected: list[Any] | None = None
+                selected_device_chunk = None
+                if device_result is not None:
+                    try:
+                        selected_device_chunk = fetch_device_fact_chunk(
+                            chunk_store,
+                            device_result.stable_ids,
+                            device_row_maps_by_sample[sample.sample_id],
+                        )
+                    except DeviceChunkSelectionError:
+                        # This is an exceptional integrity fallback. It
+                        # materializes the already-computed result, but does
+                        # not re-embed or rerun retrieval.
+                        hits = materialize_store_device_result(
+                            open_memory,
+                            device_result,
+                        )
+                        device_result = None
+
+                if selected_device_chunk is not None:
+                    composed_chunks = [
+                        header_chunk,
+                        selected_device_chunk,
+                        footer_chunk,
+                    ]
+                else:
+                    if hits is None:
+                        raise RuntimeError(
+                            "KV retrieval produced neither device results nor SearchHits."
+                        )
+                    selected_facts = reverse_ranked_memory_facts(hits)
+                    selected_ids = [fact.memory_id for fact in selected_facts]
+                    if not selected_ids:
+                        raise RuntimeError(
+                            "Retrieval returned no facts for a kv_injection request."
+                        )
+                    # Stages the selected chunks out of the corpus store
+                    # (async H2D under the cpu backend), so compose time
+                    # carries the PCIe cost of host-resident sources.
+                    selected = fetch_fact_chunks(
+                        chunk_store,
+                        chunks_by_sample[sample.sample_id],
+                        selected_ids,
+                    )
+                    composed_chunks = [header_chunk, *selected, footer_chunk]
                 kv_by_layer = encoder.compose_chunks(composed_chunks)
                 memory_token_ids = [
                     token_id
@@ -373,7 +453,14 @@ def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]
                 ]
                 torch.cuda.synchronize()
                 kv_compose_time_s += time.perf_counter() - compose_started
-                release_fact_chunks(chunk_store, selected_ids)
+                if selected_ids:
+                    release_fact_chunks(chunk_store, selected_ids)
+                # Packed per-fact slices keep their whole backing slabs alive.
+                # Drop all request-local source views immediately after the
+                # synchronized composition, well before the corpus store closes.
+                selected = None
+                selected_device_chunk = None
+                composed_chunks = []
 
                 # Registration hands the composed memory to the GPU-resident
                 # in-flight registry (a dict insert, no transfer); timed for
@@ -397,6 +484,11 @@ def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]
                 # not part of the serving path; its cost is reported
                 # separately and excluded from QPS.
                 verify_started = time.perf_counter()
+                if hits is None:
+                    hits = materialize_store_device_result(
+                        open_memory,
+                        device_result,
+                    )
                 canonical_memory = build_memory_prompt_token_ids(
                     tokenizer,
                     sample,
@@ -433,6 +525,7 @@ def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]
         # ~13.5MiB on the current jasperpy branch) until the finally block.
         chunk_store_stats = chunk_store.get_stats()
         chunk_bench_summary = chunk_store.get_bench_summary()
+        device_row_maps_by_sample.clear()
         close_chunk_store(chunk_store)
         chunks_by_sample.clear()
         cached_by_sample.clear()
@@ -540,6 +633,7 @@ def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]
         for store in stores_by_sample.values():
             close_mem0(store)
         if chunk_store is not None:
+            device_row_maps_by_sample.clear()
             close_chunk_store(chunk_store)
         release_llm(llm)
         if encoder is not None:

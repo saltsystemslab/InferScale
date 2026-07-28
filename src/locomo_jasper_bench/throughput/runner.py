@@ -182,6 +182,7 @@ _LEGACY_CONFIG_DEFAULTS: dict[str, Any] = {
     "kv_store_backend": DEFAULT_KV_STORE_BACKEND,
     "kv_staging_slots": DEFAULT_KV_STAGING_SLOTS,
     "context_window": 0,
+    "jasper_device_kv_selection": False,
 }
 
 

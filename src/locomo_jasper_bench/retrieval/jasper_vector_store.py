@@ -3,6 +3,7 @@ from __future__ import annotations
 import gc
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -18,6 +19,15 @@ _JASPER_INDEX_BYTES = 4
 _JASPER_EDGE_COUNT_BYTES = 1
 # jasperpy stores vectors on GPU as float16 regardless of the input dtype
 _JASPER_GPU_VECTOR_BYTES = 2
+
+
+@dataclass(slots=True, frozen=True)
+class JasperDeviceSearchResult:
+    """One best-first Jasper result row whose tensors remain on the search device."""
+
+    stable_ids: Any
+    distances: Any
+    metrics: SearchMetrics
 
 
 class JasperVectorStore:
@@ -175,6 +185,119 @@ class JasperVectorStore:
             jasper_effective_beam_width=effective_beam_width,
         )
 
+    def search_device(
+        self,
+        query_vector: np.ndarray | list[float],
+        top_k: int,
+        filters: dict[str, Any] | None = None,
+    ) -> JasperDeviceSearchResult | None:
+        """Return complete Jasper results without materializing result IDs on the host.
+
+        ``None`` means the ordinary SearchHit path is required, for example
+        before finalization or when payload filtering cannot run on the GPU.
+        """
+        if self._vectors is None or self._vectors.size == 0:
+            return None
+        query = _as_float32_vector(query_vector, name="query_vector")
+        if query.shape[0] != self._vectors.shape[1]:
+            raise ValueError(
+                f"query dim {query.shape[0]} does not match store dim {self._vectors.shape[1]}"
+            )
+        top_k = max(1, min(top_k, self.vector_count))
+        filters_match_all = bool(filters) and all(
+            payload_matches(payload, filters)
+            for _, payload in self._payloads_by_ordinal.values()
+        )
+        if bool(filters) and not filters_match_all:
+            return None
+        if not self._finalized or self._graph is None or self._vectors_gpu is None:
+            return None
+
+        effective_beam_width = max(self.config.beam_width, top_k)
+        if top_k < self.vector_count:
+            stable_ids, distances, search_time_ms = self._search_jasper_device(
+                query,
+                top_k,
+                beam_width=effective_beam_width,
+            )
+            if not _device_result_is_complete(
+                stable_ids,
+                distances,
+                expected_count=top_k,
+                vector_count=self.vector_count,
+            ):
+                logger.info(
+                    "Jasper device search returned incomplete or invalid results; "
+                    "retrying with exact GPU search."
+                )
+                stable_ids, distances, exact_search_time_ms = self._search_exact_gpu_device(
+                    query,
+                    top_k,
+                )
+                search_time_ms += exact_search_time_ms
+        else:
+            stable_ids, distances, search_time_ms = self._search_exact_gpu_device(
+                query,
+                top_k,
+            )
+
+        if not _device_result_is_complete(
+            stable_ids,
+            distances,
+            expected_count=top_k,
+            vector_count=self.vector_count,
+        ):
+            raise RuntimeError("Jasper exact GPU search returned incomplete or invalid results.")
+        return JasperDeviceSearchResult(
+            stable_ids=stable_ids,
+            distances=distances,
+            metrics=SearchMetrics(
+                search_time_ms,
+                vector_backend="jasper",
+                jasper_effective_beam_width=effective_beam_width,
+            ),
+        )
+
+    def materialize_device_result(
+        self,
+        result: JasperDeviceSearchResult,
+    ) -> list[SearchHit]:
+        """Materialize a device result for bookkeeping outside the KV fast path."""
+        stable_ids = result.stable_ids.detach().cpu().tolist()
+        distances = result.distances.detach().cpu().tolist()
+        hits: list[SearchHit] = []
+        for stable_id, raw_distance in zip(stable_ids, distances):
+            row = self._payload_by_ordinal(int(stable_id))
+            if row is None:
+                raise RuntimeError(
+                    f"Jasper returned invalid stable vector id {int(stable_id)}."
+                )
+            item_id, payload = row
+            distance = float(raw_distance)
+            hits.append(
+                SearchHit(
+                    id=item_id,
+                    payload=dict(payload),
+                    score=-distance,
+                    distance=distance,
+                    rank=len(hits) + 1,
+                )
+            )
+        return hits
+
+    def stable_id_items(self) -> tuple[tuple[int, str], ...]:
+        """Return setup-time Jasper stable-ID to application-ID bindings.
+
+        Graph.build assigns stable IDs from input row order, and this wrapper
+        closes and rebuilds the graph after every vector-set mutation.
+        """
+        if not self._finalized:
+            raise RuntimeError("Jasper stable IDs are unavailable before finalization.")
+        return tuple(
+            (ordinal, self._payloads_by_ordinal[ordinal][0])
+            for ordinal in sorted(self._payloads_by_ordinal)
+        )
+
     def rows(self, filters: dict[str, Any] | None = None) -> list[tuple[str, dict[str, Any]]]:
         return [
             (item_id, dict(payload))
@@ -306,22 +429,13 @@ class JasperVectorStore:
         *,
         beam_width: int,
     ) -> tuple[list[SearchHit], float]:
-        if self._graph is None:
-            raise RuntimeError("Jasper graph must be finalized before GPU search.")
-        import torch
-
-        query_tensor = torch.from_numpy(query.reshape(1, -1)).to(device="cuda", dtype=torch.float16)
-        synchronize = getattr(getattr(torch, "cuda", None), "synchronize", None)
-        if callable(synchronize):
-            synchronize()
-        started = time.perf_counter()
-        indices, distances = self._graph.search(query_tensor, k=top_k, beam_width=beam_width)
-        if callable(synchronize):
-            synchronize()
-        search_time_ms = (time.perf_counter() - started) * 1000
-
-        index_values = indices[0].detach().cpu().numpy()
-        distance_values = distances[0].detach().cpu().numpy()
+        indices, distances, search_time_ms = self._search_jasper_device(
+            query,
+            top_k,
+            beam_width=beam_width,
+        )
+        index_values = indices.detach().cpu().numpy()
+        distance_values = distances.detach().cpu().numpy()
         hits: list[SearchHit] = []
         for ordinal, raw_distance in zip(index_values, distance_values):
             if int(ordinal) < 0:
@@ -344,12 +458,67 @@ class JasperVectorStore:
             )
         return hits, search_time_ms
 
+    def _search_jasper_device(
+        self,
+        query: np.ndarray,
+        top_k: int,
+        *,
+        beam_width: int,
+    ) -> tuple[Any, Any, float]:
+        if self._graph is None:
+            raise RuntimeError("Jasper graph must be finalized before GPU search.")
+        import torch
+
+        query_tensor = torch.from_numpy(query.reshape(1, -1)).to(device="cuda", dtype=torch.float16)
+        synchronize = getattr(getattr(torch, "cuda", None), "synchronize", None)
+        if callable(synchronize):
+            synchronize()
+        started = time.perf_counter()
+        indices, distances = self._graph.search(query_tensor, k=top_k, beam_width=beam_width)
+        if callable(synchronize):
+            synchronize()
+        search_time_ms = (time.perf_counter() - started) * 1000
+        return indices[0].detach(), distances[0].detach(), search_time_ms
+
     def _search_exact_gpu(self, query: np.ndarray, top_k: int) -> tuple[list[SearchHit], float]:
+        matrix = self._vectors_gpu
+        if matrix is None:
+            return self._search_exact(query, top_k)
+        top_ordinals, distances, search_time_ms = self._search_exact_gpu_device(
+            query,
+            top_k,
+        )
+        ordinal_values = top_ordinals.detach().cpu().numpy()
+        distance_values = distances.detach().cpu().numpy()
+        hits: list[SearchHit] = []
+        for ordinal, distance in zip(ordinal_values, distance_values):
+            row = self._payload_by_ordinal(int(ordinal))
+            if row is None:
+                raise RuntimeError(
+                    f"Jasper exact GPU search produced unknown ordinal {int(ordinal)}."
+                )
+            item_id, payload = row
+            hits.append(
+                SearchHit(
+                    id=item_id,
+                    payload=dict(payload),
+                    score=-float(distance),
+                    distance=float(distance),
+                    rank=len(hits) + 1,
+                )
+            )
+        return hits, search_time_ms
+
+    def _search_exact_gpu_device(
+        self,
+        query: np.ndarray,
+        top_k: int,
+    ) -> tuple[Any, Any, float]:
         import torch
 
         matrix = self._vectors_gpu
         if matrix is None:
-            return self._search_exact(query, top_k)
+            raise RuntimeError("Jasper exact GPU search requires a resident vector matrix.")
         query_tensor = torch.from_numpy(query).to(device=matrix.device, dtype=torch.float32)
         synchronize = getattr(getattr(torch, "cuda", None), "synchronize", None)
         if callable(synchronize):
@@ -361,25 +530,7 @@ class JasperVectorStore:
         if callable(synchronize):
             synchronize()
         search_time_ms = (time.perf_counter() - started) * 1000
-
-        ordinal_values = top_ordinals.detach().cpu().numpy()
-        score_values = top_scores.detach().cpu().numpy()
-        hits: list[SearchHit] = []
-        for ordinal, score in zip(ordinal_values, score_values):
-            row = self._payload_by_ordinal(int(ordinal))
-            if row is None:
-                raise RuntimeError(f"Jasper exact GPU search produced unknown ordinal {int(ordinal)}.")
-            item_id, payload = row
-            hits.append(
-                SearchHit(
-                    id=item_id,
-                    payload=dict(payload),
-                    score=float(score),
-                    distance=-float(score),
-                    rank=len(hits) + 1,
-                )
-            )
-        return hits, search_time_ms
+        return top_ordinals.detach(), (-top_scores).detach(), search_time_ms
 
     def _search_exact(self, query: np.ndarray, top_k: int) -> tuple[list[SearchHit], float]:
         started = time.perf_counter()
@@ -480,6 +631,29 @@ def _positive_delta(before: int | None, after: int | None) -> int | None:
     if before is None or after is None:
         return None
     return max(0, int(after) - int(before))
+
+
+def _device_result_is_complete(
+    stable_ids: Any,
+    distances: Any,
+    *,
+    expected_count: int,
+    vector_count: int,
+) -> bool:
+    import torch
+
+    if int(stable_ids.numel()) != expected_count or int(distances.numel()) != expected_count:
+        return False
+    valid = (
+        (stable_ids >= 0)
+        & (stable_ids < vector_count)
+        & torch.isfinite(distances)
+        & (distances.abs() < 1e30)
+    ).all()
+    if expected_count > 1:
+        sorted_ids = torch.sort(stable_ids).values
+        valid = valid & (sorted_ids[1:] != sorted_ids[:-1]).all()
+    return bool(valid.item())
 
 
 def _bytes_to_mb(byte_count: int | None) -> float | None:

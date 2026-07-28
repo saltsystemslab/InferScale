@@ -75,8 +75,14 @@ def test_validate_existing_config_accepts_pre_change_config_json(tmp_path: Path)
     config.run_dir.mkdir(parents=True)
     legacy = config.to_jsonable()
     # A config.json written before these fields existed has no such keys;
-    # the recorded behavior was prefix caching off and the GPU store.
-    for key in ("kv_enable_prefix_caching", "kv_store_backend", "kv_staging_slots"):
+    # the recorded behavior was prefix caching off, the GPU store, and the
+    # Python SearchHit selection path.
+    for key in (
+        "kv_enable_prefix_caching",
+        "kv_store_backend",
+        "kv_staging_slots",
+        "jasper_device_kv_selection",
+    ):
         legacy.pop(key)
     (config.run_dir / "config.json").write_text(json.dumps(legacy), encoding="utf-8")
 
@@ -84,6 +90,7 @@ def test_validate_existing_config_accepts_pre_change_config_json(tmp_path: Path)
     resumed.kv_enable_prefix_caching = False
     resumed.kv_store_backend = "gpu"
     resumed.kv_staging_slots = 4
+    resumed.jasper_device_kv_selection = False
     _validate_existing_config(resumed)  # must not raise
 
     mismatched = _config(tmp_path)

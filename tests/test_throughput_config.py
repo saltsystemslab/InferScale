@@ -164,12 +164,35 @@ def test_parse_args_defaults_to_gpu_store_with_prefix_caching() -> None:
     assert config.kv_store_backend == "gpu"
     assert config.kv_staging_slots == 4
     assert config.kv_enable_prefix_caching is True
+    assert config.jasper_device_kv_selection is False
 
 
 def test_parse_args_no_kv_prefix_caching_flag() -> None:
     config, _ = parse_args(["--model", "test/model", "--no-kv-prefix-caching"])
 
     assert config.kv_enable_prefix_caching is False
+
+
+def test_jasper_device_kv_selection_cli_env_and_json_round_trip(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LOCOMO_JASPER_DEVICE_KV_SELECTION", "1")
+    enabled, _ = parse_args(["--model", "test/model"])
+    assert enabled.jasper_device_kv_selection is True
+
+    disabled, _ = parse_args(
+        ["--model", "test/model", "--no-jasper-device-kv-selection"]
+    )
+    assert disabled.jasper_device_kv_selection is False
+
+    forced, _ = parse_args(
+        ["--model", "test/model", "--jasper-device-kv-selection"]
+    )
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(forced.to_jsonable()), encoding="utf-8")
+    restored = type(forced).from_json_file(path)
+    assert restored.jasper_device_kv_selection is True
 
 
 def test_parse_args_rejects_non_positive_staging_slots() -> None:

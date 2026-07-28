@@ -93,6 +93,12 @@ To run the throughput experiments:
 bash scripts/full_throughput.sh
 ```
 
+To opt in to the GPU-resident Jasper result-ID to packed-KV selection path:
+
+```bash
+bash scripts/full_throughput.sh --jasper-device-kv-selection
+```
+
 To repeat the `kv_injection` condition with the CPU KV store, run:
 
 ```bash

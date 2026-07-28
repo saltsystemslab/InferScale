@@ -8,7 +8,10 @@ import pytest
 from pydantic import ValidationError
 
 from locomo_jasper_bench.config import BenchmarkConfig, parse_args
-from locomo_jasper_bench.retrieval.jasper_vector_store import JasperVectorStore
+from locomo_jasper_bench.retrieval.jasper_vector_store import (
+    JasperDeviceSearchResult,
+    JasperVectorStore,
+)
 from locomo_jasper_bench.retrieval.mem0_adapter import (
     Mem0JasperVectorStore,
     _validate_search_hits,
@@ -20,7 +23,12 @@ from locomo_jasper_bench.retrieval.mem0_provider import (
 )
 from locomo_jasper_bench.retrieval.memory_builder import _store_config
 from locomo_jasper_bench.retrieval.qdrant_vector_store import QdrantVectorStore
-from locomo_jasper_bench.vector_types import VECTOR_DISTANCE, SearchHit, VectorStoreConfig
+from locomo_jasper_bench.vector_types import (
+    VECTOR_DISTANCE,
+    SearchHit,
+    SearchMetrics,
+    VectorStoreConfig,
+)
 
 
 class _FakeStore:
@@ -78,6 +86,41 @@ def test_adapter_dispatches_exhaustively(monkeypatch: pytest.MonkeyPatch, tmp_pa
         Mem0JasperVectorStore(path=tmp_path, backend="qdrant", distance="cosine")
     with pytest.raises(ValueError, match="Unsupported vector backend"):
         Mem0JasperVectorStore(path=tmp_path, backend="typo")
+
+
+def test_adapter_forwards_jasper_device_results_and_metrics() -> None:
+    metrics = SearchMetrics(
+        3.5,
+        vector_backend="jasper",
+        jasper_effective_beam_width=64,
+    )
+    result = JasperDeviceSearchResult(
+        stable_ids=object(),
+        distances=object(),
+        metrics=metrics,
+    )
+    calls: list[tuple[np.ndarray, int, object]] = []
+    adapter = object.__new__(Mem0JasperVectorStore)
+    adapter.config = VectorStoreConfig(backend="jasper")
+    adapter.last_search_metrics = SearchMetrics(0.0)
+    adapter.store = SimpleNamespace(
+        search_device=lambda vector, top_k, filters: calls.append(
+            (vector, top_k, filters)
+        )
+        or result
+    )
+
+    returned = adapter.search_device(
+        query="query",
+        vectors=[[0.25, 0.75]],
+        top_k=2,
+        filters={"sample_id": "sample-1"},
+    )
+
+    assert returned is result
+    assert calls[0][0].tolist() == [0.25, 0.75]
+    assert calls[0][1:] == (2, {"sample_id": "sample-1"})
+    assert adapter.last_search_metrics is metrics
 
 
 def test_backend_validation_rejects_concrete_store_mismatch() -> None:
@@ -258,6 +301,135 @@ def test_jasper_gpu_search_truncates_negative_padding_ordinals(
     graph_results["indices"] = [[0, 7, -1, -1]]
     with pytest.raises(RuntimeError, match="invalid vector ordinal 7"):
         store._search_jasper(np.asarray([1.0, 0.0], dtype=np.float32), 4, beam_width=4)
+
+
+def test_jasper_device_search_keeps_result_ids_on_device(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: object,
+) -> None:
+    store = JasperVectorStore(tmp_path, VectorStoreConfig(backend="jasper"))
+    store.add_many(
+        [[1.0, 0.0], [0.5, 0.5], [0.0, 1.0]],
+        [{"memory": "one"}, {"memory": "two"}, {"memory": "three"}],
+        ["one", "two", "three"],
+    )
+    store._finalized = True
+    store._graph = object()
+    store._vectors_gpu = object()
+
+    class NoHostTensor:
+        def cpu(self) -> object:
+            raise AssertionError("device result must not be copied to the host")
+
+    stable_ids = NoHostTensor()
+    distances = NoHostTensor()
+    monkeypatch.setattr(
+        store,
+        "_search_jasper_device",
+        lambda *_args, **_kwargs: (stable_ids, distances, 1.25),
+    )
+    monkeypatch.setattr(
+        "locomo_jasper_bench.retrieval.jasper_vector_store._device_result_is_complete",
+        lambda *_args, **_kwargs: True,
+    )
+
+    result = store.search_device([1.0, 0.0], top_k=2)
+
+    assert result is not None
+    assert result.stable_ids is stable_ids
+    assert result.distances is distances
+    assert result.metrics.search_time_ms == 1.25
+
+
+def test_jasper_device_search_retries_invalid_beam_output_exactly_on_gpu(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: object,
+) -> None:
+    torch = pytest.importorskip("torch")
+    store = JasperVectorStore(tmp_path, VectorStoreConfig(backend="jasper"))
+    store.add_many(
+        [[1.0, 0.0], [0.5, 0.5], [0.0, 1.0]],
+        [{"memory": "one"}, {"memory": "two"}, {"memory": "three"}],
+        ["one", "two", "three"],
+    )
+    store._finalized = True
+    store._graph = object()
+    store._vectors_gpu = object()
+    padded_ids = torch.tensor([0, -1], dtype=torch.int32)
+    padded_distances = torch.tensor([-0.9, 1e30], dtype=torch.float32)
+    exact_ids = torch.tensor([0, 1], dtype=torch.int64)
+    exact_distances = torch.tensor([-0.9, -0.5], dtype=torch.float32)
+    monkeypatch.setattr(
+        store,
+        "_search_jasper_device",
+        lambda *_args, **_kwargs: (padded_ids, padded_distances, 1.0),
+    )
+    monkeypatch.setattr(
+        store,
+        "_search_exact_gpu_device",
+        lambda *_args, **_kwargs: (exact_ids, exact_distances, 2.0),
+    )
+
+    result = store.search_device([1.0, 0.0], top_k=2)
+
+    assert result is not None
+    assert result.stable_ids is exact_ids
+    assert result.distances is exact_distances
+    assert result.metrics.search_time_ms == 3.0
+
+
+def test_jasper_stable_id_bindings_follow_finalized_insertion_order(
+    tmp_path: object,
+) -> None:
+    store = JasperVectorStore(tmp_path, VectorStoreConfig(backend="jasper"))
+    store.add_many(
+        [[1.0, 0.0], [0.0, 1.0]],
+        [{"memory": "one"}, {"memory": "two"}],
+        ["fact-one", "fact-two"],
+    )
+    with pytest.raises(RuntimeError, match="before finalization"):
+        store.stable_id_items()
+    store._finalized = True
+
+    assert store.stable_id_items() == ((0, "fact-one"), (1, "fact-two"))
+
+
+def test_jasper_device_exact_results_match_python_hit_materialization(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: object,
+) -> None:
+    torch = pytest.importorskip("torch")
+    store = JasperVectorStore(tmp_path, VectorStoreConfig(backend="jasper"))
+    store.add_many(
+        [[2.0, 0.0], [0.9, 0.1]],
+        [{"memory": "larger"}, {"memory": "smaller"}],
+        ["larger", "smaller"],
+    )
+    store._finalized = True
+    store._graph = object()
+    store._vectors_gpu = torch.tensor(
+        [[2.0, 0.0], [0.9, 0.1]],
+        dtype=torch.float16,
+    )
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
+
+    result = store.search_device([1.0, 0.0], top_k=2)
+
+    assert result is not None
+    device_hits = store.materialize_device_result(result)
+    exact_hits, _ = store._search_exact(
+        np.asarray([1.0, 0.0], dtype=np.float32),
+        2,
+    )
+    assert [hit.id for hit in device_hits] == [hit.id for hit in exact_hits]
+    assert [hit.score for hit in device_hits] == pytest.approx(
+        [hit.score for hit in exact_hits],
+        abs=1e-3,
+    )
+    assert [hit.distance for hit in device_hits] == pytest.approx(
+        [hit.distance for hit in exact_hits],
+        abs=1e-3,
+    )
 
 
 def test_jasper_full_store_top_k_uses_complete_exact_fallback(

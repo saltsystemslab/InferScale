@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,14 @@ from ..retrieval.mem0_provider import MEMORY_LLM_TEMPERATURE, create_mem0_memory
 from ..retrieval.memory_builder import embed_mem0_query, load_facts_into_memory
 from ..vector_types import VectorStoreConfig
 from .config import ThroughputConfig
+
+
+@dataclass(slots=True, frozen=True)
+class KVStoreSearchResult:
+    device_result: Any | None
+    hits: list[Any] | None
+    elapsed_s: float
+    search_s: float
 
 
 def load_samples(config: ThroughputConfig) -> list[ConversationSample]:
@@ -112,6 +121,70 @@ def search_store(memory: Any, query: str, *, top_k: int) -> tuple[list[Any], flo
     metrics = getattr(vector_store, "last_search_metrics", None)
     search_s = float(getattr(metrics, "search_time_ms", 0.0) or 0.0) / 1000
     return hits, elapsed_s, search_s
+
+
+def search_store_for_kv(
+    memory: Any,
+    query: str,
+    *,
+    top_k: int,
+    prefer_device_result: bool,
+) -> KVStoreSearchResult:
+    """Embed once and return either a Jasper device result or ordinary hits."""
+    retrieval_started = time.perf_counter()
+    query_embedding = embed_mem0_query(memory, query)
+    vector_store = getattr(memory, "vector_store", None)
+    if vector_store is None:
+        raise RuntimeError("Mem0 memory has no vector_store.")
+
+    device_result = None
+    if prefer_device_result:
+        search_device = getattr(vector_store, "search_device", None)
+        if callable(search_device):
+            device_result = search_device(
+                query=query,
+                vectors=query_embedding,
+                top_k=top_k,
+            )
+
+    hits: list[Any] | None = None
+    if device_result is None:
+        search = getattr(vector_store, "search", None)
+        if not callable(search):
+            raise RuntimeError("Mem0 memory has no searchable vector_store.")
+        hits = list(
+            search(
+                query=query,
+                vectors=query_embedding,
+                top_k=top_k,
+            )
+        )
+
+    elapsed_s = time.perf_counter() - retrieval_started
+    metrics = getattr(vector_store, "last_search_metrics", None)
+    search_s = float(getattr(metrics, "search_time_ms", 0.0) or 0.0) / 1000
+    return KVStoreSearchResult(
+        device_result=device_result,
+        hits=hits,
+        elapsed_s=elapsed_s,
+        search_s=search_s,
+    )
+
+
+def materialize_store_device_result(memory: Any, result: Any) -> list[Any]:
+    vector_store = getattr(memory, "vector_store", None)
+    materialize = getattr(vector_store, "materialize_device_result", None)
+    if not callable(materialize):
+        raise RuntimeError("Mem0 vector store cannot materialize a Jasper device result.")
+    return list(materialize(result))
+
+
+def store_stable_id_items(memory: Any) -> tuple[tuple[int, str], ...]:
+    vector_store = getattr(memory, "vector_store", None)
+    stable_id_items = getattr(vector_store, "stable_id_items", None)
+    if not callable(stable_id_items):
+        raise RuntimeError("Mem0 vector store does not expose Jasper stable IDs.")
+    return tuple(stable_id_items())
 
 
 def _vector_config(config: ThroughputConfig, backend: str) -> VectorStoreConfig:

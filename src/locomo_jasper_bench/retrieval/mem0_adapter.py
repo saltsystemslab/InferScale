@@ -7,7 +7,7 @@ import numpy as np
 
 from ..runtime_paths import default_mem0_dir
 from ..vector_types import SearchHit, SearchMetrics, VECTOR_DISTANCE, VectorStoreConfig
-from .jasper_vector_store import JasperVectorStore
+from .jasper_vector_store import JasperDeviceSearchResult, JasperVectorStore
 from .qdrant_vector_store import QdrantVectorStore
 
 _MIRRORED_METADATA_KEYS = (
@@ -121,6 +121,53 @@ class Mem0JasperVectorStore(VectorStoreBase):
         _validate_search_hits(hits, expected_count=expected_count, backend=self.config.backend)
         self.last_search_metrics = metrics
         return hits
+
+    def search_device(
+        self,
+        query: str,
+        vectors: np.ndarray | list[float] | list[list[float]],
+        top_k: int = 5,
+        filters: dict[str, Any] | None = None,
+        **_: Any,
+    ) -> JasperDeviceSearchResult | None:
+        """Return Jasper tensors directly when the concrete store supports it."""
+        del query
+        requested_top_k = 5 if top_k is None else int(top_k)
+        if requested_top_k < 1:
+            raise ValueError("top_k must be >= 1.")
+        search_device = getattr(self.store, "search_device", None)
+        if not callable(search_device):
+            return None
+        result = search_device(
+            _first_vector(vectors),
+            top_k=requested_top_k,
+            filters=filters,
+        )
+        if result is not None:
+            self.last_search_metrics = result.metrics
+        return result
+
+    def materialize_device_result(
+        self,
+        result: JasperDeviceSearchResult,
+    ) -> list[SearchHit]:
+        materialize = getattr(self.store, "materialize_device_result", None)
+        if not callable(materialize):
+            raise RuntimeError("Vector store cannot materialize Jasper device results.")
+        hits = list(materialize(result))
+        expected_count = int(result.stable_ids.numel())
+        _validate_search_hits(
+            hits,
+            expected_count=expected_count,
+            backend=self.config.backend,
+        )
+        return hits
+
+    def stable_id_items(self) -> tuple[tuple[int, str], ...]:
+        stable_id_items = getattr(self.store, "stable_id_items", None)
+        if not callable(stable_id_items):
+            raise RuntimeError("Vector store does not expose Jasper stable IDs.")
+        return tuple(stable_id_items())
 
     def delete(self, vector_id: str) -> None:
         self.store.delete(str(vector_id))

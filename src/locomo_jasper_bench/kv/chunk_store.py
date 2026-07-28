@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Any, Iterable, Mapping, Sequence
 
 from .gpu_memory_store import GPUMemoryStore
+from .packed_gpu_memory_store import PackedGPUMemoryStore
 from .types import EncodedChunk
 
 # Slots beyond one full top-k fetch, covering allocator slack and the next
@@ -30,6 +31,7 @@ def build_chunk_store(
     device: str,
     top_k: int,
     staging_slots: int = 0,
+    device_selection: bool = False,
 ) -> Any:
     """A dedicated store instance for the corpus - never a connector namespace."""
     if backend == "cpu":
@@ -43,6 +45,8 @@ def build_chunk_store(
             num_staging_slots=max(int(staging_slots), int(top_k) + _STAGING_HEADROOM),
         )
     if backend == "gpu":
+        if device_selection:
+            return PackedGPUMemoryStore(device=device)
         return GPUMemoryStore(device=device)
     raise ValueError(f"Unknown chunk store backend: {backend!r}; expected 'gpu' or 'cpu'.")
 
@@ -59,13 +63,18 @@ def register_fact_chunks(
     """
     meta: dict[str, EncodedChunk] = {}
     for fact_id, chunk in fact_chunks.items():
+        chunk_meta = _metadata_only(chunk)
         store.add_user_memory(
             user_id=fact_id,
             kv_by_layer=chunk.kv_by_layer,
             num_tokens=len(chunk.token_ids),
             token_ids=chunk.token_ids,
         )
-        meta[fact_id] = _metadata_only(chunk)
+        # Registration transfers tensor ownership to the store. Dropping the
+        # source references matters once a packed store allocates its slabs:
+        # otherwise cache payloads would keep the pre-pack tensors alive.
+        chunk.kv_by_layer = {}
+        meta[fact_id] = chunk_meta
     return meta
 
 
@@ -112,6 +121,41 @@ def fetch_fact_chunks(
 def release_fact_chunks(store: Any, fact_ids: Iterable[str]) -> None:
     for fact_id in fact_ids:
         store.release_staging(fact_id)
+
+
+def finalize_chunk_store(store: Any) -> None:
+    """Finalize an optional packed layout after all corpus chunks are registered."""
+    finalize = getattr(store, "finalize_packed", None)
+    if callable(finalize):
+        finalize()
+
+
+def build_device_chunk_row_map(
+    store: Any,
+    stable_id_items: Iterable[tuple[int, str]],
+) -> Any:
+    build_map = getattr(store, "build_device_row_map", None)
+    if not callable(build_map):
+        raise RuntimeError("The chunk store does not support device-side row mapping.")
+    return build_map(stable_id_items)
+
+
+def fetch_device_fact_chunk(
+    store: Any,
+    stable_ids: Any,
+    id_to_row: Any,
+) -> EncodedChunk:
+    """Gather reverse-ranked fact KV and token IDs from a packed GPU corpus."""
+    select = getattr(store, "select_device_ids", None)
+    if not callable(select):
+        raise RuntimeError("The chunk store does not support device-side selection.")
+    memory = select(stable_ids, id_to_row, reverse=True)
+    if not memory.token_ids:
+        raise RuntimeError("Jasper device selection returned no fact tokens.")
+    return EncodedChunk(
+        token_ids=list(memory.token_ids),
+        kv_by_layer=memory.kv_by_layer,
+    )
 
 
 def close_chunk_store(store: Any) -> None:

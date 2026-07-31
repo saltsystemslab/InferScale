@@ -140,6 +140,35 @@ Primary summary metrics:
 - `metrics.query_to_answer_ms`: query embedding, retrieval, prompt/KV composition, and full answer generation.
 - `metrics.sample_setup_time_ms`: per-sample setup before the first query, including memory/index construction, KV precompute when applicable, and sample activation.
 
+## 8. MultiHop-RAG Benchmark (standalone RAG)
+
+`rag-jasper-bench` evaluates the core InferScale pipeline on standard RAG benchmarks without Mem0 fact extraction, starting with MultiHop-RAG (609 news articles, 2,556 multi-hop queries).
+Each document is chunked into 1024-token chunks, every chunk and query is embedded with `text-embedding-3-small`, and retrieval is top-k (default k=15) over one shared Jasper index.
+Each chunk's KV is precomputed once with an encoding-only prefix of its 5 preceding same-document chunks into a per-chunk disk cache, and composed at query time with chunked-RoPE repositioning; `vllm-prefix` runs the identical chunk token ids as a plain prompt baseline.
+At answer time the full corpus chunk KV is loaded from that cache into host RAM.
+The code lives in `src/rag_bench/` and reuses the LoCoMo pipeline's KV encoder, injection connector, Jasper store, and embedding cache.
+
+Run the stages in order after sections 1 to 4 (the same `.venv` provides `rag-jasper-bench`):
+
+```bash
+bash scripts/rag/setup_data.sh
+rag-jasper-bench --estimate-only --answer-model llama
+bash scripts/rag/preembed.sh
+bash scripts/rag/precompute_kv.sh
+bash scripts/rag/full_run.sh
+```
+
+Preembedding needs `OPENAI_API_KEY`; answer runs read the embedding cache and make no embedding API calls.
+The KV precompute is resumable per chunk; interrupt and rerun freely.
+The sweep defaults to `MODELS="llama"` and `TOPKS="15"` and runs both `vllm-kv` and `vllm-prefix` per cell with `--skip-judge`; override with `MODELS`, `TOPKS`, `RAG_WINDOW`, or `RAG_CHUNK_SIZE`.
+
+Judge with the same local Gemma server as the LoCoMo runs, using the RAG-specific judge script:
+
+```bash
+bash scripts/serve_vllm.sh
+STAMP=<stamp> bash scripts/rag/judge.sh
+```
+
 ## License
 
 This repository is released under the BSD 3-Clause License; see [LICENSE](LICENSE).

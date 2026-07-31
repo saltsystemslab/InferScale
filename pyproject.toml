@@ -39,6 +39,7 @@ remote = [
 [project.scripts]
 locomo-jasper-bench = "locomo_jasper_bench.run:main"
 locomo-throughput-bench = "locomo_jasper_bench.throughput.run:main"
+rag-jasper-bench = "rag_bench.run:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

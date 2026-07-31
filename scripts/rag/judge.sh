@@ -3,7 +3,8 @@
 # Judge all RAG benchmark results for a given run stamp (deferred judging).
 #
 # The sweep ran with --skip-judge; this runs rag-jasper-bench --judge-only over
-# every RAG run-id produced under STAMP. The judge server is the unchanged
+# every RAG run-id produced under STAMP, across every dataset in RAG_DATASETS
+# (default "multihoprag qasper"). The judge server is the unchanged
 # scripts/serve_vllm.sh (Gemma). This script is separate from scripts/judge.sh
 # on purpose: the LoCoMo discovery regex must not learn RAG run-id shapes.
 #
@@ -12,11 +13,12 @@
 #   grid               : regenerate them from the current sweep grid.
 #
 # Required env: STAMP  BENCHMARK_RESULTS_ROOT  JUDGE_BASE_URL  JUDGE_API_KEY  JUDGE_MODEL
-# Optional:     RUNIDS_FROM  DRY_RUN  MODELS  TOPKS  RAG_WINDOW  RAG_CHUNK_SIZE  RAG_DATASET
+# Optional:     RUNIDS_FROM  DRY_RUN  RAG_DATASETS  MODELS  RAG_MODELS_*  TOPKS
+#               RAG_WINDOW  RAG_CHUNK_SIZE
 
 set -uo pipefail
 
-: "${STAMP:?Set STAMP to the sweep run stamp to judge, e.g. 20260730T120000Z}"
+: "${STAMP:?Set STAMP to the sweep run stamp to judge, e.g. 20260731T120000Z}"
 RUNIDS_FROM="${RUNIDS_FROM:-discover}"
 DRY_RUN="${DRY_RUN:-0}"
 
@@ -25,28 +27,42 @@ DRY_RUN="${DRY_RUN:-0}"
 : "${JUDGE_API_KEY:?Set JUDGE_API_KEY}"
 : "${JUDGE_MODEL:?Set JUDGE_MODEL}"
 
-MODELS="${MODELS:-llama}"
+RAG_DATASETS="${RAG_DATASETS:-${RAG_DATASET:-multihoprag qasper}}"
 TOPKS="${TOPKS:-15}"
 RAG_WINDOW="${RAG_WINDOW:-5}"
 CHUNK_SIZE="${RAG_CHUNK_SIZE:-1024}"
-DATASET_NAME="${RAG_DATASET:-multihoprag}"
+
+models_for_dataset() {
+  case "$1" in
+    qasper) echo "${RAG_MODELS_QASPER:-qwen}" ;;
+    *) echo "${RAG_MODELS_MULTIHOPRAG:-llama}" ;;
+  esac
+}
+
+dataset_models() {
+  echo "${MODELS:-$(models_for_dataset "$1")}"
+}
 
 declare -a RUN_IDS=()
 
 if [[ "${RUNIDS_FROM}" == "grid" ]]; then
-  for MODEL in ${MODELS}; do
-    for TOP_K in ${TOPKS}; do
-      RUN_IDS+=("${MODEL}-kv-${DATASET_NAME}-c${CHUNK_SIZE}-w${RAG_WINDOW}-k${TOP_K}-${STAMP}")
-      RUN_IDS+=("${MODEL}-prefix-${DATASET_NAME}-c${CHUNK_SIZE}-w${RAG_WINDOW}-k${TOP_K}-${STAMP}")
+  for DATASET_NAME in ${RAG_DATASETS}; do
+    for MODEL in $(dataset_models "${DATASET_NAME}"); do
+      for TOP_K in ${TOPKS}; do
+        RUN_IDS+=("${MODEL}-kv-${DATASET_NAME}-c${CHUNK_SIZE}-w${RAG_WINDOW}-k${TOP_K}-${STAMP}")
+        RUN_IDS+=("${MODEL}-prefix-${DATASET_NAME}-c${CHUNK_SIZE}-w${RAG_WINDOW}-k${TOP_K}-${STAMP}")
+      done
     done
   done
 elif [[ "${RUNIDS_FROM}" == "discover" ]]; then
+  # shellcheck disable=SC2086
+  DATASETS_RE="$(echo ${RAG_DATASETS} | tr ' ' '|')"
   while IFS= read -r RUN_ID; do
     RUN_IDS+=("${RUN_ID}")
   done < <(
     find "${BENCHMARK_RESULTS_ROOT}" -name "*${STAMP}*" 2>/dev/null \
       | grep -oE "[A-Za-z0-9]+(-[A-Za-z0-9]+)*-${STAMP}" \
-      | grep -E -- "-(kv|prefix)-${DATASET_NAME}-c[0-9]+-w[0-9]+-k[0-9]+-${STAMP}$" \
+      | grep -E -- "-(kv|prefix)-(${DATASETS_RE})-c[0-9]+-w[0-9]+-k[0-9]+-${STAMP}$" \
       | sort -u
   )
 else

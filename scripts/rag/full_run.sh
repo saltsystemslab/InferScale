@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
 #
-# Sweep the RAG benchmark across MODELS x TOPKS x modes {vllm-kv, vllm-prefix}
-# with --skip-judge (judge afterwards with scripts/rag/judge.sh).
+# Sweep the RAG benchmarks across datasets x models x TOPKS x modes
+# {vllm-kv, vllm-prefix} with --skip-judge (judge afterwards with
+# scripts/rag/judge.sh).
+#
+# Datasets come from RAG_DATASETS (default "multihoprag qasper"; legacy
+# RAG_DATASET is honored when set). Models default per dataset
+# (RAG_MODELS_MULTIHOPRAG=llama, RAG_MODELS_QASPER=qwen; QASPER's
+# corpus-wide KV does not fit 250 GB of host RAM with llama). MODELS
+# overrides the model list for every dataset.
 #
 # Usage:
 #   BENCHMARK_RESULTS_ROOT=/path bash scripts/rag/full_run.sh
 #   DRY_RUN=1 BENCHMARK_RESULTS_ROOT=/path bash scripts/rag/full_run.sh
-#   MODELS="llama" TOPKS="3 5 10 15 20" BENCHMARK_RESULTS_ROOT=/path bash scripts/rag/full_run.sh
+#   RAG_DATASETS="multihoprag" MODELS="llama" TOPKS="3 5 10 15 20" \
+#     BENCHMARK_RESULTS_ROOT=/path bash scripts/rag/full_run.sh
 #
 # Run IDs encode the swept axes so results never collide:
 #   <model>-kv-<dataset>-c<chunk>-w<window>-k<topk>-<stamp>
@@ -14,22 +22,35 @@
 
 set -uo pipefail
 
-MODELS="${MODELS:-llama}"
+RAG_DATASETS="${RAG_DATASETS:-${RAG_DATASET:-multihoprag qasper}}"
 TOPKS="${TOPKS:-15}"
 RAG_WINDOW="${RAG_WINDOW:-5}"
 CHUNK_SIZE="${RAG_CHUNK_SIZE:-1024}"
-DATASET_NAME="${RAG_DATASET:-multihoprag}"
 DRY_RUN="${DRY_RUN:-0}"
 
 : "${BENCHMARK_RESULTS_ROOT:?Set BENCHMARK_RESULTS_ROOT to the results output directory}"
+
+models_for_dataset() {
+  case "$1" in
+    qasper) echo "${RAG_MODELS_QASPER:-qwen}" ;;
+    *) echo "${RAG_MODELS_MULTIHOPRAG:-llama}" ;;
+  esac
+}
+
+dataset_models() {
+  echo "${MODELS:-$(models_for_dataset "$1")}"
+}
 
 RUN_STAMP="${RUN_STAMP:-$(date -u +%Y%m%dT%H%M%SZ)}"
 LOG_DIR="${BENCHMARK_RESULTS_ROOT}/rag-sweep-logs-${RUN_STAMP}"
 mkdir -p "${LOG_DIR}"
 
-n_models=$(wc -w <<<"${MODELS}")
 n_topks=$(wc -w <<<"${TOPKS}")
-TOTAL=$(( n_models * n_topks * 2 ))
+TOTAL=0
+for DATASET_NAME in ${RAG_DATASETS}; do
+  n_models=$(wc -w <<<"$(dataset_models "${DATASET_NAME}")")
+  TOTAL=$(( TOTAL + n_models * n_topks * 2 ))
+done
 idx=0
 declare -a FAILURES=()
 
@@ -58,33 +79,35 @@ run_one () {
   fi
 }
 
-for MODEL in ${MODELS}; do
-  for TOP_K in ${TOPKS}; do
-    kv_id="${MODEL}-kv-${DATASET_NAME}-c${CHUNK_SIZE}-w${RAG_WINDOW}-k${TOP_K}-${RUN_STAMP}"
-    run_one "${MODEL} k=${TOP_K} rag-kv" \
-      rag-jasper-bench \
-        --dataset-name "${DATASET_NAME}" \
-        --results-dir "${BENCHMARK_RESULTS_ROOT}" \
-        --answer-model "${MODEL}" \
-        --answer-backend vllm-kv \
-        --chunk-size "${CHUNK_SIZE}" \
-        --context-window "${RAG_WINDOW}" \
-        --top-k "${TOP_K}" \
-        --skip-judge \
-        --run-id "${kv_id}"
+for DATASET_NAME in ${RAG_DATASETS}; do
+  for MODEL in $(dataset_models "${DATASET_NAME}"); do
+    for TOP_K in ${TOPKS}; do
+      kv_id="${MODEL}-kv-${DATASET_NAME}-c${CHUNK_SIZE}-w${RAG_WINDOW}-k${TOP_K}-${RUN_STAMP}"
+      run_one "${DATASET_NAME} ${MODEL} k=${TOP_K} rag-kv" \
+        rag-jasper-bench \
+          --dataset-name "${DATASET_NAME}" \
+          --results-dir "${BENCHMARK_RESULTS_ROOT}" \
+          --answer-model "${MODEL}" \
+          --answer-backend vllm-kv \
+          --chunk-size "${CHUNK_SIZE}" \
+          --context-window "${RAG_WINDOW}" \
+          --top-k "${TOP_K}" \
+          --skip-judge \
+          --run-id "${kv_id}"
 
-    prefix_id="${MODEL}-prefix-${DATASET_NAME}-c${CHUNK_SIZE}-w${RAG_WINDOW}-k${TOP_K}-${RUN_STAMP}"
-    run_one "${MODEL} k=${TOP_K} rag-prefix" \
-      rag-jasper-bench \
-        --dataset-name "${DATASET_NAME}" \
-        --results-dir "${BENCHMARK_RESULTS_ROOT}" \
-        --answer-model "${MODEL}" \
-        --answer-backend vllm-prefix \
-        --chunk-size "${CHUNK_SIZE}" \
-        --context-window "${RAG_WINDOW}" \
-        --top-k "${TOP_K}" \
-        --skip-judge \
-        --run-id "${prefix_id}"
+      prefix_id="${MODEL}-prefix-${DATASET_NAME}-c${CHUNK_SIZE}-w${RAG_WINDOW}-k${TOP_K}-${RUN_STAMP}"
+      run_one "${DATASET_NAME} ${MODEL} k=${TOP_K} rag-prefix" \
+        rag-jasper-bench \
+          --dataset-name "${DATASET_NAME}" \
+          --results-dir "${BENCHMARK_RESULTS_ROOT}" \
+          --answer-model "${MODEL}" \
+          --answer-backend vllm-prefix \
+          --chunk-size "${CHUNK_SIZE}" \
+          --context-window "${RAG_WINDOW}" \
+          --top-k "${TOP_K}" \
+          --skip-judge \
+          --run-id "${prefix_id}"
+    done
   done
 done
 

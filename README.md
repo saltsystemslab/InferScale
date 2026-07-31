@@ -148,11 +148,12 @@ Each chunk's KV is precomputed once with an encoding-only prefix of its 5 preced
 At answer time the full corpus chunk KV is loaded from that cache into host RAM.
 The code lives in `src/rag_bench/` and reuses the LoCoMo pipeline's KV encoder, injection connector, Jasper store, and embedding cache.
 
-Run the stages in order after sections 1 to 4 (the same `.venv` provides `rag-jasper-bench`):
+Run the stages in order after sections 1 to 4 (the same `.venv` provides `rag-jasper-bench`); every stage script covers all datasets in `RAG_DATASETS` (default `multihoprag qasper`) in one invocation:
 
 ```bash
 bash scripts/rag/setup_data.sh
-rag-jasper-bench --estimate-only --answer-model llama
+rag-jasper-bench --dataset-name multihoprag --estimate-only --answer-model llama
+rag-jasper-bench --dataset-name qasper --estimate-only --answer-model qwen
 bash scripts/rag/preembed.sh
 bash scripts/rag/precompute_kv.sh
 bash scripts/rag/full_run.sh
@@ -160,12 +161,13 @@ bash scripts/rag/full_run.sh
 
 Preembedding needs `OPENAI_API_KEY`; answer runs read the embedding cache and make no embedding API calls.
 The KV precompute is resumable per chunk; interrupt and rerun freely.
-The sweep defaults to `MODELS="llama"` and `TOPKS="15"` and runs both `vllm-kv` and `vllm-prefix` per cell with `--skip-judge`; override with `MODELS`, `TOPKS`, `RAG_WINDOW`, or `RAG_CHUNK_SIZE`.
+The sweep runs both `vllm-kv` and `vllm-prefix` per (dataset, model, top-k) cell with `--skip-judge` and `TOPKS="15"`.
+Models default per dataset (`RAG_MODELS_MULTIHOPRAG=llama`, `RAG_MODELS_QASPER=qwen`); `MODELS` overrides the list for every dataset, and `RAG_DATASETS`, `TOPKS`, `RAG_WINDOW`, and `RAG_CHUNK_SIZE` override the other axes.
 
-To run QASPER (official test split: 416 NLP papers, 1,451 questions) instead, export `RAG_DATASET=qasper` for every stage, starting with `RAG_DATASET=qasper bash scripts/rag/setup_data.sh`.
+QASPER (official test split: 416 NLP papers, 1,451 questions) is part of the default dataset list.
 QASPER questions carry multiple reference answers: string metrics take the best over references and the judge accepts a match with any one reference.
 Unanswerable questions use the abstention phrase `Unanswerable` and feed the same abstention metrics as MultiHop-RAG null queries.
-Check `--estimate-only` before precomputing: the QASPER corpus KV is about 110 GiB of host RAM for qwen but about 250 GiB for llama, so on a 250 GB host run QASPER with `MODELS="qwen"`.
+QASPER defaults to qwen because its corpus-wide KV needs about 110 GiB of host RAM for qwen but about 250 GiB for llama; on a larger-RAM host override with `RAG_MODELS_QASPER="llama"`.
 
 Judge with the same local Gemma server as the LoCoMo runs, using the RAG-specific judge script:
 

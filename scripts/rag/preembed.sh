@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
 #
-# Warm the embedding cache for the RAG benchmark: every corpus chunk and every
-# query, per answer model (chunk boundaries depend on the model's tokenizer).
-# Requires OPENAI_API_KEY. Resumable: cached embeddings are skipped.
+# Warm the embedding cache for the RAG benchmarks: every corpus chunk and
+# every query, per dataset and answer model (chunk boundaries depend on the
+# model's tokenizer). Requires OPENAI_API_KEY. Resumable: cached embeddings
+# are skipped.
+#
+# Datasets come from RAG_DATASETS (default "multihoprag qasper"; legacy
+# RAG_DATASET is honored when set). Models default per dataset
+# (RAG_MODELS_MULTIHOPRAG=llama, RAG_MODELS_QASPER=qwen; QASPER's
+# corpus-wide KV does not fit 250 GB of host RAM with llama).
+# PREEMBED_MODELS overrides the model list for every dataset.
 #
 # Usage:
 #   bash scripts/rag/preembed.sh
-#   PREEMBED_MODELS="llama qwen" bash scripts/rag/preembed.sh
+#   RAG_DATASETS="qasper" PREEMBED_MODELS="llama qwen" bash scripts/rag/preembed.sh
 
 set -euo pipefail
 
@@ -22,17 +29,26 @@ if [[ -z "${VIRTUAL_ENV:-}" && -f "${PROJECT_ROOT}/.venv/bin/activate" ]]; then
   source "${PROJECT_ROOT}/.venv/bin/activate"
 fi
 
-PREEMBED_MODELS="${PREEMBED_MODELS:-llama}"
-DATASET_NAME="${RAG_DATASET:-multihoprag}"
+RAG_DATASETS="${RAG_DATASETS:-${RAG_DATASET:-multihoprag qasper}}"
+
+models_for_dataset() {
+  case "$1" in
+    qasper) echo "${RAG_MODELS_QASPER:-qwen}" ;;
+    *) echo "${RAG_MODELS_MULTIHOPRAG:-llama}" ;;
+  esac
+}
 
 : "${OPENAI_API_KEY:?Set OPENAI_API_KEY to populate the embedding cache}"
 
-for MODEL_ALIAS in ${PREEMBED_MODELS}; do
-  echo "=== Preembedding RAG dataset=${DATASET_NAME} model=${MODEL_ALIAS} ==="
-  rag-jasper-bench \
-    --dataset-name "${DATASET_NAME}" \
-    --answer-model "${MODEL_ALIAS}" \
-    --preembed-only
+for DATASET_NAME in ${RAG_DATASETS}; do
+  DATASET_MODELS="${PREEMBED_MODELS:-$(models_for_dataset "${DATASET_NAME}")}"
+  for MODEL_ALIAS in ${DATASET_MODELS}; do
+    echo "=== Preembedding RAG dataset=${DATASET_NAME} model=${MODEL_ALIAS} ==="
+    rag-jasper-bench \
+      --dataset-name "${DATASET_NAME}" \
+      --answer-model "${MODEL_ALIAS}" \
+      --preembed-only
+  done
 done
 
-echo "=== RAG preembed complete for: ${PREEMBED_MODELS} ==="
+echo "=== RAG preembed complete for datasets: ${RAG_DATASETS} ==="

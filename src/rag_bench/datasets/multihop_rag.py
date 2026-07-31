@@ -11,7 +11,27 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ..data_types import EvidenceRef, RagDocument, RagQuery, doc_id_for_url
+from ..data_types import (
+    EvidenceRef,
+    RagDocument,
+    RagPromptProfile,
+    RagQuery,
+    doc_id_for_url,
+)
+
+INSUFFICIENT_ANSWER_TEXT = "Insufficient information"
+MULTIHOP_PROMPT_PROFILE = RagPromptProfile(
+    system_prompt=(
+        "You are a helpful assistant that answers questions using retrieved excerpts "
+        "from a corpus of news articles. "
+        "The following are excerpts from news articles:\n\n"
+    ),
+    answer_instruction=(
+        "Answer the question using only the news article excerpts above.\n"
+        "Answer with a short phrase. If the excerpts do not contain the "
+        f"information needed, answer exactly: {INSUFFICIENT_ANSWER_TEXT}\n"
+    ),
+)
 
 CORPUS_FILENAME = "corpus.json"
 QUERIES_FILENAME = "MultiHopRAG.json"
@@ -112,7 +132,7 @@ def _load_queries(path: Path, docs: list[RagDocument]) -> list[RagQuery]:
             RagQuery(
                 query_id=f"q{index:04d}",
                 question=str(record["query"]).strip(),
-                gold_answer=str(record["answer"]).strip(),
+                gold_answers=(str(record["answer"]).strip(),),
                 question_type=question_type,
                 evidence=evidence,
             )
@@ -170,6 +190,7 @@ def _spec():
         queries_filename=QUERIES_FILENAME,
         download_urls={CORPUS_FILENAME: CORPUS_URL, QUERIES_FILENAME: QUERIES_URL},
         chunking="token-window",
+        prompt_profile=MULTIHOP_PROMPT_PROFILE,
         load=load_multihop_rag,
     )
 

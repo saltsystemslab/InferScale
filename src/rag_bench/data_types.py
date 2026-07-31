@@ -40,15 +40,46 @@ class EvidenceRef:
 
 @dataclass(slots=True, frozen=True)
 class RagQuery:
+    """One evaluable question.
+
+    gold_answers holds every reference answer; QASPER questions have several
+    independent annotations and string metrics take the best over references,
+    while single-reference datasets (MultiHop-RAG) carry a one-element tuple.
+    """
+
     query_id: str
     question: str
-    gold_answer: str
+    gold_answers: tuple[str, ...]
     question_type: str
     evidence: tuple[EvidenceRef, ...]
+
+    def __post_init__(self) -> None:
+        if not self.gold_answers:
+            raise ValueError(f"RagQuery {self.query_id} requires at least one gold answer.")
+
+    @property
+    def gold_answer(self) -> str:
+        """The primary (first) reference answer."""
+        return self.gold_answers[0]
 
     @property
     def is_null(self) -> bool:
         return self.question_type == "null_query"
+
+
+@dataclass(slots=True, frozen=True)
+class RagPromptProfile:
+    """Dataset-specific prompt wording.
+
+    system_prompt is the scaffold header before the injected passages;
+    answer_instruction is the fixed instruction block rendered before
+    "Question: ..." and must name the dataset's abstention phrase. Both feed
+    token-level scaffolds, so changing them invalidates the cached
+    tables-scaffold file (chunk KVs are unaffected).
+    """
+
+    system_prompt: str
+    answer_instruction: str
 
 
 @dataclass(slots=True)

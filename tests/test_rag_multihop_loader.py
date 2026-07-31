@@ -45,6 +45,8 @@ def test_loader_parses_fixture_and_resolves_evidence(tmp_path) -> None:
     ]
     inference = queries[0]
     assert {ref.doc_id for ref in inference.evidence} == {docs[0].doc_id, docs[1].doc_id}
+    assert inference.gold_answers == ("Alpha Corp",)
+    assert inference.gold_answer == "Alpha Corp"
     assert queries[3].is_null and queries[3].evidence == ()
 
 

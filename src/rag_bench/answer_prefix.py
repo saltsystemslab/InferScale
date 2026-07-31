@@ -17,7 +17,7 @@ from locomo_jasper_bench.kv.vllm_runtime import (
 from locomo_jasper_bench.vector_types import SearchHit
 
 from .config import RagBenchConfig
-from .data_types import RagChunk, RagQuery
+from .data_types import RagChunk, RagPromptProfile, RagQuery
 from .prompting import (
     build_rag_memory_token_ids,
     build_rag_query_tokens,
@@ -31,10 +31,17 @@ from .prompting import (
 class RagPrefixAnswerClient:
     """Text-prompt baseline: identical chunk token ids stuffed as a plain prefix."""
 
-    def __init__(self, config: RagBenchConfig, *, chunks_by_id: Mapping[str, RagChunk]) -> None:
+    def __init__(
+        self,
+        config: RagBenchConfig,
+        *,
+        chunks_by_id: Mapping[str, RagChunk],
+        prompt_profile: RagPromptProfile,
+    ) -> None:
         force_vllm_inprocess_mode()
         self.config = config
         self._chunks_by_id = chunks_by_id
+        self._prompt_profile = prompt_profile
         self._llm: Any | None = None
         self._tokenizer: Any | None = None
         self._sampling_cls: Any | None = None
@@ -52,6 +59,7 @@ class RagPrefixAnswerClient:
             self._tokenizer = self._llm.get_tokenizer()
             self._scaffold = extract_rag_scaffold_token_ids(
                 self._tokenizer,
+                system_prompt=self._prompt_profile.system_prompt,
                 block_size=self.config.kv_block_size,
             )
         except Exception:
@@ -74,7 +82,12 @@ class RagPrefixAnswerClient:
             self._scaffold,
             [self._chunk_token_ids(chunk_id) for chunk_id in ordered_chunk_ids],
         )
-        query_tokens = build_rag_query_tokens(self._tokenizer, memory_token_ids, query)
+        query_tokens = build_rag_query_tokens(
+            self._tokenizer,
+            memory_token_ids,
+            query,
+            answer_instruction=self._prompt_profile.answer_instruction,
+        )
         memory_token_budget = calculate_rag_memory_budget(
             query_token_count=len(query_tokens.token_ids),
             max_position=self.config.kv_max_position,

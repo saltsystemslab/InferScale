@@ -67,7 +67,11 @@ def precompute_rag_kv(config: RagBenchConfig) -> dict[str, Any]:
     missing = [
         chunk for chunk in chunks if not chunk_file_path(cache_dir, chunk.chunk_id).exists()
     ]
-    scaffold = extract_rag_scaffold_token_ids(tokenizer, block_size=config.kv_block_size)
+    scaffold = extract_rag_scaffold_token_ids(
+        tokenizer,
+        system_prompt=spec.prompt_profile.system_prompt,
+        block_size=config.kv_block_size,
+    )
     tables_path = tables_scaffold_path(cache_dir, config.kv_block_size)
     tables_expected_meta = tables_meta(meta_base, block_size=config.kv_block_size)
     cached_tables = load_tables_and_scaffold(

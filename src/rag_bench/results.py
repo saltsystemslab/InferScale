@@ -6,6 +6,10 @@ from locomo_jasper_bench.results import percentile
 
 QUESTION_TYPES = ("inference_query", "comparison_query", "temporal_query", "null_query")
 
+# Question types whose gold behavior is abstention: MultiHop-RAG null queries
+# and QASPER questions whose first reference is unanswerable.
+ABSTENTION_QUESTION_TYPES = frozenset({"null_query", "unanswerable"})
+
 ANSWER_METRIC_KEYS = ("exact_match", "f1", "substring_match")
 
 RETRIEVAL_METRIC_KEYS = (
@@ -79,18 +83,22 @@ def summarize_rag_records(
     rows = list(records)
     judged = [row for row in rows if isinstance(row.get("judge", {}).get("correct"), bool)]
     correct = sum(1 for row in judged if row["judge"]["correct"] is True)
-    answerable = [row for row in rows if row.get("question_type") != "null_query"]
-    null_rows = [row for row in rows if row.get("question_type") == "null_query"]
+    abstention_rows = [
+        row for row in rows if row.get("question_type") in ABSTENTION_QUESTION_TYPES
+    ]
+    answerable = [
+        row for row in rows if row.get("question_type") not in ABSTENTION_QUESTION_TYPES
+    ]
     retrieval_rows = [row for row in rows if isinstance(row.get("retrieval"), dict)]
 
     metrics: dict[str, Any] = {
         "accuracy": _safe_div(correct, len(judged)),
         "accuracy_by_type": _accuracy_by_type(judged),
         "question_type_counts": _type_counts(rows),
-        "null_insufficient_accuracy": _mean(
-            _answer_metric_values(null_rows, "predicted_insufficient")
+        "abstention_accuracy": _mean(
+            _answer_metric_values(abstention_rows, "predicted_insufficient")
         ),
-        "false_insufficient_rate": _mean(
+        "false_abstention_rate": _mean(
             _answer_metric_values(answerable, "predicted_insufficient")
         ),
     }

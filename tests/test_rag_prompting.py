@@ -6,9 +6,10 @@ import pytest
 
 from locomo_jasper_bench.vector_types import SearchHit
 from rag_bench.data_types import RagQuery
+from rag_bench.datasets.multihop_rag import INSUFFICIENT_ANSWER_TEXT, MULTIHOP_PROMPT_PROFILE
+from rag_bench.datasets.qasper import QASPER_PROMPT_PROFILE, UNANSWERABLE_TEXT
 from rag_bench.prompting import (
     EMPTY_PASSAGES_TEXT,
-    RAG_SYSTEM_PROMPT,
     build_rag_memory_token_ids,
     build_rag_query_messages,
     build_rag_query_tokens,
@@ -43,32 +44,62 @@ def _query(question: str = "Who won?") -> RagQuery:
     return RagQuery(
         query_id="q0",
         question=question,
-        gold_answer="x",
+        gold_answers=("x",),
         question_type="inference_query",
         evidence=(),
     )
 
 
+def _scaffold(tokenizer: Any, *, block_size: int = 16):
+    return extract_rag_scaffold_token_ids(
+        tokenizer,
+        system_prompt=MULTIHOP_PROMPT_PROFILE.system_prompt,
+        block_size=block_size,
+    )
+
+
 def test_scaffold_without_chat_template_uses_system_fallback() -> None:
     tokenizer = CharTokenizer()
-    scaffold = extract_rag_scaffold_token_ids(tokenizer, block_size=16)
+    scaffold = _scaffold(tokenizer)
 
     header_text = tokenizer.decode(scaffold.header_token_ids)
     assert header_text.startswith("SYSTEM: ")
-    assert RAG_SYSTEM_PROMPT in header_text
+    assert MULTIHOP_PROMPT_PROFILE.system_prompt in header_text
     assert scaffold.empty_memory_token_ids == tokenizer.encode(EMPTY_PASSAGES_TEXT)
     assert scaffold.memory_list_header_token_ids == []
     assert len(scaffold.footer_token_ids) >= 15
 
 
+def test_scaffold_is_profile_specific() -> None:
+    tokenizer = CharTokenizer()
+    qasper_scaffold = extract_rag_scaffold_token_ids(
+        tokenizer,
+        system_prompt=QASPER_PROMPT_PROFILE.system_prompt,
+        block_size=16,
+    )
+
+    header_text = tokenizer.decode(qasper_scaffold.header_token_ids)
+    assert "research papers" in header_text
+    assert qasper_scaffold.header_token_ids != _scaffold(tokenizer).header_token_ids
+
+
 def test_scaffold_footer_pad_survives_content_trimming_template() -> None:
-    scaffold = extract_rag_scaffold_token_ids(TemplateTokenizer(), block_size=16)
+    scaffold = extract_rag_scaffold_token_ids(
+        TemplateTokenizer(),
+        system_prompt=MULTIHOP_PROMPT_PROFILE.system_prompt,
+        block_size=16,
+    )
 
     assert len(scaffold.footer_token_ids) >= 15
 
 
+def test_empty_system_prompt_rejected() -> None:
+    with pytest.raises(ValueError, match="system_prompt"):
+        extract_rag_scaffold_token_ids(CharTokenizer(), system_prompt="", block_size=16)
+
+
 def test_memory_token_ids_are_header_chunks_footer() -> None:
-    scaffold = extract_rag_scaffold_token_ids(CharTokenizer(), block_size=4)
+    scaffold = _scaffold(CharTokenizer(), block_size=4)
     chunk_a = [1, 2, 3]
     chunk_b = [4, 5]
 
@@ -80,7 +111,7 @@ def test_memory_token_ids_are_header_chunks_footer() -> None:
 
 
 def test_empty_retrieval_renders_empty_passages_marker() -> None:
-    scaffold = extract_rag_scaffold_token_ids(CharTokenizer(), block_size=4)
+    scaffold = _scaffold(CharTokenizer(), block_size=4)
 
     token_ids = build_rag_memory_token_ids(scaffold, [])
 
@@ -97,23 +128,46 @@ def test_reverse_ranked_chunk_ids_dedupes_and_reverses() -> None:
     assert reverse_ranked_chunk_ids(hits) == ["c3", "c2", "c1"]
 
 
-def test_query_messages_pin_the_insufficient_phrase() -> None:
-    messages = build_rag_query_messages(_query("Who won the case?"))
+def test_multihop_query_messages_pin_the_insufficient_phrase() -> None:
+    messages = build_rag_query_messages(
+        _query("Who won the case?"),
+        answer_instruction=MULTIHOP_PROMPT_PROFILE.answer_instruction,
+    )
 
     assert len(messages) == 1 and messages[0]["role"] == "user"
-    assert "answer exactly: Insufficient information" in messages[0]["content"]
+    assert f"answer exactly: {INSUFFICIENT_ANSWER_TEXT}" in messages[0]["content"]
     assert "Question: Who won the case?" in messages[0]["content"]
+
+
+def test_qasper_query_messages_pin_the_unanswerable_phrase() -> None:
+    messages = build_rag_query_messages(
+        _query("What is the F1?"),
+        answer_instruction=QASPER_PROMPT_PROFILE.answer_instruction,
+    )
+
+    assert f"answer exactly: {UNANSWERABLE_TEXT}" in messages[0]["content"]
+    assert "paper excerpts" in messages[0]["content"]
+
+
+def test_empty_answer_instruction_rejected() -> None:
+    with pytest.raises(ValueError, match="answer_instruction"):
+        build_rag_query_messages(_query(), answer_instruction="")
 
 
 def test_query_tokens_strip_duplicate_bos() -> None:
     tokenizer = BosCharTokenizer()
     memory_with_bos = [7, 100, 101]
+    instruction = MULTIHOP_PROMPT_PROFILE.answer_instruction
 
-    stripped = build_rag_query_tokens(tokenizer, memory_with_bos, _query())
+    stripped = build_rag_query_tokens(
+        tokenizer, memory_with_bos, _query(), answer_instruction=instruction
+    )
     assert stripped.stripped_query_bos is True
     assert stripped.token_ids[0] != 7
 
-    unstripped = build_rag_query_tokens(tokenizer, [100, 101], _query())
+    unstripped = build_rag_query_tokens(
+        tokenizer, [100, 101], _query(), answer_instruction=instruction
+    )
     assert unstripped.stripped_query_bos is False
     assert unstripped.token_ids[0] == 7
 

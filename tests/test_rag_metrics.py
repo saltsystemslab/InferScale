@@ -30,7 +30,7 @@ def _query(evidence: tuple[EvidenceRef, ...], question_type: str = "inference_qu
     return RagQuery(
         query_id="q0",
         question="What happened?",
-        gold_answer="Something",
+        gold_answers=("Something",),
         question_type=question_type,
         evidence=evidence,
     )
@@ -63,17 +63,35 @@ def test_predicted_insufficient_variants() -> None:
     assert predicted_insufficient("Insufficient information.") is True
     assert predicted_insufficient("insufficient information") is True
     assert predicted_insufficient("INSUFFICIENT INFORMATION!") is True
+    assert predicted_insufficient("Unanswerable") is True
+    assert predicted_insufficient("unanswerable from the excerpts") is True
     assert predicted_insufficient("The information is insufficient") is False
     assert predicted_insufficient("Apple") is False
 
 
-def test_answer_metrics_bundle() -> None:
+def test_answer_metrics_bundle_accepts_a_bare_string() -> None:
     metrics = answer_metrics("Insufficient information.", "Insufficient information.")
 
     assert metrics["exact_match"] is True
     assert metrics["f1"] == 1.0
     assert metrics["substring_match"] is True
     assert metrics["predicted_insufficient"] is True
+
+
+def test_answer_metrics_take_the_best_over_references() -> None:
+    metrics = answer_metrics("42 F1", ["42.0 F1, on the probing benchmark", "42 F1"])
+
+    assert metrics["exact_match"] is True
+    assert metrics["f1"] == 1.0
+    assert metrics["substring_match"] is True
+
+    partial = answer_metrics("apple inc", ["banana", "apple"])
+    assert partial["exact_match"] is False
+    assert partial["f1"] == pytest.approx(2 / 3)
+    assert partial["recall"] == pytest.approx(1.0)
+
+    with pytest.raises(ValueError, match="at least one gold answer"):
+        answer_metrics("x", [])
 
 
 def test_normalize_passage_text_maps_unicode_punctuation() -> None:

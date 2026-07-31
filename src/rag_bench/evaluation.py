@@ -55,6 +55,7 @@ def build_query_record(
         "category": query.question_type,
         "question": query.question,
         "gold_answer": query.gold_answer,
+        "gold_answers": list(query.gold_answers),
         "predicted_answer": answer.content,
         "evidence": [
             {"doc_id": ref.doc_id, "title": ref.title, "url": ref.url, "fact": ref.fact}
@@ -72,7 +73,7 @@ def build_query_record(
             }
             for hit in hits
         ],
-        "answer_metrics": answer_metrics(answer.content, query.gold_answer),
+        "answer_metrics": answer_metrics(answer.content, query.gold_answers),
         "retrieval": retrieval_quality,
         "judge": judge_payload,
         "metrics": metrics,

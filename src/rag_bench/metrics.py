@@ -16,7 +16,9 @@ from .data_types import RagQuery
 _ARTICLES_RE = re.compile(r"\b(a|an|the)\b")
 _PUNCT_TABLE = str.maketrans("", "", string.punctuation)
 
-INSUFFICIENT_PREFIX = "insufficient information"
+# Normalized prefixes that count as abstention across datasets: MultiHop-RAG
+# uses "Insufficient information", QASPER uses "Unanswerable".
+ABSTENTION_ANSWER_PREFIXES = ("insufficient information", "unanswerable")
 
 # Unicode punctuation that appears verbatim in MultiHop-RAG evidence facts,
 # mapped to ascii before substring matching so chunk decodes and facts compare
@@ -81,17 +83,28 @@ def substring_match(prediction: str, gold: str) -> bool:
 
 
 def predicted_insufficient(prediction: str) -> bool:
-    return normalize_answer(prediction).startswith(INSUFFICIENT_PREFIX)
+    return normalize_answer(prediction).startswith(ABSTENTION_ANSWER_PREFIXES)
 
 
-def answer_metrics(prediction: str, gold: str) -> dict[str, Any]:
-    f1_metrics = token_f1(prediction, gold)
+def answer_metrics(prediction: str, gold_answers: Sequence[str] | str) -> dict[str, Any]:
+    """String metrics against one or more reference answers.
+
+    Follows the official QASPER convention: F1 (with its precision/recall) is
+    the best over references, and exact/substring match count if any reference
+    matches. Single-reference datasets pass a one-element sequence.
+    """
+    if isinstance(gold_answers, str):
+        gold_answers = (gold_answers,)
+    golds = [str(gold) for gold in gold_answers]
+    if not golds:
+        raise ValueError("answer_metrics requires at least one gold answer.")
+    best_f1 = max((token_f1(prediction, gold) for gold in golds), key=lambda item: item["f1"])
     return {
-        "exact_match": exact_match(prediction, gold),
-        "f1": f1_metrics["f1"],
-        "precision": f1_metrics["precision"],
-        "recall": f1_metrics["recall"],
-        "substring_match": substring_match(prediction, gold),
+        "exact_match": any(exact_match(prediction, gold) for gold in golds),
+        "f1": best_f1["f1"],
+        "precision": best_f1["precision"],
+        "recall": best_f1["recall"],
+        "substring_match": any(substring_match(prediction, gold) for gold in golds),
         "predicted_insufficient": predicted_insufficient(prediction),
     }
 

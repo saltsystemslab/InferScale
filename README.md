@@ -162,6 +162,11 @@ Preembedding needs `OPENAI_API_KEY`; answer runs read the embedding cache and ma
 The KV precompute is resumable per chunk; interrupt and rerun freely.
 The sweep defaults to `MODELS="llama"` and `TOPKS="15"` and runs both `vllm-kv` and `vllm-prefix` per cell with `--skip-judge`; override with `MODELS`, `TOPKS`, `RAG_WINDOW`, or `RAG_CHUNK_SIZE`.
 
+To run QASPER (official test split: 416 NLP papers, 1,451 questions) instead, export `RAG_DATASET=qasper` for every stage, starting with `RAG_DATASET=qasper bash scripts/rag/setup_data.sh`.
+QASPER questions carry multiple reference answers: string metrics take the best over references and the judge accepts a match with any one reference.
+Unanswerable questions use the abstention phrase `Unanswerable` and feed the same abstention metrics as MultiHop-RAG null queries.
+Check `--estimate-only` before precomputing: the QASPER corpus KV is about 110 GiB of host RAM for qwen but about 250 GiB for llama, so on a 250 GB host run QASPER with `MODELS="qwen"`.
+
 Judge with the same local Gemma server as the LoCoMo runs, using the RAG-specific judge script:
 
 ```bash

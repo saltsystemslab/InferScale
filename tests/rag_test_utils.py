@@ -161,3 +161,99 @@ def _evidence(doc: dict[str, Any], fact: str) -> dict[str, Any]:
         "source": doc["source"],
         "url": doc["url"],
     }
+
+
+def _qasper_answer(**overrides: Any) -> dict[str, Any]:
+    answer = {
+        "unanswerable": False,
+        "extractive_spans": [],
+        "yes_no": None,
+        "free_form_answer": "",
+        "evidence": [],
+        "highlighted_evidence": [],
+    }
+    answer.update(overrides)
+    return {"annotation_id": "a", "worker_id": "w", "answer": answer}
+
+
+QASPER_EVIDENCE_RESULTS = "Our best model reaches 42.0 F1 on the probing benchmark."
+QASPER_EVIDENCE_TOOLKIT = "We release our probing toolkit publicly."
+QASPER_EVIDENCE_SURVEY = "The survey covers twelve datasets across four languages."
+
+
+def qasper_test_records() -> dict[str, Any]:
+    return {
+        "1601.00001": {
+            "title": "Paper One: Attention Study",
+            "abstract": "We study attention mechanisms in encoders.",
+            "full_text": [
+                {
+                    "section_name": "Introduction",
+                    "paragraphs": [
+                        "Attention weights concentrate on rare tokens in our probing study.",
+                        QASPER_EVIDENCE_TOOLKIT,
+                    ],
+                },
+                {
+                    "section_name": "Results",
+                    "paragraphs": [QASPER_EVIDENCE_RESULTS, ""],
+                },
+            ],
+            "qas": [
+                {
+                    "question": "What F1 does the best model reach?",
+                    "question_id": "q-extractive",
+                    "answers": [
+                        _qasper_answer(
+                            extractive_spans=["42.0 F1", "on the probing benchmark"],
+                            evidence=[
+                                QASPER_EVIDENCE_RESULTS,
+                                "FLOAT SELECTED: Table 2: Results",
+                            ],
+                        ),
+                        _qasper_answer(
+                            free_form_answer="42 F1",
+                            evidence=[QASPER_EVIDENCE_RESULTS],
+                        ),
+                    ],
+                },
+                {
+                    "question": "Is the probing toolkit public?",
+                    "question_id": "q-boolean",
+                    "answers": [
+                        _qasper_answer(yes_no=True, evidence=[QASPER_EVIDENCE_TOOLKIT]),
+                        _qasper_answer(yes_no=False),
+                    ],
+                },
+            ],
+        },
+        "1707.99999": {
+            "title": "Paper Two: Datasets Survey",
+            "abstract": "A survey of QA datasets.",
+            "full_text": [
+                {"section_name": "", "paragraphs": [QASPER_EVIDENCE_SURVEY]},
+            ],
+            "qas": [
+                {
+                    "question": "How many annotators were hired?",
+                    "question_id": "q-unanswerable",
+                    "answers": [
+                        _qasper_answer(unanswerable=True),
+                        _qasper_answer(
+                            free_form_answer="Twelve annotators",
+                            evidence=[QASPER_EVIDENCE_SURVEY],
+                        ),
+                    ],
+                },
+            ],
+        },
+    }
+
+
+def write_qasper_files(data_dir: Path, records: dict[str, Any] | None = None) -> Path:
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "qasper-test-v0.3.json").write_text(
+        json.dumps(qasper_test_records() if records is None else records),
+        encoding="utf-8",
+    )
+    return data_dir

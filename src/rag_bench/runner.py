@@ -215,11 +215,16 @@ def run_answer(config: RagBenchConfig) -> dict[str, Any]:
                 chunks=chunks,
                 cache_dir=cache_dir,
                 meta_base=meta_base,
+                prompt_profile=spec.prompt_profile,
             )
         else:
             from .answer_prefix import RagPrefixAnswerClient
 
-            client = RagPrefixAnswerClient(config, chunks_by_id=chunks_by_id)
+            client = RagPrefixAnswerClient(
+                config,
+                chunks_by_id=chunks_by_id,
+                prompt_profile=spec.prompt_profile,
+            )
         judge_client = None if config.skip_judge else build_judge_client(config)
         if not config.skip_judge and judge_client is None:
             raise RuntimeError(
@@ -387,7 +392,7 @@ def _answer_one_query(
             config,
             judge_client,
             question=query.question,
-            gold_answer=query.gold_answer,
+            gold_answers=query.gold_answers,
             predicted_answer=answer.content,
         )
     retrieval_quality = retrieval_metrics_for_query(query, hits, chunk_text_by_id)

@@ -29,7 +29,7 @@ from locomo_jasper_bench.kv.vllm_runtime import (
 from locomo_jasper_bench.vector_types import SearchHit
 
 from .config import RagBenchConfig
-from .data_types import RagChunk, RagQuery
+from .data_types import RagChunk, RagPromptProfile, RagQuery
 from .kv_cache import (
     CpuChunkStore,
     load_tables_and_scaffold,
@@ -68,12 +68,14 @@ class RagKvAnswerClient:
         chunks: Sequence[RagChunk],
         cache_dir: Path,
         meta_base: Mapping[str, Any],
+        prompt_profile: RagPromptProfile,
     ) -> None:
         force_vllm_inprocess_mode()
         self.config = config
         self._chunks_by_id: Mapping[str, RagChunk] = {
             chunk.chunk_id: chunk for chunk in chunks
         }
+        self._prompt_profile = prompt_profile
         self.namespace = f"{config.run_id}-{uuid.uuid4().hex}"
         self.active_user_id = f"{self.namespace}-active"
         # The namespace registry holds the in-flight composed memory for the
@@ -83,6 +85,7 @@ class RagKvAnswerClient:
         encoder_tokenizer = load_encoder_tokenizer(config.model)
         expected_scaffold = extract_rag_scaffold_token_ids(
             encoder_tokenizer,
+            system_prompt=prompt_profile.system_prompt,
             block_size=config.kv_block_size,
         )
         tables_path = tables_scaffold_path(cache_dir, config.kv_block_size)
@@ -142,6 +145,7 @@ class RagKvAnswerClient:
             self._tokenizer = self._llm.get_tokenizer()
             self._live_scaffold = extract_rag_scaffold_token_ids(
                 self._tokenizer,
+                system_prompt=self._prompt_profile.system_prompt,
                 block_size=self.config.kv_block_size,
             )
         except Exception:
@@ -176,7 +180,12 @@ class RagKvAnswerClient:
         for part in parts:
             memory_token_ids.extend(part.token_ids)
 
-        query_tokens = build_rag_query_tokens(self._tokenizer, memory_token_ids, query)
+        query_tokens = build_rag_query_tokens(
+            self._tokenizer,
+            memory_token_ids,
+            query,
+            answer_instruction=self._prompt_profile.answer_instruction,
+        )
         memory_token_budget = calculate_rag_memory_budget(
             query_token_count=len(query_tokens.token_ids),
             max_position=self.config.kv_max_position,

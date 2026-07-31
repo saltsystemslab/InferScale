@@ -129,8 +129,8 @@ def test_pipeline_smoke_end_to_end(tmp_path) -> None:
     assert metrics["accuracy"] is None
     assert metrics["exact_match"] == 1.0
     assert metrics["f1"] == 1.0
-    assert metrics["null_insufficient_accuracy"] == 1.0
-    assert metrics["false_insufficient_rate"] == 0.0
+    assert metrics["abstention_accuracy"] == 1.0
+    assert metrics["false_abstention_rate"] == 0.0
     assert metrics["retrieval"]["query_count"] == 3
     assert metrics["question_type_counts"] == {
         "comparison_query": 1,

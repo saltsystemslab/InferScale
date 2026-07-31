@@ -38,10 +38,15 @@ class StubJudgeClient:
         return ChatResult(content="true")
 
 
-def _record(query_id: str, *, judged: bool) -> dict[str, Any]:
+def _record(query_id: str, *, judged: bool, legacy: bool = False) -> dict[str, Any]:
     judge = {"correct": True, "reason": "", "raw": "true", "status": "ok"} if judged else (
         skipped_judge_payload()
     )
+    record_gold: dict[str, Any] = {"gold_answer": "gold"}
+    if not legacy:
+        # Legacy records predate the multi-reference field; judge_rag_record
+        # must fall back to gold_answer for them.
+        record_gold["gold_answers"] = ["gold", "golden answer"]
     return {
         "run_id": "r1",
         "mode": "rag-prefix",
@@ -50,7 +55,7 @@ def _record(query_id: str, *, judged: bool) -> dict[str, Any]:
         "question_type": "inference_query",
         "category": "inference_query",
         "question": f"question {query_id}",
-        "gold_answer": "gold",
+        **record_gold,
         "predicted_answer": "gold",
         "evidence": [],
         "retrieved_chunks": [],
@@ -82,7 +87,7 @@ def _write_run(tmp_path, *, rejudge: bool = False) -> RagBenchConfig:
     with JsonlWriter(config.run_dir / "predictions.jsonl") as writer:
         writer.write(_record("q0000", judged=False))
         writer.write(_record("q0001", judged=True))
-        writer.write(_record("q0002", judged=False))
+        writer.write(_record("q0002", judged=False, legacy=True))
     (config.run_dir / "config.json").write_text(
         json.dumps(config.to_jsonable()), encoding="utf-8"
     )
@@ -139,7 +144,7 @@ def test_missing_predictions_file_raises(tmp_path) -> None:
 
 
 def test_judge_messages_include_question_and_answers() -> None:
-    messages = build_rag_judge_messages("Q?", "gold", "pred")
+    messages = build_rag_judge_messages("Q?", ["gold"], "pred")
 
     assert len(messages) == 1
     content = messages[0]["content"]
@@ -147,3 +152,19 @@ def test_judge_messages_include_question_and_answers() -> None:
     assert "Reference answer: gold" in content
     assert "Predicted answer: pred" in content
     assert "true or false" in content
+
+
+def test_judge_messages_list_multiple_references() -> None:
+    messages = build_rag_judge_messages("Q?", ["first answer", "second answer"], "pred")
+
+    content = messages[0]["content"]
+    assert "- first answer" in content
+    assert "- second answer" in content
+    assert "any one of them" in content
+    assert "any one reference answer" in content
+
+
+def test_judge_messages_accept_a_bare_string() -> None:
+    content = build_rag_judge_messages("Q?", "gold", "pred")[0]["content"]
+
+    assert "Reference answer: gold" in content

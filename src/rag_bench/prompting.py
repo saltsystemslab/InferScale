@@ -13,41 +13,39 @@ from locomo_jasper_bench.kv.prompting import (
 from locomo_jasper_bench.kv.tokenization import encode_text_no_special
 from locomo_jasper_bench.vector_types import SearchHit
 
-from .data_types import RagQuery
+from .data_types import RagPromptProfile, RagQuery
 
 RAG_TEMPLATE_PLACEHOLDER = "<<<RAG_JASPER_PASSAGES_GO_HERE>>>"
-RAG_SYSTEM_PROMPT = (
-    "You are a helpful assistant that answers questions using retrieved excerpts "
-    "from a corpus of news articles. "
-    "The following are excerpts from news articles:\n\n"
-)
 EMPTY_PASSAGES_TEXT = "(No relevant passages found)\n"
-INSUFFICIENT_ANSWER_TEXT = "Insufficient information"
 
 
 def extract_rag_scaffold_token_ids(
     tokenizer: Any,
     *,
+    system_prompt: str,
     block_size: int = 16,
 ) -> MemoryScaffoldTokens:
     """Chat-templated scaffold split around the passages placeholder.
 
+    The system prompt is dataset-specific (RagPromptProfile.system_prompt).
     Same invariants as the LoCoMo scaffold (kv/prompting.py): the footer is
     padded at the token level with newline tokens to at least block_size - 1
     tokens, so injected chunk tokens never land in the recomputed KV tail.
     """
     if block_size < 1:
         raise ValueError("block_size must be >= 1.")
+    if not system_prompt:
+        raise ValueError("system_prompt must be non-empty.")
     apply_chat_template = getattr(tokenizer, "apply_chat_template", None)
     if callable(apply_chat_template):
         templated = apply_chat_template_non_thinking(
             tokenizer,
-            [{"role": "system", "content": RAG_SYSTEM_PROMPT + RAG_TEMPLATE_PLACEHOLDER}],
+            [{"role": "system", "content": system_prompt + RAG_TEMPLATE_PLACEHOLDER}],
             tokenize=False,
             add_generation_prompt=False,
         )
     else:
-        templated = f"SYSTEM: {RAG_SYSTEM_PROMPT}{RAG_TEMPLATE_PLACEHOLDER}"
+        templated = f"SYSTEM: {system_prompt}{RAG_TEMPLATE_PLACEHOLDER}"
 
     if RAG_TEMPLATE_PLACEHOLDER not in templated:
         raise RuntimeError("Answer prompt chat template removed the passages placeholder.")
@@ -103,16 +101,17 @@ def build_rag_memory_token_ids(
     return token_ids
 
 
-def build_rag_query_messages(query: RagQuery) -> list[dict[str, str]]:
+def build_rag_query_messages(
+    query: RagQuery,
+    *,
+    answer_instruction: str,
+) -> list[dict[str, str]]:
+    if not answer_instruction:
+        raise ValueError("answer_instruction must be non-empty.")
     return [
         {
             "role": "user",
-            "content": (
-                "Answer the question using only the news article excerpts above.\n"
-                "Answer with a short phrase. If the excerpts do not contain the "
-                f"information needed, answer exactly: {INSUFFICIENT_ANSWER_TEXT}\n"
-                f"Question: {query.question}"
-            ),
+            "content": f"{answer_instruction}Question: {query.question}",
         }
     ]
 
@@ -121,8 +120,13 @@ def build_rag_query_tokens(
     tokenizer: Any,
     memory_token_ids: list[int],
     query: RagQuery,
+    *,
+    answer_instruction: str,
 ) -> KvQueryTokens:
-    query_token_ids = tokenize_messages(tokenizer, build_rag_query_messages(query))
+    query_token_ids = tokenize_messages(
+        tokenizer,
+        build_rag_query_messages(query, answer_instruction=answer_instruction),
+    )
     query_token_ids, stripped_query_bos = strip_duplicate_query_bos(
         tokenizer,
         memory_token_ids=memory_token_ids,

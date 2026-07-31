@@ -49,13 +49,16 @@ for DATASET_NAME in ${RAG_DATASETS}; do
       if [[ ! -f "${DATA_DIR}/qasper-test-v0.3.json" ]]; then
         echo "Downloading QASPER test archive to ${ARCHIVE_PATH}"
         curl -fL "${ARCHIVE_URL}" -o "${ARCHIVE_PATH}"
-        tar -xzf "${ARCHIVE_PATH}" -C "${DATA_DIR}"
-        rm -f "${ARCHIVE_PATH}"
+        # --no-same-owner: as root, tar otherwise tries to restore the
+        # archive's recorded owner, which network volumes refuse.
+        tar --no-same-owner -xzf "${ARCHIVE_PATH}" -C "${DATA_DIR}"
         if [[ ! -f "${DATA_DIR}/qasper-test-v0.3.json" ]]; then
           echo "ERROR: ${ARCHIVE_URL} did not contain qasper-test-v0.3.json" >&2
           exit 1
         fi
       fi
+      # Also removes archives left behind by previously interrupted runs.
+      rm -f "${ARCHIVE_PATH}"
       ;;
     *)
       echo "Unknown dataset '${DATASET_NAME}' in RAG_DATASETS (expected multihoprag or qasper)." >&2

@@ -27,15 +27,7 @@ The common values are:
 - `OPENAI_API_KEY=...` for embeddings and Mem0 inference
 - `HF_TOKEN=...` if the model is gated
 
-By default, runtime storage is rooted at `${BENCHMARK_RUNTIME_ROOT:-/workspace}` on Runpod:
-
-- `${BENCHMARK_RUNTIME_ROOT}/.cache` for embeddings, Mem0/Jasper files, model downloads, and build caches.
-- `${BENCHMARK_RUNTIME_ROOT}/results` for benchmark outputs.
-- `${BENCHMARK_RUNTIME_ROOT}/tmp` for temporary files.
-
-`source scripts/load_env.sh` prepares those directories and points the repo `.cache` entry at the runtime cache.
-
-Load the environment in each shell that will run project commands:
+Load the environment in each shell that will run the project's commands:
 
 ```bash
 source scripts/load_env.sh
@@ -62,7 +54,6 @@ bash scripts/setup_remote.sh
 ```
 
 `scripts/setup_remote.sh` initializes the `jasperpy` submodule, downloads the LoCoMo dataset when missing, installs the Python environment, builds the Jasper library, and extracts the Mem0 facts for every answer model.
-Fact extraction serves each answer model on a vLLM server; set `SKIP_EXTRACTION=1` to defer it and run `bash scripts/extract_facts.sh` separately.
 
 Activate the environment before running benchmark commands:
 
@@ -115,21 +106,10 @@ STAMP=<stamp> bash scripts/judge.sh
 
 ## 7. Compare Results
 
-Each run writes to `${BENCHMARK_RESULTS_ROOT}/<run-id>/`, where the run id encodes the swept axes:
-`<model>-kv-mem0-jasper10-k<topk>-s<window>-<stamp>` for KV runs and `<model>-prefix-mem0-<vector>10-k<topk>-s0-<stamp>` for the prompt baselines.
-
 ```bash
 ls "${BENCHMARK_RESULTS_ROOT}"
 cat "${BENCHMARK_RESULTS_ROOT}/<run-id>/summary.json"
 ```
-
-Primary summary metrics:
-
-- `metrics.accuracy`: judged answer quality.
-- `metrics.time_to_first_token_ms`: in-process vLLM time to first token from the real answer generation.
-- `metrics.query_to_first_token_ms`: query-start-to-generate-start wall time plus vLLM time to first token.
-- `metrics.query_to_answer_ms`: query embedding, retrieval, prompt/KV composition, and full answer generation.
-- `metrics.sample_setup_time_ms`: per-sample setup before the first query, including memory/index construction, KV precompute when applicable, and sample activation.
 
 ## Results
 

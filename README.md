@@ -1,9 +1,69 @@
 # InferScale: GPU-Native KV Injection for Personalized LLM Serving
 
-This repository runs a LoCoMo benchmark comparison between in-process vLLM answer backends.
+The main benchmark uses 1,540 answerable LoCoMo questions on a single NVIDIA RTX PRO 6000 with 96 GB of memory, vLLM 0.19.1, and prefix caching enabled.
 
-- `vllm-kv`: retrieved Mem0 facts are encoded with the package's chunked-RoPE implementation, then injected directly into the KV cache.
-- `vllm-prefix`: the same retrieved Mem0 facts are included as a normal prompt injection.
+### Serving latency
+
+![Serving latency for InferScale and Mem0 across three models](figures/paper/serving-latency.png)
+
+InferScale keeps TTFT nearly flat as more memory is retrieved, while Mem0's prefill latency grows with `k`.
+
+### End-to-end memory QA accuracy
+
+Judged LoCoMo accuracy (%), micro-averaged over the 1,540 answerable questions.
+
+| Model | Method | `k=5` | `k=10` | `k=20` | `k=50` |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Llama-3.1-8B | InferScale (`w=0`) | 62.21 | 62.14 | 57.66 | 53.77 |
+| Llama-3.1-8B | InferScale (`w=5`) | 60.00 | 59.81 | 59.87 | 56.82 |
+| Llama-3.1-8B | InferScale (`w=20`) | 60.13 | 62.08 | 61.62 | 59.22 |
+| Llama-3.1-8B | InferScale (`w=50`) | 60.06 | 61.36 | 62.66 | 60.26 |
+| Llama-3.1-8B | Mem0 | 56.95 | 59.29 | 61.49 | 63.25 |
+| Mistral-7B | InferScale (`w=0`) | 54.03 | 55.13 | 52.84 | 37.22 |
+| Mistral-7B | InferScale (`w=5`) | 56.04 | 57.60 | 58.09 | 56.45 |
+| Mistral-7B | InferScale (`w=20`) | 53.96 | 55.97 | 56.95 | 58.24 |
+| Mistral-7B | InferScale (`w=50`) | 55.78 | 56.49 | 58.70 | 58.30 |
+| Mistral-7B | Mem0 | 61.30 | 63.96 | 65.00 | 64.35 |
+| Qwen2.5-7B | InferScale (`w=0`) | 59.74 | 56.75 | 54.22 | 50.45 |
+| Qwen2.5-7B | InferScale (`w=5`) | 59.29 | 57.53 | 58.05 | 57.40 |
+| Qwen2.5-7B | InferScale (`w=20`) | 60.00 | 59.68 | 58.25 | 58.64 |
+| Qwen2.5-7B | InferScale (`w=50`) | 58.83 | 58.25 | 58.18 | 58.77 |
+| Qwen2.5-7B | Mem0 | 60.06 | 63.64 | 65.13 | 64.61 |
+
+ Encoding each fact in isolation (w=0) trails Mem0 and degrades as more facts are retrieved, from 62.2% to 53.8% on Llama and, most steeply, 54.0% to 37.2% on Mistral as `k` grows from 5 to 50. A context window reverses this: with w>=20, accuracy is flat-to-rising in `k` and comes within a few points of Mem0 (on Llama, 60.3% vs. 63.3% at k=50) while often exceeding it at small `k`.
+
+### Serving throughput
+
+![Serving throughput for InferScale and Mem0 across three models](figures/paper/serving-throughput.png)
+
+InferScale’s throughput scales nearlinearly with the number of concurrent users, while Mem0 saturates early. At 100 user, InferScale reaches 100/104/135 QPS on Llama/Mistral/Qwen versus Mem0’s 27/23/32 QPS, a 3.7–4.5x speedup, and the gap widens with concurrency (Mem0 gains only ∼2x from 10 to 100 users, whereas InferScale gains ~4x).
+
+### Jasper retrieval ablation
+
+Retrieval backend's effect on end-to-end query-to-first-token latency in milliseconds.
+
+| Model | Backend | `k=5` | `k=10` | `k=20` | `k=50` |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Llama-3.1-8B | Jasper GPU | 47.92 | 53.13 | 60.86 | 86.56 |
+| Llama-3.1-8B | Qdrant CPU | 186.15 | 190.22 | 206.79 | 236.48 |
+| Mistral-7B | Jasper GPU | 39.72 | 45.78 | 56.56 | 88.41 |
+| Mistral-7B | Qdrant CPU | 129.37 | 147.41 | 162.01 | 198.07 |
+| Qwen2.5-7B | Jasper GPU | 51.30 | 54.87 | 63.36 | 85.24 |
+| Qwen2.5-7B | Qdrant CPU | 178.81 | 182.25 | 190.83 | 224.76 |
+
+The two backends return comparable results; the backend’s large effect is on retrieval latency.
+
+### Memory footprint and CPU offload
+
+Average per-conversation storage footprint in decimal MB.
+
+| Model | Jasper GPU | Fact-ID map CPU | Fact KVs GPU |
+| --- | ---: | ---: | ---: |
+| Llama-3.1-8B | 13.50 | 7.97 | 4,796.67 |
+| Mistral-7B v0.3 | 13.50 | 3.02 | 2,257.44 |
+| Qwen2.5-7B | 13.50 | 6.48 | 1,780.10 |
+
+The retrieval structures are negligible in size. The Jasper graph and the map together cost under 25 MB per conversation on every model. The footprint is dominated by the KV store (1.8-4.8 GB per conversation), which is also the only term that scales with model architecture, growing with the number of layers, KV heads, and head dimension.
 
 ## 1. Requirements
 

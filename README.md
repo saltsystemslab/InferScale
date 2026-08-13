@@ -2,6 +2,8 @@
 
 Evaluation suite to run benchmarks on InferScale.
 
+Paper: [InferScale: GPU-Native KV Injection for Personalized LLM Serving](https://arxiv.org/abs/2607.27090) (arXiv:2607.27090)
+
 ## 1. Requirements
 
 Benchmark runs target a Linux GPU host; the reference environment is a Runpod container with the persistent `/workspace` partition.
@@ -172,6 +174,23 @@ Average per-conversation storage footprint in decimal MB.
 | Llama-3.1-8B | 13.50 | 7.97 | 4,796.67 |
 | Mistral-7B v0.3 | 13.50 | 3.02 | 2,257.44 |
 | Qwen2.5-7B | 13.50 | 6.48 | 1,780.10 |
+
+## Citation
+
+If you use InferScale in your research, please cite:
+
+```bibtex
+@article{li2026inferscale,
+  title         = {InferScale: GPU-Native KV Injection for Personalized LLM Serving},
+  author        = {Li, Peter and Pandey, Prashant},
+  journal       = {arXiv preprint arXiv:2607.27090},
+  year          = {2026},
+  eprint        = {2607.27090},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.DC},
+  url           = {https://arxiv.org/abs/2607.27090}
+}
+```
 
 ## License
 

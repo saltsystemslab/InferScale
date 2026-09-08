@@ -62,7 +62,10 @@ def check_kv_gpu_projection(
         corpus_resident_bytes = composed_tokens * bytes_per_token
     else:
         corpus_resident_bytes = source_bytes
-    remediation = "Shrink the user count, lower --top-k, or reduce --gpu-memory-utilization."
+    remediation = (
+        "Reduce user_counts, top_k, or inferscale.engine.gpu_memory_utilization "
+        "in the run JSON."
+    )
 
     graph_bytes = unique_sample_count * JASPER_GRAPH_DEVICE_BYTES
     phase_peaks = {

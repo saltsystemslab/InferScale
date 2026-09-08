@@ -5,7 +5,7 @@ from typing import Any
 from loguru import logger
 
 from benchmarks.memory.runtime_clients import RuntimeClients, build_clients, judge_client_for
-from benchmarks.memory.config import BenchmarkConfig
+from benchmarks.memory.config import MemoryRunConfig
 from benchmarks.common.judge import failed_judge_payload, format_accuracy, is_judged
 from benchmarks.memory.judging import judge_metadata, judge_record, record_label
 from benchmarks.memory.modes import result_mode
@@ -22,7 +22,7 @@ from benchmarks.memory.run_files import write_deferred_judging_outputs
 from benchmarks.common.system import collect_system_metadata
 
 
-def run_benchmark(config: BenchmarkConfig, clients: RuntimeClients | None = None) -> dict[str, Any]:
+def run_benchmark(config: MemoryRunConfig, clients: RuntimeClients | None = None) -> dict[str, Any]:
     logger.info(
         "Starting benchmark run_id={} dataset={} results_dir={}",
         config.run_id,
@@ -60,7 +60,7 @@ def run_benchmark(config: BenchmarkConfig, clients: RuntimeClients | None = None
     return summary
 
 
-def judge_existing_run(config: BenchmarkConfig) -> dict[str, Any]:
+def judge_existing_run(config: MemoryRunConfig) -> dict[str, Any]:
     predictions_path = config.run_dir / "predictions.jsonl"
     if not predictions_path.exists():
         raise FileNotFoundError(f"predictions file not found: {predictions_path}")
@@ -131,7 +131,7 @@ def judge_existing_run(config: BenchmarkConfig) -> dict[str, Any]:
 
 
 def _reconcile_with_evidence(
-    config: BenchmarkConfig,
+    config: MemoryRunConfig,
     saved_config: dict[str, Any],
 ) -> dict[str, Any]:
     """Keep deferred judging on the run's recorded evidence protocol.
@@ -186,7 +186,7 @@ def _log_category_accuracy(summary: dict[str, Any]) -> None:
 
 
 def _write_benchmark_outputs(
-    config: BenchmarkConfig,
+    config: MemoryRunConfig,
     records: list[dict[str, Any]],
     system_metadata: dict[str, Any],
     sample_setup_metrics: list[dict[str, Any]],

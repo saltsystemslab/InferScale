@@ -1,31 +1,36 @@
 from __future__ import annotations
 
-import argparse
-import json
+import math
 import os
 import re
-import sys
-from dataclasses import asdict, dataclass
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from benchmarks.memory.config import (
-    ANSWER_MODEL_NAME_ALIASES,
-    MAX_JASPER_BEAM_WIDTH,
-    env_flag,
-    resolve_answer_model,
+from benchmarks.common.config import (
+    DEFAULT_EXTRACTION_LLM_BASE_URL,
+    ConfigError,
+    RuntimeConfig,
+    embedding_api_key,
+    expand_path,
+    inferscale_section,
+    int_list,
+    load_json_object,
+    load_runtime_config,
+    optional,
+    reject_unknown_keys,
+    require,
+    section_of,
+    str_list,
 )
-from inferscale.v1.config import EngineConfig
+from inferscale.v1.config import EngineConfig, KV_DTYPES
+from inferscale.v1.index.jasper import MAX_JASPER_BEAM_WIDTH
 from inferscale.v1.kv.connector_utils import (
     DEFAULT_KV_STAGING_SLOTS,
     DEFAULT_KV_STORE_BACKEND,
     KNOWN_KV_STORE_BACKENDS,
-)
-from benchmarks.common.paths import (
-    default_embedding_cache_dir,
-    default_memory_llm_cache_dir,
-    default_results_root,
 )
 
 ALL_CONDITIONS = (
@@ -49,7 +54,6 @@ def condition_vector_backend(condition: str) -> str | None:
 
 
 DEFAULT_USER_COUNTS = (50, 100, 150, 200)
-DEFAULT_USER_COUNTS_TEXT = ",".join(str(count) for count in DEFAULT_USER_COUNTS)
 
 
 @dataclass(slots=True)
@@ -67,6 +71,7 @@ class ThroughputConfig:
     top_k: int = 50
     context_window: int = 50
     seed: int = 42
+    log_level: str = "INFO"
     kv_gpu_memory_utilization: float = 0.30
     kv_max_model_len: int = 32768
     kv_max_position: int = 32768
@@ -78,7 +83,6 @@ class ThroughputConfig:
     kv_store_backend: str = DEFAULT_KV_STORE_BACKEND
     kv_staging_slots: int = DEFAULT_KV_STAGING_SLOTS
     kv_chunk_cache_enabled: bool = True
-    jasper_device_kv_selection: bool = False
     embedding_model: str = "text-embedding-3-small"
     embedding_api_key: str | None = None
     embedding_base_url: str | None = None
@@ -87,18 +91,26 @@ class ThroughputConfig:
     memory_llm_provider: str = "vllm"
     # Mem0 fact extraction always uses the answer model; see __post_init__.
     memory_llm_model: str | None = None
-    memory_llm_base_url: str | None = None
+    memory_llm_base_url: str | None = DEFAULT_EXTRACTION_LLM_BASE_URL
     memory_llm_cache_dir: Path = None  # type: ignore[assignment]
+    local_store_dir: Path = None  # type: ignore[assignment]
     jasper_n_neighbors: int = 64
     jasper_alpha: float = 1.0
     jasper_workspace_budget: str = "10GB"
     jasper_beam_width: int = 64
 
     def __post_init__(self) -> None:
-        if self.embedding_cache_dir is None:
-            self.embedding_cache_dir = default_embedding_cache_dir()
-        if self.memory_llm_cache_dir is None:
-            self.memory_llm_cache_dir = default_memory_llm_cache_dir()
+        if any(
+            value is None
+            for value in (self.embedding_cache_dir, self.memory_llm_cache_dir, self.local_store_dir)
+        ):
+            layout = load_runtime_config().layout
+            if self.embedding_cache_dir is None:
+                self.embedding_cache_dir = layout.embedding_cache_dir
+            if self.memory_llm_cache_dir is None:
+                self.memory_llm_cache_dir = layout.memory_llm_cache_dir
+            if self.local_store_dir is None:
+                self.local_store_dir = layout.local_store_dir
         if self.memory_llm_model is None:
             self.memory_llm_model = self.model
         elif self.memory_llm_model != self.model:
@@ -106,10 +118,15 @@ class ThroughputConfig:
                 "Mem0 fact extraction always uses the answer model; "
                 f"memory_llm_model={self.memory_llm_model!r} conflicts with model={self.model!r}."
             )
+        _validate_config(self)
 
     @property
     def run_dir(self) -> Path:
         return self.results_dir / "throughput" / self.run_id
+
+    @property
+    def local_store_scratch_dir(self) -> Path:
+        return self.local_store_dir / "inferscale-bench-stores" / self.run_id
 
     def engine_config(self) -> EngineConfig:
         return EngineConfig(
@@ -122,7 +139,7 @@ class ThroughputConfig:
 
     def to_jsonable(self, *, redact_secrets: bool = True) -> dict[str, Any]:
         data = asdict(self)
-        for key in ("results_dir", "dataset_path", "embedding_cache_dir", "memory_llm_cache_dir"):
+        for key in ("results_dir", "dataset_path", "embedding_cache_dir", "memory_llm_cache_dir", "local_store_dir"):
             data[key] = str(data[key])
         data["user_counts"] = list(self.user_counts)
         data["conditions"] = list(self.conditions)
@@ -132,44 +149,29 @@ class ThroughputConfig:
 
     @classmethod
     def from_json_file(cls, path: str | Path) -> "ThroughputConfig":
-        raw = json.loads(Path(path).read_text(encoding="utf-8"))
-        if not isinstance(raw, dict):
-            raise ValueError(f"Throughput config must be a JSON object: {path}")
-        data = dict(raw)
-        for key in ("results_dir", "dataset_path", "embedding_cache_dir", "memory_llm_cache_dir"):
-            data[key] = Path(data[key])
-        data["conditions"] = tuple(data["conditions"])
-        data["user_counts"] = tuple(int(count) for count in data["user_counts"])
+        """Restore an internal, flattened worker snapshot, not an authored run file."""
+        data = load_json_object(path)
+        # Old snapshots cannot disable the now mandatory GPU text-to-KV map.
+        data.pop("jasper_device_kv_selection", None)
+        reject_unknown_keys(data, tuple(item.name for item in fields(cls)), "throughput worker snapshot")
+        for key in ("model", "model_label", "run_id", "results_dir"):
+            require(data, key, str, "throughput worker snapshot")
+        for key in ("results_dir", "dataset_path", "embedding_cache_dir", "memory_llm_cache_dir", "local_store_dir"):
+            if data.get(key) is not None:
+                data[key] = Path(require(data, key, str, "throughput worker snapshot"))
+        data["conditions"] = str_list(data, "conditions", "throughput worker snapshot")
+        data["user_counts"] = int_list(data, "user_counts", "throughput worker snapshot")
         if data.get("embedding_api_key") == "<redacted>":
             data["embedding_api_key"] = (
                 os.environ.get("LOCOMO_THROUGHPUT_EMBEDDING_API_KEY")
-                or os.environ.get("OPENAI_API_KEY")
+                or embedding_api_key()
             )
         return cls(**data)
 
-
-def parse_user_counts(value: str | Iterable[str]) -> tuple[int, ...]:
-    raw_parts: list[str] = []
-    values = [value] if isinstance(value, str) else list(value)
-    for item in values:
-        raw_parts.extend(part.strip() for part in re.split(r"[;,\s]+", item) if part.strip())
-    if not raw_parts:
-        raise ValueError("The user-count list cannot be empty.")
-
-    counts: list[int] = []
-    seen: set[int] = set()
-    for raw in raw_parts:
-        try:
-            count = int(raw)
-        except ValueError as exc:
-            raise ValueError(f"Invalid user count {raw!r}; expected an integer.") from exc
-        if count <= 0:
-            raise ValueError(f"User counts must be greater than zero, got {count}.")
-        if count in seen:
-            raise ValueError(f"Duplicate user count: {count}")
-        counts.append(count)
-        seen.add(count)
-    return tuple(counts)
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any], *, runtime: RuntimeConfig) -> "ThroughputConfig":
+        """Build a run from authored JSON or a materialized JSON sweep cell."""
+        return _build_run_config(data, runtime)
 
 
 def user_counts_text(counts: Iterable[int]) -> str:
@@ -181,197 +183,164 @@ def default_run_id(model_label: str) -> str:
     return f"{_slug(model_label)}-{stamp}"
 
 
-def parse_args(argv: list[str] | None = None) -> tuple[ThroughputConfig, bool]:
-    parser = argparse.ArgumentParser(
-        prog="locomo-throughput-bench",
-        description=(
-            "Run multi-user throughput benchmarks for vLLM memory conditions over the "
-            "LoCoMo dataset's Mem0-extracted fact catalogs."
-        ),
-        allow_abbrev=False,
-    )
-    parser.add_argument(
-        "--model",
-        default=os.environ.get("LOCOMO_VLLM_MODEL", "llama"),
-        help="Hugging Face model id, local path, or configured alias: llama, mistral, qwen, qwen3-14b.",
-    )
-    parser.add_argument("--results-dir", type=Path, default=default_results_root())
-    parser.add_argument("--run-id")
-    parser.add_argument("--dataset", dest="dataset_path", type=Path, default=Path("data/locomo10.json"))
-    parser.add_argument("--conditions", nargs="+", choices=ALL_CONDITIONS, default=list(ALL_CONDITIONS))
-    parser.add_argument(
-        "--user-counts",
-        default=os.environ.get("THROUGHPUT_USER_COUNTS", DEFAULT_USER_COUNTS_TEXT),
-        help="Comma-separated simulated user counts; users map to LoCoMo conversations round-robin.",
-    )
-    parser.add_argument("--requests-per-user", type=int, default=int(os.environ.get("THROUGHPUT_REQUESTS_PER_USER", "2")))
-    parser.add_argument("--max-output-tokens", type=int, default=int(os.environ.get("THROUGHPUT_MAX_OUTPUT_TOKENS", "50")))
-    parser.add_argument("--warmup-batches", type=int, default=int(os.environ.get("THROUGHPUT_WARMUP_BATCHES", "2")))
-    parser.add_argument("--top-k", type=int, default=int(os.environ.get("THROUGHPUT_TOP_K", "50")))
-    parser.add_argument(
-        "--context-window",
-        type=int,
-        default=int(os.environ.get("THROUGHPUT_CONTEXT_WINDOW", "50")),
-        help=(
-            "Turns preceding each retrieved fact used as an encoding prefix for "
-            "kv_injection chunks (encoding-prefix-discard); text conditions ignore it."
-        ),
-    )
-    parser.add_argument("--seed", type=int, default=int(os.environ.get("THROUGHPUT_SEED", "42")))
-    parser.add_argument(
-        "--gpu-memory-utilization",
-        dest="kv_gpu_memory_utilization",
-        type=float,
-        default=float(os.environ.get("LOCOMO_KV_GPU_MEMORY_UTILIZATION", "0.30")),
-    )
-    parser.add_argument("--max-model-len", dest="kv_max_model_len", type=int, default=32768)
-    parser.add_argument("--kv-max-position", type=int, default=32768)
-    parser.add_argument("--dtype", dest="kv_dtype", default=os.environ.get("LOCOMO_KV_DTYPE", "bfloat16"))
-    parser.add_argument("--device", dest="kv_device", default=os.environ.get("LOCOMO_KV_DEVICE", "cuda:0"))
-    parser.add_argument("--kv-block-size", type=int, default=16)
-    parser.add_argument(
-        "--kv-connector-module",
-        default=os.environ.get("LOCOMO_KV_CONNECTOR_MODULE", "inferscale.v1.kv.connector"),
-    )
-    parser.add_argument(
-        "--kv-prefix-caching",
-        action=argparse.BooleanOptionalAction,
-        dest="kv_enable_prefix_caching",
-        default=env_flag("LOCOMO_KV_ENABLE_PREFIX_CACHING", True),
-        help=(
-            "vLLM automatic prefix caching. The CLI overrides the "
-            "LOCOMO_KV_ENABLE_PREFIX_CACHING env default in both directions."
-        ),
-    )
-    parser.add_argument(
-        "--kv-store-backend",
-        choices=list(KNOWN_KV_STORE_BACKENDS),
-        default=os.environ.get("LOCOMO_KV_STORE_BACKEND", DEFAULT_KV_STORE_BACKEND),
-        help=(
-            "Where the pre-encoded fact-chunk corpus lives: GPU HBM, or pinned host "
-            "RAM staged over PCIe at composition time."
-        ),
-    )
-    parser.add_argument(
-        "--kv-staging-slots",
-        type=int,
-        default=int(os.environ.get("LOCOMO_KV_STAGING_SLOTS", str(DEFAULT_KV_STAGING_SLOTS))),
-        help="Staging pool floor for the cpu chunk store (raised to at least top-k + 4).",
-    )
-    parser.add_argument(
-        "--no-kv-chunk-cache",
-        dest="kv_chunk_cache_enabled",
-        action="store_false",
-        help="Disable the pre-encoded KV chunk disk cache (always re-encode).",
-    )
-    parser.add_argument(
-        "--jasper-device-kv-selection",
-        action=argparse.BooleanOptionalAction,
-        default=env_flag("LOCOMO_JASPER_DEVICE_KV_SELECTION", False),
-        help=(
-            "Keep Jasper result IDs on CUDA while mapping and gathering from the GPU "
-            "fact-chunk corpus. Unsupported cases use the existing SearchHit path."
-        ),
-    )
-    parser.add_argument("--embedding-model", default=os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"))
-    parser.add_argument("--embedding-api-key", default=os.environ.get("OPENAI_API_KEY"))
-    parser.add_argument("--embedding-base-url", default=os.environ.get("OPENAI_BASE_URL"))
-    parser.add_argument("--embedding-cache-dir", type=Path, default=default_embedding_cache_dir())
-    parser.add_argument("--no-embedding-cache", action="store_false", dest="embedding_cache_enabled")
-    parser.set_defaults(memory_llm_provider="vllm")
-    parser.add_argument(
-        "--memory-llm-base-url",
-        default=os.environ.get("MEM0_LLM_BASE_URL"),
-        help="Extraction server recorded in the fact-catalog identity (must match --preembed-only).",
-    )
-    parser.add_argument(
-        "--memory-llm-cache-dir",
-        type=Path,
-        default=default_memory_llm_cache_dir(),
-        help="Root directory holding the immutable fact catalogs from --preembed-only.",
-    )
-    parser.add_argument("--jasper-n-neighbors", type=int, default=64)
-    parser.add_argument("--jasper-alpha", type=float, default=1.0)
-    parser.add_argument("--jasper-workspace-budget", default="10GB")
-    parser.add_argument("--jasper-beam-width", type=int, default=64)
-    parser.add_argument("--dry-run", action="store_true")
+_RUN_KEYS = (
+    "benchmark", "model", "dataset_path", "results_dir", "run_id", "conditions",
+    "user_counts", "requests_per_user", "max_output_tokens", "warmup_batches",
+    "top_k", "context_window", "seed", "log_level", "embedding_cache_enabled",
+    "kv_chunk_cache_enabled", "inferscale", "mem0", "sweeps",
+)
 
-    ns = parser.parse_args(sys.argv[1:] if argv is None else argv)
-    try:
-        user_counts = parse_user_counts(ns.user_counts)
-        _validate_positive_options(ns)
-    except ValueError as exc:
-        parser.error(str(exc))
 
-    raw_model = ns.model.strip()
-    model_label = ANSWER_MODEL_NAME_ALIASES.get(raw_model.lower(), raw_model.rsplit("/", 1)[-1])
+def load_throughput_config(path: str | Path, runtime: RuntimeConfig) -> ThroughputConfig:
+    """Load benchmark settings from JSON and storage/model defaults from runtime JSON."""
+    return ThroughputConfig.from_dict(load_json_object(path), runtime=runtime)
+
+
+def _build_run_config(data: Mapping[str, Any], runtime: RuntimeConfig) -> ThroughputConfig:
+    where = "memory-throughput"
+    reject_unknown_keys(data, _RUN_KEYS, where)
+    benchmark = optional(data, "benchmark", str, where, where)
+    if benchmark != where:
+        raise ConfigError(f"Expected benchmark {where!r}, got {benchmark!r}.")
+    raw_model = require(data, "model", str, where).strip()
+    if not raw_model:
+        raise ConfigError(f"{where}.model must be non-empty.")
+    top_k = optional(data, "top_k", int, 50, where)
+    max_output_tokens = optional(data, "max_output_tokens", int, 50, where)
+    library = inferscale_section(data, model=runtime.resolve_model(raw_model), top_k=top_k, where=where)
+    nested = section_of(data, "inferscale", where)
+    if "prompt" in nested:
+        raise ConfigError(f"{where}.inferscale.prompt is fixed by the benchmark protocol.")
+    embedding = section_of(nested, "embedding", f"{where}.inferscale", required=False)
+    if "batch_size" in embedding:
+        raise ConfigError(f"{where}.inferscale.embedding.batch_size is not supported; Mem0 replays individual facts.")
+    generation = section_of(nested, "generation", f"{where}.inferscale", required=False)
+    for key, expected in (("max_tokens", max_output_tokens), ("temperature", 0.0), ("top_p", 1.0)):
+        if key in generation and generation[key] != expected:
+            raise ConfigError(
+                f"{where}.inferscale.generation.{key} must be {expected!r}; "
+                "throughput uses fixed-length deterministic generation configured by max_output_tokens."
+            )
+    mem0 = section_of(data, "mem0", where, required=False)
+    reject_unknown_keys(mem0, ("llm_base_url",), f"{where}.mem0")
+    memory_llm_base_url = optional(
+        mem0, "llm_base_url", str, DEFAULT_EXTRACTION_LLM_BASE_URL, f"{where}.mem0"
+    )
+    _validate_sweeps(section_of(data, "sweeps", where, required=False))
+    label = runtime.model_label(raw_model)
+    layout = runtime.layout
     config = ThroughputConfig(
-        model=resolve_answer_model(raw_model),
-        model_label=model_label,
-        results_dir=ns.results_dir,
-        run_id=ns.run_id or default_run_id(model_label),
-        dataset_path=ns.dataset_path,
-        conditions=tuple(dict.fromkeys(ns.conditions)),
-        user_counts=user_counts,
-        requests_per_user=ns.requests_per_user,
-        max_output_tokens=ns.max_output_tokens,
-        warmup_batches=ns.warmup_batches,
-        top_k=ns.top_k,
-        context_window=ns.context_window,
-        seed=ns.seed,
-        kv_gpu_memory_utilization=ns.kv_gpu_memory_utilization,
-        kv_max_model_len=ns.kv_max_model_len,
-        kv_max_position=ns.kv_max_position,
-        kv_dtype=ns.kv_dtype,
-        kv_device=ns.kv_device,
-        kv_block_size=ns.kv_block_size,
-        kv_connector_module=ns.kv_connector_module,
-        kv_enable_prefix_caching=ns.kv_enable_prefix_caching,
-        kv_store_backend=ns.kv_store_backend,
-        kv_staging_slots=ns.kv_staging_slots,
-        kv_chunk_cache_enabled=ns.kv_chunk_cache_enabled,
-        jasper_device_kv_selection=ns.jasper_device_kv_selection,
-        embedding_model=ns.embedding_model,
-        embedding_api_key=ns.embedding_api_key,
-        embedding_base_url=ns.embedding_base_url,
-        embedding_cache_enabled=ns.embedding_cache_enabled,
-        embedding_cache_dir=ns.embedding_cache_dir,
-        memory_llm_provider=ns.memory_llm_provider,
-        memory_llm_base_url=ns.memory_llm_base_url,
-        memory_llm_cache_dir=ns.memory_llm_cache_dir,
-        jasper_n_neighbors=ns.jasper_n_neighbors,
-        jasper_alpha=ns.jasper_alpha,
-        jasper_workspace_budget=ns.jasper_workspace_budget,
-        jasper_beam_width=ns.jasper_beam_width,
+        model=library.model,
+        model_label=label,
+        results_dir=expand_path(optional(data, "results_dir", str, str(layout.results_root), where), root=runtime.root),
+        run_id=optional(data, "run_id", str, None, where) or default_run_id(label),
+        dataset_path=expand_path(optional(data, "dataset_path", str, "data/locomo10.json", where), root=runtime.root),
+        conditions=str_list(data, "conditions", where, default=ALL_CONDITIONS),
+        user_counts=int_list(data, "user_counts", where, default=DEFAULT_USER_COUNTS),
+        requests_per_user=optional(data, "requests_per_user", int, 2, where),
+        max_output_tokens=max_output_tokens,
+        warmup_batches=optional(data, "warmup_batches", int, 2, where),
+        top_k=top_k,
+        context_window=optional(data, "context_window", int, 50, where),
+        seed=optional(data, "seed", int, 42, where),
+        log_level=optional(data, "log_level", str, "INFO", where),
+        kv_gpu_memory_utilization=library.engine.gpu_memory_utilization,
+        kv_max_model_len=library.engine.max_model_len,
+        kv_max_position=library.kv.max_position,
+        kv_dtype=library.kv.dtype,
+        kv_device=library.kv.device,
+        kv_block_size=library.engine.block_size,
+        kv_connector_module=library.engine.connector_module,
+        kv_enable_prefix_caching=library.engine.enable_prefix_caching,
+        kv_store_backend=library.kv.store_backend,
+        kv_staging_slots=library.kv.staging_slots,
+        kv_chunk_cache_enabled=optional(data, "kv_chunk_cache_enabled", bool, True, where),
+        embedding_model=library.embedding.model,
+        embedding_api_key=embedding_api_key(),
+        embedding_base_url=library.embedding.base_url,
+        embedding_cache_enabled=optional(data, "embedding_cache_enabled", bool, True, where),
+        embedding_cache_dir=layout.embedding_cache_dir,
+        memory_llm_base_url=memory_llm_base_url,
+        memory_llm_cache_dir=layout.memory_llm_cache_dir,
+        local_store_dir=layout.local_store_dir,
+        jasper_n_neighbors=library.index.n_neighbors,
+        jasper_alpha=library.index.alpha,
+        jasper_workspace_budget=library.index.workspace_budget,
+        jasper_beam_width=library.index.beam_width,
     )
-    return config, bool(ns.dry_run)
+    return config
 
 
-def _validate_positive_options(ns: argparse.Namespace) -> None:
+def _validate_sweeps(sweeps: dict[str, Any]) -> None:
+    for name in sweeps:
+        where = f"memory-throughput.sweeps.{name}"
+        sweep = section_of(sweeps, name, "memory-throughput.sweeps")
+        reject_unknown_keys(sweep, ("run_prefix", "conditions", "kv_store_backend", "kv_staging_slots"), where)
+        if not optional(sweep, "run_prefix", str, "throughput", where).strip():
+            raise ConfigError(f"{where}.run_prefix must be non-empty.")
+        conditions = str_list(sweep, "conditions", where, default=ALL_CONDITIONS)
+        _validate_conditions(conditions, where)
+        backend = optional(sweep, "kv_store_backend", str, DEFAULT_KV_STORE_BACKEND, where)
+        if backend not in KNOWN_KV_STORE_BACKENDS:
+            raise ConfigError(f"{where}.kv_store_backend must be one of {KNOWN_KV_STORE_BACKENDS}.")
+        if optional(sweep, "kv_staging_slots", int, DEFAULT_KV_STAGING_SLOTS, where) < 1:
+            raise ConfigError(f"{where}.kv_staging_slots must be greater than zero.")
+
+
+def _validate_conditions(conditions: tuple[str, ...], where: str) -> None:
+    if not conditions or any(condition not in ALL_CONDITIONS for condition in conditions):
+        raise ConfigError(f"{where}.conditions must be a non-empty list containing only {ALL_CONDITIONS}.")
+    if len(set(conditions)) != len(conditions):
+        raise ConfigError(f"{where}.conditions must not contain duplicates.")
+
+
+def _validate_config(config: ThroughputConfig) -> None:
+    data = asdict(config)
+    where = "memory-throughput"
     for name in (
-        "requests_per_user",
-        "max_output_tokens",
-        "top_k",
-        "kv_max_model_len",
-        "kv_max_position",
-        "kv_block_size",
-        "kv_staging_slots",
-        "jasper_n_neighbors",
-        "jasper_beam_width",
+        "requests_per_user", "max_output_tokens", "warmup_batches", "top_k", "context_window", "seed",
+        "kv_max_model_len", "kv_max_position", "kv_block_size", "kv_staging_slots",
+        "jasper_n_neighbors", "jasper_beam_width",
     ):
-        if getattr(ns, name) <= 0:
-            raise ValueError(f"--{name.replace('_', '-')} must be greater than zero.")
-    if ns.warmup_batches < 0:
-        raise ValueError("--warmup-batches must be at least zero.")
-    if ns.context_window < 0:
-        raise ValueError("--context-window must be at least zero.")
-    if not 0 < ns.kv_gpu_memory_utilization < 1:
-        raise ValueError("--gpu-memory-utilization must be between zero and one.")
-    uses_jasper = any(condition_vector_backend(condition) == "jasper" for condition in ns.conditions)
-    if uses_jasper and max(ns.jasper_beam_width, ns.top_k) > MAX_JASPER_BEAM_WIDTH:
-        raise ValueError(
-            f"Effective Jasper beam width must be at most {MAX_JASPER_BEAM_WIDTH}."
-        )
+        value = require(data, name, int, where)
+        lower_bound = 0 if name in {"warmup_batches", "context_window", "seed"} else 1
+        if value < lower_bound:
+            raise ConfigError(f"{where}.{name} must be at least {lower_bound}.")
+    for name in ("kv_enable_prefix_caching", "kv_chunk_cache_enabled", "embedding_cache_enabled"):
+        require(data, name, bool, where)
+    for name in (
+        "model", "model_label", "run_id", "log_level", "kv_dtype", "kv_device", "kv_connector_module",
+        "kv_store_backend", "embedding_model", "memory_llm_provider", "memory_llm_model", "jasper_workspace_budget",
+    ):
+        if not require(data, name, str, where).strip():
+            raise ConfigError(f"{where}.{name} must be non-empty.")
+    for name in ("embedding_api_key", "embedding_base_url", "memory_llm_base_url"):
+        if data[name] is not None:
+            require(data, name, str, where)
+    for name in ("kv_gpu_memory_utilization", "jasper_alpha"):
+        value = require(data, name, (int, float), where)
+        if not math.isfinite(value) or value <= 0:
+            raise ConfigError(f"{where}.{name} must be a finite positive number.")
+    if config.kv_gpu_memory_utilization >= 1:
+        raise ConfigError(f"{where}.kv_gpu_memory_utilization must be between zero and one.")
+    if config.kv_store_backend not in KNOWN_KV_STORE_BACKENDS:
+        raise ConfigError(f"{where}.kv_store_backend must be one of {KNOWN_KV_STORE_BACKENDS}.")
+    if config.kv_dtype.lower() not in KV_DTYPES:
+        raise ConfigError(f"{where}.kv_dtype must be one of {KV_DTYPES}.")
+    if config.memory_llm_provider != "vllm":
+        raise ConfigError(f"{where}.memory_llm_provider must be vllm.")
+    if config.log_level.upper() not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+        raise ConfigError(f"{where}.log_level must be DEBUG, INFO, WARNING, ERROR, or CRITICAL.")
+    _validate_conditions(config.conditions, where)
+    if (
+        not config.user_counts
+        or any(not isinstance(count, int) or isinstance(count, bool) or count < 1 for count in config.user_counts)
+        or len(set(config.user_counts)) != len(config.user_counts)
+    ):
+        raise ConfigError(f"{where}.user_counts must be distinct positive integers.")
+    uses_jasper = any(condition_vector_backend(condition) == "jasper" for condition in config.conditions)
+    if uses_jasper and max(config.jasper_beam_width, config.top_k) > MAX_JASPER_BEAM_WIDTH:
+        raise ConfigError(f"Effective Jasper beam width must be at most {MAX_JASPER_BEAM_WIDTH}.")
 
 
 def _slug(value: str) -> str:

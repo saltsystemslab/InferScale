@@ -1,29 +1,31 @@
 from __future__ import annotations
 
-import argparse
-import os
-import sys
-from dataclasses import asdict, dataclass, field
+from collections.abc import Mapping
+from dataclasses import InitVar, asdict, dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
-from benchmarks.memory.config import (
-    DEFAULT_EMBEDDING_MODEL,
-    DEFAULT_JUDGE_API_KEY,
-    DEFAULT_JUDGE_BASE_URL,
-    DEFAULT_JUDGE_MODEL,
-    DEFAULT_JUDGE_PROVIDER,
-    DEFAULT_MAX_JUDGE_TOKENS,
-    DEFAULT_MODEL,
-    MAX_JASPER_BEAM_WIDTH,
-    default_run_id,
-    env_flag,
-    resolve_answer_model,
+from benchmarks.common.config import (
+    ConfigError,
+    JudgeConfig,
+    RuntimeConfig,
+    embedding_api_key,
+    expand_path,
+    inferscale_section,
+    int_list,
+    judge_config,
+    load_json_object,
+    load_runtime_config,
+    optional,
+    reject_unknown_keys,
+    section_of,
+    stamp_now,
+    str_list,
 )
-from benchmarks.common.paths import default_embedding_cache_dir, default_results_root
-from inferscale.v1.config import EngineConfig
+from inferscale.v1.config import EmbeddingConfig, EngineConfig
+from inferscale.v1.index.jasper import MAX_JASPER_BEAM_WIDTH
 
-AnswerBackend = Literal["vllm-kv", "vllm-prefix"]
+AnswerBackend = Literal["kv-injection", "prompt-injection"]
 JudgeProvider = Literal["vllm", "none"]
 
 DEFAULT_DATASET = "multihoprag"
@@ -32,43 +34,41 @@ DEFAULT_CONTEXT_WINDOW = 5
 DEFAULT_TOP_K = 15
 DEFAULT_MAX_ANSWER_TOKENS = 64
 DEFAULT_EMBED_BATCH_SIZE = 128
+DEFAULT_EMBEDDING_MODEL = EmbeddingConfig().model
+DEFAULT_JUDGE_PROVIDER = JudgeConfig().provider
+DEFAULT_MAX_JUDGE_TOKENS = JudgeConfig().max_tokens
 # Parse-time slack for the scaffold and the templated question on top of the
 # retrieved chunks; the answer path still enforces the exact budget per query.
 MEMORY_BUDGET_MARGIN_TOKENS = 512
 
 
-def _env_or_default(name: str, default: str) -> str:
-    return os.environ.get(name) or default
-
-
-def _arg_present(argv: list[str], option: str) -> bool:
-    return option in argv or any(value.startswith(f"{option}=") for value in argv)
-
-
 @dataclass(slots=True)
 class RagBenchConfig:
+    runtime: InitVar[RuntimeConfig | None] = None
     dataset_name: str = DEFAULT_DATASET
     data_dir: Path | None = None
-    results_dir: Path = field(default_factory=default_results_root)
-    run_id: str = field(default_factory=default_run_id)
+    results_dir: Path = field(default_factory=lambda: load_runtime_config().layout.results_root)
+    run_id: str = field(default_factory=stamp_now)
 
-    model: str = DEFAULT_MODEL
-    answer_backend: AnswerBackend = "vllm-kv"
+    model: str = "llama"
+    answer_backend: AnswerBackend = "kv-injection"
 
     chunk_size: int = DEFAULT_CHUNK_SIZE
     context_window: int = DEFAULT_CONTEXT_WINDOW
     top_k: int = DEFAULT_TOP_K
 
     judge_provider: JudgeProvider = DEFAULT_JUDGE_PROVIDER
-    judge_model: str = DEFAULT_JUDGE_MODEL
-    judge_base_url: str | None = DEFAULT_JUDGE_BASE_URL
-    judge_api_key: str | None = DEFAULT_JUDGE_API_KEY
+    judge_model: str = field(default_factory=lambda: load_runtime_config().judge_server.model)
+    judge_base_url: str | None = field(
+        default_factory=lambda: load_runtime_config().judge_server.base_url
+    )
+    judge_api_key: str | None = field(default_factory=lambda: load_runtime_config().judge_api_key())
 
     embedding_model: str = DEFAULT_EMBEDDING_MODEL
     embedding_base_url: str | None = None
-    embedding_api_key: str | None = None
+    embedding_api_key: str | None = field(default_factory=embedding_api_key)
     embedding_cache_enabled: bool = True
-    embedding_cache_dir: Path = field(default_factory=default_embedding_cache_dir)
+    embedding_cache_dir: Path = field(default_factory=lambda: load_runtime_config().layout.embedding_cache_dir)
     embed_batch_size: int = DEFAULT_EMBED_BATCH_SIZE
 
     jasper_n_neighbors: int = 64
@@ -97,19 +97,17 @@ class RagBenchConfig:
 
     max_queries: int | None = None
     log_every: int = 25
-    estimate_only: bool = False
-    preembed_only: bool = False
-    precompute_kv_only: bool = False
+    log_level: str = "INFO"
     skip_judge: bool = False
-    judge_only: bool = False
     rejudge: bool = False
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, runtime: RuntimeConfig | None) -> None:
         if self.data_dir is None:
             self.data_dir = Path("data") / self.dataset_name
+        self.model = (runtime or load_runtime_config()).resolve_model(self.model)
 
     def result_mode(self) -> str:
-        return "rag-kv" if self.answer_backend == "vllm-kv" else "rag-prefix"
+        return "rag-kv" if self.answer_backend == "kv-injection" else "rag-prefix"
 
     @property
     def jasper_effective_beam_width(self) -> int:
@@ -140,280 +138,173 @@ class RagBenchConfig:
                 data[key] = "<redacted>"
         return data
 
+    @classmethod
+    def from_json_file(
+        cls, path: str | Path, *, runtime: RuntimeConfig | None = None
+    ) -> "RagBenchConfig":
+        return cls.from_dict(load_json_object(path), runtime=runtime)
 
-def parse_args(argv: list[str] | None = None) -> RagBenchConfig:
-    raw_argv = list(sys.argv[1:] if argv is None else argv)
-    parser = argparse.ArgumentParser(
-        prog="rag-jasper-bench",
-        description=(
-            "Run standalone RAG benchmarks (MultiHop-RAG first) with Jasper retrieval "
-            "and InferScale chunked-RoPE KV injection, without Mem0 extraction."
-        ),
-        allow_abbrev=False,
-    )
-    parser.add_argument(
-        "--dataset-name",
-        default=os.environ.get("RAG_DATASET", DEFAULT_DATASET),
-        help="Registered RAG dataset name (currently: multihoprag).",
-    )
-    parser.add_argument(
-        "--data-dir",
-        type=Path,
-        default=_default_data_dir_from_env(),
-        help="Dataset directory (default: data/<dataset-name>).",
-    )
-    parser.add_argument("--results-dir", type=Path, default=default_results_root())
-    parser.add_argument("--run-id", default=default_run_id())
-
-    parser.add_argument(
-        "--model",
-        "--answer-model",
-        dest="model",
-        default=os.environ.get("RAG_MODEL")
-        or os.environ.get("LOCOMO_VLLM_MODEL", DEFAULT_MODEL),
-        help=(
-            "Answer model HF id, local path, or configured alias. "
-            "Built-in aliases: llama, mistral, qwen, qwen3-14b."
-        ),
-    )
-    parser.add_argument(
-        "--answer-backend",
-        choices=["vllm-kv", "vllm-prefix"],
-        default=os.environ.get("RAG_ANSWER_BACKEND", "vllm-kv"),
-        help="Inject retrieved chunks through in-process vLLM KV or a normal prompt prefix.",
-    )
-
-    parser.add_argument(
-        "--chunk-size",
-        type=int,
-        default=int(os.environ.get("RAG_CHUNK_SIZE", str(DEFAULT_CHUNK_SIZE))),
-        help="Tokens per corpus chunk (default:1024).",
-    )
-    parser.add_argument(
-        "--context-window",
-        type=int,
-        default=int(os.environ.get("RAG_CONTEXT_WINDOW", str(DEFAULT_CONTEXT_WINDOW))),
-        help=(
-            "Number of same-document chunks immediately preceding each chunk used as an "
-            "encoding-only prefix whose KV is discarded (vllm-kv only)."
-        ),
-    )
-    parser.add_argument(
-        "--top-k",
-        type=int,
-        default=int(os.environ.get("RAG_TOP_K", str(DEFAULT_TOP_K))),
-        help="Number of chunks to retrieve per query (default: 15).",
-    )
-
-    parser.add_argument(
-        "--judge",
-        dest="judge_provider",
-        choices=["vllm", "none"],
-        default=None,
-        help="Judge provider to use: local OpenAI-compatible vLLM or none.",
-    )
-    parser.add_argument("--judge-model")
-    parser.add_argument("--judge-base-url")
-    parser.add_argument("--judge-api-key")
-
-    parser.add_argument(
-        "--embedding-model",
-        default=os.environ.get("OPENAI_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
-    )
-    parser.add_argument("--embedding-base-url", default=os.environ.get("OPENAI_BASE_URL"))
-    parser.add_argument("--embedding-api-key", default=os.environ.get("OPENAI_API_KEY"))
-    parser.add_argument("--embedding-cache-dir", type=Path, default=default_embedding_cache_dir())
-    parser.add_argument("--no-embedding-cache", action="store_false", dest="embedding_cache_enabled")
-    parser.add_argument(
-        "--embed-batch-size",
-        type=int,
-        default=int(os.environ.get("RAG_EMBED_BATCH_SIZE", str(DEFAULT_EMBED_BATCH_SIZE))),
-    )
-
-    parser.add_argument("--jasper-n-neighbors", type=int, default=64)
-    parser.add_argument("--jasper-alpha", type=float, default=1.0)
-    parser.add_argument("--jasper-workspace-budget", default="10GB")
-    parser.add_argument("--jasper-beam-width", type=int, default=64)
-
-    parser.add_argument("--temperature", type=float, default=0.0)
-    parser.add_argument("--top-p", type=float, default=1.0)
-    parser.add_argument(
-        "--max-answer-tokens",
-        type=int,
-        default=int(os.environ.get("RAG_MAX_ANSWER_TOKENS", str(DEFAULT_MAX_ANSWER_TOKENS))),
-        help="Generation cap; MultiHop-RAG gold answers are short phrases.",
-    )
-    parser.add_argument("--max-judge-tokens", type=int, default=DEFAULT_MAX_JUDGE_TOKENS)
-
-    parser.add_argument(
-        "--kv-connector-module",
-        default=os.environ.get("LOCOMO_KV_CONNECTOR_MODULE", "inferscale.v1.kv.connector"),
-        help="Import path for the GPU MemoryKVConnector module used by in-process vLLM.",
-    )
-    parser.add_argument(
-        "--kv-gpu-memory-utilization",
-        type=float,
-        default=float(os.environ.get("RAG_KV_GPU_MEMORY_UTILIZATION", "0.40")),
-    )
-    parser.add_argument(
-        "--kv-block-size",
-        type=int,
-        default=int(os.environ.get("LOCOMO_KV_BLOCK_SIZE", "16")),
-        help="vLLM KV-cache block size. The passages footer protects chunks from its partial tail.",
-    )
-    parser.add_argument(
-        "--kv-max-model-len",
-        type=int,
-        default=int(os.environ.get("RAG_KV_MAX_MODEL_LEN", "32768")),
-    )
-    parser.add_argument(
-        "--kv-max-position",
-        type=int,
-        default=int(os.environ.get("RAG_KV_MAX_POSITION", "32768")),
-    )
-    parser.add_argument("--kv-dtype", default=os.environ.get("LOCOMO_KV_DTYPE", "bfloat16"))
-    parser.add_argument("--kv-device", default=os.environ.get("LOCOMO_KV_DEVICE", "cuda:0"))
-    parser.add_argument(
-        "--kv-prefix-caching",
-        action=argparse.BooleanOptionalAction,
-        dest="kv_enable_prefix_caching",
-        default=env_flag("LOCOMO_KV_ENABLE_PREFIX_CACHING", True),
-        help="vLLM automatic prefix caching (vllm-prefix requires it).",
-    )
-    parser.add_argument(
-        "--kv-chunk-cache-root",
-        type=Path,
-        default=_optional_path_env("RAG_KV_CHUNK_CACHE_ROOT"),
-        help=(
-            "Root of the per-chunk KV precompute cache that the cpu store loads from "
-            "(default: <cache root>/rag-kv-chunks)."
-        ),
-    )
-
-    parser.add_argument("--max-queries", type=int)
-    parser.add_argument("--log-every", type=int, default=int(os.environ.get("RAG_LOG_EVERY", "25")))
-    parser.add_argument(
-        "--estimate-only",
-        action="store_true",
-        help=(
-            "Print corpus, chunk, embedding, and projected KV cache sizes for this "
-            "configuration, then exit without any GPU or network work."
-        ),
-    )
-    parser.add_argument(
-        "--preembed-only",
-        action="store_true",
-        help="Precompute all chunk and query embeddings into the embedding cache, then exit.",
-    )
-    parser.add_argument(
-        "--precompute-kv-only",
-        action="store_true",
-        help=(
-            "Pre-encode every corpus chunk's KV (with its context-window prefix) into "
-            "the per-chunk disk cache for this model, then exit."
-        ),
-    )
-    parser.add_argument(
-        "--skip-judge",
-        action="store_true",
-        help="Generate predictions without calling the judge endpoint.",
-    )
-    parser.add_argument(
-        "--judge-only",
-        action="store_true",
-        help="Judge missing results in an existing run directory and regenerate summary.json.",
-    )
-    parser.add_argument(
-        "--rejudge",
-        action="store_true",
-        help="With --judge-only, replace existing judge results instead of only filling missing results.",
-    )
-
-    ns = parser.parse_args(raw_argv)
-    if ns.top_k < 1:
-        parser.error("--top-k must be >= 1.")
-    if ns.chunk_size < 1:
-        parser.error("--chunk-size must be >= 1.")
-    if ns.context_window < 0:
-        parser.error("--context-window must be >= 0.")
-    if ns.embed_batch_size < 1:
-        parser.error("--embed-batch-size must be >= 1.")
-    if ns.jasper_beam_width < 1:
-        parser.error("--jasper-beam-width must be >= 1.")
-    if max(ns.jasper_beam_width, ns.top_k) > MAX_JASPER_BEAM_WIDTH:
-        parser.error(
-            "Effective Jasper beam width must be <= "
-            f"{MAX_JASPER_BEAM_WIDTH}; got max({ns.jasper_beam_width}, {ns.top_k})."
+    @classmethod
+    def from_dict(
+        cls, data: Mapping[str, Any], *, runtime: RuntimeConfig | None = None
+    ) -> "RagBenchConfig":
+        runtime = runtime or load_runtime_config()
+        where = "rag"
+        reject_unknown_keys(
+            data,
+            (
+                "benchmark", "dataset", "data_dir", "models", "model", "results_dir",
+                "run_id", "answer_backend", "chunk_size", "context_window", "top_k",
+                "max_queries", "log_every", "log_level", "embed_batch_size",
+                "embedding_cache_enabled", "embedding_cache_dir", "kv_chunk_cache_root",
+                "skip_judge", "rejudge", "inferscale", "judge", "sweeps",
+            ),
+            where,
         )
-    if ns.kv_block_size < 1:
-        parser.error("--kv-block-size must be >= 1.")
-    memory_budget = min(ns.kv_max_position, ns.kv_max_model_len - ns.max_answer_tokens)
-    if ns.top_k * ns.chunk_size + MEMORY_BUDGET_MARGIN_TOKENS > memory_budget:
-        parser.error(
-            f"top_k x chunk_size + {MEMORY_BUDGET_MARGIN_TOKENS} scaffold/query margin "
-            f"({ns.top_k} x {ns.chunk_size} + {MEMORY_BUDGET_MARGIN_TOKENS}) exceeds the "
-            f"memory budget min(--kv-max-position, --kv-max-model-len - --max-answer-tokens) "
-            f"= {memory_budget}. Lower --top-k or --chunk-size, or raise the limits."
+        if optional(data, "benchmark", str, "rag", where) != "rag":
+            raise ConfigError("rag.benchmark must be 'rag'.")
+        if "model" in data and "models" in data:
+            raise ConfigError("rag must specify model or models, not both.")
+        models = (
+            [optional(data, "model", str, "llama", where)]
+            if "models" not in data else str_list(data, "models", where)
         )
-    if ns.answer_backend == "vllm-prefix" and not ns.kv_enable_prefix_caching:
-        parser.error(
-            "--answer-backend vllm-prefix requires prefix caching; pass --kv-prefix-caching "
-            "or unset LOCOMO_KV_ENABLE_PREFIX_CACHING."
+        if len(models) != 1:
+            raise ConfigError("A RAG invocation requires one model; use the sweep launcher for multiple models.")
+        model = runtime.resolve_model(models[0])
+        top_k = optional(data, "top_k", int, DEFAULT_TOP_K, where)
+        raw_library = dict(section_of(data, "inferscale", where, required=False))
+        reject_unknown_keys(raw_library, ("engine", "kv", "index", "embedding", "generation"), "rag.inferscale")
+        # RAG has a shorter generation cap and host-resident corpus KV.
+        raw_library["generation"] = {
+            "max_tokens": DEFAULT_MAX_ANSWER_TOKENS,
+            **section_of(raw_library, "generation", "rag.inferscale", required=False),
+        }
+        raw_library["kv"] = {
+            "store_backend": "cpu",
+            **section_of(raw_library, "kv", "rag.inferscale", required=False),
+        }
+        library = inferscale_section({"inferscale": raw_library}, model=model, top_k=top_k, where=where)
+        if library.kv.store_backend != "cpu":
+            raise ConfigError("rag.inferscale.kv.store_backend must be cpu.")
+        judge = judge_config(section_of(data, "judge", where, required=False), runtime, where="rag.judge")
+        if judge.with_evidence:
+            raise ConfigError("rag.judge.with_evidence is not supported by the RAG judge.")
+        skip_judge = optional(data, "skip_judge", bool, False, where)
+        dataset_name = optional(data, "dataset", str, DEFAULT_DATASET, where)
+        from benchmarks.rag.datasets import get_dataset
+
+        try:
+            dataset_name = get_dataset(dataset_name).name
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from exc
+
+        def path_value(key: str, default: Path | None) -> Path | None:
+            value = optional(data, key, str, None, where)
+            return expand_path(value, root=runtime.root) if value is not None else default
+
+        config = cls(
+            runtime=runtime,
+            dataset_name=dataset_name,
+            data_dir=path_value("data_dir", runtime.root / "data" / dataset_name),
+            results_dir=path_value("results_dir", runtime.layout.results_root),
+            run_id=optional(data, "run_id", str, stamp_now(), where),
+            model=models[0],
+            answer_backend=optional(data, "answer_backend", str, "kv-injection", where),
+            chunk_size=optional(data, "chunk_size", int, DEFAULT_CHUNK_SIZE, where),
+            context_window=optional(data, "context_window", int, DEFAULT_CONTEXT_WINDOW, where),
+            top_k=top_k,
+            judge_provider="none" if skip_judge else judge.provider,
+            judge_model=judge.model,
+            judge_base_url=judge.base_url,
+            judge_api_key=judge.api_key,
+            embedding_model=library.embedding.model,
+            embedding_base_url=library.embedding.base_url,
+            embedding_api_key=embedding_api_key(),
+            embedding_cache_enabled=optional(data, "embedding_cache_enabled", bool, True, where),
+            embedding_cache_dir=path_value("embedding_cache_dir", runtime.layout.embedding_cache_dir),
+            embed_batch_size=optional(data, "embed_batch_size", int, library.embedding.batch_size, where),
+            jasper_n_neighbors=library.index.n_neighbors,
+            jasper_alpha=library.index.alpha,
+            jasper_workspace_budget=library.index.workspace_budget,
+            jasper_beam_width=library.index.beam_width,
+            temperature=library.generation.temperature,
+            top_p=library.generation.top_p,
+            max_answer_tokens=library.generation.max_tokens,
+            max_judge_tokens=judge.max_tokens,
+            kv_connector_module=library.engine.connector_module,
+            kv_gpu_memory_utilization=library.engine.gpu_memory_utilization,
+            kv_block_size=library.engine.block_size,
+            kv_max_model_len=library.engine.max_model_len,
+            kv_max_position=library.kv.max_position,
+            kv_dtype=library.kv.dtype,
+            kv_device=library.kv.device,
+            kv_enable_prefix_caching=library.engine.enable_prefix_caching,
+            kv_chunk_cache_root=path_value("kv_chunk_cache_root", runtime.layout.rag_kv_chunk_cache_root),
+            max_queries=optional(data, "max_queries", int, None, where),
+            log_every=optional(data, "log_every", int, 25, where),
+            log_level=optional(data, "log_level", str, "INFO", where).upper(),
+            skip_judge=skip_judge or judge.provider == "none",
+            rejudge=optional(data, "rejudge", bool, False, where),
         )
-    if ns.skip_judge and ns.judge_provider is not None:
-        parser.error("--skip-judge cannot be combined with --judge.")
-    try:
-        ns.judge_provider = _resolve_judge_provider(ns.judge_provider, skip_judge=ns.skip_judge)
-    except ValueError as exc:
-        parser.error(str(exc))
-    if ns.judge_provider == "none":
-        ns.skip_judge = True
-    if ns.rejudge and not ns.judge_only:
-        parser.error("--rejudge requires --judge-only.")
-    if ns.judge_only and ns.judge_provider == "none":
-        parser.error("--judge-only requires --judge vllm.")
-    _resolve_judge_connection(ns, explicit_argv=raw_argv)
-    ns.model = resolve_answer_model(ns.model)
-    return RagBenchConfig(**vars(ns))
+        _validate(config)
+        _validate_sweeps(section_of(data, "sweeps", where, required=False))
+        return config
 
 
-def _default_data_dir_from_env() -> Path | None:
-    for name in ("RAG_DATA_DIR", "MULTIHOP_RAG_DATA_DIR"):
-        value = os.environ.get(name)
-        if value:
-            return Path(value)
-    return None
-
-
-def _optional_path_env(name: str) -> Path | None:
-    value = os.environ.get(name)
-    return Path(value) if value else None
-
-
-def _resolve_judge_provider(value: str | None, *, skip_judge: bool) -> JudgeProvider:
-    if skip_judge:
-        return "none"
-    resolved = value or os.environ.get("JUDGE_PROVIDER") or DEFAULT_JUDGE_PROVIDER
-    if resolved not in {"vllm", "none"}:
-        raise ValueError(f"JUDGE_PROVIDER must be vllm or none, got {resolved!r}.")
-    return resolved  # type: ignore[return-value]
-
-
-def _resolve_judge_connection(ns: argparse.Namespace, *, explicit_argv: list[str]) -> None:
-    explicit_model = _arg_present(explicit_argv, "--judge-model")
-    explicit_base_url = _arg_present(explicit_argv, "--judge-base-url")
-    explicit_api_key = _arg_present(explicit_argv, "--judge-api-key")
-
-    if ns.judge_provider == "vllm":
-        ns.judge_model = ns.judge_model if explicit_model else _env_or_default("JUDGE_MODEL", DEFAULT_JUDGE_MODEL)
-        ns.judge_base_url = ns.judge_base_url if explicit_base_url else _env_or_default(
-            "JUDGE_BASE_URL",
-            DEFAULT_JUDGE_BASE_URL,
+def _validate(config: RagBenchConfig) -> None:
+    if config.answer_backend not in {"kv-injection", "prompt-injection"}:
+        raise ConfigError("rag.answer_backend must be kv-injection or prompt-injection.")
+    for name in ("top_k", "chunk_size", "embed_batch_size", "log_every", "max_answer_tokens"):
+        if getattr(config, name) < 1:
+            raise ConfigError(f"rag.{name} must be >= 1.")
+    if config.context_window < 0:
+        raise ConfigError("rag.context_window must be >= 0.")
+    if config.max_queries is not None and config.max_queries < 1:
+        raise ConfigError("rag.max_queries must be >= 1 or null.")
+    if not config.run_id.strip() or Path(config.run_id).name != config.run_id or config.run_id in {".", ".."}:
+        raise ConfigError("rag.run_id must be a non-empty directory name.")
+    if config.log_level not in {"TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL"}:
+        raise ConfigError("rag.log_level is not a supported logging level.")
+    if config.answer_backend == "prompt-injection" and not config.kv_enable_prefix_caching:
+        raise ConfigError("rag.answer_backend prompt-injection requires inferscale.engine.enable_prefix_caching.")
+    budget = min(config.kv_max_position, config.kv_max_model_len - config.max_answer_tokens)
+    if config.top_k * config.chunk_size + MEMORY_BUDGET_MARGIN_TOKENS > budget:
+        raise ConfigError(
+            f"top_k x chunk_size + {MEMORY_BUDGET_MARGIN_TOKENS} scaffold/query margin exceeds "
+            f"the memory budget min(inferscale.kv.max_position, "
+            f"inferscale.engine.max_model_len - inferscale.generation.max_tokens) = {budget}."
         )
-        ns.judge_api_key = ns.judge_api_key if explicit_api_key else _env_or_default(
-            "JUDGE_API_KEY",
-            DEFAULT_JUDGE_API_KEY,
-        )
-        return
 
-    ns.judge_model = ns.judge_model or ""
+
+def _validate_sweeps(sweeps: Mapping[str, Any]) -> None:
+    for name in sweeps:
+        where = f"rag.sweeps.{name}"
+        sweep = section_of(sweeps, name, "rag.sweeps")
+        reject_unknown_keys(sweep, ("log_dir_prefix", "top_k", "answer_backends"), where)
+        optional(sweep, "log_dir_prefix", str, "rag-sweep-logs", where)
+        if any(k < 1 or k > MAX_JASPER_BEAM_WIDTH for k in int_list(sweep, "top_k", where, default=[DEFAULT_TOP_K])):
+            raise ConfigError(f"{where}.top_k must be between 1 and {MAX_JASPER_BEAM_WIDTH}.")
+        backends = str_list(sweep, "answer_backends", where, default=["kv-injection", "prompt-injection"])
+        if any(backend not in {"kv-injection", "prompt-injection"} for backend in backends):
+            raise ConfigError(f"{where}.answer_backends must contain only kv-injection or prompt-injection.")
+
+
+def load_rag_config(
+    path: str | Path, *, runtime: RuntimeConfig | None = None, stage: str = "run"
+) -> RagBenchConfig:
+    raw = load_json_object(path)
+    config = RagBenchConfig.from_dict(raw, runtime=runtime)
+    validate_rag_stage(config, stage, has_run_id=bool(raw.get("run_id")))
+    return config
+
+
+def validate_rag_stage(config: RagBenchConfig, stage: str, *, has_run_id: bool) -> None:
+    if stage not in {"estimate", "preembed", "precompute-kv", "run", "judge"}:
+        raise ConfigError(f"Unsupported RAG stage: {stage!r}.")
+    if stage == "judge" and (config.judge_provider != "vllm" or config.skip_judge):
+        raise ConfigError("The judge stage requires judge.provider vllm and skip_judge false.")
+    if stage == "judge" and not has_run_id:
+        raise ConfigError("The judge stage requires run_id in the JSON configuration.")
+    if config.rejudge and stage != "judge":
+        raise ConfigError("rag.rejudge requires the judge stage.")

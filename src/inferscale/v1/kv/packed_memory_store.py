@@ -3,20 +3,22 @@ from __future__ import annotations
 import logging
 from typing import Any, Iterable
 
-from .memory_store import GPUMemoryStore, UserMemory, bytes_to_mb, kv_nbytes
+from .memory_store import (
+    DeviceChunkSelectionError,
+    GPUMemoryStore,
+    UserMemory,
+    bytes_to_mb,
+    kv_nbytes,
+)
 
 logger = logging.getLogger(__name__)
-
-
-class DeviceChunkSelectionError(RuntimeError):
-    """A device result cannot be mapped safely to packed chunk rows."""
 
 
 class PackedGPUMemoryStore(GPUMemoryStore):
     """GPU chunk store with a packed tensor layout for device-side selection.
 
-    Before finalization this has the same string-keyed behavior as
-    ``GPUMemoryStore``. Finalization packs each layer along its token axis and
+    Corpus string IDs always resolve through the GPU chunk map.
+    Finalization packs each layer along its token axis and
     replaces the per-fact tensors with views into the packed slabs, preserving
     the ordinary lookup path without retaining a second copy of the KV corpus.
     """
@@ -28,7 +30,7 @@ class PackedGPUMemoryStore(GPUMemoryStore):
         self._packed_token_ids: Any = None
         self._packed_offsets: Any = None
         self._packed_lengths: Any = None
-        self._row_by_user_id: dict[str, int] = {}
+        self._packed_rows_valid = True
         self._max_tokens_per_memory = 0
         self._packed_physical_bytes = 0
 
@@ -61,6 +63,7 @@ class PackedGPUMemoryStore(GPUMemoryStore):
         with self._lock:
             if self._packed:
                 return
+            self._finalize_chunk_lookup_locked()
             user_ids = list(self._memories)
             if not user_ids:
                 self._packed = True
@@ -85,7 +88,7 @@ class PackedGPUMemoryStore(GPUMemoryStore):
                     del sources
             except Exception:
                 # Completed slabs can restore the per-fact lookup views, so
-                # a later-layer allocation failure does not corrupt fallback.
+                # a later-layer allocation failure preserves the stored payloads.
                 for memory, offset, length in zip(memories, offsets, lengths):
                     for layer_name, packed in packed_kv_by_layer.items():
                         memory.kv_by_layer[layer_name] = packed[
@@ -126,14 +129,11 @@ class PackedGPUMemoryStore(GPUMemoryStore):
                     }
                 raise
 
-            for row, (user_id, memory, offset, length) in enumerate(
-                zip(user_ids, memories, offsets, lengths)
-            ):
+            for memory, offset, length in zip(memories, offsets, lengths):
                 memory.kv_by_layer = {
                     layer_name: packed[:, offset : offset + length]
                     for layer_name, packed in packed_kv_by_layer.items()
                 }
-                self._row_by_user_id[user_id] = row
 
             self._packed_kv_by_layer = packed_kv_by_layer
             self._packed_token_ids = packed_token_ids
@@ -162,44 +162,15 @@ class PackedGPUMemoryStore(GPUMemoryStore):
         The returned map is valid while the finalized corpus is immutable.
         Callers remove rows only when every request is complete.
         """
-        import torch
-
-        bindings = [
-            (int(stable_id), str(user_id)) for stable_id, user_id in stable_id_items
-        ]
-        if not bindings:
-            raise ValueError(
-                "Cannot build a device row map without stable-ID bindings."
-            )
-        stable_ids = [stable_id for stable_id, _ in bindings]
-        if any(stable_id < 0 for stable_id in stable_ids):
-            raise ValueError("Jasper stable IDs must be non-negative.")
-        if len(stable_ids) != len(set(stable_ids)):
-            raise ValueError("Jasper stable-ID bindings contain duplicates.")
-        if sorted(stable_ids) != list(range(len(stable_ids))):
-            raise ValueError(
-                "Packed GPU selection requires contiguous Jasper stable IDs starting at zero."
-            )
-
         with self._lock:
             if not self._packed:
                 raise RuntimeError(
                     "The GPU chunk store must be finalized before row-map binding."
                 )
-            row_by_user_id = dict(self._row_by_user_id)
-        dense_rows = [-1] * len(stable_ids)
-        seen_user_ids: set[str] = set()
-        for stable_id, user_id in bindings:
-            if user_id in seen_user_ids:
-                raise ValueError(f"Jasper item ID {user_id!r} is bound more than once.")
-            seen_user_ids.add(user_id)
-            row = row_by_user_id.get(user_id)
-            if row is None:
-                raise ValueError(
-                    f"Jasper item ID {user_id!r} has no packed GPU KV chunk."
-                )
-            dense_rows[stable_id] = row
-        return torch.tensor(dense_rows, device=self._device, dtype=torch.long)
+            if not self._packed_rows_valid:
+                raise RuntimeError("Packed GPU row bindings are invalid after chunk removal.")
+            self._finalize_chunk_lookup_locked()
+            return self._bind_device_rows_locked(stable_id_items)
 
     def select_device_ids(
         self,
@@ -211,42 +182,15 @@ class PackedGPUMemoryStore(GPUMemoryStore):
         """Gather variable-length chunks without materializing Jasper IDs on the host."""
         import torch
 
-        if int(getattr(stable_ids, "ndim", -1)) != 1:
-            raise DeviceChunkSelectionError(
-                "Jasper stable IDs must be a one-dimensional tensor."
-            )
-        if int(stable_ids.numel()) < 1:
-            raise DeviceChunkSelectionError("Jasper returned no stable IDs.")
-        if int(getattr(id_to_row, "ndim", -1)) != 1 or int(id_to_row.numel()) < 1:
-            raise DeviceChunkSelectionError(
-                "The Jasper stable-ID row map is empty or invalid."
-            )
-        if getattr(stable_ids, "device", None) != getattr(id_to_row, "device", None):
-            raise DeviceChunkSelectionError(
-                "Jasper stable IDs and the KV row map must be on the same device."
-            )
-
-        stable_ids = stable_ids.to(dtype=torch.long)
-        valid_range = (stable_ids >= 0) & (stable_ids < int(id_to_row.numel()))
-        safe_ids = torch.where(valid_range, stable_ids, torch.zeros_like(stable_ids))
-        rows = id_to_row.index_select(0, safe_ids)
-        valid = (valid_range & (rows >= 0)).all()
-        if int(stable_ids.numel()) > 1:
-            sorted_ids = torch.sort(stable_ids).values
-            valid = valid & (sorted_ids[1:] != sorted_ids[:-1]).all()
-        if not bool(valid.item()):
-            raise DeviceChunkSelectionError(
-                "Jasper returned a padded, invalid, unmapped, or duplicate stable ID."
-            )
-
-        if reverse:
-            rows = torch.flip(rows, dims=(0,))
-
         with self._lock:
             if not self._packed:
                 raise RuntimeError(
                     "The GPU chunk store must be finalized before selection."
                 )
+            if not self._packed_rows_valid:
+                raise RuntimeError("Packed GPU row bindings are invalid after chunk removal.")
+            self._finalize_chunk_lookup_locked()
+            rows = self._device_rows_locked(stable_ids, id_to_row, reverse=reverse)
             layer_names = tuple(self._packed_kv_by_layer)
             packed_token_ids = self._packed_token_ids
             packed_offsets = self._packed_offsets
@@ -285,22 +229,27 @@ class PackedGPUMemoryStore(GPUMemoryStore):
         if not removed:
             return False
         with self._lock:
-            self._row_by_user_id.pop(user_id, None)
+            if self._packed:
+                self._packed_rows_valid = False
             if not self._memories:
                 self._clear_packed_locked()
         return True
 
-    def get_stats(self) -> dict[str, int | float]:
+    def get_stats(self) -> dict[str, Any]:
         with self._lock:
             physical_bytes = (
                 self._packed_physical_bytes
                 if self._packed and self._memories
                 else self._total_bytes
             )
+            lookup_bytes = self._chunk_lookup.nbytes if self._chunk_lookup else 0
             return {
                 "num_users": len(self._memories),
                 "total_tokens": self._total_tokens,
-                "total_gpu_mb": bytes_to_mb(physical_bytes),
+                "total_gpu_mb": bytes_to_mb(physical_bytes + lookup_bytes),
+                "gpu_chunk_map_mb": bytes_to_mb(lookup_bytes),
+                "chunk_map_bytes": lookup_bytes,
+                "chunk_map_device": str(self._chunk_lookup.device) if self._chunk_lookup else None,
             }
 
     def _gather_packed_layer(self, layer_name: str, source_indices: Any) -> Any:
@@ -317,7 +266,6 @@ class PackedGPUMemoryStore(GPUMemoryStore):
         self._packed_token_ids = None
         self._packed_offsets = None
         self._packed_lengths = None
-        self._row_by_user_id.clear()
         self._max_tokens_per_memory = 0
         self._packed_physical_bytes = 0
 

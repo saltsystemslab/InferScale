@@ -11,8 +11,10 @@ from typing import Any, Literal
 from loguru import logger
 
 from benchmarks.memory.protocol import MEM0AI_VERSION, MEMORY_EXTRACTION_MAX_TOKENS
-from benchmarks.common.paths import default_mem0_dir_string
+from benchmarks.common.paths import mem0_dir_from_environment
 from benchmarks.common.vector_types import VECTOR_DISTANCE, VectorStoreConfig
+from benchmarks.common.config import DEFAULT_EXTRACTION_LLM_BASE_URL
+from inferscale.v1.embedding.openai import DEFAULT_OPENAI_BASE_URL
 
 # Extraction sampling temperature. Part of the fact-catalog and LLM-cache
 # identity: changing it must not silently replay catalogs extracted at the
@@ -38,7 +40,7 @@ def create_mem0_memory(
         raise RuntimeError(
             f"This benchmark requires mem0ai=={MEM0AI_VERSION}, found {installed_version}."
         )
-    os.environ.setdefault("MEM0_DIR", default_mem0_dir_string())
+    os.environ.setdefault("MEM0_DIR", str(mem0_dir_from_environment()))
     os.environ.setdefault("MEM0_TELEMETRY", "false")
     register_mem0_jasper_provider()
     try:
@@ -87,21 +89,21 @@ def build_mem0_config(
     if not memory_llm_model:
         raise ValueError("Mem0 LLM model must not be empty.")
 
-    embedder_config: dict[str, Any] = {"model": embedding_model}
+    embedder_config: dict[str, Any] = {
+        "model": embedding_model,
+        "openai_base_url": embedding_base_url or DEFAULT_OPENAI_BASE_URL,
+    }
     if embedding_api_key:
         embedder_config["api_key"] = embedding_api_key
-    if embedding_base_url:
-        embedder_config["openai_base_url"] = embedding_base_url
 
     memory_llm_config: dict[str, Any] = {
         "model": memory_llm_model,
         "temperature": MEMORY_LLM_TEMPERATURE,
         "max_tokens": MEMORY_EXTRACTION_MAX_TOKENS,
+        "vllm_base_url": memory_llm_base_url or DEFAULT_EXTRACTION_LLM_BASE_URL,
     }
     if memory_llm_api_key:
         memory_llm_config["api_key"] = memory_llm_api_key
-    if memory_llm_base_url:
-        memory_llm_config["vllm_base_url"] = memory_llm_base_url
 
     store_root = Path(store_root)
     return {
@@ -149,7 +151,7 @@ def _install_jasper_config_module() -> None:
         collection_name: str = Field("memories", description="Name of the collection")
         embedding_model_dims: int | None = Field(1536, description="Dimensions of the embedding model")
         path: str = Field(
-            default_factory=default_mem0_dir_string,
+            default_factory=lambda: str(mem0_dir_from_environment()),
             description="Path for the Jasper vector store",
         )
         backend: Literal["jasper", "qdrant"] = Field("jasper", description="Concrete vector store backend")

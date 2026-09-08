@@ -67,6 +67,12 @@ class OpenAICompatibleChatClient:
         return ChatResult(content=content)
 
 
+"""
+Converts different response-content formats into one plain string.
+- None becomes "".
+- A list of content blocks has its text extracted and concatenated, without
+adding separators.
+"""
 def _normalize_message_content(content: Any) -> str:
     if content is None:
         return ""
@@ -82,6 +88,12 @@ def _normalize_message_content(content: Any) -> str:
     return str(content)
 
 
+"""
+Extracts text from one item in a multipart response
+- String: returns it unchanged
+- Dictionary: reads "text" as if that key exists, otherwise "content"
+- Object: reads .text, falling back to .content if .text is None
+"""
 def _content_part_text(item: Any) -> str:
     if isinstance(item, str):
         return item

@@ -5,38 +5,35 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 cd "${PROJECT_ROOT}"
 
-# shellcheck source=scripts/load_env.sh
-source "${SCRIPT_DIR}/load_env.sh"
+if (($#)); then
+  echo "setup_remote.sh takes no arguments; edit configs/setup.json and configs/runtime.json." >&2
+  exit 2
+fi
+# shellcheck source=scripts/environment.sh
+source "${SCRIPT_DIR}/environment.sh"
+load_benchmark_environment "${PROJECT_ROOT}/configs/setup.json" prepare-launch
+_SETUP_EXPORTS="$(python3 - <<'PYSETUP'
+from pathlib import Path
+from benchmarks.common.setup_config import shell_exports
+print(shell_exports(Path("configs/setup.json")))
+PYSETUP
+)"
+eval "${_SETUP_EXPORTS}"
+unset _SETUP_EXPORTS
 # shellcheck source=scripts/runpod_cuda_cmake.sh
 source "${SCRIPT_DIR}/runpod_cuda_cmake.sh"
 
-CUDA_MODULE="${CUDA_MODULE-cuda/12.8}"
-PYTORCH_INDEX="${PYTORCH_INDEX:-https://download.pytorch.org/whl/cu128}"
-JASPER_CUDA_ARCHITECTURES="${JASPER_CUDA_ARCHITECTURES:-native}"
-CONSTRAINTS_FILE="${CONSTRAINTS_FILE:-constraints-cu128.txt}"
-VENV_DIR="${VENV_DIR:-.venv}"
-LOCOMO_DATASET_PATH="${LOCOMO_DATASET_PATH:-data/locomo10.json}"
-LOCOMO_DATASET_URL="${LOCOMO_DATASET_URL:-}"
-if [[ -z "${LOCOMO_DATASET_URL}" ]]; then
-  LOCOMO_DATASET_URL="https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json"
-fi
-
 if [[ "${FRESH_REMOTE_BUILD:-0}" == "1" ]]; then
   rm -rf "${VENV_DIR}" .cache tmp jasperpy/build jasperpy/python/jasper/lib/*.so
-  # Recreate runtime-backed paths after removing the local .cache entry.
-  # shellcheck source=scripts/load_env.sh
-  source "${SCRIPT_DIR}/load_env.sh"
+  # Recreate runtime-backed paths after removing local cache/build entries.
+  load_benchmark_environment "${PROJECT_ROOT}/configs/setup.json" prepare-launch
 fi
 
 if [[ "${SKIP_SUBMODULE_INIT:-0}" != "1" ]]; then
   git submodule update --init --recursive jasperpy
 fi
 
-if [[ "${BENCHMARK_USE_SCRATCH:-1}" != "0" ]]; then
-  echo "Using benchmark runtime root: ${BENCHMARK_RUNTIME_ROOT}"
-else
-  echo "Using project-local cache/results directories."
-fi
+echo "Using benchmark runtime root: ${BENCHMARK_RUNTIME_ROOT}"
 echo "Using benchmark cache root: ${BENCHMARK_CACHE_ROOT}"
 echo "Using benchmark results root: ${BENCHMARK_RESULTS_ROOT}"
 
@@ -116,13 +113,13 @@ cmake --install jasperpy/build
 python -m pip install -e jasperpy/python
 
 python - <<'PY'
-import locomo_jasper_bench
+import inferscale
 import accelerate
 import torch
 import transformers
 import vllm
 
-print("locomo_jasper_bench:", locomo_jasper_bench.__version__)
+print("inferscale:", inferscale.__version__)
 print("accelerate:", accelerate.__version__)
 print("torch:", torch.__version__)
 print("torch cuda:", torch.version.cuda)
@@ -132,13 +129,14 @@ PY
 
 # Timed runs consume immutable Mem0 fact catalogs, so extraction is part of
 # setup: scripts/extract_facts.sh serves each answer model on a temporary
-# local vLLM server and runs the bounded --preembed-only protocol against it.
-# Set SKIP_EXTRACTION=1 to defer it, e.g. to extract in parallel across pods
-# with scripts/individual/extract_<model>.sh.
+# local vLLM server and runs the bounded preembed protocol against it.
+# Set extract_facts=false in the setup JSON to defer extraction.
 if [[ "${SKIP_EXTRACTION:-0}" != "1" ]]; then
-  bash "${SCRIPT_DIR}/extract_facts.sh"
+  # shellcheck source=scripts/launch.sh
+  source "${SCRIPT_DIR}/launch.sh"
+  (run_launch "${EXTRACTION_LAUNCH_CONFIG}")
 else
-  echo "Skipping Mem0 fact extraction (SKIP_EXTRACTION=1); run scripts/extract_facts.sh before the benchmarks."
+  echo "Skipping Mem0 fact extraction (setup JSON extract_facts=false); run scripts/extract_facts.sh before the benchmarks."
 fi
 
 echo "Setup complete. Next: run the sweep (bash scripts/full_run.sh)."

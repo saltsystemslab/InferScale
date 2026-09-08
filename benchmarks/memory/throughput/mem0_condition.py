@@ -12,7 +12,6 @@ from benchmarks.memory.prompting import (
     extract_memory_scaffold_token_ids,
 )
 from benchmarks.memory.mem0.fact_catalog import MemoryFact
-from benchmarks.common.paths import local_store_scratch_dir
 from benchmarks.memory.throughput.config import ThroughputConfig
 from benchmarks.memory.throughput.engine import (
     measure_batch,
@@ -45,7 +44,7 @@ def run_mem0(
 ) -> list[dict[str, Any]]:
     if not config.embedding_api_key and not config.embedding_base_url:
         raise RuntimeError(
-            f"{condition} requires --embedding-api-key/OPENAI_API_KEY or a local --embedding-base-url."
+            f"{condition} requires OPENAI_API_KEY or inferscale.embedding.base_url in the run JSON."
         )
 
     samples = load_samples(config)
@@ -54,7 +53,7 @@ def run_mem0(
 
     llm: Any | None = None
     stores_by_sample: dict[str, Any] = {}
-    mem0_store_root = local_store_scratch_dir(config.run_id) / f"{condition}-stores"
+    mem0_store_root = config.local_store_scratch_dir / f"{condition}-stores"
     if mem0_store_root.exists():
         shutil.rmtree(mem0_store_root)
     try:

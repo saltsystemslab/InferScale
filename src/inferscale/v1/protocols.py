@@ -50,7 +50,13 @@ class VectorIndex(Protocol):
 
 
 class ChunkStore(Protocol):
-    """KV memory store contract shared by the GPU, pinned-host, and packed stores."""
+    """KV payload storage with mandatory CUDA chunk-ID to row lookup.
+
+    The corpus methods resolve IDs through a GPU map for both GPU and pinned
+    host payloads.
+    The single-user methods also serve the composed-request registry, whose
+    bookkeeping is separate from the text-to-KV corpus map.
+    """
 
     num_staging_slots: int
 
@@ -66,11 +72,23 @@ class ChunkStore(Protocol):
 
     def peek_user_memory(self, user_id: str) -> UserMemory | None: ...
 
+    def finalize_chunk_lookup(self) -> None: ...
+
+    def get_chunk_memories(
+        self, chunk_ids: Sequence[str]
+    ) -> list[tuple[str, UserMemory]]: ...
+
+    def build_device_row_map(self, stable_id_items: Iterable[tuple[int, str]]) -> Any: ...
+
+    def get_device_chunk_memories(
+        self, stable_ids: Any, id_to_row: Any, *, reverse: bool = False
+    ) -> list[tuple[str, UserMemory]]: ...
+
     def remove_user_memory(self, user_id: str) -> bool: ...
 
     def get_all_user_ids(self) -> list[str]: ...
 
-    def get_stats(self) -> dict[str, int | float]: ...
+    def get_stats(self) -> dict[str, Any]: ...
 
     def prefetch_user_to_gpu(self, user_id: str) -> bool: ...
 

@@ -90,9 +90,9 @@ class StorageLayout:
         ]
 
     def apply_environment(self) -> None:
-        """Export the cache locations without overriding values already set."""
+        """Export the authoritative cache locations from the runtime JSON."""
         for key, value in self.environment().items():
-            os.environ.setdefault(key, value)
+            os.environ[key] = value
 
     def create_directories(self) -> None:
         for directory in self.directories():

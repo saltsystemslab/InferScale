@@ -35,7 +35,7 @@ from benchmarks.rag.results import (
 from benchmarks.rag.tokenizer import load_rag_tokenizer
 
 # KV geometry (layers, kv_heads, head_dim) for the configured answer models,
-# used only by --estimate-only projections. Unknown models fall back to
+# used only by estimate stage projections. Unknown models fall back to
 # transformers AutoConfig when available.
 _KV_GEOMETRY = {
     "meta-llama/Llama-3.1-8B-Instruct": (32, 8, 128),
@@ -159,7 +159,7 @@ def run_answer(config: RagBenchConfig) -> dict[str, Any]:
 
     cache_dir: Path | None = None
     meta_base: dict[str, Any] | None = None
-    if config.answer_backend == "vllm-kv":
+    if config.answer_backend == "kv-injection":
         fingerprint = corpus_fingerprint(docs)
         cache_dir = rag_chunk_cache_dir(
             model=config.model,
@@ -208,7 +208,7 @@ def run_answer(config: RagBenchConfig) -> dict[str, Any]:
     client: Any | None = None
     try:
         setup_metrics.update(retriever.build())
-        if config.answer_backend == "vllm-kv":
+        if config.answer_backend == "kv-injection":
             from benchmarks.rag.answer_kv import RagKvAnswerClient
 
             assert cache_dir is not None and meta_base is not None
@@ -230,7 +230,7 @@ def run_answer(config: RagBenchConfig) -> dict[str, Any]:
         judge_client = judge_client_for(config)
         if not config.skip_judge and judge_client is None:
             raise RuntimeError(
-                "Judge client is not configured. Use --skip-judge to write unjudged predictions."
+                "Judge client is not configured. Set skip_judge=true in the run JSON to write unjudged predictions."
             )
         client.start_llm()
         with JsonlWriter(config.run_dir / "predictions.jsonl") as writer:

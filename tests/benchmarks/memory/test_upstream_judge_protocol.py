@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from benchmarks.common.clients import ChatResult
-from benchmarks.memory.config import BenchmarkConfig, parse_args
 from benchmarks.memory.data import QuestionAnswer
+from memory_config import make_memory_config
 from benchmarks.memory.judging import judge_qa
 from benchmarks.memory.judge_prompt import build_judge_messages
 from benchmarks.common.judge import parse_judge_response
@@ -47,12 +47,12 @@ def test_judge_does_not_request_structured_output() -> None:
             return ChatResult("true")
 
     judge = RecordingJudge()
-    payload = judge_qa(BenchmarkConfig(), judge, _qa(), "Paris")  # type: ignore[arg-type]
+    payload = judge_qa(make_memory_config(), judge, _qa(), "Paris")  # type: ignore[arg-type]
 
     assert payload["correct"] is True
     assert "response_format" not in judge.kwargs
 
 
-def test_with_evidence_flag_remains_parseable_for_saved_run_compatibility() -> None:
-    assert parse_args(["--skip-judge"]).with_evidence is False
-    assert parse_args(["--skip-judge", "--with-evidence"]).with_evidence is True
+def test_with_evidence_setting_remains_available_for_saved_run_compatibility() -> None:
+    assert make_memory_config(skip_judge=True).with_evidence is False
+    assert make_memory_config(skip_judge=True, judge={'with_evidence': True}).with_evidence is True

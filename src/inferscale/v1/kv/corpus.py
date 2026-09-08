@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..types import KVChunk, ScaffoldChunks
 from .chunk_store import (
@@ -12,22 +12,28 @@ from .chunk_store import (
     close_chunk_store,
     fetch_chunks,
     fetch_device_chunk,
+    fetch_device_chunks,
     finalize_chunk_store,
     register_chunks,
     release_chunks,
 )
 
+if TYPE_CHECKING:
+    from ..protocols import ChunkStore
+
 
 class KVCorpus:
-    """Chunk KV owned by a backend store, with metadata kept locally.
+    """Chunk KV with a GPU ID map and local planning metadata.
 
     ``add`` moves a chunk's tensors into the store and keeps a metadata-only
     copy (token ids and context provenance) for planning and inspection. The
     scaffold chunks (header, empty context, footer) stay as local GPU tensors
     and never enter the store, exactly like the corpus stores they wrap.
+    The store resolves text IDs to numeric KV rows on GPU regardless of
+    whether the corpus payloads are on GPU or in pinned host memory.
     """
 
-    def __init__(self, store: Any) -> None:
+    def __init__(self, store: ChunkStore) -> None:
         self._store = store
         self._meta: dict[str, KVChunk] = {}
         self._registered_bytes = 0
@@ -35,7 +41,7 @@ class KVCorpus:
         self.scaffold: ScaffoldChunks | None = None
 
     @property
-    def store(self) -> Any:
+    def store(self) -> ChunkStore:
         return self._store
 
     def set_scaffold(self, scaffold: ScaffoldChunks) -> None:
@@ -63,12 +69,14 @@ class KVCorpus:
         return self._meta.get(chunk_id)
 
     def fetch(self, chunk_ids: Sequence[str]) -> list[KVChunk]:
+        """Resolve IDs through the store's GPU map and load their KV payloads."""
         return fetch_chunks(self._store, self._meta, list(chunk_ids))
 
     def release(self, chunk_ids: Iterable[str]) -> None:
         release_chunks(self._store, chunk_ids)
 
     def finalize(self) -> None:
+        """Build the mandatory GPU lookup and finalize the payload layout."""
         finalize_chunk_store(self._store)
 
     def build_device_row_map(self, stable_id_items: Iterable[tuple[int, str]]) -> Any:
@@ -76,6 +84,14 @@ class KVCorpus:
 
     def fetch_device_chunk(self, stable_ids: Any, id_to_row: Any) -> KVChunk:
         return fetch_device_chunk(self._store, stable_ids, id_to_row)
+
+    def fetch_device_chunks(
+        self, stable_ids: Any, id_to_row: Any, *, reverse: bool = True
+    ) -> list[KVChunk]:
+        """Resolve Jasper IDs on GPU for either corpus payload backend."""
+        return fetch_device_chunks(
+            self._store, self._meta, stable_ids, id_to_row, reverse=reverse
+        )
 
     def stats(self) -> dict[str, Any]:
         stats: dict[str, Any] = {

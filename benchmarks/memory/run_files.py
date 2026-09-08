@@ -4,14 +4,14 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks.common.files import replace_jsonl, write_json
-from benchmarks.memory.config import BenchmarkConfig
+from benchmarks.memory.config import MemoryRunConfig
 from benchmarks.memory.modes import existing_run_mode
 from benchmarks.memory.reporting import write_query_reports
 from benchmarks.memory.results import summarize_records
 
 
 def write_deferred_judging_outputs(
-    config: BenchmarkConfig,
+    config: MemoryRunConfig,
     predictions_path: Path,
     records: list[dict[str, Any]],
     *,

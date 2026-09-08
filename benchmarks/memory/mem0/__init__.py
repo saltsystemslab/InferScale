@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import os
+
+# Set the harness default before importing adapters, which load the Mem0 SDK.
+os.environ.setdefault("MEM0_TELEMETRY", "false")
+
 from benchmarks.memory.mem0.fact_catalog import MemoryFact, fact_catalog_hits
 from benchmarks.memory.mem0.memory_builder import (
     SampleMemoryBuilder,

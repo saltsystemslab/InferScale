@@ -5,15 +5,15 @@ from typing import Any
 
 from loguru import logger
 
-from benchmarks.memory.config import BenchmarkConfig
+from benchmarks.memory.config import MemoryRunConfig
 from benchmarks.memory.data import ConversationSample, load_locomo
 from benchmarks.memory.mem0.memory_builder import SampleMemoryBuilder, memory_embedder
 from benchmarks.common.files import write_json
 
 
-def preembed_locomo_embeddings(config: BenchmarkConfig) -> dict[str, Any]:
+def preembed_locomo_embeddings(config: MemoryRunConfig) -> dict[str, Any]:
     if not config.embedding_cache_enabled:
-        raise RuntimeError("--preembed-only requires the embedding cache; remove --no-embedding-cache.")
+        raise RuntimeError("The preembed stage requires embedding_cache_enabled=true in JSON.")
     if config.preembed_workers < 1:
         raise ValueError("preembed_workers must be >= 1.")
 
@@ -120,7 +120,7 @@ def preembed_locomo_embeddings(config: BenchmarkConfig) -> dict[str, Any]:
 
 
 def _preembed_sample(
-    config: BenchmarkConfig,
+    config: MemoryRunConfig,
     sample: ConversationSample,
     sample_index: int,
     sample_count: int,

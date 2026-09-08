@@ -4,8 +4,10 @@ from typing import Any
 
 import pytest
 
+from library_fakes import FakeChunkStore
 from benchmarks.memory.data import ConversationSample, QuestionAnswer, Turn
-from benchmarks.memory.config import BenchmarkConfig, parse_args
+from benchmarks.common.config import ConfigError
+from memory_config import make_memory_config
 from benchmarks.memory.composer import SampleComposer
 from inferscale.v1.kv.prompt import require_identical_token_ids
 from benchmarks.memory.context import (
@@ -313,12 +315,56 @@ def _fake_composer(
     catalog: list[SearchHit],
 ) -> tuple[SampleComposer, _FakeChunkEncoder]:
     encoder = _FakeChunkEncoder()
+    # Exercise composition through the required lookup interface while these
+    # tests validate prompt tokens and planning independently of CUDA kernels.
+    monkeypatch.setattr(
+        "benchmarks.memory.composer.build_chunk_store",
+        lambda *_args, **_kwargs: FakeChunkStore(),
+    )
     composer = SampleComposer(  # type: ignore[arg-type]
         encoder=encoder,
         context_window=context_window,
     )
     composer.encode_sample(_sample(), catalog)
     return composer, encoder
+
+
+def test_composer_requires_gpu_map_before_fetching(monkeypatch: pytest.MonkeyPatch) -> None:
+    catalog = [_hit("fact", "Stored fact.", 1)]
+    composer, _ = _fake_composer(monkeypatch, context_window=0, catalog=catalog)
+    store = FakeChunkStore()
+
+    def fail_lookup() -> None:
+        raise RuntimeError("GPU lookup allocation failed")
+
+    monkeypatch.setattr(store, "finalize_chunk_lookup", fail_lookup)
+    monkeypatch.setattr(
+        "benchmarks.memory.composer.build_chunk_store", lambda *_args, **_kwargs: store
+    )
+    with pytest.raises(RuntimeError, match="GPU lookup allocation failed"):
+        composer.compose(catalog, memory_token_budget=10_000)
+    assert store.lookup_batches == []
+
+
+def test_composer_reports_gpu_map_separately_from_host_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    catalog = [_hit("fact", "Stored fact.", 1)]
+    composer, _ = _fake_composer(monkeypatch, context_window=0, catalog=catalog)
+    composer.compose(catalog, memory_token_budget=10_000)
+    monkeypatch.setattr(
+        composer.chunk_store,
+        "get_stats",
+        lambda: {"chunk_map_bytes": 24, "chunk_map_device": "cuda:0"},
+    )
+
+    stats = composer.cache_stats()
+
+    assert stats["llama_kv_chunk_map_gpu_bytes"] == 24
+    assert stats["llama_kv_chunk_map_gpu_mb"] == 24 / (1024 * 1024)
+    assert stats["llama_kv_chunk_metadata_cpu_bytes"] > 0
+    assert stats["kv_chunk_store_chunk_map_device"] == "cuda:0"
+    assert "llama_kv_chunk_map_cpu_bytes" not in stats
 
 
 def test_w0_prefix_and_kv_use_identical_header_fact_footer_question_tokens(
@@ -343,6 +389,7 @@ def test_w0_prefix_and_kv_use_identical_header_fact_footer_question_tokens(
     )
 
     composed = composer.compose(catalog, memory_token_budget=10_000)
+    assert composer.chunk_store.lookup_batches == [["earlier", "later"]]
     scaffold = extract_memory_scaffold_token_ids(encoder.tokenizer)
     header_text = "".join(chr(token_id) for token_id in scaffold.header_token_ids)
     prompted = build_memory_prompt_token_ids(
@@ -493,19 +540,20 @@ def test_visible_memory_budget_never_drops_retrieved_facts() -> None:
 
 
 def test_kv_block_size_is_configured_for_both_vllm_backends() -> None:
-    config = parse_args(["--skip-judge", "--kv-block-size", "32"])
+    config = make_memory_config(inferscale={'engine': {'block_size': 32}})
 
     assert config.kv_block_size == 32
     assert vllm_engine_kwargs(model=config.model, dtype=config.kv_dtype, engine=config.engine_config())["block_size"] == 32
-    prefix_config = BenchmarkConfig(answer_backend="vllm-prefix")
+    prefix_config = make_memory_config(answer_backend="prompt-injection")
     assert vllm_engine_kwargs(
         model=prefix_config.model, dtype=prefix_config.kv_dtype, engine=prefix_config.engine_config()
     )["block_size"] == 16
 
 
-def test_negative_or_zero_kv_block_size_is_rejected() -> None:
-    with pytest.raises(SystemExit):
-        parse_args(["--skip-judge", "--kv-block-size", "0"])
+@pytest.mark.parametrize("block_size", [-1, 0])
+def test_negative_or_zero_kv_block_size_is_rejected(block_size: int) -> None:
+    with pytest.raises(ConfigError, match="engine.block_size must be >= 1"):
+        make_memory_config(inferscale={'engine': {'block_size': block_size}})
 
 
 def test_live_vllm_memory_tokens_must_match_precomputed_hf_tokens() -> None:

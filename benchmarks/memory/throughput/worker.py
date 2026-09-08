@@ -7,40 +7,48 @@ Condition implementations live in kv_condition.py and mem0_condition.py.
 
 from __future__ import annotations
 
-import argparse
+import json
+import logging
+import sys
 from pathlib import Path
 from typing import Any
 
+from benchmarks.common.config import ConfigError, int_list, reject_unknown_keys, require
 from benchmarks.common.files import write_json
 from benchmarks.memory.throughput.config import (
-    ALL_CONDITIONS,
     ThroughputConfig,
     condition_vector_backend,
-    parse_user_counts,
 )
 from benchmarks.memory.throughput.kv_condition import run_kv_injection
 from benchmarks.memory.throughput.mem0_condition import run_mem0
 
 
-def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Internal throughput benchmark worker.")
-    parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--condition", choices=ALL_CONDITIONS, required=True)
-    parser.add_argument("--user-counts", required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    args = parser.parse_args(argv)
-
-    config = ThroughputConfig.from_json_file(args.config)
-    user_counts = parse_user_counts(args.user_counts)
+def main(job: dict[str, Any]) -> None:
+    """Run one isolated measurement from the runner's JSON job."""
+    where = "throughput worker job"
+    if not isinstance(job, dict):
+        raise ConfigError(f"{where} must be a JSON object.")
+    reject_unknown_keys(job, ("config_path", "condition", "user_counts", "output_path"), where)
+    config_path = Path(require(job, "config_path", str, where))
+    condition = require(job, "condition", str, where)
+    output_path = Path(require(job, "output_path", str, where))
+    user_counts = int_list(job, "user_counts", where)
+    config = ThroughputConfig.from_json_file(config_path)
+    if condition not in config.conditions:
+        raise ConfigError(f"Worker condition {condition!r} is not in the configured list.")
+    logging.basicConfig(
+        level=config.log_level.upper(),
+        format="%(asctime)s | %(levelname)-5s | %(message)s",
+    )
     unknown = [count for count in user_counts if count not in config.user_counts]
     if unknown:
-        parser.error(
+        raise ConfigError(
             "Worker user counts are not in the configured list: " + ", ".join(map(str, unknown))
         )
 
-    results = run_condition(config, args.condition, user_counts)
-    write_json(args.output, {"condition": args.condition, "results": results})
-    print(f"worker wrote {len(results)} row(s) to {args.output}", flush=True)
+    results = run_condition(config, condition, user_counts)
+    write_json(output_path, {"condition": condition, "results": results})
+    print(f"worker wrote {len(results)} row(s) to {output_path}", flush=True)
 
 
 def run_condition(
@@ -61,4 +69,4 @@ def run_condition(
 
 
 if __name__ == "__main__":
-    main()
+    main(json.load(sys.stdin))

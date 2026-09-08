@@ -1,0 +1,10 @@
+{
+  "family": "rag",
+  "name": "rag-preembed",
+  "configs": [
+    "configs/rag/multihoprag.json",
+    "configs/rag/qasper.json"
+  ],
+  "stage": "preembed",
+  "dry_run": false
+}

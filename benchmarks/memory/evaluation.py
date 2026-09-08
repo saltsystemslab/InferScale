@@ -4,7 +4,7 @@ import hashlib
 from typing import Any
 
 from benchmarks.memory.runtime_clients import RuntimeClients
-from benchmarks.memory.config import BenchmarkConfig
+from benchmarks.memory.config import MemoryRunConfig
 from benchmarks.memory.data import ConversationSample, QuestionAnswer
 from benchmarks.common.answers import final_answer_text
 from benchmarks.common.judge import skipped_judge_payload
@@ -14,7 +14,7 @@ from benchmarks.common.vector_types import RetrievalMetrics, SearchHit
 
 
 class QuestionEvaluator:
-    def __init__(self, config: BenchmarkConfig, clients: RuntimeClients) -> None:
+    def __init__(self, config: MemoryRunConfig, clients: RuntimeClients) -> None:
         self.config = config
         self.clients = clients
 
@@ -63,7 +63,7 @@ class QuestionEvaluator:
             judge_payload = skipped_judge_payload(judge_metadata(self.config))
         else:
             if self.clients.judge_client is None:
-                raise RuntimeError("Judge client is not configured. Use --skip-judge to write unjudged predictions.")
+                raise RuntimeError("Judge client is not configured. Set skip_judge=true in JSON to write unjudged predictions.")
             judge_payload = judge_qa(
                 self.config,
                 self.clients.judge_client,

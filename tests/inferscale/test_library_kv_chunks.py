@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from library_fakes import FakeChunkStore
 
 from inferscale.v1.kv.chunk_store import build_chunk_store, chunk_nbytes, register_chunks
 from inferscale.v1.kv.compose import memory_parts, reverse_ranked_ids
@@ -40,10 +41,7 @@ def test_memory_parts_uses_the_empty_chunk_when_nothing_is_selected() -> None:
 
 
 def test_build_chunk_store_backends() -> None:
-    assert isinstance(build_chunk_store("gpu", device="cpu", top_k=3), GPUMemoryStore)
-    assert isinstance(
-        build_chunk_store("gpu", device="cpu", top_k=3, device_selection=True), PackedGPUMemoryStore
-    )
+    assert isinstance(build_chunk_store("gpu", device="cuda:0", top_k=3), PackedGPUMemoryStore)
     with pytest.raises(ValueError):
         build_chunk_store("disk", device="cpu", top_k=3)
 
@@ -55,11 +53,12 @@ def test_register_chunks_requires_matching_ids() -> None:
 
 
 def test_corpus_moves_tensors_into_the_store_and_fetches_by_id() -> None:
-    corpus = KVCorpus(GPUMemoryStore(device="cpu"))
+    corpus = KVCorpus(FakeChunkStore())
     chunk = _chunk("c1", [5, 6, 7])
     expected_bytes = chunk_nbytes(chunk)
     corpus.add(chunk)
     corpus.add(_chunk("c2", [8]))
+    corpus.finalize()
 
     assert chunk.kv_by_layer == {}
     assert corpus.ids() == ["c1", "c2"]

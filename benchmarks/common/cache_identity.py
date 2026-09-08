@@ -27,18 +27,20 @@ def normalize_endpoint(value: str | None) -> str:
         )
     )
 
-
+"""Hash URL endpoint for a cache key"""
 def endpoint_cache_key(endpoint: str | None) -> str:
     normalized = normalize_endpoint(endpoint)
     digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
     return f"endpoint-{digest}"
 
 
+"""Clean up strings for use in cache-directory names"""
 def safe_path_part(value: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", value.strip())
     return safe or "default"
 
 
+"""Saves JSON without exposing a partially written destination file"""
 def atomic_write_json(path: Path, payload: Any, *, indent: int | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path: Path | None = None

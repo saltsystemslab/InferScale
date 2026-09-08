@@ -5,7 +5,7 @@ from typing import Any
 
 import numpy as np
 
-from benchmarks.common.paths import default_mem0_dir
+from benchmarks.common.paths import mem0_dir_from_environment
 from benchmarks.common.vector_types import (
     SearchHit,
     SearchMetrics,
@@ -62,7 +62,7 @@ class Mem0JasperVectorStore(VectorStoreBase):
         self.collection_name = collection_name
         self.embedding_model_dims = embedding_model_dims
         if path is None:
-            self.root = default_mem0_dir() / collection_name
+            self.root = mem0_dir_from_environment() / collection_name
         else:
             self.root = Path(path) / collection_name
         self.config = VectorStoreConfig(

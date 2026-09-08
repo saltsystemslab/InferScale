@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from benchmarks.memory.config import BenchmarkConfig
+from memory_config import make_memory_config
 from benchmarks.memory.data import (
     ConversationSample,
     QuestionAnswer,
@@ -78,7 +78,7 @@ def test_sessions_are_numbered_in_chronological_date_order(tmp_path: Path) -> No
 
 
 def test_run_config_records_fixed_benchmark_provenance() -> None:
-    config = BenchmarkConfig().to_jsonable()
+    config = make_memory_config().to_jsonable()
 
     assert config["memory_benchmarks_repository"] == MEMORY_BENCHMARKS_REPOSITORY
     assert config["memory_benchmarks_commit"] == MEMORY_BENCHMARKS_COMMIT

@@ -8,7 +8,8 @@ from typing import Any
 
 import pytest
 
-from benchmarks.memory.config import BenchmarkConfig
+from benchmarks.memory.config import MemoryRunConfig
+from memory_config import make_memory_config
 from benchmarks.memory.data import ConversationSample
 from benchmarks.memory import preembed
 
@@ -31,7 +32,7 @@ def test_preembed_runs_samples_concurrently_and_aggregates_metrics(
         max_active = 0
         closed: list[str] = []
 
-        def __init__(self, config: BenchmarkConfig, *, embedding_cache_mode: str) -> None:
+        def __init__(self, config: MemoryRunConfig, *, embedding_cache_mode: str) -> None:
             del config, embedding_cache_mode
 
         def build_with_metrics(
@@ -75,7 +76,7 @@ def test_preembed_runs_samples_concurrently_and_aggregates_metrics(
     monkeypatch.setattr(preembed, "SampleMemoryBuilder", FakeMemoryBuilder)
     monkeypatch.setattr(preembed, "preembed_questions", lambda memory, sample: 2)
     monkeypatch.setattr(preembed, "preembed_question_entities", lambda memory, sample: 3)
-    config = BenchmarkConfig(
+    config = make_memory_config(
         results_dir=tmp_path / "results",
         run_id="concurrent-preembed",
         preembed_workers=2,
@@ -106,7 +107,7 @@ def test_preembed_rejects_duplicate_sample_ids_before_starting_workers(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(preembed, "load_locomo", lambda *args, **kwargs: [_sample("same"), _sample("same")])
-    config = BenchmarkConfig(results_dir=tmp_path, run_id="duplicate", preembed_workers=2)
+    config = make_memory_config(results_dir=tmp_path, run_id="duplicate", preembed_workers=2)
 
     with pytest.raises(ValueError, match="Duplicate sample ids"):
         preembed.preembed_locomo_embeddings(config)

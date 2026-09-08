@@ -36,11 +36,6 @@ remote = [
     "accelerate==1.14.0",
 ]
 
-[project.scripts]
-locomo-jasper-bench = "benchmarks.memory.run:main"
-locomo-throughput-bench = "benchmarks.memory.throughput.run:main"
-rag-jasper-bench = "benchmarks.rag.run:main"
-
 [tool.setuptools]
 package-dir = {"" = "src", "benchmarks" = "benchmarks"}
 

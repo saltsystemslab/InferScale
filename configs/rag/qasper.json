@@ -3,7 +3,7 @@
   "dataset": "qasper",
   "data_dir": "data/qasper",
   "models": ["qwen"],
-  "answer_backend": "vllm-kv",
+  "answer_backend": "kv-injection",
   "chunk_size": 1024,
   "context_window": 5,
   "top_k": 15,
@@ -54,7 +54,7 @@
     "standard": {
       "log_dir_prefix": "rag-sweep-logs",
       "top_k": [15],
-      "answer_backends": ["vllm-kv", "vllm-prefix"]
+      "answer_backends": ["kv-injection", "prompt-injection"]
     }
   }
 }

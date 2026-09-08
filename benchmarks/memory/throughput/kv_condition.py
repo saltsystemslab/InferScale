@@ -20,14 +20,13 @@ from inferscale.v1.kv.chunk_store import (
     build_chunk_store,
     close_chunk_store,
     fetch_device_chunk,
-    fetch_chunks,
+    fetch_device_chunks,
     finalize_chunk_store,
     register_chunks,
     release_chunks,
 )
 from benchmarks.memory.context import (
     build_fact_context_encoding_plan,
-    reverse_ranked_memory_facts,
     unique_memory_facts,
 )
 from benchmarks.memory.prompting import (
@@ -36,10 +35,8 @@ from benchmarks.memory.prompting import (
     extract_memory_scaffold_token_ids,
     format_memory_fact,
 )
-from inferscale.v1.kv.packed_memory_store import DeviceChunkSelectionError
 from inferscale.v1.kv.tokenization import encode_text_no_special
 from benchmarks.memory.mem0.fact_catalog import fact_catalog_hits
-from benchmarks.common.paths import local_store_scratch_dir
 from benchmarks.memory.throughput.config import ThroughputConfig
 from benchmarks.memory.throughput.engine import (
     build_kv_warmup_prompt,
@@ -80,16 +77,16 @@ def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]
     the encoder weights and the fact-chunk corpus store before the engine
     allocates its pool; the jasper stores stay resident for the whole run
     (segments are small on the current jasperpy branch) until the finally
-    block. The corpus lives in the --kv-store-backend store (HBM or pinned
+    block. The corpus lives in the inferscale.kv.store_backend store (HBM or pinned
     host RAM); composed request memories are ephemeral GPU products held
     only in the connector's in-flight registry.
     """
     if config.kv_device not in {"cuda", "cuda:0"}:
-        raise RuntimeError("The current strict GPU registry requires --device cuda:0.")
+        raise RuntimeError("The current strict GPU registry requires inferscale.kv.device = cuda:0 in the run JSON.")
     if not config.embedding_api_key and not config.embedding_base_url:
         raise RuntimeError(
-            "kv_injection retrieval requires --embedding-api-key/OPENAI_API_KEY or a local "
-            "--embedding-base-url."
+            "kv_injection retrieval requires OPENAI_API_KEY or "
+            "inferscale.embedding.base_url in the run JSON."
         )
 
     import importlib
@@ -131,10 +128,10 @@ def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]
     namespace = f"throughput-{config.run_id}-{uuid.uuid4().hex}"
     # The namespace registry holds in-flight per-request compositions for the
     # connector handoff and is always GPU-resident; it is NOT the memory
-    # store. --kv-store-backend selects where the fact-chunk corpus lives
+    # store. inferscale.kv.store_backend selects where the fact-chunk corpus lives
     # (the chunk store built below).
     get_gpu_memory_store(namespace, backend="gpu")
-    mem0_store_root = local_store_scratch_dir(config.run_id) / f"kv-stores-{num_users}u"
+    mem0_store_root = config.local_store_scratch_dir / f"kv-stores-{num_users}u"
     if mem0_store_root.exists():
         shutil.rmtree(mem0_store_root)
     encoder: Any | None = None
@@ -226,10 +223,6 @@ def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]
             device=config.kv_device,
             top_k=config.top_k,
             staging_slots=config.kv_staging_slots,
-            device_selection=(
-                config.jasper_device_kv_selection
-                and config.kv_store_backend == "gpu"
-            ),
         )
         # Values are metadata-only chunk maps once registration moves each
         # sample's KV into the chunk store below.
@@ -254,7 +247,7 @@ def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]
                 for fact in kv_facts:
                     # Chunk values are conditioned on the preceding context_window
                     # turns; only the fact-token KV slice is kept (prefix-discard),
-                    # matching the accuracy path's vllm-kv encoding semantics.
+                    # matching the accuracy path's kv-injection encoding semantics.
                     plan = build_fact_context_encoding_plan(
                         fact,
                         sample,
@@ -347,29 +340,11 @@ def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]
                 store_root=mem0_store_root / sample.sample_id,
                 facts=facts_by_sample[sample.sample_id],
             )
-        device_selection_enabled = (
-            config.jasper_device_kv_selection
-            and config.kv_store_backend == "gpu"
-        )
-        if device_selection_enabled:
-            try:
-                for sample in used_samples:
-                    device_row_maps_by_sample[sample.sample_id] = (
-                        build_device_chunk_row_map(
-                            chunk_store,
-                            store_stable_id_items(
-                                stores_by_sample[sample.sample_id]
-                            ),
-                        )
-                    )
-            except (RuntimeError, ValueError) as exc:
-                device_row_maps_by_sample.clear()
-                device_selection_enabled = False
-                print(
-                    "kv_injection: Jasper device KV selection setup failed; "
-                    f"using SearchHit fallback ({exc})",
-                    flush=True,
-                )
+        for sample in used_samples:
+            device_row_maps_by_sample[sample.sample_id] = build_device_chunk_row_map(
+                chunk_store,
+                store_stable_id_items(stores_by_sample[sample.sample_id]),
+            )
         memory_setup_time_s = time.perf_counter() - setup_started
 
         for user_index in range(num_users):
@@ -382,14 +357,9 @@ def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]
                     open_memory,
                     request.query,
                     top_k=config.top_k,
-                    prefer_device_result=(
-                        device_selection_enabled
-                        and sample.sample_id in device_row_maps_by_sample
-                    ),
                 )
                 retrieval_time_s += search_result.elapsed_s
                 vector_search_time_s += search_result.search_s
-                hits = search_result.hits
                 device_result = search_result.device_result
 
                 # Compose launches asynchronous CUDA work; synchronize on
@@ -400,48 +370,28 @@ def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]
                 selected_ids: list[str] = []
                 selected: list[Any] | None = None
                 selected_device_chunk = None
-                if device_result is not None:
-                    try:
-                        selected_device_chunk = fetch_device_chunk(
-                            chunk_store,
-                            device_result.stable_ids,
-                            device_row_maps_by_sample[sample.sample_id],
-                        )
-                    except DeviceChunkSelectionError:
-                        # This is an exceptional integrity fallback. It
-                        # materializes the already-computed result, but does
-                        # not re-embed or rerun retrieval.
-                        hits = materialize_store_device_result(
-                            open_memory,
-                            device_result,
-                        )
-                        device_result = None
-
-                if selected_device_chunk is not None:
-                    composed_chunks = [
-                        header_chunk,
-                        selected_device_chunk,
-                        footer_chunk,
-                    ]
+                if config.kv_store_backend == "gpu":
+                    selected_device_chunk = fetch_device_chunk(
+                        chunk_store,
+                        device_result.stable_ids,
+                        device_row_maps_by_sample[sample.sample_id],
+                    )
+                    composed_chunks = [header_chunk, selected_device_chunk, footer_chunk]
                 else:
-                    if hits is None:
-                        raise RuntimeError(
-                            "KV retrieval produced neither device results nor SearchHits."
-                        )
-                    selected_facts = reverse_ranked_memory_facts(hits)
-                    selected_ids = [fact.memory_id for fact in selected_facts]
+                    # The lookup map stays on GPU. Only selected rows cross
+                    # to the host to stage their pinned KV payloads.
+                    selected = fetch_device_chunks(
+                        chunk_store,
+                        chunks_by_sample[sample.sample_id],
+                        device_result.stable_ids,
+                        device_row_maps_by_sample[sample.sample_id],
+                        reverse=True,
+                    )
+                    selected_ids = [chunk.chunk_id for chunk in selected]
                     if not selected_ids:
                         raise RuntimeError(
                             "Retrieval returned no facts for a kv_injection request."
                         )
-                    # Stages the selected chunks out of the corpus store
-                    # (async H2D under the cpu backend), so compose time
-                    # carries the PCIe cost of host-resident sources.
-                    selected = fetch_chunks(
-                        chunk_store,
-                        chunks_by_sample[sample.sample_id],
-                        selected_ids,
-                    )
                     composed_chunks = [header_chunk, *selected, footer_chunk]
                 kv_by_layer = encoder.compose(composed_chunks)
                 memory_token_ids = [
@@ -482,11 +432,7 @@ def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]
                 # not part of the serving path; its cost is reported
                 # separately and excluded from QPS.
                 verify_started = time.perf_counter()
-                if hits is None:
-                    hits = materialize_store_device_result(
-                        open_memory,
-                        device_result,
-                    )
+                hits = materialize_store_device_result(open_memory, device_result)
                 canonical_memory = build_memory_prompt_token_ids(
                     tokenizer,
                     sample,

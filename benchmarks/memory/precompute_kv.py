@@ -14,14 +14,14 @@ from inferscale.v1.kv.encoder import ChunkedRopeEncoder
 
 from .chunk_cache import cache_meta, cache_path_for, chunk_cache_dir, save_sample_chunks
 from .composer import SampleComposer
-from .config import BenchmarkConfig
+from .config import MemoryRunConfig
 from .context import unique_memory_facts
 from .data import load_locomo
 from .mem0.fact_catalog import fact_catalog_hits
 from .mem0.memory_builder import fact_catalog_store_for
 
 
-def precompute_kv_chunks(config: BenchmarkConfig) -> dict[str, Any]:
+def precompute_kv_chunks(config: MemoryRunConfig) -> dict[str, Any]:
     samples = load_locomo(config.dataset_path, max_samples=config.max_samples)
     if not samples:
         raise RuntimeError(f"No LoCoMo samples found in {config.dataset_path}.")
@@ -49,6 +49,7 @@ def precompute_kv_chunks(config: BenchmarkConfig) -> dict[str, Any]:
                 block_size=config.kv_block_size,
                 sample=sample,
                 facts=kv_facts,
+                cache_root=config.cache_root,
             )
             if path.exists():
                 skipped += 1
@@ -108,6 +109,7 @@ def precompute_kv_chunks(config: BenchmarkConfig) -> dict[str, Any]:
         context_window=config.context_window,
         max_position=config.kv_max_position,
         block_size=config.kv_block_size,
+        cache_root=config.cache_root,
     )
     return {
         "samples": len(samples),

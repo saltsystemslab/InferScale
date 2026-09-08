@@ -7,7 +7,7 @@ from typing import Any
 from loguru import logger
 
 from benchmarks.memory.runtime_clients import RuntimeClients
-from benchmarks.memory.config import BenchmarkConfig
+from benchmarks.memory.config import MemoryRunConfig
 from benchmarks.memory.data import ConversationSample, QuestionAnswer, load_locomo
 from benchmarks.memory.evaluation import QuestionEvaluator
 from benchmarks.common.judge import judge_label
@@ -40,8 +40,10 @@ KV_PRECOMPUTE_SETUP_KEYS = (
     "kv_precomputed_gpu_mb",
     "kv_chunk_cache_residency_is_gpu",
     "llama_kv_chunk_count",
-    "llama_kv_chunk_map_cpu_bytes",
-    "llama_kv_chunk_map_cpu_mb",
+    "llama_kv_chunk_metadata_cpu_bytes",
+    "llama_kv_chunk_metadata_cpu_mb",
+    "llama_kv_chunk_map_gpu_bytes",
+    "llama_kv_chunk_map_gpu_mb",
     "llama_kv_chunk_tensor_gpu_bytes",
     "llama_kv_chunk_tensor_gpu_mb",
     "llama_kv_prefix_tensor_gpu_bytes",
@@ -51,11 +53,11 @@ KV_PRECOMPUTE_SETUP_KEYS = (
 )
 
 
-def run_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> PredictionResult:
+def run_prediction_mode(config: MemoryRunConfig, clients: RuntimeClients) -> PredictionResult:
     return run_kv_prediction_mode(config, clients)
 
 
-def run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> PredictionResult:
+def run_kv_prediction_mode(config: MemoryRunConfig, clients: RuntimeClients) -> PredictionResult:
     logger.info("Loading LoCoMo dataset from {}", config.dataset_path)
     samples = load_locomo(config.dataset_path, max_samples=config.max_samples)
     planned_questions = planned_question_count(samples, config.max_questions)
@@ -219,7 +221,7 @@ def run_kv_prediction_mode(config: BenchmarkConfig, clients: RuntimeClients) -> 
 
 
 def _base_sample_setup_row(
-    config: BenchmarkConfig,
+    config: MemoryRunConfig,
     sample: ConversationSample,
     question_count: int,
 ) -> dict[str, Any]:
@@ -257,8 +259,10 @@ def _base_sample_setup_row(
         "kv_precomputed_gpu_mb": None,
         "kv_chunk_cache_residency_is_gpu": None,
         "llama_kv_chunk_count": None,
-        "llama_kv_chunk_map_cpu_bytes": None,
-        "llama_kv_chunk_map_cpu_mb": None,
+        "llama_kv_chunk_metadata_cpu_bytes": None,
+        "llama_kv_chunk_metadata_cpu_mb": None,
+        "llama_kv_chunk_map_gpu_bytes": None,
+        "llama_kv_chunk_map_gpu_mb": None,
         "llama_kv_chunk_tensor_gpu_bytes": None,
         "llama_kv_chunk_tensor_gpu_mb": None,
         "llama_kv_prefix_tensor_gpu_bytes": None,

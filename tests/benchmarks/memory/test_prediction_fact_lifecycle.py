@@ -5,7 +5,8 @@ from typing import Any
 
 from benchmarks.common.clients import ChatResult
 from benchmarks.memory.runtime_clients import RuntimeClients
-from benchmarks.memory.config import BenchmarkConfig
+from benchmarks.memory.config import MemoryRunConfig
+from memory_config import make_memory_config
 from benchmarks.memory.data import ConversationSample, QuestionAnswer, Turn
 from benchmarks.memory.prediction import run_prediction_mode
 from benchmarks.memory.mem0.fact_catalog import MemoryFact
@@ -46,7 +47,7 @@ def test_prediction_uses_fact_catalog_then_live_retriever_and_closes(
     retriever = FakeRetriever()
 
     class FakeMemoryBuilder:
-        def __init__(self, config: BenchmarkConfig) -> None:
+        def __init__(self, config: MemoryRunConfig) -> None:
             assert config.run_id == "fact-lifecycle"
 
         def load_fact_catalog(self, selected_sample: ConversationSample) -> tuple[MemoryFact, ...]:
@@ -109,11 +110,11 @@ def test_prediction_uses_fact_catalog_then_live_retriever_and_closes(
         "benchmarks.memory.prediction.SampleMemoryBuilder",
         FakeMemoryBuilder,
     )
-    config = BenchmarkConfig(
+    config = make_memory_config(
         dataset_path=tmp_path / "unused.json",
         results_dir=tmp_path / "results",
         run_id="fact-lifecycle",
-        answer_backend="vllm-kv",
+        answer_backend="kv-injection",
         vector_backend="jasper",
         top_k=1,
         max_samples=1,

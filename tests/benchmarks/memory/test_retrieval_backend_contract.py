@@ -7,7 +7,8 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
-from benchmarks.memory.config import BenchmarkConfig, parse_args
+from benchmarks.common.config import ConfigError
+from memory_config import make_memory_config
 from inferscale.v1.index.jasper import JasperDeviceSearchResult, JasperIndex, JasperIndexConfig
 from benchmarks.memory.mem0.adapter import Mem0JasperVectorStore, _validate_search_hits
 from benchmarks.memory.mem0.provider import (
@@ -585,7 +586,7 @@ def test_jasper_partial_filter_uses_complete_exact_fallback(
 
 def test_effective_beam_expands_to_top_k_and_is_recorded(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LOCOMO_KV_CONTEXT_WINDOW", raising=False)
-    config = parse_args(["--skip-judge", "--top-k", "100", "--jasper-beam-width", "64"])
+    config = make_memory_config(top_k=100, inferscale={'index': {'beam_width': 64}})
 
     assert config.context_window == 0
     assert config.context_window_unit == "turns"
@@ -601,42 +602,32 @@ def test_effective_beam_expands_to_top_k_and_is_recorded(monkeypatch: pytest.Mon
 
 
 def test_qdrant_has_no_effective_jasper_beam() -> None:
-    config = BenchmarkConfig(vector_backend="qdrant", top_k=100, jasper_beam_width=64)
+    config = make_memory_config(vector_backend='qdrant', top_k=100, inferscale={'index': {'beam_width': 64}})
 
     assert config.jasper_effective_beam_width is None
     assert _store_config(config).beam_width == 64
 
 
 def test_nonzero_turn_context_is_accepted_for_prefix_backend() -> None:
-    config = parse_args(
-        [
-            "--skip-judge",
-            "--answer-backend",
-            "vllm-prefix",
-            "--vector-backend",
-            "qdrant",
-            "--context-window",
-            "1",
-        ]
+    config = make_memory_config(
+        answer_backend="prompt-injection", vector_backend="qdrant", context_window=1
     )
 
     assert config.context_window == 1
-    assert config.answer_backend == "vllm-prefix"
+    assert config.answer_backend == "prompt-injection"
 
 
 def test_negative_context_window_remains_rejected() -> None:
-    with pytest.raises(SystemExit):
-        parse_args(["--skip-judge", "--context-window", "-1"])
+    with pytest.raises(ConfigError, match="context_window must be >= 0"):
+        make_memory_config(context_window=-1)
 
 
 def test_primary_configuration_has_no_distance_override() -> None:
-    assert "vector_distance" not in BenchmarkConfig().to_jsonable()
-    with pytest.raises(TypeError, match="vector_distance"):
-        BenchmarkConfig(vector_distance="cosine")  # type: ignore[call-arg]
+    assert "vector_distance" not in make_memory_config().to_jsonable()
+    with pytest.raises(ConfigError, match="vector_distance"):
+        make_memory_config(vector_distance="cosine")
     with pytest.raises(TypeError, match="distance"):
         VectorStoreConfig(distance="cosine")  # type: ignore[call-arg]
-    with pytest.raises(SystemExit):
-        parse_args(["--skip-judge", "--vector-distance", VECTOR_DISTANCE])
 
 
 def test_local_qdrant_returns_complete_unique_results(tmp_path: object) -> None:

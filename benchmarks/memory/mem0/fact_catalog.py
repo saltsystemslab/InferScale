@@ -198,7 +198,7 @@ class FactCatalogStore:
                 raise RuntimeError(
                     f"Mem0 fact catalog identity mismatch for {key} at {path}: "
                     f"expected={expected_value!r} actual={payload.get(key)!r}. "
-                    "Rerun --preembed-only with the current configuration."
+                    "Rerun the preembed stage with the current JSON configuration."
                 )
         rows = payload.get("facts")
         if not isinstance(rows, list):

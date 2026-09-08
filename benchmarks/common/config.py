@@ -3,9 +3,7 @@
 ``configs/runtime.json`` describes the machine (storage roots, build knobs,
 model aliases, the judge server, environment variables). Each benchmark has
 its own JSON files under ``configs/`` that reference models by alias and
-embed an ``inferscale`` section for the library. Secrets never live in JSON:
-``OPENAI_API_KEY``, ``HF_TOKEN``, and the optional ``JUDGE_API_KEY`` and
-``MEM0_LLM_API_KEY`` overrides come from the environment.
+embed an ``inferscale`` section for the library.
 """
 
 from __future__ import annotations
@@ -14,17 +12,17 @@ import json
 import os
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args, get_type_hints
 
 from .paths import StorageConfig, StorageLayout, project_root, resolve_layout
 
-RUNTIME_CONFIG_ENV = "INFERSCALE_RUNTIME_CONFIG"
 OPENAI_API_KEY_ENV = "OPENAI_API_KEY"
-JUDGE_API_KEY_ENV = "JUDGE_API_KEY"
-MEM0_LLM_API_KEY_ENV = "MEM0_LLM_API_KEY"
+JUDGE_LLM_API_KEY_ENV = "JUDGE_LLM_API_KEY"
+EXTRACTION_LLM_API_KEY_ENV = "EXTRACTION_LLM_API_KEY"
+DEFAULT_EXTRACTION_LLM_BASE_URL = "http://localhost:8000/v1"
 REDACTED = "<redacted>"
 
 
@@ -98,26 +96,12 @@ def embedding_api_key() -> str | None:
     return os.environ.get(OPENAI_API_KEY_ENV) or None
 
 
-def mem0_llm_api_key() -> str | None:
-    return os.environ.get(MEM0_LLM_API_KEY_ENV) or None
+def judge_llm_api_key() -> str | None:
+    return os.environ.get(JUDGE_LLM_API_KEY_ENV) or None
 
 
-def apply_overrides(data: dict[str, Any], overrides: Mapping[str, Any]) -> dict[str, Any]:
-    """Return a copy of ``data`` with dotted-key overrides applied; None values are skipped."""
-    result = json.loads(json.dumps(data))
-    for dotted, value in overrides.items():
-        if value is None:
-            continue
-        target = result
-        parts = dotted.split(".")
-        for part in parts[:-1]:
-            child = target.get(part)
-            if not isinstance(child, dict):
-                child = {}
-                target[part] = child
-            target = child
-        target[parts[-1]] = value
-    return result
+def extraction_llm_api_key() -> str | None:
+    return os.environ.get(EXTRACTION_LLM_API_KEY_ENV) or None
 
 
 def redact(data: dict[str, Any], keys: Sequence[str]) -> dict[str, Any]:
@@ -270,19 +254,16 @@ class RuntimeConfig:
         return self.reasoning_parsers.get(self.model_label(name))
 
     def judge_api_key(self) -> str:
-        return os.environ.get(JUDGE_API_KEY_ENV) or self.judge_server.api_key
+        return judge_llm_api_key() or self.judge_server.api_key
 
     def apply_environment(self) -> None:
         """Export cache locations and the environment block before heavy imports."""
         for key, value in self.environment.items():
-            os.environ.setdefault(key, value)
+            os.environ[key] = value
         self.layout.apply_environment()
 
 
 def default_runtime_config_path() -> Path:
-    value = os.environ.get(RUNTIME_CONFIG_ENV)
-    if value:
-        return Path(value)
     return project_root() / "configs" / "runtime.json"
 
 
@@ -310,7 +291,12 @@ class JudgeConfig:
         }
 
 
-def judge_config(section: Mapping[str, Any], runtime: RuntimeConfig, *, where: str) -> JudgeConfig:
+def judge_config(
+    section: Mapping[str, Any],
+    runtime: RuntimeConfig,
+    *,
+    where: str,
+) -> JudgeConfig:
     reject_unknown_keys(section, ("provider", "model", "base_url", "max_tokens", "with_evidence"), where)
     provider = optional(section, "provider", str, "vllm", where)
     if provider not in {"vllm", "none"}:
@@ -318,10 +304,11 @@ def judge_config(section: Mapping[str, Any], runtime: RuntimeConfig, *, where: s
     max_tokens = optional(section, "max_tokens", int, 4, where)
     if max_tokens < 1:
         raise ConfigError(f"{where}.max_tokens must be >= 1.")
+    configured_base_url = optional(section, "base_url", str, runtime.judge_server.base_url, where)
     return JudgeConfig(
         provider=provider,
         model=optional(section, "model", str, runtime.judge_server.model, where),
-        base_url=optional(section, "base_url", str, runtime.judge_server.base_url, where),
+        base_url=configured_base_url,
         api_key=runtime.judge_api_key(),
         max_tokens=max_tokens,
         with_evidence=optional(section, "with_evidence", bool, False, where),
@@ -396,9 +383,28 @@ def inferscale_section(
     section["model"] = model
     section["top_k"] = top_k
     try:
+        _validate_dataclass_types(section, InferScaleConfig, f"{where}.inferscale")
         return InferScaleConfig.from_dict(section)
     except ValueError as exc:
         raise ConfigError(f"{where}.inferscale: {exc}") from exc
+
+
+
+def _validate_dataclass_types(data: Mapping[str, Any], schema: type, where: str) -> None:
+    """Reject JSON type mismatches before dataclass constructors use values."""
+    hints = get_type_hints(schema)
+    reject_unknown_keys(data, tuple(hints), where)
+    for name, value in data.items():
+        expected = hints[name]
+        if is_dataclass(expected):
+            if not isinstance(value, dict):
+                raise ConfigError(f"{where}.{name} must be a JSON object.")
+            _validate_dataclass_types(value, expected, f"{where}.{name}")
+            continue
+        choices = get_args(expected) or (expected,)
+        if float in choices:
+            choices = (*choices, int)
+        _typed(value, name, choices, where)
 
 
 def jsonable_value(value: Any) -> Any:
@@ -416,25 +422,25 @@ def jsonable_value(value: Any) -> Any:
 __all__ = [
     "BuildConfig",
     "ConfigError",
-    "JUDGE_API_KEY_ENV",
+    "DEFAULT_EXTRACTION_LLM_BASE_URL",
+    "EXTRACTION_LLM_API_KEY_ENV",
+    "JUDGE_LLM_API_KEY_ENV",
     "JudgeConfig",
     "JudgeServerConfig",
-    "MEM0_LLM_API_KEY_ENV",
     "OPENAI_API_KEY_ENV",
     "REDACTED",
-    "RUNTIME_CONFIG_ENV",
     "RuntimeConfig",
-    "apply_overrides",
     "default_runtime_config_path",
     "embedding_api_key",
     "expand_path",
+    "extraction_llm_api_key",
     "inferscale_section",
     "int_list",
     "judge_config",
+    "judge_llm_api_key",
     "jsonable_value",
     "load_json_object",
     "load_runtime_config",
-    "mem0_llm_api_key",
     "optional",
     "redact",
     "reject_unknown_keys",

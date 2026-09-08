@@ -5,12 +5,12 @@ from typing import Any
 from benchmarks.common.clients import ChatClient
 from benchmarks.common.judge import judge_payload
 
-from .config import BenchmarkConfig
+from .config import MemoryRunConfig
 from .data import QuestionAnswer
 from .judge_prompt import build_judge_messages
 
 
-def judge_metadata(config: BenchmarkConfig | None) -> dict[str, Any]:
+def judge_metadata(config: MemoryRunConfig | None) -> dict[str, Any]:
     if config is None:
         return {}
     return {
@@ -21,7 +21,7 @@ def judge_metadata(config: BenchmarkConfig | None) -> dict[str, Any]:
 
 
 def judge_qa(
-    config: BenchmarkConfig,
+    config: MemoryRunConfig,
     judge_client: ChatClient,
     qa: QuestionAnswer,
     predicted_answer: str,
@@ -38,7 +38,7 @@ def judge_qa(
     return judge_payload(judge.content, judge_metadata(config))
 
 
-def judge_record(config: BenchmarkConfig, judge_client: ChatClient, record: dict[str, Any]) -> dict[str, Any]:
+def judge_record(config: MemoryRunConfig, judge_client: ChatClient, record: dict[str, Any]) -> dict[str, Any]:
     qa = QuestionAnswer(
         sample_id=str(record.get("sample_id") or ""),
         question_id=str(record.get("question_id") or ""),

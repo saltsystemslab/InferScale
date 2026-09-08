@@ -58,6 +58,7 @@ class RagKvAnswerClient:
     KV is fully resident in host RAM (CpuChunkStore, the cpu store backend,
     loaded once from the precompute cache) instead of a per-sample GPU store,
     because the full corpus KV does not fit GPU HBM at MultiHop-RAG scale.
+    The text/chunk-ID to KV-row lookup map always resides on CUDA.
     """
 
     def __init__(
@@ -118,7 +119,9 @@ class RagKvAnswerClient:
         self._empty_chunk = cached.scaffold_chunks["empty_passages"]
         self._footer_chunk = cached.scaffold_chunks["footer"]
         # The heavy step: load the full corpus chunk KV into host RAM once.
-        self._store = CpuChunkStore(cache_dir, meta_base=meta_base, chunks=chunks)
+        self._store = CpuChunkStore(
+            cache_dir, meta_base=meta_base, chunks=chunks, device=config.kv_device
+        )
         self._engine = VLLMEngine(config.model, config.kv_dtype, config.engine_config())
         self._tokenizer: Any | None = None
         self._live_scaffold: Any | None = None
@@ -146,7 +149,7 @@ class RagKvAnswerClient:
             self.close()
             raise
         logger.info(
-            "Started vLLM KV answer engine model={} namespace={}",
+            "Started kv-injection answer engine model={} namespace={}",
             self.config.model,
             self.namespace,
         )
@@ -295,6 +298,9 @@ class RagKvAnswerClient:
         if encoder is not None:
             encoder.close()
             self._encoder = None
+        store = getattr(self, "_store", None)
+        if store is not None:
+            store.close()
         drop_namespace(self.namespace)
         empty_cuda_cache(collect_ipc=True)
 

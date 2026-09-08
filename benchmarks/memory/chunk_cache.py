@@ -29,7 +29,7 @@ from inferscale.v1.kv.serialization import (
 )
 from inferscale.v1.types import KVChunk
 
-from benchmarks.common.paths import default_cache_root
+from benchmarks.common.config import load_runtime_config
 
 from .data import ConversationSample
 from .mem0.fact_catalog import sample_fingerprint
@@ -73,7 +73,7 @@ def chunk_cache_dir(
     block_size: int,
     cache_root: str | Path | None = None,
 ) -> Path:
-    root = Path(cache_root) if cache_root is not None else default_cache_root()
+    root = Path(cache_root) if cache_root is not None else load_runtime_config().layout.cache_root
     model_slug = model.replace("/", "__")
     return (
         root

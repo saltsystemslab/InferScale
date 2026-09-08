@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
 
 import pytest
 
-from benchmarks.memory.config import BenchmarkConfig
+from benchmarks.memory.config import MemoryRunConfig
+from memory_config import make_memory_config, memory_config_data, memory_runtime
 from benchmarks.memory.data import ConversationSample, Turn
 from benchmarks.memory.mem0 import memory_builder
 from benchmarks.memory.mem0.fact_catalog import make_memory_fact
@@ -31,19 +34,20 @@ def _sample() -> ConversationSample:
     )
 
 
-def _config(tmp_path: Path, **overrides: object) -> BenchmarkConfig:
+def _config(tmp_path: Path, **values: object) -> MemoryRunConfig:
     defaults: dict[str, object] = {
         "results_dir": tmp_path / "results",
         "run_id": "check",
         "model": "answer/model",
-        "memory_llm_cache_dir": tmp_path / "mem0-inference",
-        "embedding_cache_dir": tmp_path / "embedding-cache",
     }
-    defaults.update(overrides)
-    return BenchmarkConfig(**defaults)  # type: ignore[arg-type]
+    defaults.update(values)
+    return make_memory_config(
+        **defaults,
+        runtime=memory_runtime(storage={"cache_root": str(tmp_path / "cache")}),
+    )
 
 
-def _write_catalog(config: BenchmarkConfig, sample: ConversationSample) -> None:
+def _write_catalog(config: MemoryRunConfig, sample: ConversationSample) -> None:
     store = fact_catalog_store_for(config)
     store.write(sample, [make_memory_fact("Alice likes tea.", sample, sample.turns[0])])
 
@@ -71,45 +75,40 @@ def test_missing_fact_catalogs_uses_the_full_catalog_identity(
     monkeypatch.setattr(memory_builder, "load_locomo", lambda path, max_samples=None: [sample])
     _write_catalog(_config(tmp_path), sample)
 
-    other_endpoint = _config(tmp_path, memory_llm_base_url="http://other-host:9000/v1")
+    other_endpoint = _config(tmp_path, mem0={"llm_base_url": "http://other-host:8000/v1"})
     assert missing_fact_catalogs(other_endpoint)
 
-    other_embedding = _config(tmp_path, embedding_model="other-embedding-model")
+    other_embedding = _config(tmp_path, inferscale={"embedding": {"model": "other-embedding-model"}})
     assert missing_fact_catalogs(other_embedding)
 
 
-def test_check_catalogs_cli_fails_with_remediation_and_creates_no_run_dir(
+def test_check_catalogs_fails_with_remediation_and_creates_no_run_dir(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    monkeypatch.setattr(os, "environ", os.environ.copy())
     sample = _sample()
     monkeypatch.setattr(memory_builder, "load_locomo", lambda path, max_samples=None: [sample])
-    argv = [
-        "--check-catalogs",
-        "--skip-judge",
-        "--answer-model",
-        "answer/model",
-        "--results-dir",
-        str(tmp_path / "results"),
-        "--run-id",
-        "check",
-        "--memory-llm-cache-dir",
-        str(tmp_path / "mem0-inference"),
-        "--embedding-cache-dir",
-        str(tmp_path / "embedding-cache"),
-    ]
+    config_path = tmp_path / "memory.json"
+    config_path.write_text(json.dumps(memory_config_data(
+        model="answer/model", results_dir=tmp_path / "results", run_id="check", skip_judge=True,
+    )), encoding="utf-8")
+    runtime_path = tmp_path / "runtime.json"
+    runtime_path.write_text(
+        json.dumps({"storage": {"cache_root": str(tmp_path / "cache")}}), encoding="utf-8"
+    )
 
     with pytest.raises(SystemExit, match="1"):
-        main(argv)
+        main(config_path, runtime_path=runtime_path, stage="check-catalogs")
 
     err = capsys.readouterr().err
     assert "missing Mem0 fact catalogs for model answer/model" in err
-    assert 'EXTRACTION_MODELS="answer/model" bash scripts/extract_facts.sh' in err
+    assert "scripts/extract_facts.sh" in err
     assert not (tmp_path / "results" / "check").exists()
 
     _write_catalog(_config(tmp_path), sample)
-    main(argv)
+    main(config_path, runtime_path=runtime_path, stage="check-catalogs")
 
     out = capsys.readouterr().out
     assert "fact catalogs complete for model answer/model" in out

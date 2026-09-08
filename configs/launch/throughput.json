@@ -1,0 +1,13 @@
+{
+  "family": "throughput",
+  "name": "throughput",
+  "configs": [
+    "configs/memory/throughput/llama.json",
+    "configs/memory/throughput/mistral.json",
+    "configs/memory/throughput/qwen.json",
+    "configs/memory/throughput/qwen3.json"
+  ],
+  "sweep": "standard",
+  "stage": "run",
+  "dry_run": false
+}

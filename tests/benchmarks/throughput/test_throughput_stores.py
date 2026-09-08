@@ -37,16 +37,14 @@ def test_kv_store_search_returns_device_result_without_python_search(
         memory,
         "query",
         top_k=2,
-        prefer_device_result=True,
     )
 
     assert embeddings == ["query"]
     assert result.device_result is device_result
-    assert result.hits is None
     assert result.search_s == 0.0025
 
 
-def test_kv_store_search_reuses_embedding_for_device_unavailable_fallback(
+def test_kv_store_search_rejects_unavailable_device_results(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     embed_calls: list[str] = []
@@ -70,15 +68,22 @@ def test_kv_store_search_reuses_embedding_for_device_unavailable_fallback(
         lambda _memory, query: embed_calls.append(query) or query_embedding,
     )
 
-    result = search_store_for_kv(
-        memory,
-        "query",
-        top_k=2,
-        prefer_device_result=True,
-    )
+    with pytest.raises(RuntimeError, match="requires GPU device results"):
+        search_store_for_kv(memory, "query", top_k=2)
 
     assert embed_calls == ["query"]
-    assert search_vectors == [query_embedding]
-    assert result.device_result is None
-    assert result.hits == ["hit"]
-    assert result.search_s == 0.004
+    assert search_vectors == []
+
+
+def test_kv_store_search_requires_device_search(monkeypatch: pytest.MonkeyPatch) -> None:
+    def search(**_kwargs):
+        raise AssertionError("KV selection must never fall back to host results")
+
+    memory = SimpleNamespace(vector_store=SimpleNamespace(search=search))
+    monkeypatch.setattr(
+        "benchmarks.memory.throughput.stores.embed_mem0_query",
+        lambda _memory, _query: [0.25, 0.75],
+    )
+
+    with pytest.raises(RuntimeError, match="requires a vector store with GPU device search"):
+        search_store_for_kv(memory, "query", top_k=2)

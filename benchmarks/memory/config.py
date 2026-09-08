@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -12,17 +13,17 @@ from inferscale.v1.config import EngineConfig, InferScaleConfig
 from inferscale.v1.index.jasper import MAX_JASPER_BEAM_WIDTH
 
 from benchmarks.common.config import (
+    DEFAULT_EXTRACTION_LLM_BASE_URL,
     REDACTED,
     ConfigError,
     JudgeConfig,
     RuntimeConfig,
-    apply_overrides,
+    embedding_api_key,
     expand_path,
+    extraction_llm_api_key,
     inferscale_section,
     int_list,
     judge_config,
-    mem0_llm_api_key,
-    embedding_api_key,
     optional,
     reject_unknown_keys,
     require,
@@ -44,14 +45,13 @@ from .protocol import (
     MEMORY_INGESTION_PROTOCOL,
 )
 
-AnswerBackend = Literal["vllm-kv", "vllm-prefix"]
+AnswerBackend = Literal["kv-injection", "prompt-injection"]
 VectorBackend = Literal["jasper", "qdrant"]
-ANSWER_BACKENDS = ("vllm-kv", "vllm-prefix")
+ANSWER_BACKENDS = ("kv-injection", "prompt-injection")
 VECTOR_BACKENDS = ("jasper", "qdrant")
 MEMORY_UNIT = "mem0-fact"
 CONTEXT_WINDOW_UNIT = "turns"
 CONTEXT_WINDOW_SEMANTICS = "encoding-prefix-discard-v1"
-DEFAULT_MEM0_LLM_BASE_URL = "http://localhost:8000/v1"
 BENCHMARK_NAME = "memory-accuracy-latency"
 
 _TOP_LEVEL_KEYS = (
@@ -136,17 +136,20 @@ class MemoryCell:
             f"-k{self.top_k}-s{self.context_window}-{stamp}"
         )
 
-    def overrides(self) -> dict[str, Any]:
-        values: dict[str, Any] = {
-            "answer_backend": self.answer_backend,
-            "vector_backend": self.vector_backend,
-            "top_k": self.top_k,
-            "context_window": self.context_window,
-            "inferscale.kv.store_backend": self.kv_store_backend,
-        }
+    def materialize(self, data: Mapping[str, Any]) -> dict[str, Any]:
+        """Produce one run's JSON from the grid declared in the same JSON file."""
+        result = deepcopy(dict(data))
+        result.update(
+            answer_backend=self.answer_backend,
+            vector_backend=self.vector_backend,
+            top_k=self.top_k,
+            context_window=self.context_window,
+        )
+        kv = result.setdefault("inferscale", {}).setdefault("kv", {})
+        kv["store_backend"] = self.kv_store_backend
         if self.kv_staging_slots is not None:
-            values["inferscale.kv.staging_slots"] = self.kv_staging_slots
-        return values
+            kv["staging_slots"] = self.kv_staging_slots
+        return result
 
 
 @dataclass(slots=True)
@@ -161,7 +164,7 @@ class MemoryRunConfig:
     embedding_cache_dir: Path
     memory_llm_cache_dir: Path
     judge: JudgeConfig
-    answer_backend: str = "vllm-kv"
+    answer_backend: str = "kv-injection"
     vector_backend: str = "jasper"
     context_window: int = 0
     max_samples: int | None = None
@@ -174,7 +177,7 @@ class MemoryRunConfig:
     skip_judge: bool = False
     rejudge: bool = False
     memory_llm_provider: str = "vllm"
-    memory_llm_base_url: str | None = DEFAULT_MEM0_LLM_BASE_URL
+    memory_llm_base_url: str | None = DEFAULT_EXTRACTION_LLM_BASE_URL
     memory_llm_api_key: str | None = None
     extraction: ExtractionConfig = field(default_factory=ExtractionConfig)
     sweeps: dict[str, MemorySweep] = field(default_factory=dict)
@@ -393,10 +396,9 @@ class MemoryRunConfig:
         data: Mapping[str, Any],
         *,
         runtime: RuntimeConfig,
-        overrides: Mapping[str, Any] | None = None,
         where: str = "memory config",
     ) -> "MemoryRunConfig":
-        merged = apply_overrides(dict(data), overrides or {})
+        merged = dict(data)
         reject_unknown_keys(merged, _TOP_LEVEL_KEYS, where)
         benchmark = optional(merged, "benchmark", str, BENCHMARK_NAME, where)
         if benchmark != BENCHMARK_NAME:
@@ -405,7 +407,7 @@ class MemoryRunConfig:
         alias = require(merged, "model", str, where)
         model = runtime.resolve_model(alias)
         label = runtime.model_label(alias)
-        answer_backend = optional(merged, "answer_backend", str, "vllm-kv", where)
+        answer_backend = optional(merged, "answer_backend", str, "kv-injection", where)
         if answer_backend not in ANSWER_BACKENDS:
             raise ConfigError(f"{where}.answer_backend must be one of {ANSWER_BACKENDS}.")
         vector_backend = optional(merged, "vector_backend", str, "jasper", where)
@@ -421,8 +423,13 @@ class MemoryRunConfig:
         if preembed_workers < 1:
             raise ConfigError(f"{where}.preembed_workers must be >= 1.")
         log_every = optional(merged, "log_every", int, 5, where)
+        if log_every < 0:
+            raise ConfigError(f"{where}.log_every must be >= 0 (0 disables progress logging).")
         max_samples = optional(merged, "max_samples", int, None, where)
         max_questions = optional(merged, "max_questions", int, None, where)
+        for name, value in (("max_samples", max_samples), ("max_questions", max_questions)):
+            if value is not None and value < 1:
+                raise ConfigError(f"{where}.{name} must be >= 1.")
 
         inferscale = inferscale_section(merged, model=model, top_k=top_k, where=where)
         if vector_backend == "jasper" and max(inferscale.index.beam_width, top_k) > MAX_JASPER_BEAM_WIDTH:
@@ -430,16 +437,22 @@ class MemoryRunConfig:
                 f"{where}: effective Jasper beam width must be <= {MAX_JASPER_BEAM_WIDTH}; "
                 f"got max({inferscale.index.beam_width}, {top_k})."
             )
-        if answer_backend == "vllm-prefix" and not inferscale.engine.enable_prefix_caching:
-            raise ConfigError(f"{where}: answer_backend vllm-prefix requires inferscale.engine.enable_prefix_caching.")
+        if answer_backend == "prompt-injection" and not inferscale.engine.enable_prefix_caching:
+            raise ConfigError(f"{where}: answer_backend prompt-injection requires inferscale.engine.enable_prefix_caching.")
 
-        judge = judge_config(section_of(merged, "judge", where, required=False), runtime, where=f"{where}.judge")
+        judge = judge_config(
+            section_of(merged, "judge", where, required=False),
+            runtime,
+            where=f"{where}.judge",
+        )
         skip_judge = optional(merged, "skip_judge", bool, False, where) or judge.provider == "none"
         rejudge = optional(merged, "rejudge", bool, False, where)
 
         mem0_section = section_of(merged, "mem0", where, required=False)
         reject_unknown_keys(mem0_section, ("llm_base_url",), f"{where}.mem0")
-        memory_llm_base_url = optional(mem0_section, "llm_base_url", str, DEFAULT_MEM0_LLM_BASE_URL, f"{where}.mem0")
+        memory_llm_base_url = optional(
+            mem0_section, "llm_base_url", str, DEFAULT_EXTRACTION_LLM_BASE_URL, f"{where}.mem0"
+        )
 
         extraction = _extraction_config(section_of(merged, "extraction", where, required=False), f"{where}.extraction")
         endpoint_port = urlsplit(memory_llm_base_url).port
@@ -455,7 +468,12 @@ class MemoryRunConfig:
         dataset_path = expand_path(optional(merged, "dataset_path", str, "data/locomo10.json", where), root=runtime.root)
         results_value = optional(merged, "results_dir", str, None, where)
         results_dir = expand_path(results_value, root=runtime.root) if results_value else layout.results_root
-        run_id = optional(merged, "run_id", str, None, where) or stamp_now()
+        run_id = optional(merged, "run_id", str, None, where)
+        if run_id is not None and (
+            not run_id.strip() or run_id in {".", ".."} or "/" in run_id or "\\" in run_id
+        ):
+            raise ConfigError(f"{where}.run_id must be a non-empty directory name.")
+        run_id = run_id or stamp_now()
 
         return cls(
             inferscale=inferscale,
@@ -481,7 +499,7 @@ class MemoryRunConfig:
             skip_judge=skip_judge,
             rejudge=rejudge,
             memory_llm_base_url=memory_llm_base_url,
-            memory_llm_api_key=mem0_llm_api_key(),
+            memory_llm_api_key=extraction_llm_api_key(),
             extraction=extraction,
             sweeps=sweeps,
         )
@@ -518,7 +536,7 @@ class MemoryRunConfig:
         windows: list[int] = [self.context_window]
         for sweep in self.sweeps.values():
             for variant in sweep.variants:
-                if variant.answer_backend == "vllm-kv":
+                if variant.answer_backend == "kv-injection":
                     windows.extend(variant.context_windows)
         return tuple(sorted(set(windows)))
 
@@ -527,13 +545,25 @@ def load_memory_config(
     path: str | Path,
     runtime: RuntimeConfig,
     *,
-    overrides: Mapping[str, Any] | None = None,
+    stage: str = "run",
 ) -> MemoryRunConfig:
     from benchmarks.common.config import load_json_object
 
-    return MemoryRunConfig.from_dict(
-        load_json_object(path), runtime=runtime, overrides=overrides, where=f"memory config {path}"
-    )
+    data = load_json_object(path)
+    config = MemoryRunConfig.from_dict(data, runtime=runtime, where=f"memory config {path}")
+    validate_memory_stage(config, stage, has_run_id=bool(data.get("run_id")))
+    return config
+
+
+def validate_memory_stage(config: MemoryRunConfig, stage: str, *, has_run_id: bool) -> None:
+    if stage not in {"run", "judge", "check-catalogs", "preembed", "precompute-kv"}:
+        raise ConfigError(f"Unsupported memory stage: {stage!r}.")
+    if stage == "judge" and not has_run_id:
+        raise ConfigError("The judge stage requires run_id in JSON to select an existing run.")
+    if config.rejudge and stage != "judge":
+        raise ConfigError("JSON rejudge=true requires the judge stage.")
+    if stage == "judge" and config.skip_judge:
+        raise ConfigError("The judge stage requires judging to be enabled in JSON.")
 
 
 def _extraction_config(section: Mapping[str, Any], where: str) -> ExtractionConfig:

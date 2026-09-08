@@ -11,7 +11,7 @@ def load_rag_tokenizer(model: str, *, allow_transformers_fallback: bool = False)
     Chunk token ids must be byte-identical to what the vLLM engine sees (the
     KV connector matches injected chunks as a prompt prefix), so every stage
     that produces token ids uses the same resolver as the engine. The
-    transformers AutoTokenizer fallback exists only for --estimate-only on
+    transformers AutoTokenizer fallback exists only for the estimate stage on
     hosts without vLLM; it may tokenize differently (notably for Mistral) and
     must never feed the embedding, KV, or answer stages.
     """
@@ -28,8 +28,8 @@ def load_rag_tokenizer(model: str, *, allow_transformers_fallback: bool = False)
         if not allow_transformers_fallback:
             raise RuntimeError(
                 "vLLM is required to load the tokenizer for this stage so token ids "
-                "match the engine. Run this command on the GPU host, or use "
-                "--estimate-only which permits the transformers fallback."
+                "match the engine. Run this stage on the GPU host, or select "
+                "the estimate stage, which permits the transformers fallback."
             ) from exc
         logger.warning(
             "vLLM is unavailable ({}); falling back to transformers AutoTokenizer for "

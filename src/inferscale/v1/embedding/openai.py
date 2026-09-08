@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+
 
 class OpenAIEmbedder:
     """Embeds documents and queries with the OpenAI embeddings API.
@@ -22,9 +24,12 @@ class OpenAIEmbedder:
     ) -> None:
         from openai import OpenAI
 
-        kwargs: dict[str, Any] = {"max_retries": 5}
-        if base_url:
-            kwargs["base_url"] = base_url
+        kwargs: dict[str, Any] = {
+            "max_retries": 5,
+            # An omitted JSON endpoint selects the provider default, even if
+            # the SDK's ambient OPENAI_BASE_URL points at another server.
+            "base_url": base_url or DEFAULT_OPENAI_BASE_URL,
+        }
         if api_key:
             kwargs["api_key"] = api_key
         self._client = OpenAI(**kwargs)

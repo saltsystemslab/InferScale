@@ -5,18 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from benchmarks.memory.config import BenchmarkConfig
+from benchmarks.memory.config import MemoryRunConfig
+from memory_config import make_memory_config
 from benchmarks.memory.runner import _reconcile_with_evidence
 
 
-def _config(tmp_path: Path, *, with_evidence: bool, rejudge: bool) -> BenchmarkConfig:
-    return BenchmarkConfig(
-        results_dir=tmp_path,
-        run_id="run",
-        with_evidence=with_evidence,
-        judge_only=True,
-        rejudge=rejudge,
-    )
+def _config(tmp_path: Path, *, with_evidence: bool, rejudge: bool) -> MemoryRunConfig:
+    return make_memory_config(results_dir=tmp_path, run_id='run', rejudge=rejudge, judge={'with_evidence': with_evidence})
 
 
 def test_judge_only_adopts_the_saved_evidence_protocol(tmp_path: Path) -> None:

@@ -6,8 +6,40 @@ from typing import Any
 
 import numpy as np
 
+from inferscale.v1.kv.memory_store import GPUMemoryStore, UserMemory
 from inferscale.v1.serving.vllm import GenerationOutput
 from inferscale.v1.types import EncodingPlan, KVChunk, SearchHit, SearchMetrics
+
+
+class FakeChunkStore(GPUMemoryStore):
+    """Instrument the corpus lookup contract without allocating CUDA tensors.
+
+    This fake deliberately rejects the old single-ID access path, so library
+    tests detect a regression to registry lookup during corpus fetching.
+    It does not simulate or validate GPU execution.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(device="cpu")
+        self.lookup_finalized = False
+        self.lookup_batches: list[list[str]] = []
+
+    def finalize_chunk_lookup(self) -> None:
+        self.lookup_finalized = True
+
+    def get_chunk_memories(self, chunk_ids) -> list[tuple[str, UserMemory]]:
+        assert self.lookup_finalized, "Finalize corpus lookup before serving queries."
+        self.lookup_batches.append(list(chunk_ids))
+        result: list[tuple[str, UserMemory]] = []
+        for chunk_id in chunk_ids:
+            memory = GPUMemoryStore.get_user_memory(self, chunk_id)
+            if memory is None:
+                raise ValueError("Retrieved chunk ID has no pre-encoded KV chunk.")
+            result.append((chunk_id, memory))
+        return result
+
+    def get_user_memory(self, user_id: str) -> UserMemory | None:
+        raise AssertionError("Corpus fetch bypassed the mandatory chunk lookup interface.")
 
 
 class FakeTokenizer:

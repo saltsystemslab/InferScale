@@ -2,9 +2,10 @@
 
 The chunk store is the home of the corpus: chunks encoded once (or loaded
 from a disk cache) and reused across requests. The ``gpu`` backend keeps the
-corpus HBM-resident (GPUMemoryStore); ``cpu`` keeps it in pinned host RAM
+corpus HBM-resident (PackedGPUMemoryStore); ``cpu`` keeps it in pinned host RAM
 (CpuPinnedMemoryStore) and stages the selected chunks to the GPU per
 composition, which is where a corpus-in-DRAM system pays its PCIe cost.
+Both backends always resolve text IDs through a GPU-resident KV row map.
 
 Composed request memories never enter these stores; they are ephemeral GPU
 products handed to the connector through the (always GPU-resident) serving
@@ -16,7 +17,7 @@ from __future__ import annotations
 from typing import Any, Iterable, Mapping, Sequence
 
 from ..types import KVChunk
-from .memory_store import GPUMemoryStore, tensor_nbytes
+from .memory_store import tensor_nbytes
 from .packed_memory_store import PackedGPUMemoryStore
 
 # Slots beyond one full top-k fetch, covering allocator slack and the next
@@ -30,7 +31,6 @@ def build_chunk_store(
     device: str,
     top_k: int,
     staging_slots: int = 0,
-    device_selection: bool = False,
 ) -> Any:
     """A dedicated store instance for the corpus, never a connector namespace."""
     if backend == "cpu":
@@ -44,9 +44,7 @@ def build_chunk_store(
             num_staging_slots=max(int(staging_slots), int(top_k) + _STAGING_HEADROOM),
         )
     if backend == "gpu":
-        if device_selection:
-            return PackedGPUMemoryStore(device=device)
-        return GPUMemoryStore(device=device)
+        return PackedGPUMemoryStore(device=device)
     raise ValueError(f"Unknown chunk store backend: {backend!r}; expected 'gpu' or 'cpu'.")
 
 
@@ -98,14 +96,24 @@ def fetch_chunks(
             f"Composition needs {len(chunk_ids)} staged chunks but the chunk "
             f"store has only {capacity} staging slots; raise the staging slot count."
         )
-    fetched: list[KVChunk] = []
     for chunk_id in chunk_ids:
+        if chunk_id not in meta:
+            raise RuntimeError(f"Retrieved chunk id {chunk_id} has no pre-encoded KV chunk.")
+    try:
+        memories = store.get_chunk_memories(chunk_ids)
+    except ValueError as exc:
+        raise RuntimeError(f"Requested chunk is missing from the chunk store: {exc}") from exc
+    return _chunks_with_metadata(meta, memories)
+
+
+def _chunks_with_metadata(
+    meta: Mapping[str, KVChunk], memories: Iterable[tuple[str, Any]]
+) -> list[KVChunk]:
+    fetched: list[KVChunk] = []
+    for chunk_id, memory in memories:
         chunk_meta = meta.get(chunk_id)
         if chunk_meta is None:
             raise RuntimeError(f"Retrieved chunk id {chunk_id} has no pre-encoded KV chunk.")
-        memory = store.get_user_memory(chunk_id)
-        if memory is None:
-            raise RuntimeError(f"Chunk {chunk_id} is missing from the chunk store.")
         fetched.append(
             KVChunk(
                 chunk_id=chunk_id,
@@ -128,10 +136,11 @@ def release_chunks(store: Any, chunk_ids: Iterable[str]) -> None:
 
 
 def finalize_chunk_store(store: Any) -> None:
-    """Finalize an optional packed layout after all corpus chunks are registered."""
+    """Finalize the payload layout and mandatory GPU map after registration."""
     finalize = getattr(store, "finalize_packed", None)
     if callable(finalize):
         finalize()
+    store.finalize_chunk_lookup()
 
 
 def build_device_chunk_row_map(
@@ -163,9 +172,31 @@ def fetch_device_chunk(
     )
 
 
+def fetch_device_chunks(
+    store: Any,
+    meta: Mapping[str, KVChunk],
+    stable_ids: Any,
+    id_to_row: Any,
+    *,
+    reverse: bool = True,
+) -> list[KVChunk]:
+    """Resolve Jasper IDs on GPU and stage row-selected pinned payloads."""
+    capacity = int(getattr(store, "num_staging_slots", 0) or 0)
+    if capacity and int(stable_ids.numel()) > capacity:
+        raise RuntimeError(
+            f"Composition needs {stable_ids.numel()} staged chunks but the chunk "
+            f"store has only {capacity} staging slots; raise the staging slot count."
+        )
+    memories = store.get_device_chunk_memories(stable_ids, id_to_row, reverse=reverse)
+    return _chunks_with_metadata(meta, memories)
+
+
 def close_chunk_store(store: Any) -> None:
     for chunk_id in list(store.get_all_user_ids()):
         store.remove_user_memory(chunk_id)
+    close_lookup = getattr(store, "close_chunk_lookup", None)
+    if callable(close_lookup):
+        close_lookup()
 
 
 def chunk_nbytes(chunk: KVChunk | None) -> int:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import string
 from typing import Any
+from unittest.mock import Mock
 
 import numpy as np
 
@@ -77,7 +78,7 @@ def test_pipeline_smoke_end_to_end(tmp_path) -> None:
     config = RagBenchConfig(
         results_dir=tmp_path / "results",
         run_id="smoke",
-        answer_backend="vllm-prefix",
+        answer_backend="prompt-injection",
         skip_judge=True,
         top_k=4,
     )
@@ -154,3 +155,57 @@ def test_pipeline_smoke_end_to_end(tmp_path) -> None:
     write_csv(tmp_path / "query_metrics.csv", rows, QUERY_METRICS_COLUMNS)
     header = (tmp_path / "query_metrics.csv").read_text(encoding="utf-8").splitlines()[0]
     assert header == ",".join(QUERY_METRICS_COLUMNS)
+
+
+def test_kv_client_passes_cuda_device_to_store_and_closes_it(tmp_path, monkeypatch) -> None:
+    from benchmarks.rag import answer_kv
+    from benchmarks.rag.data_types import RagPromptProfile
+    from benchmarks.rag.kv_cache import CachedRagScaffold
+    from inferscale.v1.kv.prompt import ScaffoldTokens
+    from inferscale.v1.types import KVChunk
+
+    scaffold = ScaffoldTokens(
+        header_token_ids=[1], empty_token_ids=[2], footer_token_ids=[3]
+    )
+    cached = CachedRagScaffold(
+        cos_table=object(),
+        sin_table=object(),
+        scaffold_chunks={
+            slot: KVChunk(chunk_id=slot, token_ids=ids, kv_by_layer={})
+            for slot, ids in (
+                ("header", [1]), ("empty_passages", [2]), ("footer", [3])
+            )
+        },
+    )
+    for name in (
+        "force_vllm_inprocess_mode",
+        "get_gpu_memory_store",
+        "load_encoder_tokenizer",
+        "clear_namespace",
+        "drop_namespace",
+        "empty_cuda_cache",
+    ):
+        monkeypatch.setattr(answer_kv, name, Mock())
+    monkeypatch.setattr(answer_kv, "extract_rag_scaffold_token_ids", Mock(return_value=scaffold))
+    monkeypatch.setattr(answer_kv, "load_tables_and_scaffold", Mock(return_value=cached))
+    encoder_factory = Mock()
+    store_factory = Mock()
+    engine_factory = Mock()
+    monkeypatch.setattr(answer_kv, "ChunkedRopeEncoder", encoder_factory)
+    monkeypatch.setattr(answer_kv, "CpuChunkStore", store_factory)
+    monkeypatch.setattr(answer_kv, "VLLMEngine", engine_factory)
+    config = RagBenchConfig(kv_device="cuda:2")
+
+    client = answer_kv.RagKvAnswerClient(
+        config,
+        chunks=[],
+        cache_dir=tmp_path,
+        meta_base={},
+        prompt_profile=RagPromptProfile(system_prompt="system", answer_instruction="answer"),
+    )
+
+    store_factory.assert_called_once_with(tmp_path, meta_base={}, chunks=[], device="cuda:2")
+    client.close()
+    store_factory.return_value.close.assert_called_once_with()
+    encoder_factory.from_tables.return_value.close.assert_called_once_with()
+    engine_factory.return_value.close.assert_called_once_with()

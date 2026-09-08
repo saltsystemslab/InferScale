@@ -72,12 +72,11 @@ def _write_run(tmp_path, *, rejudge: bool = False) -> RagBenchConfig:
     config = RagBenchConfig(
         results_dir=tmp_path,
         run_id="r1",
-        answer_backend="vllm-prefix",
+        answer_backend="prompt-injection",
         judge_provider="vllm",
         judge_model="stub-judge",
         judge_base_url="http://stub",
         judge_api_key="key",
-        judge_only=True,
         rejudge=rejudge,
     )
     config.run_dir.mkdir(parents=True)
@@ -134,7 +133,7 @@ def test_judge_failure_persists_progress_and_raises(tmp_path, monkeypatch) -> No
 
 
 def test_missing_predictions_file_raises(tmp_path) -> None:
-    config = RagBenchConfig(results_dir=tmp_path, run_id="missing", judge_only=True)
+    config = RagBenchConfig(results_dir=tmp_path, run_id="missing")
 
     with pytest.raises(FileNotFoundError):
         rag_runner.judge_existing_run(config)

@@ -14,10 +14,10 @@ from loguru import logger
 
 from pathlib import Path
 
-from benchmarks.memory.config import BenchmarkConfig
+from benchmarks.memory.config import MemoryRunConfig
 from benchmarks.memory.data import ConversationSample, format_turn_for_memory, load_locomo
 from benchmarks.common.embedding_cache import CacheMode, CachedEmbedder
-from benchmarks.common.paths import default_mem0_dir_string, local_store_scratch_dir
+from benchmarks.common.paths import mem0_dir_from_environment
 from benchmarks.common.vector_types import VectorStoreConfig
 from benchmarks.memory.mem0.fact_catalog import (
     FactCatalogStore,
@@ -41,7 +41,7 @@ _MEM0_OBSERVATION_DATE: ContextVar[str | None] = ContextVar(
 )
 
 
-def fact_catalog_store_for(config: BenchmarkConfig) -> FactCatalogStore:
+def fact_catalog_store_for(config: MemoryRunConfig) -> FactCatalogStore:
     return FactCatalogStore(
         config.memory_llm_cache_dir,
         provider=config.memory_llm_provider,
@@ -53,7 +53,7 @@ def fact_catalog_store_for(config: BenchmarkConfig) -> FactCatalogStore:
     )
 
 
-def missing_fact_catalogs(config: BenchmarkConfig) -> list[tuple[str, Path]]:
+def missing_fact_catalogs(config: MemoryRunConfig) -> list[tuple[str, Path]]:
     """Sample ids and expected catalog paths that do not exist for this config's full catalog identity."""
     store = fact_catalog_store_for(config)
     samples = load_locomo(config.dataset_path, max_samples=config.max_samples)
@@ -67,7 +67,7 @@ def missing_fact_catalogs(config: BenchmarkConfig) -> list[tuple[str, Path]]:
 class SampleMemoryBuilder:
     def __init__(
         self,
-        config: BenchmarkConfig,
+        config: MemoryRunConfig,
         *,
         embedding_cache_mode: CacheMode = "read",
         memory_llm_cache_mode: CacheMode | None = None,
@@ -102,7 +102,7 @@ class SampleMemoryBuilder:
         if self.memory_llm_cache_mode == "write":
             raise RuntimeError(
                 "Prepared retrievers consume immutable fact catalogs. Run build_with_metrics() "
-                "during --preembed-only first, then construct a read-mode SampleMemoryBuilder."
+                "during the preembed stage first, then construct a read-mode SampleMemoryBuilder."
             )
         memory, metrics = self.build_with_metrics(sample, finalize_index=finalize_index)
         facts = self.load_fact_catalog(sample)
@@ -129,7 +129,7 @@ class SampleMemoryBuilder:
             return self._extract_and_materialize_catalog(sample)
 
         facts = self.load_fact_catalog(sample)
-        store_root = local_store_scratch_dir(self.config.run_id) / "mem0" / sample.sample_id
+        store_root = self.config.local_store_scratch_dir() / "mem0" / sample.sample_id
         total_started = time.perf_counter()
         create_started = time.perf_counter()
         memory = self._create_memory(
@@ -178,7 +178,7 @@ class SampleMemoryBuilder:
     ) -> tuple[Any, dict[str, Any]]:
         total_started = time.perf_counter()
         create_started = time.perf_counter()
-        store_root = local_store_scratch_dir(self.config.run_id) / "mem0-extraction" / sample.sample_id
+        store_root = self.config.local_store_scratch_dir() / "mem0-extraction" / sample.sample_id
         # Mem0 persists a messages table (last 10 messages feed the extraction
         # prompt) in history.sqlite under the store root; wipe the whole staging
         # directory so a repeated extraction run starts clean.
@@ -445,7 +445,7 @@ def embed_mem0_query(memory: Any, query: str) -> Any:
 
 
 def _store_config(
-    config: BenchmarkConfig,
+    config: MemoryRunConfig,
     *,
     backend: str | None = None,
 ) -> VectorStoreConfig:
@@ -497,7 +497,7 @@ def _mem0_observation_date(created_at: str) -> Iterator[None]:
 
 def _install_mem0_observation_date_wrapper() -> None:
     """Install one process-wide wrapper whose timestamp is context-local."""
-    os.environ.setdefault("MEM0_DIR", default_mem0_dir_string())
+    os.environ.setdefault("MEM0_DIR", str(mem0_dir_from_environment()))
     os.environ.setdefault("MEM0_TELEMETRY", "false")
     importlib.import_module("mem0")
     mem0_main = importlib.import_module("mem0.memory.main")

@@ -1,33 +1,34 @@
 from __future__ import annotations
 
-import os
 import sys
+from pathlib import Path
 
 from loguru import logger
 
-from benchmarks.common.paths import configure_runtime_environment
 
-configure_runtime_environment()
+def main(
+    config_path: Path, *, runtime_path: Path | None = None, stage: str = "run"
+) -> None:
+    from benchmarks.common.config import load_runtime_config
+    from benchmarks.rag.config import load_rag_config
 
-
-def main(argv: list[str] | None = None) -> None:
-    from benchmarks.rag.config import parse_args
-
-    config = parse_args(argv)
-    _configure_logging()
-    if config.judge_only:
+    runtime = load_runtime_config(runtime_path)
+    config = load_rag_config(config_path, runtime=runtime, stage=stage)
+    runtime.apply_environment()
+    _configure_logging(config.log_level)
+    if stage == "judge":
         from benchmarks.rag.runner import judge_existing_run
 
         summary = judge_existing_run(config)
         print(f"judged results in {config.run_dir}")
         _print_summary_line(summary)
         return
-    if config.estimate_only:
+    if stage == "estimate":
         from benchmarks.rag.runner import run_estimate
 
         run_estimate(config)
         return
-    if config.preembed_only:
+    if stage == "preembed":
         from benchmarks.rag.preembed import preembed_rag_embeddings
 
         summary = preembed_rag_embeddings(config)
@@ -38,7 +39,7 @@ def main(argv: list[str] | None = None) -> None:
             f"cache_hits={cache['hits']} cache_misses={cache['misses']}"
         )
         return
-    if config.precompute_kv_only:
+    if stage == "precompute-kv":
         from benchmarks.rag.kv_precompute import precompute_rag_kv
 
         summary = precompute_rag_kv(config)
@@ -76,14 +77,10 @@ def _fmt(value: object) -> str:
     return f"{float(value):.4f}"
 
 
-def _configure_logging() -> None:
+def _configure_logging(level: str) -> None:
     logger.remove()
     logger.add(
         sys.stderr,
-        level=(os.environ.get("RAG_LOG_LEVEL") or os.environ.get("LOCOMO_LOG_LEVEL") or "INFO").upper(),
+        level=level,
         format="{time:YYYY-MM-DD HH:mm:ss} | {level:<5} | {message}",
     )
-
-
-if __name__ == "__main__":
-    main()

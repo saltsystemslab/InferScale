@@ -1,22 +1,23 @@
 from __future__ import annotations
 
-import os
 import sys
+from pathlib import Path
 
 from loguru import logger
 
-from benchmarks.common.paths import configure_runtime_environment
 
-configure_runtime_environment()
+def main(config_path: Path, *, runtime_path: Path | None = None, stage: str = "run") -> None:
+    """Execute one memory benchmark stage using the selected JSON files."""
+    from benchmarks.common.config import load_runtime_config
+    from benchmarks.memory.config import load_memory_config
 
-
-def main(argv: list[str] | None = None) -> None:
-    from benchmarks.memory.config import parse_args
+    runtime = load_runtime_config(runtime_path)
+    config = load_memory_config(config_path, runtime, stage=stage)
+    runtime.apply_environment()
+    _configure_logging(config.log_level)
     from benchmarks.memory.runner import judge_existing_run, run_benchmark
 
-    config = parse_args(argv)
-    _configure_logging()
-    if config.judge_only:
+    if stage == "judge":
         summary = judge_existing_run(config)
         print(f"judged results in {config.run_dir}")
         accuracy = summary.get("metrics", {}).get("accuracy")
@@ -25,7 +26,7 @@ def main(argv: list[str] | None = None) -> None:
         else:
             print(f"questions={summary['question_count']} judged={summary['judged_count']}")
         return
-    if config.check_catalogs:
+    if stage == "check-catalogs":
         from benchmarks.memory.mem0.memory_builder import missing_fact_catalogs
 
         missing = missing_fact_catalogs(config)
@@ -38,14 +39,14 @@ def main(argv: list[str] | None = None) -> None:
             for sample_id, path in missing:
                 print(f"  {sample_id}: {path}", file=sys.stderr)
             print(
-                "Extraction always uses the answer model; materialize them with:\n"
-                f'  EXTRACTION_MODELS="{config.model}" bash scripts/extract_facts.sh',
+                "Extraction always uses the answer model. Select the same memory JSON file in "
+                "the extraction launch plan, then run bash scripts/extract_facts.sh.",
                 file=sys.stderr,
             )
             raise SystemExit(1)
         print(f"fact catalogs complete for model {config.memory_llm_model}")
         return
-    if config.preembed_only:
+    if stage == "preembed":
         from benchmarks.memory.preembed import preembed_locomo_embeddings
 
         summary = preembed_locomo_embeddings(config)
@@ -57,7 +58,7 @@ def main(argv: list[str] | None = None) -> None:
             f"inference_cache_misses={summary['memory_inference_cache']['misses']}"
         )
         return
-    if config.precompute_kv_only:
+    if stage == "precompute-kv":
         from benchmarks.memory.precompute_kv import precompute_kv_chunks
 
         summary = precompute_kv_chunks(config)
@@ -76,14 +77,10 @@ def main(argv: list[str] | None = None) -> None:
         print(f"questions={summary['question_count']} judged={summary['judged_count']}")
 
 
-def _configure_logging() -> None:
+def _configure_logging(level: str) -> None:
     logger.remove()
     logger.add(
         sys.stderr,
-        level=os.environ.get("LOCOMO_LOG_LEVEL", "INFO").upper(),
+        level=level.upper(),
         format="{time:YYYY-MM-DD HH:mm:ss} | {level:<5} | {message}",
     )
-
-
-if __name__ == "__main__":
-    main()

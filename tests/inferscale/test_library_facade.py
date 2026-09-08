@@ -4,9 +4,8 @@ import pytest
 
 import inferscale.v1.api as api_module
 from inferscale.v1 import Chunk, InferScale, InferScaleConfig
-from inferscale.v1.kv.memory_store import GPUMemoryStore
 from inferscale.v1.kv.registry import namespace_stats
-from library_fakes import FakeEmbedder, FakeEncoder, FakeEngine, FakeIndex
+from library_fakes import FakeChunkStore, FakeEmbedder, FakeEncoder, FakeEngine, FakeIndex
 
 
 @pytest.fixture
@@ -17,7 +16,7 @@ def engine(monkeypatch):
         config,
         embedder=FakeEmbedder(),
         index=FakeIndex(),
-        chunk_store=GPUMemoryStore(device="cpu"),
+        chunk_store=FakeChunkStore(),
         engine=FakeEngine(),
     )
     yield facade
@@ -74,6 +73,7 @@ def test_phase_order_and_query_flow(engine) -> None:
     assert extra["memory_store_backend"] == "gpu"
     assert engine._encoder.released is True
     assert engine._index.finalized is True
+    assert engine._corpus.store.lookup_finalized is True
 
     with pytest.raises(RuntimeError, match="serving"):
         engine.precompute([Chunk(id="late", text="late")])
@@ -85,6 +85,7 @@ def test_phase_order_and_query_flow(engine) -> None:
     assert result.retrieval is not None
     selected = result.metrics["kv_selected_chunk_ids"]
     assert selected == list(reversed([hit.id for hit in result.hits]))
+    assert engine._corpus.store.lookup_batches[-1] == selected
     assert engine._encoder.composed[-1] == ["scaffold:header", *selected, "scaffold:footer"]
 
     scaffold = engine._corpus.scaffold
@@ -115,3 +116,17 @@ def test_phase_order_and_query_flow(engine) -> None:
     assert fake_engine.closed and engine._encoder is None and engine._index.closed
     with pytest.raises(RuntimeError, match="closed"):
         engine.query("again")
+
+
+def test_failed_gpu_lookup_setup_prevents_serving(engine, monkeypatch) -> None:
+    engine.precompute(_chunks())
+
+    def fail_lookup() -> None:
+        raise RuntimeError("GPU chunk map allocation failed.")
+
+    monkeypatch.setattr(engine._corpus.store, "finalize_chunk_lookup", fail_lookup)
+    with pytest.raises(RuntimeError, match="GPU chunk map allocation failed"):
+        engine.start()
+    assert engine._engine.started is False
+    with pytest.raises(RuntimeError, match="start\\(\\)"):
+        engine.query("Who has a cat?")

@@ -57,7 +57,7 @@ class RagPrefixAnswerClient:
         except Exception:
             self.close()
             raise
-        logger.info("Started vLLM prefix answer engine model={}", self.config.model)
+        logger.info("Started prompt-injection answer engine model={}", self.config.model)
 
     def answer(
         self,

@@ -16,9 +16,11 @@ from collections.abc import Sequence
 from typing import Any
 
 from inferscale.v1.kv.chunk_store import (
+    build_chunk_store,
     chunk_nbytes,
     close_chunk_store,
     fetch_chunks,
+    finalize_chunk_store,
     register_chunks,
     release_chunks,
 )
@@ -64,7 +66,7 @@ class SampleComposer:
         self.context_window = context_window
         self.block_size = block_size
         # When set, the fact-chunk corpus lives in this backend store
-        # (GPUMemoryStore or CpuPinnedMemoryStore) after move_chunks_to_store;
+        # after move_chunks_to_store, with its ID lookup map on GPU;
         # self.chunks then holds metadata-only chunks and compose() stages
         # the selected chunks per request. Scaffold chunks stay local GPU
         # tensors either way.
@@ -133,13 +135,17 @@ class SampleComposer:
         do so BEFORE this move: afterwards the local chunks are
         metadata-only and the store owns the tensors until close().
         """
-        if self.chunk_store is None or self._chunks_in_store or not self.chunks:
+        if self.chunk_store is None:
             return
-        first_chunk = next(iter(self.chunks.values()))
-        self._stored_chunk_layers = len(first_chunk.kv_by_layer)
-        self._stored_chunk_bytes = sum(chunk_nbytes(chunk) for chunk in self.chunks.values())
-        self.chunks = register_chunks(self.chunk_store, self.chunks)
-        self._chunks_in_store = True
+        if not self._chunks_in_store:
+            first_chunk = next(iter(self.chunks.values()), None)
+            self._stored_chunk_layers = len(first_chunk.kv_by_layer) if first_chunk else 0
+            self._stored_chunk_bytes = sum(chunk_nbytes(chunk) for chunk in self.chunks.values())
+            self.chunks = register_chunks(self.chunk_store, self.chunks)
+            # Registration transfers ownership even if GPU finalization fails.
+            # A retry must preserve these payloads instead of registering metadata.
+            self._chunks_in_store = True
+        finalize_chunk_store(self.chunk_store)
 
     def encode_sample(
         self,
@@ -246,22 +252,23 @@ class SampleComposer:
             )
 
         selected_ids = [fact.memory_id for fact in selected_facts]
-        if self._chunks_in_store:
-            # Stages the selected chunks on the cpu store (async H2D with
-            # per-layer events); a plain lookup on the gpu store. The staging
-            # tensors are record_stream-protected, so releasing right after
-            # the compose kernels are enqueued is safe.
-            selected = fetch_chunks(self.chunk_store, self.chunks, selected_ids)
-        else:
-            selected = [self.chunks[fact_id] for fact_id in selected_ids]
+        if self.chunk_store is None:
+            # Standalone composers may retain tensors for offline cache writes,
+            # but serving always resolves IDs through the GPU lookup map.
+            self.chunk_store = build_chunk_store(
+                "gpu", device=str(self.device), top_k=max(1, len(self.chunks))
+            )
+        self.move_chunks_to_store()
+        # CPU payloads are staged after the GPU map selects their rows.
+        # Staging tensors are record_stream-protected through composition.
+        selected = fetch_chunks(self.chunk_store, self.chunks, selected_ids)
 
         chunks = [self.header_chunk, *memory_heading_chunks, *selected]
         chunks.append(self.footer_chunk)
         try:
             kv_by_layer = self.encoder.compose(chunks)
         finally:
-            if self._chunks_in_store:
-                release_chunks(self.chunk_store, selected_ids)
+            release_chunks(self.chunk_store, selected_ids)
         token_ids: list[int] = []
         for chunk in chunks:
             token_ids.extend(chunk.token_ids)
@@ -318,7 +325,9 @@ class SampleComposer:
             fact_chunk_tensor_bytes = sum(chunk_nbytes(chunk) for chunk in fact_chunks)
             residency = "gpu"
         total_bytes = prefix_tensor_bytes + fact_chunk_tensor_bytes
-        chunk_map_cpu_bytes = _chunk_map_cpu_bytes(fact_chunks_by_id)
+        chunk_metadata_cpu_bytes = _chunk_metadata_cpu_bytes(fact_chunks_by_id)
+        store_stats = self.chunk_store.get_stats() if self.chunk_store is not None else {}
+        chunk_map_gpu_bytes = int(store_stats.get("chunk_map_bytes", 0))
 
         stats = {
             "kv_chunk_cache_residency": residency,
@@ -329,8 +338,10 @@ class SampleComposer:
             "kv_precomputed_gpu_mb": total_bytes / (1024 * 1024),
             "kv_precomputed_devices": ",".join(sorted(devices)),
             "llama_kv_chunk_count": len(fact_chunks),
-            "llama_kv_chunk_map_cpu_bytes": chunk_map_cpu_bytes,
-            "llama_kv_chunk_map_cpu_mb": bytes_to_mb(chunk_map_cpu_bytes),
+            "llama_kv_chunk_metadata_cpu_bytes": chunk_metadata_cpu_bytes,
+            "llama_kv_chunk_metadata_cpu_mb": bytes_to_mb(chunk_metadata_cpu_bytes),
+            "llama_kv_chunk_map_gpu_bytes": chunk_map_gpu_bytes,
+            "llama_kv_chunk_map_gpu_mb": bytes_to_mb(chunk_map_gpu_bytes),
             "llama_kv_chunk_tensor_gpu_bytes": fact_chunk_tensor_bytes,
             "llama_kv_chunk_tensor_gpu_mb": bytes_to_mb(fact_chunk_tensor_bytes),
             "llama_kv_prefix_tensor_gpu_bytes": prefix_tensor_bytes,
@@ -338,9 +349,8 @@ class SampleComposer:
             "llama_kv_total_tensor_gpu_bytes": total_bytes,
             "llama_kv_total_tensor_gpu_mb": bytes_to_mb(total_bytes),
         }
-        if self.chunk_store is not None:
-            for key, value in self.chunk_store.get_stats().items():
-                stats[f"kv_chunk_store_{key}"] = value
+        for key, value in store_stats.items():
+            stats[f"kv_chunk_store_{key}"] = value
         return stats
 
     def close(self) -> None:
@@ -386,7 +396,7 @@ class SampleComposer:
         return self.encoder.encode_plan(plan)
 
 
-def _chunk_map_cpu_bytes(chunks_by_id: dict[str, KVChunk]) -> int:
+def _chunk_metadata_cpu_bytes(chunks_by_id: dict[str, KVChunk]) -> int:
     total = sys.getsizeof(chunks_by_id)
     for chunk_id, chunk in chunks_by_id.items():
         total += sys.getsizeof(chunk_id)

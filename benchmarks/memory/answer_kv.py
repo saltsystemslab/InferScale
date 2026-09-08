@@ -35,7 +35,7 @@ from .chunk_cache import (
     scaffold_chunks_match,
 )
 from .composer import SampleComposer
-from .config import BenchmarkConfig
+from .config import MemoryRunConfig
 from .context import memory_context_metrics, unique_memory_facts
 from .data import ConversationSample, QuestionAnswer
 from .prompting import (
@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 class KVAnswerClient:
     """In-process vLLM answer client using strict GPU chunked-RoPE KV injection."""
 
-    def __init__(self, config: BenchmarkConfig) -> None:
+    def __init__(self, config: MemoryRunConfig) -> None:
         force_vllm_inprocess_mode()
         self.config = config
         self.namespace = f"{config.run_id}-{uuid.uuid4().hex}"
@@ -116,7 +116,7 @@ class KVAnswerClient:
                 sample=sample,
                 facts=kv_facts,
             )
-            cache_path = cache_path_for(**key_kwargs)
+            cache_path = cache_path_for(**key_kwargs, cache_root=self.config.cache_root)
             payload_meta = cache_meta(**key_kwargs)
             cached = load_sample_chunks(
                 cache_path,

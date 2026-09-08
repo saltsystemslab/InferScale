@@ -2,7 +2,7 @@
   "benchmark": "memory-accuracy-latency",
   "model": "qwen",
   "dataset_path": "data/locomo10.json",
-  "answer_backend": "vllm-kv",
+  "answer_backend": "kv-injection",
   "vector_backend": "jasper",
   "top_k": 50,
   "context_window": 0,
@@ -67,15 +67,15 @@
       "log_dir_prefix": "sweep-logs",
       "top_k": [5, 10, 20, 50],
       "variants": [
-        {"name": "kv", "answer_backend": "vllm-kv", "vector_backend": "jasper", "kv_store_backend": "gpu", "context_window": [0, 5, 20, 50]},
-        {"name": "prefix", "answer_backend": "vllm-prefix", "vector_backend": "qdrant", "kv_store_backend": "gpu", "context_window": [0]}
+        {"name": "kv", "answer_backend": "kv-injection", "vector_backend": "jasper", "kv_store_backend": "gpu", "context_window": [0, 5, 20, 50]},
+        {"name": "prefix", "answer_backend": "prompt-injection", "vector_backend": "qdrant", "kv_store_backend": "gpu", "context_window": [0]}
       ]
     },
     "cpu-store": {
       "log_dir_prefix": "sweep-cpu-logs",
       "top_k": [5, 10, 20, 50],
       "variants": [
-        {"name": "kvcpu", "answer_backend": "vllm-kv", "vector_backend": "jasper", "kv_store_backend": "cpu", "kv_staging_slots": 4, "context_window": [0, 5, 20, 50]}
+        {"name": "kvcpu", "answer_backend": "kv-injection", "vector_backend": "jasper", "kv_store_backend": "cpu", "kv_staging_slots": 4, "context_window": [0, 5, 20, 50]}
       ]
     }
   }

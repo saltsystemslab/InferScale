@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import sys
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from benchmarks.common.config import ConfigError
 from benchmarks.memory.throughput.config import ThroughputConfig
 from benchmarks.memory.throughput.engine import build_warmup_prompts
 from benchmarks.memory.throughput.projection import (
@@ -18,7 +20,7 @@ from benchmarks.memory.throughput.reporting import (
     build_result_row,
     validate_result_row,
 )
-from benchmarks.memory.throughput.worker import run_condition
+from benchmarks.memory.throughput.worker import main, run_condition
 
 
 def _config(tmp_path: Path) -> ThroughputConfig:
@@ -251,6 +253,32 @@ def test_run_condition_rejects_removed_prompt_injection(tmp_path: Path) -> None:
 def test_run_condition_requires_single_count_kv_worker(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="exactly one user count"):
         run_condition(_config(tmp_path), "kv_injection", (2, 3))
+
+
+@pytest.mark.parametrize("values,match", [
+    ({"user_counts": "50,100"}, "integers"),
+    ({"user_counts": [True]}, "integers"),
+    ({"user_counts": []}, "integers"),
+    ({"user_counts": [50, 50]}, "duplicates"),
+    ({"user_counts": [3]}, "not in the configured list"),
+    ({"condition": "unknown"}, "not in the configured list"),
+    ({"extra": True}, "unknown keys"),
+])
+def test_worker_rejects_invalid_json_jobs(tmp_path: Path, values: dict, match: str) -> None:
+    config_path = tmp_path / "snapshot.json"
+    config_path.write_text(json.dumps(_config(tmp_path).to_jsonable()), encoding="utf-8")
+    job = {
+        "config_path": str(config_path),
+        "condition": "mem0_qdrant",
+        "user_counts": [50],
+        "output_path": str(tmp_path / "result.json"),
+        **values,
+    }
+
+    with pytest.raises(ConfigError, match=match):
+        main(job)
+
+    assert not (tmp_path / "result.json").exists()
 
 
 def _prompts(lengths: list[int]) -> list[dict[str, list[int]]]:

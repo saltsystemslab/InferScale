@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from benchmarks.memory.config import BenchmarkConfig
+from memory_config import make_memory_config, memory_runtime
 from benchmarks.memory.data import ConversationSample, Turn
 from benchmarks.memory.mem0.fact_catalog import (
     FactCatalogStore,
@@ -472,14 +472,14 @@ def test_sample_builder_materializes_catalog_and_read_mode_never_reruns_inferenc
         "benchmarks.memory.mem0.memory_builder.create_mem0_memory",
         fake_create_mem0_memory,
     )
-    config = BenchmarkConfig(
+    monkeypatch.setenv("EXTRACTION_LLM_API_KEY", "memory-secret")
+    config = make_memory_config(
         results_dir=tmp_path / "results",
         run_id="run",
         model="Qwen/Qwen2.5-7B-Instruct",
         vector_backend="qdrant",
         embedding_cache_enabled=False,
-        memory_llm_api_key="memory-secret",
-        memory_llm_cache_dir=tmp_path / "inference-cache",
+        runtime=memory_runtime(storage={"cache_root": str(tmp_path / "cache")}),
     )
 
     writer = SampleMemoryBuilder(config, memory_llm_cache_mode="write")
@@ -535,13 +535,13 @@ def test_sample_builder_aborts_without_catalog_when_extraction_json_is_invalid(
         "benchmarks.memory.mem0.memory_builder.create_mem0_memory",
         lambda **_: _FakeMemory('{"memory":[{"id":"0"}]'),
     )
-    config = BenchmarkConfig(
+    config = make_memory_config(
         results_dir=tmp_path / "results",
         run_id="run",
         model="Qwen/Qwen2.5-7B-Instruct",
         vector_backend="qdrant",
         embedding_cache_enabled=False,
-        memory_llm_cache_dir=tmp_path / "inference-cache",
+        runtime=memory_runtime(storage={"cache_root": str(tmp_path / "cache")}),
     )
     writer = SampleMemoryBuilder(config, memory_llm_cache_mode="write")
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -54,20 +53,13 @@ def worker_specs(config: ThroughputConfig) -> list[WorkerSpec]:
     return specs
 
 
-def build_worker_command(config: ThroughputConfig, spec: WorkerSpec) -> list[str]:
-    return [
-        sys.executable,
-        "-m",
-        "benchmarks.memory.throughput.worker",
-        "--config",
-        str((config.run_dir / "config.json").resolve()),
-        "--condition",
-        spec.condition,
-        "--user-counts",
-        user_counts_text(spec.user_counts),
-        "--output",
-        str(spec.output_path.resolve()),
-    ]
+def build_worker_job(config: ThroughputConfig, spec: WorkerSpec) -> dict[str, Any]:
+    return {
+        "config_path": str((config.run_dir / "config.json").resolve()),
+        "condition": spec.condition,
+        "user_counts": list(spec.user_counts),
+        "output_path": str(spec.output_path.resolve()),
+    }
 
 
 def run_throughput(config: ThroughputConfig, *, dry_run: bool = False) -> dict[str, Any] | None:
@@ -77,7 +69,7 @@ def run_throughput(config: ThroughputConfig, *, dry_run: bool = False) -> dict[s
         print(f"model: {config.model}")
         print(f"user counts: {user_counts_text(config.user_counts)}")
         for spec in specs:
-            print(shlex.join(build_worker_command(config, spec)))
+            print(json.dumps(build_worker_job(config, spec)))
         return None
 
     _validate_runtime_requirements(config)
@@ -96,14 +88,15 @@ def run_throughput(config: ThroughputConfig, *, dry_run: bool = False) -> dict[s
     write_json(config.run_dir / "system.json", system_metadata)
 
     for index, spec in enumerate(specs, start=1):
-        command = build_worker_command(config, spec)
         print(
             f"[{index}/{len(specs)}] {spec.condition} users={user_counts_text(spec.user_counts)}",
             flush=True,
         )
         spec.output_path.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(
-            command,
+            [sys.executable, "-m", "benchmarks.memory.throughput.worker"],
+            input=json.dumps(build_worker_job(config, spec)),
+            text=True,
             check=True,
             cwd=project_root(),
             env=_worker_environment(config),
@@ -155,7 +148,7 @@ def _validate_runtime_requirements(config: ThroughputConfig) -> None:
         )
     if not Path(config.dataset_path).exists():
         raise RuntimeError(
-            f"LoCoMo dataset not found at {config.dataset_path}; pass --dataset or download it "
+            f"LoCoMo dataset not found at {config.dataset_path}; set dataset_path in the run JSON or download it "
             "with scripts/setup_remote.sh."
         )
     if retrieval_conditions & set(config.conditions):
@@ -170,7 +163,7 @@ def _validate_runtime_requirements(config: ThroughputConfig) -> None:
         raise RuntimeError(
             "Conditions "
             + ", ".join(needs_embeddings)
-            + " require --embedding-api-key/OPENAI_API_KEY or --embedding-base-url/OPENAI_BASE_URL."
+            + " require OPENAI_API_KEY or inferscale.embedding.base_url in the run JSON."
         )
 
 
@@ -182,7 +175,6 @@ _LEGACY_CONFIG_DEFAULTS: dict[str, Any] = {
     "kv_store_backend": DEFAULT_KV_STORE_BACKEND,
     "kv_staging_slots": DEFAULT_KV_STAGING_SLOTS,
     "context_window": 0,
-    "jasper_device_kv_selection": False,
 }
 
 
@@ -195,7 +187,9 @@ def _validate_existing_config(config: ThroughputConfig) -> None:
         raise RuntimeError(f"Existing config is not a JSON object: {path}")
     expected_config = config.to_jsonable()
     for key, expected in expected_config.items():
-        if key in {"conditions", "embedding_api_key"}:
+        # Rebuilt vector-store scratch can move between runs without changing
+        # the measured workload, including runs recorded before this field.
+        if key in {"conditions", "embedding_api_key", "local_store_dir", "log_level"}:
             continue
         if key in _LEGACY_CONFIG_DEFAULTS and key not in raw:
             recorded = _LEGACY_CONFIG_DEFAULTS[key]
@@ -203,7 +197,7 @@ def _validate_existing_config(config: ThroughputConfig) -> None:
             recorded = raw.get(key)
         if recorded != expected:
             raise RuntimeError(
-                f"Run directory {config.run_dir} already contains a different {key}. Use a new --run-id."
+                f"Run directory {config.run_dir} already contains a different {key}. Set a new run_id in the run JSON."
             )
 
 

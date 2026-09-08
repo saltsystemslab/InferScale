@@ -18,8 +18,7 @@ from benchmarks.memory.throughput.config import ThroughputConfig
 
 @dataclass(slots=True, frozen=True)
 class KVStoreSearchResult:
-    device_result: Any | None
-    hits: list[Any] | None
+    device_result: Any
     elapsed_s: float
     search_s: float
 
@@ -56,7 +55,7 @@ def build_user_store(
     """Replay a sample's fact catalog into a fresh per-user store.
 
     Fact embeddings go through the shared cache (free and offline after
-    --preembed-only), but the raw embedder is restored before returning so
+    the preembed stage), but the raw embedder is restored before returning so
     query-time retrieval measures live embedding latency, not cache reads.
     """
     memory = create_mem0_memory(
@@ -128,36 +127,25 @@ def search_store_for_kv(
     query: str,
     *,
     top_k: int,
-    prefer_device_result: bool,
 ) -> KVStoreSearchResult:
-    """Embed once and return either a Jasper device result or ordinary hits."""
+    """Embed once and return Jasper IDs on GPU for mandatory KV lookup."""
     retrieval_started = time.perf_counter()
     query_embedding = embed_mem0_query(memory, query)
     vector_store = getattr(memory, "vector_store", None)
     if vector_store is None:
         raise RuntimeError("Mem0 memory has no vector_store.")
 
-    device_result = None
-    if prefer_device_result:
-        search_device = getattr(vector_store, "search_device", None)
-        if callable(search_device):
-            device_result = search_device(
-                query=query,
-                vectors=query_embedding,
-                top_k=top_k,
-            )
-
-    hits: list[Any] | None = None
+    search_device = getattr(vector_store, "search_device", None)
+    if not callable(search_device):
+        raise RuntimeError("KV retrieval requires a vector store with GPU device search.")
+    device_result = search_device(
+        query=query,
+        vectors=query_embedding,
+        top_k=top_k,
+    )
     if device_result is None:
-        search = getattr(vector_store, "search", None)
-        if not callable(search):
-            raise RuntimeError("Mem0 memory has no searchable vector_store.")
-        hits = list(
-            search(
-                query=query,
-                vectors=query_embedding,
-                top_k=top_k,
-            )
+        raise RuntimeError(
+            "KV retrieval requires GPU device results; Jasper returned no device result."
         )
 
     elapsed_s = time.perf_counter() - retrieval_started
@@ -165,7 +153,6 @@ def search_store_for_kv(
     search_s = float(getattr(metrics, "search_time_ms", 0.0) or 0.0) / 1000
     return KVStoreSearchResult(
         device_result=device_result,
-        hits=hits,
         elapsed_s=elapsed_s,
         search_s=search_s,
     )

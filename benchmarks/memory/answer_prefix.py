@@ -10,7 +10,7 @@ from inferscale.v1.types import SearchHit
 
 from benchmarks.common.clients import ChatResult
 
-from .config import BenchmarkConfig
+from .config import MemoryRunConfig
 from .context import memory_context_metrics
 from .data import ConversationSample, QuestionAnswer
 from .prompting import (
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 class PrefixAnswerClient:
     """In-process vLLM answer client for same-token KV-equivalence prompt injection."""
 
-    def __init__(self, config: BenchmarkConfig) -> None:
+    def __init__(self, config: MemoryRunConfig) -> None:
         force_vllm_inprocess_mode()
         self.config = config
         self._engine = VLLMEngine(config.model, config.kv_dtype, config.engine_config())
@@ -46,7 +46,7 @@ class PrefixAnswerClient:
 
     def prepare_sample(self, sample: ConversationSample) -> None:
         self.close_sample()
-        logger.info("Preparing vLLM prefix prompt sample_id=%s", sample.sample_id)
+        logger.info("Preparing prompt-injection prompt sample_id=%s", sample.sample_id)
         self._active_sample_id = id(sample)
 
     def answer_with_retrieved_memory(
@@ -64,7 +64,7 @@ class PrefixAnswerClient:
         if not self._engine.started or self._tokenizer is None:
             raise RuntimeError("PrefixAnswerClient.prepare_sample() must be called before answering.")
         if self._active_sample_id != id(sample):
-            raise RuntimeError(f"vllm-prefix sample_id={sample.sample_id} is not the active prepared sample.")
+            raise RuntimeError(f"prompt-injection sample_id={sample.sample_id} is not the active prepared sample.")
 
         request_started = ttft_started_at if ttft_started_at is not None else time.perf_counter()
         scaffold = extract_memory_scaffold_token_ids(

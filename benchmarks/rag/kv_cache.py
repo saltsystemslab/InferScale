@@ -7,13 +7,15 @@ corpus KV is loaded once into host RAM (CpuChunkStore, the cpu store
 backend) and there is no answer-time disk I/O. The full-corpus KV does not
 fit GPU HBM at MultiHop-RAG scale (roughly 180 GiB for Llama-3.1-8B in
 bf16), but it fits the reference host's RAM.
+The text/chunk-ID to KV-row map always resides on CUDA, including when
+the KV tensors themselves reside in host RAM.
 
 Cache identity lives in the directory key (model, dtype, chunk_size,
 context_window, max_position, corpus fingerprint) and is re-validated against
 every payload's meta plus the exact chunk token ids on load, so a stale cache
 can never silently inject wrong content.
 
-torch is imported only through the library payload helpers, so the module's
+torch is imported only inside the library tensor helpers, so the module's
 pure key and validation helpers stay importable and testable without torch.
 """
 
@@ -29,6 +31,7 @@ from typing import Any
 from loguru import logger
 
 from benchmarks.common.cache_identity import atomic_write_json, safe_path_part
+from inferscale.v1.kv.chunk_map import GPUChunkMap
 from inferscale.v1.kv.serialization import (
     chunk_from_payload,
     chunk_to_payload,
@@ -36,7 +39,7 @@ from inferscale.v1.kv.serialization import (
     save_torch_payload,
 )
 from inferscale.v1.types import KVChunk
-from benchmarks.common.paths import default_cache_root
+from benchmarks.common.config import load_runtime_config
 
 from benchmarks.rag.data_types import RagChunk
 
@@ -54,7 +57,7 @@ def rag_chunk_cache_dir(
     corpus_fingerprint: str,
     cache_root: str | Path | None = None,
 ) -> Path:
-    root = Path(cache_root) if cache_root is not None else default_cache_root() / "rag-kv-chunks"
+    root = Path(cache_root) if cache_root is not None else load_runtime_config().layout.rag_kv_chunk_cache_root
     model_slug = safe_path_part(model.replace("/", "__"))
     return (
         root
@@ -289,12 +292,14 @@ def encoded_chunk_nbytes(chunk: KVChunk) -> int:
 
 
 class CpuChunkStore:
-    """The cpu store backend: the full corpus chunk KV resident in host RAM.
+    """CPU-resident corpus KV tensors indexed by a mandatory CUDA map.
 
     Loaded once, upfront, from the per-chunk precompute cache into pageable
     CPU tensors; composition copies the selected chunks to the GPU per
     query. There is no eviction and no answer-time disk I/O, so per-query
     latencies are uniform from the first query.
+    Chunk IDs resolve to rows on CUDA; only the selected numeric rows return
+    to the host to select CPU tensors for composition.
     """
 
     _LOG_EVERY = 200
@@ -305,10 +310,11 @@ class CpuChunkStore:
         *,
         meta_base: Mapping[str, Any],
         chunks: Sequence[RagChunk],
+        device: str,
     ) -> None:
         self._cache_dir = Path(cache_dir)
         self._meta_base = dict(meta_base)
-        self._entries: dict[str, KVChunk] = {}
+        self._entries: list[KVChunk] = []
         self.resident_bytes = 0
         self.chunk_count = len(chunks)
 
@@ -335,39 +341,42 @@ class CpuChunkStore:
             self._cache_dir,
         )
         started = time.perf_counter()
-        for index, chunk in enumerate(chunks, start=1):
-            path = chunk_file_path(self._cache_dir, chunk.chunk_id)
-            encoded = load_chunk(
-                path,
-                expected_meta=chunk_meta(self._meta_base, chunk),
-                expected_token_ids=chunk.token_ids,
-                device="cpu",
-            )
-            if encoded is None:
-                raise RuntimeError(
-                    f"RAG KV chunk cache is stale for chunk {chunk.chunk_id} at {path}. "
-                    "Run the precompute-kv stage with the same model, chunk size, and "
-                    "context window first."
+        self._chunk_map = GPUChunkMap([chunk.chunk_id for chunk in chunks], device=device)
+        try:
+            for index, chunk in enumerate(chunks, start=1):
+                path = chunk_file_path(self._cache_dir, chunk.chunk_id)
+                encoded = load_chunk(
+                    path,
+                    expected_meta=chunk_meta(self._meta_base, chunk),
+                    expected_token_ids=chunk.token_ids,
+                    device="cpu",
                 )
-            self._entries[chunk.chunk_id] = encoded
-            self.resident_bytes += encoded_chunk_nbytes(encoded)
-            if index % self._LOG_EVERY == 0 or index == len(chunks):
-                logger.info(
-                    "Loaded {}/{} KV chunks into host RAM ({:.1f} GiB)",
-                    index,
-                    len(chunks),
-                    self.resident_bytes / 1024**3,
-                )
+                if encoded is None:
+                    raise RuntimeError(
+                        f"RAG KV chunk cache is stale for chunk {chunk.chunk_id} at {path}. "
+                        "Run the precompute-kv stage with the same model, chunk size, and "
+                        "context window first."
+                    )
+                self._entries.append(encoded)
+                self.resident_bytes += encoded_chunk_nbytes(encoded)
+                if index % self._LOG_EVERY == 0 or index == len(chunks):
+                    logger.info(
+                        "Loaded {}/{} KV chunks into host RAM ({:.1f} GiB)",
+                        index,
+                        len(chunks),
+                        self.resident_bytes / 1024**3,
+                    )
+        except Exception:
+            self.close()
+            raise
         self.load_time_ms = (time.perf_counter() - started) * 1000
 
     def fetch(self, chunk_ids: Sequence[str]) -> list[KVChunk]:
-        fetched: list[KVChunk] = []
-        for chunk_id in chunk_ids:
-            encoded = self._entries.get(chunk_id)
-            if encoded is None:
-                raise RuntimeError(f"Retrieved chunk id {chunk_id} is not part of the corpus.")
-            fetched.append(encoded)
-        return fetched
+        try:
+            rows = self._chunk_map.lookup(chunk_ids)
+        except ValueError as exc:
+            raise RuntimeError("Retrieved chunk id is not part of the corpus.") from exc
+        return [self._entries[row] for row in rows.detach().cpu().tolist()]
 
     def stats(self) -> dict[str, Any]:
         return {
@@ -375,7 +384,14 @@ class CpuChunkStore:
             "kv_store_chunk_count": self.chunk_count,
             "kv_store_resident_bytes": self.resident_bytes,
             "kv_store_load_time_ms": self.load_time_ms,
+            "kv_chunk_map_device": str(self._chunk_map.device),
+            "kv_chunk_map_bytes": self._chunk_map.nbytes,
         }
+
+    def close(self) -> None:
+        self._chunk_map.close()
+        self._entries.clear()
+        self.resident_bytes = 0
 
 
 def _warn_if_low_host_memory(expected_bytes: int) -> None:

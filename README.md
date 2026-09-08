@@ -1,13 +1,10 @@
 # InferScale: GPU-Native KV Injection for Personalized LLM Serving
 
-This repository runs a LoCoMo benchmark comparison between in-process vLLM answer backends.
-
-- `vllm-kv`: retrieved Mem0 facts are encoded with the package's chunked-RoPE implementation, then injected directly into the KV cache.
-- `vllm-prefix`: the same retrieved Mem0 facts are included as a normal prompt injection.
+Paper: [InferScale: GPU-Native KV Injection for Personalized LLM Serving](https://arxiv.org/abs/2607.27090) (arXiv:2607.27090)
 
 ## 1. Requirements
 
-Benchmark runs target a Linux GPU host; the reference environment is a Runpod container with the persistent `/workspace` partition.
+The setup targets a Linux GPU host; the reference environment is a Runpod container with the persistent `/workspace` partition.
 
 - GPU: one NVIDIA GPU with CUDA >=12.8.
 - Python >=3.10,<3.14.
@@ -30,15 +27,7 @@ The common values are:
 - `OPENAI_API_KEY=...` for embeddings and Mem0 inference
 - `HF_TOKEN=...` if the model is gated
 
-By default, runtime storage is rooted at `${BENCHMARK_RUNTIME_ROOT:-/workspace}` on Runpod:
-
-- `${BENCHMARK_RUNTIME_ROOT}/.cache` for embeddings, Mem0/Jasper files, model downloads, and build caches.
-- `${BENCHMARK_RUNTIME_ROOT}/results` for benchmark outputs.
-- `${BENCHMARK_RUNTIME_ROOT}/tmp` for temporary files.
-
-`source scripts/load_env.sh` prepares those directories and points the repo `.cache` entry at the runtime cache.
-
-Load the environment in each shell that will run project commands:
+Load the environment in each shell that will run the project's commands:
 
 ```bash
 source scripts/load_env.sh
@@ -60,120 +49,135 @@ static constexpr index_t vectors_per_segment = 1u << 12;
 
 ## 4. Install
 
+For the quickstart, set `extract_facts` to `false` in `configs/setup.json`.
+
+In `configs/runtime.json`, set `storage.runtime_root` to a writable directory; the default is `/workspace`, and `null` uses project-local storage.
+
 ```bash
 bash scripts/setup_remote.sh
 ```
 
-`scripts/setup_remote.sh` initializes the `jasperpy` submodule, downloads the LoCoMo dataset when missing, installs the Python environment, builds the Jasper library, and extracts the Mem0 facts for every answer model.
-Fact extraction serves each answer model on a vLLM server; set `SKIP_EXTRACTION=1` to defer it and run `bash scripts/extract_facts.sh` separately.
+The script creates the virtual environment, installs InferScale and the pinned GPU dependencies, builds Jasper, and installs its Python bindings.
 
-Activate the environment before running benchmark commands:
+Load credentials and runtime paths into your current shell, then activate the configured environment:
 
 ```bash
-source .venv/bin/activate
+source scripts/load_env.sh
+source "${VENV_DIR}/bin/activate"
 ```
 
-## 5. Run Experiments
+## Example usage
 
-Now we are ready to run answer generation.
+Run [examples/quickstart.py](examples/quickstart.py):
 
 ```bash
-bash scripts/full_run.sh
+python examples/quickstart.py
 ```
 
-To repeat the KV injection grid with the CPU KV store, run:
+The example precomputes four short context chunks, retrieves the two most relevant chunks, and answers “What is the name of Alice's cat?”
+It prints the precomputed chunk and token counts, the generated answer, the engine's time to first token in milliseconds, and the retrieved chunk IDs.
 
-```bash
-bash scripts/full_run_cpu_store.sh
+The core API follows three steps: `precompute()`, `start()`, and `query()`:
+
+```python
+from inferscale.v1 import Chunk, InferScale, InferScaleConfig
+
+config = InferScaleConfig(
+    model="meta-llama/Llama-3.1-8B-Instruct",
+    top_k=2,
+)
+chunks = [
+    Chunk(id="c1", text="Alice moved to Berlin in March 2021."),
+    Chunk(id="c2", text="Alice adopted a grey cat named Miso in 2023."),
+]
+
+with InferScale(config) as engine:
+    engine.precompute(chunks)
+    engine.start()
+    result = engine.query("What is the name of Alice's cat?")
+    print(result.text)
+    print([hit.id for hit in result.hits])
 ```
 
-To run the throughput experiments:
+## Benchmark Results
 
-```bash
-bash scripts/full_throughput.sh
-```
+See [/benchmarks](benchmarks/README.md) for the memory, RAG, and throughput experiments.
 
-To opt in to the GPU-resident Jasper result-ID to packed-KV selection path:
+### Serving latency
 
-```bash
-bash scripts/full_throughput.sh --jasper-device-kv-selection
-```
+![Serving latency for InferScale and Mem0 across three models](figures/paper/serving-latency.png)
 
-To repeat the `kv_injection` condition with the CPU KV store, run:
+InferScale keeps TTFT nearly flat as more memory is retrieved, while Mem0's prefill latency grows with `k`.
 
-```bash
-bash scripts/full_throughput_cpu_store.sh
-```
+### End-to-end memory QA accuracy
 
-## 6. Judge Accuracy
+Judged LoCoMo accuracy (%), micro-averaged over the 1,540 answerable questions.
 
-For local Gemma/vLLM judging on the same GPU, start the judge after answer runs finish:
+#### Llama-3.1-8B
 
-```bash
-source .venv/bin/activate
-bash scripts/serve_vllm.sh
-```
+| Method | `k=5` | `k=10` | `k=20` | `k=50` |
+| --- | ---: | ---: | ---: | ---: |
+| InferScale (`w=0`) | 62.21 | 62.14 | 57.66 | 53.77 |
+| InferScale (`w=5`) | 60.00 | 59.81 | 59.87 | 56.82 |
+| InferScale (`w=20`) | 60.13 | 62.08 | 61.62 | 59.22 |
+| InferScale (`w=50`) | 60.06 | 61.36 | 62.66 | 60.26 |
+| Mem0 | 56.95 | 59.29 | 61.49 | 63.25 |
 
-Then judge each run from another shell that has sourced `scripts/load_env.sh`:
+#### Mistral-7B
 
-```bash
-STAMP=<stamp> bash scripts/judge.sh
-```
+| Method | `k=5` | `k=10` | `k=20` | `k=50` |
+| --- | ---: | ---: | ---: | ---: |
+| InferScale (`w=0`) | 54.03 | 55.13 | 52.84 | 37.22 |
+| InferScale (`w=5`) | 56.04 | 57.60 | 58.09 | 56.45 |
+| InferScale (`w=20`) | 53.96 | 55.97 | 56.95 | 58.24 |
+| InferScale (`w=50`) | 55.78 | 56.49 | 58.70 | 58.30 |
+| Mem0 | 61.30 | 63.96 | 65.00 | 64.35 |
 
-`STAMP` is the sweep stamp printed by `scripts/full_run.sh`, also visible in the `sweep-logs-<stamp>` directory name.
+#### Qwen2.5-7B
 
-## 7. Compare Results
+| Method | `k=5` | `k=10` | `k=20` | `k=50` |
+| --- | ---: | ---: | ---: | ---: |
+| InferScale (`w=0`) | 59.74 | 56.75 | 54.22 | 50.45 |
+| InferScale (`w=5`) | 59.29 | 57.53 | 58.05 | 57.40 |
+| InferScale (`w=20`) | 60.00 | 59.68 | 58.25 | 58.64 |
+| InferScale (`w=50`) | 58.83 | 58.25 | 58.18 | 58.77 |
+| Mem0 | 60.06 | 63.64 | 65.13 | 64.61 |
 
-Each run writes to `${BENCHMARK_RESULTS_ROOT}/<run-id>/`, where the run id encodes the swept axes:
-`<model>-kv-mem0-jasper10-k<topk>-s<window>-<stamp>` for KV runs and `<model>-prefix-mem0-<vector>10-k<topk>-s0-<stamp>` for the prompt baselines.
+Encoding each fact in isolation (`w=0`) trails Mem0 and degrades as more facts are retrieved, from 62.2% to 53.8% on Llama and, most steeply, 54.0% to 37.2% on Mistral as `k` grows from 5 to 50.
 
-```bash
-ls "${BENCHMARK_RESULTS_ROOT}"
-cat "${BENCHMARK_RESULTS_ROOT}/<run-id>/summary.json"
-```
+A context window reverses this: with `w>=20`, accuracy is flat-to-rising in `k` and comes within a few points of Mem0 (on Llama, 60.3% vs. 63.3% at `k=50`) while often exceeding it at small `k`.
 
-Primary summary metrics:
+### Serving throughput
 
-- `metrics.accuracy`: judged answer quality.
-- `metrics.time_to_first_token_ms`: in-process vLLM time to first token from the real answer generation.
-- `metrics.query_to_first_token_ms`: query-start-to-generate-start wall time plus vLLM time to first token.
-- `metrics.query_to_answer_ms`: query embedding, retrieval, prompt/KV composition, and full answer generation.
-- `metrics.sample_setup_time_ms`: per-sample setup before the first query, including memory/index construction, KV precompute when applicable, and sample activation.
+![Serving throughput for InferScale and Mem0 across three models](figures/paper/serving-throughput.png)
 
-## 8. MultiHop-RAG Benchmark (standalone RAG)
+InferScale's throughput scales near-linearly with the number of concurrent users, while Mem0 saturates early.
 
-`rag-jasper-bench` evaluates the core InferScale pipeline on standard RAG benchmarks without Mem0 fact extraction, starting with MultiHop-RAG (609 news articles, 2,556 multi-hop queries).
-Each document is chunked into 1024-token chunks, every chunk and query is embedded with `text-embedding-3-small`, and retrieval is top-k (default k=15) over one shared Jasper index.
-Each chunk's KV is precomputed once with an encoding-only prefix of its 5 preceding same-document chunks into a per-chunk disk cache, and composed at query time with chunked-RoPE repositioning; `vllm-prefix` runs the identical chunk token ids as a plain prompt baseline.
-At answer time the full corpus chunk KV is loaded from that cache into host RAM.
-The code lives in `src/rag_bench/` and reuses the LoCoMo pipeline's KV encoder, injection connector, Jasper store, and embedding cache.
+### Memory footprint and CPU offload
 
-Run the stages in order after sections 1 to 4 (the same `.venv` provides `rag-jasper-bench`); every stage script covers all datasets in `RAG_DATASETS` (default `multihoprag qasper`) in one invocation:
+Average per-conversation storage footprint in decimal MB.
 
-```bash
-bash scripts/rag/setup_data.sh
-rag-jasper-bench --dataset-name multihoprag --estimate-only --answer-model llama
-rag-jasper-bench --dataset-name qasper --estimate-only --answer-model qwen
-bash scripts/rag/preembed.sh
-bash scripts/rag/precompute_kv.sh
-bash scripts/rag/full_run.sh
-```
+| Model | Jasper GPU | Fact-ID map CPU | Fact KVs GPU |
+| --- | ---: | ---: | ---: |
+| Llama-3.1-8B | 13.50 | 7.97 | 4,796.67 |
+| Mistral-7B v0.3 | 13.50 | 3.02 | 2,257.44 |
+| Qwen2.5-7B | 13.50 | 6.48 | 1,780.10 |
 
-Preembedding needs `OPENAI_API_KEY`; answer runs read the embedding cache and make no embedding API calls.
-The KV precompute is resumable per chunk; interrupt and rerun freely.
-The sweep runs both `vllm-kv` and `vllm-prefix` per (dataset, model, top-k) cell with `--skip-judge` and `TOPKS="15"`.
-Models default per dataset (`RAG_MODELS_MULTIHOPRAG=llama`, `RAG_MODELS_QASPER=qwen`); `MODELS` overrides the list for every dataset, and `RAG_DATASETS`, `TOPKS`, `RAG_WINDOW`, and `RAG_CHUNK_SIZE` override the other axes.
+## Citation
 
-QASPER (official test split: 416 NLP papers, 1,451 questions) is part of the default dataset list.
-QASPER questions carry multiple reference answers: string metrics take the best over references and the judge accepts a match with any one reference.
-Unanswerable questions use the abstention phrase `Unanswerable` and feed the same abstention metrics as MultiHop-RAG null queries.
-QASPER defaults to qwen because its corpus-wide KV needs about 110 GiB of host RAM for qwen but about 250 GiB for llama; on a larger-RAM host override with `RAG_MODELS_QASPER="llama"`.
+If you use InferScale in your research, please cite:
 
-Judge with the same local Gemma server as the LoCoMo runs, using the RAG-specific judge script:
-
-```bash
-bash scripts/serve_vllm.sh
-STAMP=<stamp> bash scripts/rag/judge.sh
+```bibtex
+@article{li2026inferscale,
+  title         = {InferScale: GPU-Native KV Injection for Personalized LLM Serving},
+  author        = {Li, Peter and Pandey, Prashant},
+  journal       = {arXiv preprint arXiv:2607.27090},
+  year          = {2026},
+  eprint        = {2607.27090},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.DC},
+  url           = {https://arxiv.org/abs/2607.27090}
+}
 ```
 
 ## License

@@ -1,0 +1,7 @@
+{
+  "family": "rag",
+  "name": "rag-judge",
+  "manifest": "/workspace/results/launches/<rag-launch>/manifest.json",
+  "stage": "judge",
+  "dry_run": false
+}

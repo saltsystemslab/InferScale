@@ -2,8 +2,17 @@
   "benchmark": "memory-throughput",
   "model": "llama",
   "dataset_path": "data/locomo10.json",
-  "conditions": ["mem0_qdrant", "kv_injection"],
-  "user_counts": [10, 25, 50, 75, 100],
+  "conditions": [
+    "mem0_qdrant",
+    "kv_injection"
+  ],
+  "user_counts": [
+    10,
+    25,
+    50,
+    75,
+    100
+  ],
   "requests_per_user": 2,
   "max_output_tokens": 50,
   "warmup_batches": 2,
@@ -13,7 +22,6 @@
   "log_level": "INFO",
   "embedding_cache_enabled": true,
   "kv_chunk_cache_enabled": true,
-  "jasper_device_kv_selection": false,
   "inferscale": {
     "engine": {
       "gpu_memory_utilization": 0.5,
@@ -37,20 +45,28 @@
     },
     "embedding": {
       "model": "text-embedding-3-small",
-      "base_url": null,
-      "batch_size": 128
-    },
-    "generation": {
-      "max_tokens": 50,
-      "temperature": 0.0,
-      "top_p": 1.0
+      "base_url": null
     }
   },
   "mem0": {
     "llm_base_url": "http://localhost:8000/v1"
   },
   "sweeps": {
-    "standard": {"run_prefix": "throughput", "conditions": ["mem0_qdrant", "kv_injection"], "kv_store_backend": "gpu"},
-    "cpu-store": {"run_prefix": "throughput-cpu", "conditions": ["kv_injection"], "kv_store_backend": "cpu", "kv_staging_slots": 4}
+    "standard": {
+      "run_prefix": "throughput",
+      "conditions": [
+        "mem0_qdrant",
+        "kv_injection"
+      ],
+      "kv_store_backend": "gpu"
+    },
+    "cpu-store": {
+      "run_prefix": "throughput-cpu",
+      "conditions": [
+        "kv_injection"
+      ],
+      "kv_store_backend": "cpu",
+      "kv_staging_slots": 4
+    }
   }
 }

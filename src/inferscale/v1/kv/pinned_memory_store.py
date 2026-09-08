@@ -21,12 +21,16 @@ from __future__ import annotations
 import logging
 import threading
 import time
+import weakref
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterable, Iterator, Sequence
 
+from .chunk_map import GPUChunkMap
 from .connector_utils import DEFAULT_KV_STAGING_SLOTS
-from .memory_store import UserMemory, bytes_to_mb, kv_nbytes
+from .memory_store import (
+    UserMemory, bytes_to_mb, device_chunk_rows, kv_nbytes, validate_row_map_binding,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -241,6 +245,9 @@ class CpuPinnedMemoryStore:
             self._copy_stream = torch.cuda.Stream(device=self._device)
 
         self._host: dict[str, _HostUserMemory] = {}
+        self._chunk_lookup: GPUChunkMap | None = None
+        self._chunk_host: tuple[tuple[str, _HostUserMemory], ...] = ()
+        self._device_row_maps: dict[int, Any] = {}
         self._slots: dict[str, _StagingSlot] = {}
         # Public: the connector sizes its sliding prefetch window to this.
         self.num_staging_slots = num_staging_slots
@@ -271,6 +278,7 @@ class CpuPinnedMemoryStore:
         # swapping the host payload, so its metrics record the old sizes.
         self.release_staging(user_id)
         with self._lock:
+            self._invalidate_chunk_lookup_locked()
             self._host[user_id] = _HostUserMemory(
                 kv_by_layer_host=pinned,
                 num_tokens=num_tokens,
@@ -306,8 +314,10 @@ class CpuPinnedMemoryStore:
             host_memory = self._host.get(user_id)
         if host_memory is None:
             return None
+        return self._staged_memory(user_id, host_memory)
 
-        self.prefetch_user_to_gpu(user_id)
+    def _staged_memory(self, user_id: str, host_memory: _HostUserMemory) -> UserMemory:
+        self._prefetch_host_memory(user_id, host_memory)
         with self._lock:
             slot = self._slots.get(user_id)
         if slot is None:
@@ -321,6 +331,59 @@ class CpuPinnedMemoryStore:
             token_ids=host_memory.token_ids,
         )
 
+    def finalize_chunk_lookup(self) -> None:
+        """Keep corpus IDs and row resolution on GPU while payloads stay pinned."""
+        with self._lock:
+            self._finalize_chunk_lookup_locked()
+
+    def _finalize_chunk_lookup_locked(self) -> None:
+        if self._chunk_lookup is None:
+            memories = tuple(self._host.items())
+            self._chunk_lookup = GPUChunkMap(
+                [chunk_id for chunk_id, _ in memories], device=str(self._device)
+            )
+            self._chunk_host = memories
+
+    def get_chunk_memories(
+        self, chunk_ids: Sequence[str]
+    ) -> list[tuple[str, UserMemory]]:
+        with self._lock:
+            self._finalize_chunk_lookup_locked()
+            rows = self._chunk_lookup.lookup(chunk_ids).detach().cpu().tolist()
+            memories = [self._chunk_host[row] for row in rows]
+        return [(chunk_id, self._staged_memory(chunk_id, memory)) for chunk_id, memory in memories]
+
+    def build_device_row_map(self, stable_id_items: Iterable[tuple[int, str]]) -> Any:
+        with self._lock:
+            self._finalize_chunk_lookup_locked()
+            rows = self._chunk_lookup.stable_id_row_map(stable_id_items)
+            self._device_row_maps[id(rows)] = weakref.ref(rows)
+            return rows
+
+    def get_device_chunk_memories(
+        self, stable_ids: Any, id_to_row: Any, *, reverse: bool = False
+    ) -> list[tuple[str, UserMemory]]:
+        with self._lock:
+            self._finalize_chunk_lookup_locked()
+            validate_row_map_binding(self._device_row_maps, id_to_row)
+            rows = device_chunk_rows(
+                stable_ids, id_to_row, device=self._chunk_lookup.device,
+                num_rows=len(self._chunk_host), reverse=reverse,
+            ).detach().cpu().tolist()
+            memories = [self._chunk_host[row] for row in rows]
+        return [(chunk_id, self._staged_memory(chunk_id, memory)) for chunk_id, memory in memories]
+
+    def _invalidate_chunk_lookup_locked(self) -> None:
+        if self._chunk_lookup is not None:
+            self._chunk_lookup.close()
+            self._chunk_lookup = None
+        self._chunk_host = ()
+        self._device_row_maps.clear()
+
+    def close_chunk_lookup(self) -> None:
+        with self._lock:
+            self._invalidate_chunk_lookup_locked()
+
     def remove_user_memory(self, user_id: str) -> bool:
         with self._lock:
             present = user_id in self._host
@@ -331,6 +394,8 @@ class CpuPinnedMemoryStore:
         self.release_staging(user_id)
         with self._lock:
             removed = self._host.pop(user_id, None) is not None
+            if removed:
+                self._invalidate_chunk_lookup_locked()
         if removed:
             logger.info("Removed pinned-host memory for user %s", user_id)
         return removed
@@ -347,11 +412,16 @@ class CpuPinnedMemoryStore:
         No-op (returns True) if the user is already staged; returns False if
         the user has no stored memory.
         """
-        torch = self._torch
         with self._lock:
             host_memory = self._host.get(user_id)
             if host_memory is None:
                 return False
+        return self._prefetch_host_memory(user_id, host_memory)
+
+    def _prefetch_host_memory(self, user_id: str, host_memory: _HostUserMemory) -> bool:
+        """Stage an already resolved payload without consulting the host ID map."""
+        torch = self._torch
+        with self._lock:
             if user_id in self._slots:
                 return True
 
@@ -429,18 +499,22 @@ class CpuPinnedMemoryStore:
 
     # ── Benchmark plumbing ────────────────────────────────────────
 
-    def get_stats(self) -> dict[str, int | float]:
+    def get_stats(self) -> dict[str, Any]:
         with self._lock:
             staging_mb = bytes_to_mb(
                 sum(kv_nbytes(slot.gpu_tensors) for slot in self._slots.values())
             )
+            lookup_mb = bytes_to_mb(self._chunk_lookup.nbytes if self._chunk_lookup else 0)
             return {
                 "num_users": len(self._host),
                 "total_tokens": sum(memory.num_tokens for memory in self._host.values()),
                 # total_gpu_mb keeps the GPU-store meaning of "resident HBM":
                 # for this store that is the staging pool, not the payload.
-                "total_gpu_mb": staging_mb,
+                "total_gpu_mb": staging_mb + lookup_mb,
                 "gpu_staging_mb": staging_mb,
+                "gpu_chunk_map_mb": lookup_mb,
+                "chunk_map_bytes": self._chunk_lookup.nbytes if self._chunk_lookup else 0,
+                "chunk_map_device": str(self._chunk_lookup.device) if self._chunk_lookup else None,
                 "total_host_mb": bytes_to_mb(
                     sum(memory.nbytes for memory in self._host.values())
                 ),

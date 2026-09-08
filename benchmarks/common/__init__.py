@@ -1,1 +1,1 @@
-"""Harness code shared by every benchmark."""
+"""Common code shared by every benchmark."""

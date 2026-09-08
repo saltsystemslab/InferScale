@@ -1,0 +1,60 @@
+{
+  "benchmark": "rag",
+  "dataset": "multihoprag",
+  "data_dir": "data/multihoprag",
+  "models": ["llama"],
+  "answer_backend": "vllm-kv",
+  "chunk_size": 1024,
+  "context_window": 5,
+  "top_k": 15,
+  "max_queries": null,
+  "log_every": 25,
+  "log_level": "INFO",
+  "embed_batch_size": 128,
+  "embedding_cache_enabled": true,
+  "kv_chunk_cache_root": null,
+  "skip_judge": false,
+  "inferscale": {
+    "engine": {
+      "gpu_memory_utilization": 0.4,
+      "max_model_len": 32768,
+      "block_size": 16,
+      "enable_prefix_caching": true,
+      "connector_module": "inferscale.v1.kv.connector"
+    },
+    "kv": {
+      "dtype": "bfloat16",
+      "device": "cuda:0",
+      "max_position": 32768,
+      "store_backend": "cpu",
+      "staging_slots": 4
+    },
+    "index": {
+      "n_neighbors": 64,
+      "alpha": 1.0,
+      "workspace_budget": "10GB",
+      "beam_width": 64
+    },
+    "embedding": {
+      "model": "text-embedding-3-small",
+      "base_url": null,
+      "batch_size": 128
+    },
+    "generation": {
+      "max_tokens": 64,
+      "temperature": 0.0,
+      "top_p": 1.0
+    }
+  },
+  "judge": {
+    "provider": "vllm",
+    "max_tokens": 4
+  },
+  "sweeps": {
+    "standard": {
+      "log_dir_prefix": "rag-sweep-logs",
+      "top_k": [15],
+      "answer_backends": ["vllm-kv", "vllm-prefix"]
+    }
+  }
+}

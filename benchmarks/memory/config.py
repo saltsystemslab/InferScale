@@ -431,7 +431,9 @@ class MemoryRunConfig:
             if value is not None and value < 1:
                 raise ConfigError(f"{where}.{name} must be >= 1.")
 
-        inferscale = inferscale_section(merged, model=model, top_k=top_k, where=where)
+        inferscale = inferscale_section(
+            merged, model=model, top_k=top_k, context_window=context_window, where=where
+        )
         if vector_backend == "jasper" and max(inferscale.index.beam_width, top_k) > MAX_JASPER_BEAM_WIDTH:
             raise ConfigError(
                 f"{where}: effective Jasper beam width must be <= {MAX_JASPER_BEAM_WIDTH}; "

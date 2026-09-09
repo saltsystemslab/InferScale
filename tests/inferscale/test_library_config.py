@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
-from inferscale.v1 import InferScaleConfig
+from inferscale.v1 import (
+    EmbeddingConfig,
+    EngineConfig,
+    GenerationConfig,
+    InferScaleConfig,
+    JasperIndexConfig,
+    KVConfig,
+    PromptConfig,
+)
 from inferscale.v1.config import DEFAULT_CONNECTOR_MODULE
 
 
@@ -16,6 +25,9 @@ def test_defaults_match_the_serving_contract() -> None:
     assert config.kv.max_position == 32768
     assert config.index.beam_width == 64
     assert config.embedding.model == "text-embedding-3-small"
+    assert config.context_window == 0
+    assert config.to_dict()["context_window"] == 0
+    assert InferScaleConfig.from_dict({"model": config.model}).context_window == 0
 
 
 def test_from_dict_builds_nested_sections_and_round_trips(tmp_path) -> None:
@@ -59,3 +71,58 @@ def test_from_dict_builds_nested_sections_and_round_trips(tmp_path) -> None:
 def test_from_dict_rejects_invalid_values(data, message) -> None:
     with pytest.raises(ValueError, match=message):
         InferScaleConfig.from_dict(data)
+
+
+@pytest.mark.parametrize("context_window", [0, 1, 3, 100])
+def test_context_window_round_trips_through_all_config_entrypoints(
+    tmp_path: Path, context_window: int
+) -> None:
+    config = InferScaleConfig(model="m", context_window=context_window)
+    data = config.to_dict()
+    assert data["context_window"] == context_window
+    assert InferScaleConfig.from_dict(data) == config
+
+    path = tmp_path / "inferscale.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert InferScaleConfig.from_json(path) == config
+
+
+@pytest.mark.parametrize("context_window", [-1, True, False, 1.0, "1", None, [], {}])
+@pytest.mark.parametrize("source", ["constructor", "dict", "json"])
+def test_context_window_rejects_negative_or_noninteger_values(
+    tmp_path: Path, context_window, source: str
+) -> None:
+    data = {"model": "m", "context_window": context_window}
+    path = tmp_path / "inferscale.json"
+    if source == "json":
+        path.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="context_window"):
+        if source == "constructor":
+            InferScaleConfig(**data)
+        elif source == "dict":
+            InferScaleConfig.from_dict(data)
+        else:
+            InferScaleConfig.from_json(path)
+
+
+def test_context_window_preserves_existing_positional_config_sections() -> None:
+    engine = EngineConfig(block_size=32)
+    kv = KVConfig(staging_slots=8)
+    index = JasperIndexConfig(beam_width=128)
+    embedding = EmbeddingConfig(batch_size=4)
+    prompt = PromptConfig(chunk_separator="\n\n")
+    generation = GenerationConfig(max_tokens=64)
+    config = InferScaleConfig("m", 5, engine, kv, index, embedding, prompt, generation, context_window=2)
+
+    assert config.top_k == 5
+    assert config.context_window == 2
+    assert config.engine is engine
+    assert config.kv is kv
+    assert config.index is index
+    assert config.embedding is embedding
+    assert config.prompt is prompt
+    assert config.generation is generation
+
+    with pytest.raises(TypeError):
+        InferScaleConfig("m", 5, engine, kv, index, embedding, prompt, generation, 2)

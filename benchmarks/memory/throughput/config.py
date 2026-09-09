@@ -206,8 +206,12 @@ def _build_run_config(data: Mapping[str, Any], runtime: RuntimeConfig) -> Throug
     if not raw_model:
         raise ConfigError(f"{where}.model must be non-empty.")
     top_k = optional(data, "top_k", int, 50, where)
+    context_window = optional(data, "context_window", int, 50, where)
     max_output_tokens = optional(data, "max_output_tokens", int, 50, where)
-    library = inferscale_section(data, model=runtime.resolve_model(raw_model), top_k=top_k, where=where)
+    library = inferscale_section(
+        data, model=runtime.resolve_model(raw_model), top_k=top_k,
+        context_window=context_window, where=where,
+    )
     nested = section_of(data, "inferscale", where)
     if "prompt" in nested:
         raise ConfigError(f"{where}.inferscale.prompt is fixed by the benchmark protocol.")
@@ -241,7 +245,7 @@ def _build_run_config(data: Mapping[str, Any], runtime: RuntimeConfig) -> Throug
         max_output_tokens=max_output_tokens,
         warmup_batches=optional(data, "warmup_batches", int, 2, where),
         top_k=top_k,
-        context_window=optional(data, "context_window", int, 50, where),
+        context_window=library.context_window,
         seed=optional(data, "seed", int, 42, where),
         log_level=optional(data, "log_level", str, "INFO", where),
         kv_gpu_memory_utilization=library.engine.gpu_memory_utilization,

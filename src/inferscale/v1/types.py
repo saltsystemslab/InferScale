@@ -15,17 +15,15 @@ class Chunk:
 
     ``token_ids`` are the source of truth for the KV encode when given;
     otherwise ``text`` plus the configured separator is tokenized.
-    ``context_token_ids`` form an encoding-only prefix whose KV is discarded
-    after the forward pass, and ``context_ids`` record where it came from.
+    ``InferScaleConfig.context_window`` selects preceding chunks as an
+    encoding-only prefix; only this chunk's KV is retained.
     ``payload`` is stored in the vector index next to the embedding.
     """
 
     id: str
     text: str
     token_ids: Sequence[int] | None = None
-    context_token_ids: Sequence[int] = ()
-    context_ids: Sequence[str] = ()
-    payload: Mapping[str, Any] | None = None
+    payload: Mapping[str, Any] | None = field(default=None, kw_only=True)
 
 
 @dataclass(slots=True, frozen=True)

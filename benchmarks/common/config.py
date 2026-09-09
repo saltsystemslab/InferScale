@@ -371,17 +371,19 @@ def inferscale_section(
     *,
     model: str,
     top_k: int,
+    context_window: int,
     where: str,
 ) -> Any:
-    """Build the library config from the ``inferscale`` section plus the run's model and top_k."""
+    """Build the library config with model, retrieval depth, and context window from the run."""
     from inferscale.v1 import InferScaleConfig
 
     section = dict(section_of(data, "inferscale", where))
-    for key in ("model", "top_k"):
+    for key in ("model", "top_k", "context_window"):
         if key in section:
             raise ConfigError(f"{where}.inferscale.{key} is set from the top level; remove it from the section.")
     section["model"] = model
     section["top_k"] = top_k
+    section["context_window"] = context_window
     try:
         _validate_dataclass_types(section, InferScaleConfig, f"{where}.inferscale")
         return InferScaleConfig.from_dict(section)

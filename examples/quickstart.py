@@ -3,7 +3,8 @@
 Needs a CUDA host with the jasper package built and OPENAI_API_KEY in the
 environment. Every chunk's KV is encoded once; at query time the retrieved
 chunks are composed and injected into vLLM's KV cache instead of being
-re-read as prompt text.
+re-read as prompt text. Each target uses up to two preceding chunks as an
+encoding prefix; only the target chunk's KV is retained.
 """
 
 from inferscale.v1 import Chunk, InferScale, InferScaleConfig
@@ -17,7 +18,11 @@ CONTEXT = [
 
 
 def main() -> None:
-    config = InferScaleConfig(model="meta-llama/Llama-3.1-8B-Instruct", top_k=2)
+    config = InferScaleConfig(
+        model="meta-llama/Llama-3.1-8B-Instruct",
+        top_k=2,
+        context_window=2,
+    )
     with InferScale(config) as engine:
         stats = engine.precompute(Chunk(id=chunk_id, text=text) for chunk_id, text in CONTEXT)
         print(f"precomputed {stats.chunk_count} chunks, {stats.token_count} tokens")

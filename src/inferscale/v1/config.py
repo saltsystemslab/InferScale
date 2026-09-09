@@ -70,6 +70,8 @@ class GenerationConfig:
 class InferScaleConfig:
     model: str
     top_k: int = 10
+    # Preceding chunks used only while encoding each target chunk's KV.
+    context_window: int = field(default=0, kw_only=True)
     engine: EngineConfig = field(default_factory=EngineConfig)
     kv: KVConfig = field(default_factory=KVConfig)
     index: JasperIndexConfig = field(default_factory=JasperIndexConfig)
@@ -124,6 +126,8 @@ def validate_config(config: InferScaleConfig) -> None:
         raise ValueError("model must be a non-empty model id or path.")
     if config.top_k < 1:
         raise ValueError("top_k must be >= 1.")
+    if isinstance(config.context_window, bool) or not isinstance(config.context_window, int) or config.context_window < 0:
+        raise ValueError("context_window must be a nonnegative integer.")
     engine = config.engine
     if engine.block_size < 1:
         raise ValueError("engine.block_size must be >= 1.")

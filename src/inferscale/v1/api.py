@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections import deque
 from collections.abc import Iterable, Sequence
+from dataclasses import replace
+from itertools import islice
 from typing import Any
 
 from .config import InferScaleConfig
@@ -111,7 +114,11 @@ class InferScale:
         return self._ensure_encoder().tokenizer
 
     def precompute(self, chunks: Iterable[Chunk]) -> PrecomputeStats:
-        """Encode chunk KV into the chunk store and embed the texts into the index."""
+        """Encode and index chunks in order, continuing the window across calls.
+
+        Each chunk uses up to ``context_window`` preceding chunks as encoding
+        context. Only the target chunk's KV is kept for retrieval.
+        """
         self._require_open()
         if self._started:
             raise RuntimeError("InferScale is serving; precompute all context before start().")
@@ -122,6 +129,8 @@ class InferScale:
 
         cfg = self._config
         encoder = self._ensure_encoder()
+        # Plan the complete batch before embedding or encoding its chunks.
+        plans = self._plans_for(encoder, chunk_list)
         if self._corpus.scaffold is None:
             scaffold_tokens = build_scaffold_tokens(
                 encoder.tokenizer,
@@ -131,9 +140,6 @@ class InferScale:
             )
             self._corpus.set_scaffold(encode_scaffold(encoder, scaffold_tokens))
 
-        # Plan everything first so an over-long chunk fails before any
-        # network or GPU work.
-        plans = [self._plan_for(encoder, chunk) for chunk in chunk_list]
         payloads = [
             dict(chunk.payload) if chunk.payload is not None else {"text": chunk.text}
             for chunk in chunk_list
@@ -329,7 +335,9 @@ class InferScale:
         return list(self._chunks)
 
     def get_chunk(self, chunk_id: str) -> ChunkInfo | None:
-        return self._chunks.get(chunk_id)
+        """Return metadata without exposing the token list used by future windows."""
+        chunk = self._chunks.get(chunk_id)
+        return replace(chunk, token_ids=list(chunk.token_ids)) if chunk is not None else None
 
     def close(self) -> None:
         if self._closed:
@@ -362,19 +370,31 @@ class InferScale:
             )
         return self._encoder
 
-    def _plan_for(self, encoder: ChunkedRopeEncoder, chunk: Chunk) -> EncodingPlan:
+    def _plans_for(self, encoder: ChunkedRopeEncoder, chunks: Sequence[Chunk]) -> list[EncodingPlan]:
         cfg = self._config
-        if chunk.token_ids is not None:
-            token_ids = list(chunk.token_ids)
-        else:
-            token_ids = encode_text_no_special(encoder.tokenizer, chunk.text + cfg.prompt.chunk_separator)
-        return build_encoding_plan(
-            chunk.id,
-            token_ids,
-            context_token_ids=chunk.context_token_ids,
-            context_ids=chunk.context_ids,
-            max_input_tokens=cfg.kv.max_position,
+        previous_count = min(cfg.context_window, len(self._chunks))
+        previous = list(islice(reversed(self._chunks.values()), previous_count))
+        history: deque[tuple[str, list[int]]] = deque(
+            ((chunk.id, chunk.token_ids) for chunk in reversed(previous)),
+            maxlen=min(cfg.context_window, len(self._chunks) + len(chunks)),
         )
+        plans: list[EncodingPlan] = []
+        for chunk in chunks:
+            if chunk.token_ids is not None:
+                token_ids = list(chunk.token_ids)
+            else:
+                token_ids = encode_text_no_special(encoder.tokenizer, chunk.text + cfg.prompt.chunk_separator)
+            plan = build_encoding_plan(
+                chunk.id,
+                token_ids,
+                context_token_ids=[token for _, tokens in history for token in tokens],
+                context_ids=tuple(chunk_id for chunk_id, _ in history),
+                max_input_tokens=cfg.kv.max_position,
+            )
+            plans.append(plan)
+            # Prefixes never become part of the history for later chunks.
+            history.append((chunk.id, plan.target_token_ids))
+        return plans
 
     def _require_new_ids(self, chunks: Sequence[Chunk]) -> None:
         seen: set[str] = set()

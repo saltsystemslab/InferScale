@@ -173,8 +173,8 @@ class RagBenchConfig:
             raise ConfigError("A RAG invocation requires one model; use the sweep launcher for multiple models.")
         model = runtime.resolve_model(models[0])
         top_k = optional(data, "top_k", int, DEFAULT_TOP_K, where)
+        context_window = optional(data, "context_window", int, DEFAULT_CONTEXT_WINDOW, where)
         raw_library = dict(section_of(data, "inferscale", where, required=False))
-        reject_unknown_keys(raw_library, ("engine", "kv", "index", "embedding", "generation"), "rag.inferscale")
         # RAG has a shorter generation cap and host-resident corpus KV.
         raw_library["generation"] = {
             "max_tokens": DEFAULT_MAX_ANSWER_TOKENS,
@@ -184,7 +184,11 @@ class RagBenchConfig:
             "store_backend": "cpu",
             **section_of(raw_library, "kv", "rag.inferscale", required=False),
         }
-        library = inferscale_section({"inferscale": raw_library}, model=model, top_k=top_k, where=where)
+        library = inferscale_section(
+            {"inferscale": raw_library}, model=model, top_k=top_k,
+            context_window=context_window, where=where,
+        )
+        reject_unknown_keys(raw_library, ("engine", "kv", "index", "embedding", "generation"), "rag.inferscale")
         if library.kv.store_backend != "cpu":
             raise ConfigError("rag.inferscale.kv.store_backend must be cpu.")
         judge = judge_config(section_of(data, "judge", where, required=False), runtime, where="rag.judge")
@@ -212,7 +216,7 @@ class RagBenchConfig:
             model=models[0],
             answer_backend=optional(data, "answer_backend", str, "kv-injection", where),
             chunk_size=optional(data, "chunk_size", int, DEFAULT_CHUNK_SIZE, where),
-            context_window=optional(data, "context_window", int, DEFAULT_CONTEXT_WINDOW, where),
+            context_window=library.context_window,
             top_k=top_k,
             judge_provider="none" if skip_judge else judge.provider,
             judge_model=judge.model,

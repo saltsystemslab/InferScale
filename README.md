@@ -101,7 +101,7 @@ with InferScale(config) as engine:
 
 ## Benchmark Results
 
-See [/benchmarks](benchmarks/README.md) for the memory, RAG, and throughput experiments.
+See [/benchmarks](benchmarks/README.md) for the memory and RAG experiments.
 
 ### Serving latency
 

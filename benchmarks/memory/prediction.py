@@ -1,0 +1,316 @@
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+from typing import Any
+
+from loguru import logger
+
+from benchmarks.memory.runtime_clients import RuntimeClients
+from benchmarks.memory.config import MemoryRunConfig
+from benchmarks.memory.data import ConversationSample, QuestionAnswer, load_locomo
+from benchmarks.memory.evaluation import QuestionEvaluator
+from benchmarks.common.judge import judge_label
+from benchmarks.memory.modes import result_mode
+from benchmarks.memory.mem0.fact_catalog import fact_catalog_hits
+from benchmarks.memory.mem0.memory_builder import SampleMemoryBuilder
+from benchmarks.common.files import JsonlWriter
+from benchmarks.common.vector_types import SearchHit
+
+
+@dataclass(slots=True)
+class PreparedSample:
+    index: int
+    sample: ConversationSample
+    questions: list[QuestionAnswer]
+    fact_catalog: list[SearchHit]
+
+
+@dataclass(slots=True)
+class PredictionResult:
+    records: list[dict[str, Any]]
+    sample_setup_metrics: list[dict[str, Any]]
+
+
+KV_PRECOMPUTE_SETUP_KEYS = (
+    "kv_precomputed_chunks",
+    "kv_precomputed_chunks_with_prefix",
+    "kv_precomputed_tokens",
+    "kv_precomputed_layers",
+    "kv_precomputed_gpu_mb",
+    "kv_chunk_cache_residency_is_gpu",
+    "llama_kv_chunk_count",
+    "llama_kv_chunk_metadata_cpu_bytes",
+    "llama_kv_chunk_metadata_cpu_mb",
+    "llama_kv_chunk_map_gpu_bytes",
+    "llama_kv_chunk_map_gpu_mb",
+    "llama_kv_chunk_tensor_gpu_bytes",
+    "llama_kv_chunk_tensor_gpu_mb",
+    "llama_kv_prefix_tensor_gpu_bytes",
+    "llama_kv_prefix_tensor_gpu_mb",
+    "llama_kv_total_tensor_gpu_bytes",
+    "llama_kv_total_tensor_gpu_mb",
+)
+
+
+def run_prediction_mode(config: MemoryRunConfig, clients: RuntimeClients) -> PredictionResult:
+    return run_kv_prediction_mode(config, clients)
+
+
+def run_kv_prediction_mode(config: MemoryRunConfig, clients: RuntimeClients) -> PredictionResult:
+    logger.info("Loading LoCoMo dataset from {}", config.dataset_path)
+    samples = load_locomo(config.dataset_path, max_samples=config.max_samples)
+    planned_questions = planned_question_count(samples, config.max_questions)
+    logger.info(
+        "Loaded {} samples for prepared vLLM backend={}; planned_questions={} max_samples={} max_questions={} context_window={}",
+        len(samples),
+        config.answer_backend,
+        planned_questions,
+        config.max_samples,
+        config.max_questions,
+        config.context_window,
+    )
+
+    prepare_sample = getattr(clients.answer_client, "prepare_sample", None)
+    close_sample = getattr(clients.answer_client, "close_sample", None)
+    start_llm = getattr(clients.answer_client, "start_llm", None)
+    if not callable(close_sample) or not callable(prepare_sample) or not callable(start_llm):
+        raise RuntimeError(f"{config.answer_backend} answer backend does not expose sample preparation methods.")
+    precompute_sample_cache = getattr(clients.answer_client, "precompute_sample_cache", None)
+    active_sample_gpu_cache = callable(precompute_sample_cache)
+
+    output_path = config.run_dir / "predictions.jsonl"
+    all_records: list[dict[str, Any]] = []
+    remaining_questions = config.max_questions
+    completed_questions = 0
+    memory_builder = SampleMemoryBuilder(config)
+    question_evaluator = QuestionEvaluator(config, clients)
+    prepared_samples: list[PreparedSample] = []
+    sample_setup_by_key: dict[int, dict[str, Any]] = {}
+    sample_setup_rows: list[dict[str, Any]] = []
+
+    for sample_index, sample in enumerate(samples, start=1):
+        if remaining_questions is not None and remaining_questions <= 0:
+            break
+
+        sample_questions = _eligible_questions(sample.qa)
+        if remaining_questions is not None:
+            sample_questions = sample_questions[:remaining_questions]
+        if not sample_questions:
+            continue
+
+        logger.info(
+            "KV sample {}/{} sample_id={} turns={} questions={} preparation starting",
+            sample_index,
+            len(samples),
+            sample.sample_id,
+            len(sample.turns),
+            len(sample_questions),
+        )
+
+        if remaining_questions is not None:
+            remaining_questions -= len(sample_questions)
+
+        if not sample_questions:
+            continue
+
+        logger.info(
+            "KV sample {}/{} sample_id={} selected; query retrieval deferred until answer timing",
+            sample_index,
+            len(samples),
+            sample.sample_id,
+        )
+        facts = fact_catalog_hits(memory_builder.load_fact_catalog(sample))
+        prepared_samples.append(
+            PreparedSample(
+                index=sample_index,
+                sample=sample,
+                questions=list(sample_questions),
+                fact_catalog=facts,
+            )
+        )
+        setup_row = _base_sample_setup_row(config, sample, len(sample_questions))
+        if active_sample_gpu_cache:
+            kv_metrics = precompute_sample_cache(sample, facts) or {}
+            setup_row["kv_precompute_time_ms"] = _number(kv_metrics.get("kv_precompute_time_ms"))
+            for key in KV_PRECOMPUTE_SETUP_KEYS:
+                setup_row[key] = _number(kv_metrics.get(key))
+        sample_setup_by_key[id(sample)] = setup_row
+
+    if active_sample_gpu_cache:
+        logger.info(
+            "Precomputed GPU-resident KV caches for {} samples and {} questions before one vLLM startup",
+            len(prepared_samples),
+            sum(len(prepared.questions) for prepared in prepared_samples),
+        )
+    else:
+        logger.info(
+            "Prepared {} samples and {} questions before vLLM startup",
+            len(prepared_samples),
+            sum(len(prepared.questions) for prepared in prepared_samples),
+        )
+    if not prepared_samples:
+        with JsonlWriter(output_path):
+            pass
+        logger.info("Wrote 0 prepared vLLM prediction records to {}", output_path)
+        return PredictionResult(records=all_records, sample_setup_metrics=sample_setup_rows)
+
+    start_llm()
+
+    with JsonlWriter(output_path) as writer:
+        for prepared in prepared_samples:
+            sample = prepared.sample
+            setup_row = sample_setup_by_key[id(sample)]
+            retriever, memory_metrics = memory_builder.build_retriever_with_metrics(sample)
+            setup_row.update(memory_metrics)
+            try:
+                prepare_started = time.perf_counter()
+                prepare_sample(sample)
+                setup_row["answer_prepare_sample_time_ms"] = (time.perf_counter() - prepare_started) * 1000
+                setup_row["sample_setup_time_ms"] = _setup_total_ms(setup_row)
+                sample_setup_rows.append(dict(setup_row))
+                for qa in prepared.questions:
+                    next_question = completed_questions + 1
+                    if should_log_progress(next_question, planned_questions, config.log_every):
+                        logger.info(
+                            "KV question {}/{} starting sample_id={} question_id={} category={}",
+                            next_question,
+                            planned_questions,
+                            sample.sample_id,
+                            qa.question_id,
+                            qa.category,
+                        )
+                    query_started_at = time.perf_counter()
+                    hits, retrieval_metrics = retriever.search(
+                        qa.question,
+                        top_k=config.top_k,
+                    )
+                    record = question_evaluator.answer_from_hits(
+                        sample,
+                        qa,
+                        hits,
+                        retrieval_metrics=retrieval_metrics,
+                        ttft_started_at=time.perf_counter(),
+                        query_started_at=query_started_at,
+                    )
+                    writer.write(record)
+                    all_records.append(record)
+                    completed_questions += 1
+                    if should_log_progress(completed_questions, planned_questions, config.log_every):
+                        logger.info(
+                            "KV question {}/{} finished sample_id={} question_id={} judge={}",
+                            completed_questions,
+                            planned_questions,
+                            sample.sample_id,
+                            qa.question_id,
+                            judge_label(record.get("judge", {}).get("correct")),
+                        )
+                logger.info(
+                    "KV sample {}/{} sample_id={} finished",
+                    prepared.index,
+                    len(samples),
+                    sample.sample_id,
+                )
+            finally:
+                memory_builder.log_embedding_cache_stats(retriever.memory, sample.sample_id)
+                retriever.close()
+                close_sample()
+
+    logger.info("Wrote {} prepared vLLM prediction records to {}", len(all_records), output_path)
+    return PredictionResult(records=all_records, sample_setup_metrics=sample_setup_rows)
+
+
+def _base_sample_setup_row(
+    config: MemoryRunConfig,
+    sample: ConversationSample,
+    question_count: int,
+) -> dict[str, Any]:
+    return {
+        "run_id": config.run_id,
+        "mode": result_mode(config),
+        "sample_id": sample.sample_id,
+        "question_count": question_count,
+        "turn_count": len(sample.turns),
+        "vector_backend": config.vector_backend,
+        "memory_create_time_ms": None,
+        "embedding_memory_build_time_ms": None,
+        "memory_input_turn_count": None,
+        "memory_inferred_record_count": None,
+        "memory_fact_catalog_loaded": None,
+        "memory_llm_cache_hits": None,
+        "memory_llm_cache_misses": None,
+        "vector_index_build_time_ms": None,
+        "jasper_vector_count": None,
+        "jasper_embedding_dim": None,
+        "jasper_embedding_matrix_cpu_bytes": None,
+        "jasper_embedding_matrix_cpu_mb": None,
+        "jasper_embedding_matrix_gpu_logical_bytes": None,
+        "jasper_embedding_matrix_gpu_logical_mb": None,
+        "jasper_graph_gpu_bytes": None,
+        "jasper_graph_gpu_mb": None,
+        "jasper_graph_torch_allocated_delta_bytes": None,
+        "jasper_graph_torch_allocated_delta_mb": None,
+        "memory_setup_time_ms": None,
+        "kv_precompute_time_ms": None,
+        "kv_precomputed_chunks": None,
+        "kv_precomputed_chunks_with_prefix": None,
+        "kv_precomputed_tokens": None,
+        "kv_precomputed_layers": None,
+        "kv_precomputed_gpu_mb": None,
+        "kv_chunk_cache_residency_is_gpu": None,
+        "llama_kv_chunk_count": None,
+        "llama_kv_chunk_metadata_cpu_bytes": None,
+        "llama_kv_chunk_metadata_cpu_mb": None,
+        "llama_kv_chunk_map_gpu_bytes": None,
+        "llama_kv_chunk_map_gpu_mb": None,
+        "llama_kv_chunk_tensor_gpu_bytes": None,
+        "llama_kv_chunk_tensor_gpu_mb": None,
+        "llama_kv_prefix_tensor_gpu_bytes": None,
+        "llama_kv_prefix_tensor_gpu_mb": None,
+        "llama_kv_total_tensor_gpu_bytes": None,
+        "llama_kv_total_tensor_gpu_mb": None,
+        "answer_prepare_sample_time_ms": None,
+        "sample_setup_time_ms": None,
+    }
+
+
+def _setup_total_ms(row: dict[str, Any]) -> float:
+    return sum(
+        value
+        for value in (
+            _number(row.get("memory_setup_time_ms")),
+            _number(row.get("kv_precompute_time_ms")),
+            _number(row.get("answer_prepare_sample_time_ms")),
+        )
+        if value is not None
+    )
+
+
+def _number(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def planned_question_count(samples: list[ConversationSample], max_questions: int | None) -> int:
+    total = sum(len(_eligible_questions(sample.qa)) for sample in samples)
+    if max_questions is None:
+        return total
+    return min(total, max_questions)
+
+
+# Upstream memory-benchmarks scores categories 1-4 only (5 is adversarial).
+_ELIGIBLE_CATEGORIES = frozenset({"1", "2", "3", "4"})
+
+
+def _eligible_questions(questions: list[QuestionAnswer]) -> list[QuestionAnswer]:
+    return [qa for qa in questions if str(qa.category).strip() in _ELIGIBLE_CATEGORIES]
+
+
+def should_log_progress(index: int, total: int, interval: int) -> bool:
+    if interval <= 0 or total <= 0:
+        return False
+    return index == 1 or index == total or index % interval == 0

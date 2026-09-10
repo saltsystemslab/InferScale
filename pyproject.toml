@@ -36,13 +36,14 @@ remote = [
     "accelerate==1.14.0",
 ]
 
-[project.scripts]
-locomo-jasper-bench = "locomo_jasper_bench.run:main"
-locomo-throughput-bench = "locomo_jasper_bench.throughput.run:main"
+[tool.setuptools]
+package-dir = {"" = "src", "benchmarks" = "benchmarks"}
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["src", "."]
+include = ["inferscale*", "benchmarks*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", ".", "tests/helpers"]
+addopts = "--import-mode=importlib"

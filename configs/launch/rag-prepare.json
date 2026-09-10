@@ -1,0 +1,10 @@
+{
+  "family": "rag",
+  "name": "rag-prepare",
+  "configs": [
+    "configs/rag/multihoprag.json",
+    "configs/rag/qasper.json"
+  ],
+  "stage": "prepare",
+  "dry_run": false
+}

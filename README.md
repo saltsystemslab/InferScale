@@ -86,6 +86,7 @@ config = InferScaleConfig(
     model="meta-llama/Llama-3.1-8B-Instruct",
     top_k=2,
     context_window=2,
+    vector_backend="exact",
 )
 chunks = [
     Chunk(id="c1", text="Alice moved to Berlin in March 2021."),

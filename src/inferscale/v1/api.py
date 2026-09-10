@@ -17,6 +17,7 @@ from typing import Any
 from .config import InferScaleConfig
 from .embedding.openai import OpenAIEmbedder
 from .index.jasper import JasperIndex
+from .index.matmul import MatmulIndex
 from .kv.chunk_store import build_chunk_store, chunk_nbytes
 from .kv.compose import memory_parts, reverse_ranked_ids
 from .kv.corpus import KVCorpus
@@ -94,7 +95,12 @@ class InferScale:
             if embedder is not None
             else OpenAIEmbedder(model=config.embedding.model, base_url=config.embedding.base_url)
         )
-        self._index: VectorIndex = index if index is not None else JasperIndex(config.index)
+        if index is not None:
+            self._index: VectorIndex = index
+        elif config.vector_backend == "exact":
+            self._index = MatmulIndex(device=config.kv.device)
+        else:
+            self._index = JasperIndex(config.index)
         self._retriever = Retriever(self._embedder, self._index, batch_size=config.embedding.batch_size)
         self._engine = engine if engine is not None else VLLMEngine(config.model, config.kv.dtype, config.engine)
         self._encoder: ChunkedRopeEncoder | None = None

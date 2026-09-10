@@ -11,6 +11,7 @@ from .config import (
 )
 from .embedding.openai import OpenAIEmbedder
 from .index.jasper import MAX_JASPER_BEAM_WIDTH, JasperIndex, JasperIndexConfig
+from .index.matmul import MatmulIndex
 from .kv.corpus import KVCorpus
 from .kv.encoder import ChunkedRopeEncoder, load_encoder_tokenizer
 from .protocols import ChunkStore, Embedder, VectorIndex
@@ -20,6 +21,7 @@ from .types import (
     Chunk,
     ChunkInfo,
     ComposedMemory,
+    DeviceSearchResult,
     EncodingPlan,
     KVChunk,
     PrecomputeStats,
@@ -40,6 +42,7 @@ __all__ = [
     "ChunkStore",
     "ChunkedRopeEncoder",
     "ComposedMemory",
+    "DeviceSearchResult",
     "Embedder",
     "EmbeddingConfig",
     "EncodingPlan",
@@ -52,6 +55,7 @@ __all__ = [
     "KVChunk",
     "KVConfig",
     "KVCorpus",
+    "MatmulIndex",
     "OpenAIEmbedder",
     "PrecomputeStats",
     "PromptConfig",

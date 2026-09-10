@@ -378,12 +378,19 @@ def inferscale_section(
     from inferscale.v1 import InferScaleConfig
 
     section = dict(section_of(data, "inferscale", where))
+    if "vector_backend" in section:
+        raise ConfigError(
+            f"{where}.inferscale.vector_backend is supported only by the standalone InferScale API; "
+            "benchmarks select their retrieval backends separately. Remove it from the section."
+        )
     for key in ("model", "top_k", "context_window"):
         if key in section:
             raise ConfigError(f"{where}.inferscale.{key} is set from the top level; remove it from the section.")
     section["model"] = model
     section["top_k"] = top_k
     section["context_window"] = context_window
+    # Benchmark indexes are selected separately; keep their Jasper tuning validated.
+    section["vector_backend"] = "jasper"
     try:
         _validate_dataclass_types(section, InferScaleConfig, f"{where}.inferscale")
         return InferScaleConfig.from_dict(section)

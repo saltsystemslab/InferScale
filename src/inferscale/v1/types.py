@@ -105,6 +105,15 @@ class SearchMetrics:
     jasper_effective_beam_width: int | None = None
 
 
+@dataclass(slots=True, frozen=True)
+class DeviceSearchResult:
+    """One best-first result row whose IDs and distances remain on the GPU."""
+
+    stable_ids: Any
+    distances: Any
+    metrics: SearchMetrics
+
+
 @dataclass(slots=True)
 class RetrievalMetrics:
     embedding_time_ms: float

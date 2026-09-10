@@ -1,7 +1,7 @@
 """Precompute a handful of context chunks, then answer a question with KV injection.
 
-Needs a CUDA host with the jasper package built and OPENAI_API_KEY in the
-environment. Every chunk's KV is encoded once; at query time the retrieved
+Needs a CUDA host and OPENAI_API_KEY in the environment.
+Every chunk's KV is encoded once; at query time the retrieved
 chunks are composed and injected into vLLM's KV cache instead of being
 re-read as prompt text. Each target uses up to two preceding chunks as an
 encoding prefix; only the target chunk's KV is retained.
@@ -22,6 +22,7 @@ def main() -> None:
         model="meta-llama/Llama-3.1-8B-Instruct",
         top_k=2,
         context_window=2,
+        vector_backend="exact",
     )
     with InferScale(config) as engine:
         stats = engine.precompute(Chunk(id=chunk_id, text=text) for chunk_id, text in CONTEXT)

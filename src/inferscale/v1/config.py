@@ -72,6 +72,8 @@ class InferScaleConfig:
     top_k: int = 10
     # Preceding chunks used only while encoding each target chunk's KV.
     context_window: int = field(default=0, kw_only=True)
+    # Retrieval implementation; Jasper tuning lives in the index section.
+    vector_backend: str = field(default="exact", kw_only=True)
     engine: EngineConfig = field(default_factory=EngineConfig)
     kv: KVConfig = field(default_factory=KVConfig)
     index: JasperIndexConfig = field(default_factory=JasperIndexConfig)
@@ -128,6 +130,8 @@ def validate_config(config: InferScaleConfig) -> None:
         raise ValueError("top_k must be >= 1.")
     if isinstance(config.context_window, bool) or not isinstance(config.context_window, int) or config.context_window < 0:
         raise ValueError("context_window must be a nonnegative integer.")
+    if config.vector_backend not in ("exact", "jasper"):
+        raise ValueError("vector_backend must be 'exact' or 'jasper'.")
     engine = config.engine
     if engine.block_size < 1:
         raise ValueError("engine.block_size must be >= 1.")
@@ -148,16 +152,17 @@ def validate_config(config: InferScaleConfig) -> None:
         )
     if kv.dtype.lower() not in KV_DTYPES:
         raise ValueError(f"kv.dtype must be one of {KV_DTYPES}, got {kv.dtype!r}.")
-    index = config.index
-    if index.n_neighbors < 1:
-        raise ValueError("index.n_neighbors must be >= 1.")
-    if index.beam_width < 1:
-        raise ValueError("index.beam_width must be >= 1.")
-    if max(index.beam_width, config.top_k) > MAX_JASPER_BEAM_WIDTH:
-        raise ValueError(
-            "Effective Jasper beam width must be <= "
-            f"{MAX_JASPER_BEAM_WIDTH}; got max({index.beam_width}, {config.top_k})."
-        )
+    if config.vector_backend == "jasper":
+        index = config.index
+        if index.n_neighbors < 1:
+            raise ValueError("index.n_neighbors must be >= 1.")
+        if index.beam_width < 1:
+            raise ValueError("index.beam_width must be >= 1.")
+        if max(index.beam_width, config.top_k) > MAX_JASPER_BEAM_WIDTH:
+            raise ValueError(
+                "Effective Jasper beam width must be <= "
+                f"{MAX_JASPER_BEAM_WIDTH}; got max({index.beam_width}, {config.top_k})."
+            )
     if config.embedding.batch_size < 1:
         raise ValueError("embedding.batch_size must be >= 1.")
     if not config.embedding.model:

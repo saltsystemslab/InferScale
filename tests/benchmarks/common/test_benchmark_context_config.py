@@ -51,3 +51,12 @@ def test_context_window_has_one_authored_source(benchmark_input, nested_context_
     data["inferscale"]["context_window"] = nested_context_window
     with pytest.raises(ConfigError, match=r"inferscale\.context_window is set from the top level"):
         config_type.from_dict(data, runtime=runtime)
+
+
+@pytest.mark.parametrize("vector_backend", ["exact", "jasper"])
+def test_benchmarks_reject_standalone_api_retrieval_selector(benchmark_input, vector_backend) -> None:
+    config_type, data, runtime, _ = benchmark_input
+    data["inferscale"]["vector_backend"] = vector_backend
+
+    with pytest.raises(ConfigError, match=r"inferscale\.vector_backend.*standalone InferScale API"):
+        config_type.from_dict(data, runtime=runtime)

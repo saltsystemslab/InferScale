@@ -11,7 +11,6 @@ from urllib.parse import urlsplit
 
 from inferscale.v1.config import EngineConfig, InferScaleConfig
 from inferscale.v1.index.jasper import MAX_JASPER_BEAM_WIDTH
-from benchmarks.common.qdrant_config import QdrantConfig
 
 from benchmarks.common.config import (
     DEFAULT_EXTRACTION_LLM_BASE_URL,
@@ -167,7 +166,6 @@ class MemoryRunConfig:
     judge: JudgeConfig
     answer_backend: str = "kv-injection"
     vector_backend: str = "jasper"
-    qdrant: QdrantConfig = field(default_factory=QdrantConfig)
     context_window: int = 0
     max_samples: int | None = None
     max_questions: int | None = None
@@ -347,7 +345,6 @@ class MemoryRunConfig:
             "run_id": self.run_id,
             "answer_backend": self.answer_backend,
             "vector_backend": self.vector_backend,
-            "qdrant": self.qdrant.to_dict(),
             "top_k": self.top_k,
             "context_window": self.context_window,
             "max_samples": self.max_samples,
@@ -493,7 +490,6 @@ class MemoryRunConfig:
             judge=judge,
             answer_backend=answer_backend,
             vector_backend=vector_backend,
-            qdrant=runtime.qdrant,
             context_window=context_window,
             max_samples=max_samples,
             max_questions=max_questions,

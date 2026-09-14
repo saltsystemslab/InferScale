@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Any, get_args, get_type_hints
 
 from .paths import StorageConfig, StorageLayout, project_root, resolve_layout
-from .qdrant_config import QdrantConfig
 
 OPENAI_API_KEY_ENV = "OPENAI_API_KEY"
 JUDGE_LLM_API_KEY_ENV = "JUDGE_LLM_API_KEY"
@@ -144,7 +143,6 @@ class RuntimeConfig:
     environment: dict[str, str]
     path: Path
     root: Path
-    qdrant: QdrantConfig = field(default_factory=QdrantConfig)
 
     @classmethod
     def from_json(cls, path: str | Path, *, root: Path | None = None) -> "RuntimeConfig":
@@ -163,7 +161,7 @@ class RuntimeConfig:
         project = root if root is not None else project_root()
         reject_unknown_keys(
             data,
-            ("storage", "build", "models", "reasoning_parsers", "judge_server", "environment", "qdrant"),
+            ("storage", "build", "models", "reasoning_parsers", "judge_server", "environment"),
             where,
         )
         storage_section = section_of(data, "storage", where, required=False)
@@ -223,10 +221,6 @@ class RuntimeConfig:
             quantization=optional(judge_section, "quantization", str, None, f"{where}.judge_server"),
         )
         environment = _string_map(section_of(data, "environment", where, required=False), f"{where}.environment")
-        try:
-            qdrant = QdrantConfig.from_dict(section_of(data, "qdrant", where, required=False))
-        except ValueError as exc:
-            raise ConfigError(f"runtime.{exc}") from exc
         return cls(
             storage=storage,
             layout=resolve_layout(storage, root=project),
@@ -237,7 +231,6 @@ class RuntimeConfig:
             environment=environment,
             path=Path(path),
             root=project,
-            qdrant=qdrant,
         )
 
     def resolve_model(self, name: str) -> str:

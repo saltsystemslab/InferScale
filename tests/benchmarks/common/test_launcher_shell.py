@@ -17,7 +17,7 @@ def repo(tmp_path: Path) -> Path:
     target = tmp_path / "repo $(printf keep-literal)"
     (target / "benchmarks/common").mkdir(parents=True)
     shutil.copytree(ROOT / "scripts", target / "scripts")
-    for path in ("benchmarks/__init__.py", "benchmarks/common/__init__.py", "benchmarks/common/config.py", "benchmarks/common/paths.py", "benchmarks/common/environment.py", "benchmarks/common/qdrant_config.py"):
+    for path in ("benchmarks/__init__.py", "benchmarks/common/__init__.py", "benchmarks/common/config.py", "benchmarks/common/paths.py", "benchmarks/common/environment.py"):
         shutil.copy2(ROOT / path, target / path)
     (target / "configs/launch").mkdir(parents=True)
     return target
@@ -115,27 +115,6 @@ def test_serve_uses_its_fixed_json_workflow(repo: Path) -> None:
     assert result["runtime"] == str(runtime)
     assert result["args"] == ["-"]
     assert 'serve(Path("configs/serve.json"))' in result["code"]
-
-
-@pytest.mark.parametrize("args", [(), ("check",)])
-def test_qdrant_check_uses_configured_runtime_and_interpreter(repo: Path, args: tuple[str, ...]) -> None:
-    runtime = _runtime(repo, "qdrant")
-    shutil.copy2(runtime, repo / "configs/runtime.json")
-
-    process = _run(repo, "qdrant.sh", args)
-
-    assert process.returncode == 0, process.stderr
-    result = json.loads(process.stdout)
-    assert result["runtime"] == str(repo / "configs/runtime.json")
-    assert result["interpreter"] == str(repo / "qdrant venv/bin/python")
-    assert result["args"] == ["-m", "benchmarks.common.qdrant_check"]
-
-
-@pytest.mark.parametrize("args", [("start",), ("stop",), ("check", "extra")])
-def test_qdrant_script_rejects_local_lifecycle_commands(repo: Path, args: tuple[str, ...]) -> None:
-    process = _run(repo, "qdrant.sh", args)
-    assert process.returncode == 2
-    assert "Runpod console" in process.stderr
 
 
 def test_programmatic_serve_preview_reads_json_without_starting_a_server(tmp_path, monkeypatch, capsys):

@@ -27,7 +27,6 @@ from benchmarks.memory.mem0.fact_catalog import (
 )
 from benchmarks.memory.mem0.provider import (
     MEMORY_LLM_TEMPERATURE,
-    close_mem0_stores,
     create_mem0_memory,
     resolved_mem0_backend,
 )
@@ -106,20 +105,16 @@ class SampleMemoryBuilder:
                 "during the preembed stage first, then construct a read-mode SampleMemoryBuilder."
             )
         memory, metrics = self.build_with_metrics(sample, finalize_index=finalize_index)
-        try:
-            facts = self.load_fact_catalog(sample)
-            return (
-                PreparedMem0Retriever(
-                    memory,
-                    sample_id=sample.sample_id,
-                    fact_catalog=facts,
-                    vector_backend=resolved_mem0_backend(memory),
-                ),
-                metrics,
-            )
-        except BaseException:
-            self.close(memory)
-            raise
+        facts = self.load_fact_catalog(sample)
+        return (
+            PreparedMem0Retriever(
+                memory,
+                sample_id=sample.sample_id,
+                fact_catalog=facts,
+                vector_backend=resolved_mem0_backend(memory),
+            ),
+            metrics,
+        )
 
     def load_fact_catalog(self, sample: ConversationSample) -> tuple[MemoryFact, ...]:
         return self._fact_catalog_store.load(sample)
@@ -142,44 +137,40 @@ class SampleMemoryBuilder:
             _store_config(self.config),
             inference_enabled=False,
         )
-        try:
-            resolved_backend = resolved_mem0_backend(memory)
-            self._install_embedding_cache(memory)
-            self._reset_vector_store(memory)
-            memory_create_time_ms = (time.perf_counter() - create_started) * 1000
+        resolved_backend = resolved_mem0_backend(memory)
+        self._install_embedding_cache(memory)
+        self._reset_vector_store(memory)
+        memory_create_time_ms = (time.perf_counter() - create_started) * 1000
 
-            build_started = time.perf_counter()
-            self._load_facts_into_memory(memory, facts)
-            logger.info(
-                "Loaded {} immutable Mem0 facts for sample_id={} backend={}",
-                len(facts),
-                sample.sample_id,
-                resolved_backend,
-            )
-            embedding_memory_build_time_ms = (time.perf_counter() - build_started) * 1000
+        build_started = time.perf_counter()
+        self._load_facts_into_memory(memory, facts)
+        logger.info(
+            "Loaded {} immutable Mem0 facts for sample_id={} backend={}",
+            len(facts),
+            sample.sample_id,
+            resolved_backend,
+        )
+        embedding_memory_build_time_ms = (time.perf_counter() - build_started) * 1000
 
-            vector_index_build_time_ms = None
-            if finalize_index:
-                logger.info("Building vector index for sample_id={} backend={}", sample.sample_id, resolved_backend)
-                index_started = time.perf_counter()
-                self._finalize(memory)
-                vector_index_build_time_ms = (time.perf_counter() - index_started) * 1000
-                logger.info("Index ready sample_id={} backend={}", sample.sample_id, resolved_backend)
-            metrics = {
-                "vector_backend": resolved_backend,
-                "memory_create_time_ms": memory_create_time_ms,
-                "embedding_memory_build_time_ms": embedding_memory_build_time_ms,
-                "vector_index_build_time_ms": vector_index_build_time_ms,
-                "memory_setup_time_ms": (time.perf_counter() - total_started) * 1000,
-                "memory_input_turn_count": len(sample.turns),
-                "memory_inferred_record_count": len(facts),
-                "memory_fact_catalog_loaded": 1,
-            }
-            metrics.update(self._vector_store_memory_stats(memory))
-            return memory, metrics
-        except BaseException:
-            self.close(memory)
-            raise
+        vector_index_build_time_ms = None
+        if finalize_index:
+            logger.info("Building vector index for sample_id={} backend={}", sample.sample_id, resolved_backend)
+            index_started = time.perf_counter()
+            self._finalize(memory)
+            vector_index_build_time_ms = (time.perf_counter() - index_started) * 1000
+            logger.info("Index ready sample_id={} backend={}", sample.sample_id, resolved_backend)
+        metrics = {
+            "vector_backend": resolved_backend,
+            "memory_create_time_ms": memory_create_time_ms,
+            "embedding_memory_build_time_ms": embedding_memory_build_time_ms,
+            "vector_index_build_time_ms": vector_index_build_time_ms,
+            "memory_setup_time_ms": (time.perf_counter() - total_started) * 1000,
+            "memory_input_turn_count": len(sample.turns),
+            "memory_inferred_record_count": len(facts),
+            "memory_fact_catalog_loaded": 1,
+        }
+        metrics.update(self._vector_store_memory_stats(memory))
+        return memory, metrics
 
     def _extract_and_materialize_catalog(
         self,
@@ -333,7 +324,13 @@ class SampleMemoryBuilder:
         return cache.stats()
 
     def close(self, memory: Any) -> None:
-        close_mem0_stores(memory)
+        for vector_store in (
+            getattr(memory, "vector_store", None),
+            getattr(memory, "_entity_store", None),
+        ):
+            close = getattr(vector_store, "close", None)
+            if callable(close):
+                close()
 
     def _install_embedding_cache(self, memory: Any) -> None:
         if not self.config.embedding_cache_enabled:
@@ -454,7 +451,6 @@ def _store_config(
 ) -> VectorStoreConfig:
     return VectorStoreConfig(
         backend=backend or config.vector_backend,
-        qdrant=config.qdrant,
         n_neighbors=config.jasper_n_neighbors,
         alpha=config.jasper_alpha,
         workspace_budget=config.jasper_workspace_budget,

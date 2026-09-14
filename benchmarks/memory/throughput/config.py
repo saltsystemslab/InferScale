@@ -4,12 +4,10 @@ import math
 import os
 import re
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
-
-from benchmarks.common.qdrant_config import QdrantConfig
 
 from benchmarks.common.config import (
     DEFAULT_EXTRACTION_LLM_BASE_URL,
@@ -100,7 +98,6 @@ class ThroughputConfig:
     jasper_alpha: float = 1.0
     jasper_workspace_budget: str = "10GB"
     jasper_beam_width: int = 64
-    qdrant: QdrantConfig = field(default_factory=QdrantConfig)
 
     def __post_init__(self) -> None:
         if any(
@@ -164,7 +161,6 @@ class ThroughputConfig:
                 data[key] = Path(require(data, key, str, "throughput worker snapshot"))
         data["conditions"] = str_list(data, "conditions", "throughput worker snapshot")
         data["user_counts"] = int_list(data, "user_counts", "throughput worker snapshot")
-        data["qdrant"] = QdrantConfig.from_dict(data.get("qdrant", {}))
         if data.get("embedding_api_key") == "<redacted>":
             data["embedding_api_key"] = (
                 os.environ.get("LOCOMO_THROUGHPUT_EMBEDDING_API_KEY")
@@ -275,7 +271,6 @@ def _build_run_config(data: Mapping[str, Any], runtime: RuntimeConfig) -> Throug
         jasper_alpha=library.index.alpha,
         jasper_workspace_budget=library.index.workspace_budget,
         jasper_beam_width=library.index.beam_width,
-        qdrant=runtime.qdrant,
     )
     return config
 

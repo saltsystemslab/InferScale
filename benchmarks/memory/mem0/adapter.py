@@ -6,7 +6,6 @@ from typing import Any
 import numpy as np
 
 from benchmarks.common.paths import mem0_dir_from_environment
-from benchmarks.common.qdrant_config import QdrantConfig
 from benchmarks.common.vector_types import (
     SearchHit,
     SearchMetrics,
@@ -44,7 +43,7 @@ except Exception:  # pragma: no cover - mem0 is optional for local unit tests
 
 
 class Mem0JasperVectorStore(VectorStoreBase):
-    """Mem0 adapter dispatching to the requested vector backend."""
+    """Mem0 adapter dispatching to the requested local vector backend."""
 
     def __init__(
         self,
@@ -53,7 +52,6 @@ class Mem0JasperVectorStore(VectorStoreBase):
         embedding_model_dims: int | None = 1536,
         path: str | Path | None = None,
         backend: str = "jasper",
-        qdrant: dict[str, Any] | None = None,
         distance: str = VECTOR_DISTANCE,
         n_neighbors: int = 64,
         alpha: float = 1.0,
@@ -69,7 +67,6 @@ class Mem0JasperVectorStore(VectorStoreBase):
             self.root = Path(path) / collection_name
         self.config = VectorStoreConfig(
             backend=backend,
-            qdrant=QdrantConfig.from_dict(qdrant if qdrant is not None else {}),
             n_neighbors=n_neighbors,
             alpha=alpha,
             workspace_budget=workspace_budget,

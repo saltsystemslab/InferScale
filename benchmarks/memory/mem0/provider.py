@@ -5,7 +5,6 @@ import os
 import sys
 import threading
 import types
-from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Literal
 
@@ -15,7 +14,6 @@ from benchmarks.memory.protocol import MEM0AI_VERSION, MEMORY_EXTRACTION_MAX_TOK
 from benchmarks.common.paths import mem0_dir_from_environment
 from benchmarks.common.vector_types import VECTOR_DISTANCE, VectorStoreConfig
 from benchmarks.common.config import DEFAULT_EXTRACTION_LLM_BASE_URL
-from benchmarks.common.qdrant_config import QdrantConfig
 from inferscale.v1.embedding.openai import DEFAULT_OPENAI_BASE_URL
 
 # Extraction sampling temperature. Part of the fact-catalog and LLM-cache
@@ -23,18 +21,6 @@ from inferscale.v1.embedding.openai import DEFAULT_OPENAI_BASE_URL
 # old value.
 MEMORY_LLM_TEMPERATURE = 0.0
 _MEM0_PROVIDER_REGISTRATION_LOCK = threading.Lock()
-
-
-def close_mem0_stores(memory: Any) -> None:
-    """Close every initialized store, even when another store's cleanup fails."""
-    with ExitStack() as cleanup:
-        for store in (
-            getattr(memory, "vector_store", None),
-            getattr(memory, "_entity_store", None),
-        ):
-            close = getattr(store, "close", None)
-            if callable(close):
-                cleanup.callback(close)
 
 
 def create_mem0_memory(
@@ -127,7 +113,6 @@ def build_mem0_config(
                 "collection_name": "memories",
                 "path": str(store_root),
                 "backend": vector_config.backend,
-                "qdrant": vector_config.qdrant.to_dict(),
                 "distance": VECTOR_DISTANCE,
                 "n_neighbors": vector_config.n_neighbors,
                 "alpha": vector_config.alpha,
@@ -170,7 +155,6 @@ def _install_jasper_config_module() -> None:
             description="Path for the Jasper vector store",
         )
         backend: Literal["jasper", "qdrant"] = Field("jasper", description="Concrete vector store backend")
-        qdrant: dict[str, Any] = Field(default_factory=lambda: QdrantConfig().to_dict())
         distance: Literal["ip"] = Field(VECTOR_DISTANCE, description="Distance metric")
         n_neighbors: int = Field(64, description="Jasper graph neighbor count")
         alpha: float = Field(1.0, description="Jasper graph alpha")

@@ -20,6 +20,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+embedding = [
+    "torch>=2.2",
+    "transformers>=4.51,<5",
+]
 dev = [
     "pytest>=8",
 ]

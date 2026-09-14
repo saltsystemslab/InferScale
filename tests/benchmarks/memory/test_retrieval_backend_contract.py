@@ -630,43 +630,37 @@ def test_primary_configuration_has_no_distance_override() -> None:
         VectorStoreConfig(distance="cosine")  # type: ignore[call-arg]
 
 
-def test_qdrant_server_returns_complete_unique_results(
-    tmp_path: object, qdrant_server_config: VectorStoreConfig,
-) -> None:
+def test_local_qdrant_returns_complete_unique_results(tmp_path: object) -> None:
     from qdrant_client import models
 
-    store = QdrantVectorStore(tmp_path, qdrant_server_config)
-    try:
-        store.add_many(
-            [[1.0, 0.0], [0.0, 1.0], [0.5, 0.5]],
-            [{"memory": "one"}, {"memory": "two"}, {"memory": "three"}],
-            ["one", "two", "three"],
-        )
+    store = QdrantVectorStore(tmp_path, VectorStoreConfig(backend="qdrant"))
+    store.add_many(
+        [[1.0, 0.0], [0.0, 1.0], [0.5, 0.5]],
+        [{"memory": "one"}, {"memory": "two"}, {"memory": "three"}],
+        ["one", "two", "three"],
+    )
 
-        hits, metrics = store.search([1.0, 0.0], top_k=2)
-        _validate_search_hits(hits, expected_count=2, backend="qdrant")
+    hits, metrics = store.search([1.0, 0.0], top_k=2)
+    _validate_search_hits(hits, expected_count=2, backend="qdrant")
 
-        collection = store._client.get_collection(collection_name=store._collection_name)
-        assert collection.config.params.vectors.distance == models.Distance.DOT
-        assert [hit.id for hit in hits] == ["one", "three"]
-        assert hits[0].score == pytest.approx(1.0)
-        assert hits[0].distance == pytest.approx(-1.0)
-        assert metrics.vector_backend == "qdrant"
-        assert metrics.jasper_effective_beam_width is None
-        assert not hasattr(store, "memory_stats")
-    finally:
-        store.close()
+    collection = store._client.get_collection(collection_name="memories")
+    assert collection.config.params.vectors.distance == models.Distance.DOT
+    assert [hit.id for hit in hits] == ["one", "three"]
+    assert hits[0].score == pytest.approx(1.0)
+    assert hits[0].distance == pytest.approx(-1.0)
+    assert metrics.vector_backend == "qdrant"
+    assert metrics.jasper_effective_beam_width is None
+    assert not hasattr(store, "memory_stats")
+    store.close()
 
 
-def test_jasper_and_qdrant_rank_candidates_by_inner_product(
-    tmp_path: object, qdrant_server_config: VectorStoreConfig,
-) -> None:
+def test_jasper_and_qdrant_rank_candidates_by_inner_product(tmp_path: object) -> None:
     vectors = [[2.0, 0.0], [0.9, 0.1]]
     payloads = [{"memory": "larger product"}, {"memory": "smaller product"}]
     ids = ["larger", "smaller"]
     stores = (
         JasperIndex(),
-        QdrantVectorStore(tmp_path, qdrant_server_config),
+        QdrantVectorStore(tmp_path, VectorStoreConfig(backend="qdrant")),
     )
 
     try:
@@ -681,12 +675,11 @@ def test_jasper_and_qdrant_rank_candidates_by_inner_product(
             store.close()
 
 
-def test_qdrant_server_pushes_simple_scope_filter_into_query(
+def test_local_qdrant_pushes_simple_scope_filter_into_query(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: object,
-    qdrant_server_config: VectorStoreConfig,
 ) -> None:
-    store = QdrantVectorStore(tmp_path, qdrant_server_config)
+    store = QdrantVectorStore(tmp_path, VectorStoreConfig(backend="qdrant"))
     store.add_many(
         [[1.0, 0.0], [0.5, 0.5], [0.0, 1.0]],
         [
@@ -718,12 +711,11 @@ def test_qdrant_server_pushes_simple_scope_filter_into_query(
     assert query_calls[0]["query_filter"] is not None
 
 
-def test_qdrant_server_finalize_caches_rows(
+def test_local_qdrant_finalize_caches_rows(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: object,
-    qdrant_server_config: VectorStoreConfig,
 ) -> None:
-    store = QdrantVectorStore(tmp_path, qdrant_server_config)
+    store = QdrantVectorStore(tmp_path, VectorStoreConfig(backend="qdrant"))
     store.add_many(
         [[1.0, 0.0], [0.0, 1.0]],
         [
@@ -739,20 +731,16 @@ def test_qdrant_server_finalize_caches_rows(
         lambda **_kwargs: pytest.fail("finalized Qdrant rows should be served from memory"),
     )
     try:
-        assert {item_id for item_id, _ in store.rows({"user_id": "sample-1"})} == {
+        assert [item_id for item_id, _ in store.rows({"user_id": "sample-1"})] == [
             "tea",
             "coffee",
-        }
+        ]
     finally:
         store.close()
 
 
-def test_mem0_adapter_supports_filtered_listing_and_entity_crud(
-    tmp_path: object, qdrant_server_config: VectorStoreConfig,
-) -> None:
-    store = Mem0JasperVectorStore(
-        path=tmp_path, backend="qdrant", qdrant=qdrant_server_config.qdrant.to_dict(),
-    )
+def test_mem0_adapter_supports_filtered_listing_and_entity_crud(tmp_path: object) -> None:
+    store = Mem0JasperVectorStore(path=tmp_path, backend="qdrant")
     try:
         store.insert(
             vectors=[[1.0, 0.0], [0.0, 1.0]],

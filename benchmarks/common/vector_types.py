@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
-from .qdrant_config import QdrantConfig
+from dataclasses import dataclass
 
 from inferscale.v1.index.jasper import JasperIndexConfig
 from inferscale.v1.types import VECTOR_DISTANCE, RetrievalMetrics, SearchHit, SearchMetrics
@@ -21,7 +19,6 @@ __all__ = [
 @dataclass(slots=True)
 class VectorStoreConfig:
     backend: str = "jasper"
-    qdrant: QdrantConfig = field(default_factory=QdrantConfig)
     n_neighbors: int = 64
     alpha: float = 1.0
     workspace_budget: str = "10GB"

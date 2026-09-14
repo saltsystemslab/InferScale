@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from pathlib import Path
@@ -12,33 +13,41 @@ from inferscale.v1.index.filters import payload_matches
 
 
 class QdrantVectorStore:
-    """Local qdrant-client backend with the same interface as JasperIndex."""
+    """Qdrant server backend with an isolated collection owned by this store."""
 
     _ID_PAYLOAD_KEY = "__locomo_bench_id"
     _UUID_NAMESPACE = uuid.UUID("5c6ab2ac-d6ef-4e8f-97a7-85d8c528a0b1")
+    _SCROLL_PAGE_SIZE = 256
 
     def __init__(self, root: str | Path, config: VectorStoreConfig) -> None:
         self.root = Path(root)
         self.config = config
         self.root.mkdir(parents=True, exist_ok=True)
-        self._collection_name = "memories"
-        self._client = self._create_client()
-        self._dim = self._load_dim()
+        label = re.sub(r"[^a-zA-Z0-9_-]", "_", self.root.name)[:48] or "store"
+        self._collection_name = f"benchmark_jasper_{label}_{uuid.uuid4().hex}"
+        self._collection_created = False
+        self._closed = False
+        self._dim: int | None = None
         self._rows_cache: list[tuple[str, dict[str, Any]]] | None = None
+        self._count_cache: int | None = 0
+        self._client = self._create_client()
 
     @property
     def vector_count(self) -> int:
-        try:
+        self._ensure_open()
+        if self._rows_cache is not None:
+            return len(self._rows_cache)
+        if self._count_cache is None:
             result = self._client.count(collection_name=self._collection_name, exact=True)
-        except Exception:
-            return 0
-        return int(getattr(result, "count", 0) or 0)
+            self._count_cache = int(result.count)
+        return self._count_cache
 
     @property
     def dim(self) -> int | None:
         return self._dim
 
     def count(self, filters: dict[str, Any] | None = None) -> int:
+        self._ensure_open()
         if self._rows_cache is not None:
             if not filters:
                 return len(self._rows_cache)
@@ -67,6 +76,7 @@ class QdrantVectorStore:
         payloads: Iterable[dict[str, Any]],
         ids: Iterable[str] | None = None,
     ) -> list[str]:
+        self._ensure_open()
         vector_list = [np.asarray(vector, dtype=np.float32) for vector in vectors]
         payload_list = list(payloads)
         if len(vector_list) != len(payload_list):
@@ -93,8 +103,8 @@ class QdrantVectorStore:
                     payload=next_payload,
                 )
             )
-        self._client.upsert(collection_name=self._collection_name, points=points)
-        self._rows_cache = None
+        self._invalidate_caches()
+        self._client.upsert(collection_name=self._collection_name, points=points, wait=True)
         return [str(item_id) for item_id in id_list]
 
     def finalize(self) -> None:
@@ -124,6 +134,7 @@ class QdrantVectorStore:
             "query": query.tolist(),
             "limit": candidate_k,
             "with_payload": True,
+            "search_params": self._models().SearchParams(exact=self.config.qdrant.exact),
         }
         if query_filter is not None:
             query_kwargs["query_filter"] = query_filter
@@ -149,6 +160,9 @@ class QdrantVectorStore:
         ]
 
     def get(self, item_id: str) -> SearchHit | None:
+        self._ensure_open()
+        if not self._collection_created:
+            return None
         points = self._client.retrieve(
             collection_name=self._collection_name,
             ids=[self._point_id(str(item_id))],
@@ -166,7 +180,12 @@ class QdrantVectorStore:
         vector: np.ndarray | list[float] | None = None,
         payload: dict[str, Any] | None = None,
     ) -> None:
+        self._ensure_open()
+        if not self._collection_created:
+            return
         point_id = self._point_id(str(item_id))
+        if payload is not None or vector is not None:
+            self._invalidate_caches()
         if payload is not None:
             next_payload = dict(payload)
             next_payload[self._ID_PAYLOAD_KEY] = str(item_id)
@@ -174,8 +193,8 @@ class QdrantVectorStore:
                 collection_name=self._collection_name,
                 payload=next_payload,
                 points=[point_id],
+                wait=True,
             )
-            self._rows_cache = None
         if vector is not None:
             models = self._models()
             self._client.update_vectors(
@@ -186,33 +205,60 @@ class QdrantVectorStore:
                         vector=np.asarray(vector, dtype=np.float32).tolist(),
                     )
                 ],
+                wait=True,
             )
 
     def delete(self, item_id: str) -> None:
+        self._ensure_open()
+        if not self._collection_created:
+            return
         models = self._models()
+        self._invalidate_caches()
         self._client.delete(
             collection_name=self._collection_name,
             points_selector=models.PointIdsList(points=[self._point_id(str(item_id))]),
+            wait=True,
         )
-        self._rows_cache = None
 
     def reset(self) -> None:
-        if self._collection_exists():
+        self._ensure_open()
+        if self._collection_created:
             self._client.delete_collection(collection_name=self._collection_name)
+        self._collection_created = False
         self._dim = None
         self._rows_cache = None
+        self._count_cache = 0
 
     def close(self) -> None:
-        close = getattr(self._client, "close", None)
-        if callable(close):
-            close()
+        if self._closed:
+            return
+        try:
+            self.reset()
+        finally:
+            self._closed = True
+            self._client.close()
 
     def _create_client(self) -> Any:
         try:
             from qdrant_client import QdrantClient
         except ImportError as exc:
             raise RuntimeError("Install qdrant-client to use --vector-backend qdrant.") from exc
-        return QdrantClient(path=str(self.root / "qdrant"))
+        connection = self.config.qdrant
+        client = QdrantClient(
+            url=connection.url,
+            grpc_port=connection.grpc_port,
+            prefer_grpc=connection.prefer_grpc,
+            timeout=connection.timeout,
+        )
+        try:
+            client.get_collections()
+        except Exception as exc:
+            client.close()
+            raise RuntimeError(
+                f"Cannot connect to the Qdrant server at {connection.url}. "
+                "Start the Qdrant Docker service and check the configured HTTP and gRPC ports."
+            ) from exc
+        return client
 
     def _models(self) -> Any:
         try:
@@ -221,15 +267,6 @@ class QdrantVectorStore:
             raise RuntimeError("Install qdrant-client to use --vector-backend qdrant.") from exc
         return models
 
-    def _load_dim(self) -> int | None:
-        try:
-            info = self._client.get_collection(collection_name=self._collection_name)
-        except Exception:
-            return None
-        params = getattr(getattr(info, "config", None), "params", None)
-        vectors = getattr(params, "vectors", None)
-        return getattr(vectors, "size", None)
-
     def _ensure_collection(self, dim: int) -> None:
         if self._dim is not None:
             if self._dim != dim:
@@ -237,23 +274,20 @@ class QdrantVectorStore:
             return
 
         models = self._models()
-        if self._collection_exists():
-            self._client.delete_collection(collection_name=self._collection_name)
         self._client.create_collection(
             collection_name=self._collection_name,
             vectors_config=models.VectorParams(size=dim, distance=models.Distance.DOT),
         )
+        self._collection_created = True
         self._dim = dim
 
-    def _collection_exists(self) -> bool:
-        exists = getattr(self._client, "collection_exists", None)
-        if callable(exists):
-            return bool(exists(collection_name=self._collection_name))
-        try:
-            self._client.get_collection(collection_name=self._collection_name)
-        except Exception:
-            return False
-        return True
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("The Qdrant vector store is closed.")
+
+    def _invalidate_caches(self) -> None:
+        self._rows_cache = None
+        self._count_cache = None
 
     def _native_filter(self, filters: dict[str, Any] | None) -> Any | None:
         if not filters:
@@ -296,27 +330,34 @@ class QdrantVectorStore:
         return models.Filter(must=must or None, must_not=must_not or None)
 
     def _load_rows(self) -> list[tuple[str, dict[str, Any]]]:
+        self._ensure_open()
         if self._rows_cache is not None:
             return self._rows_cache
-        if self.vector_count == 0:
+        if not self._collection_created:
             self._rows_cache = []
             return self._rows_cache
-        points, _ = self._client.scroll(
-            collection_name=self._collection_name,
-            limit=max(1, self.vector_count),
-            with_payload=True,
-            with_vectors=False,
-        )
-        self._rows_cache = []
-        for point in points:
-            raw_payload = getattr(point, "payload", None)
-            payload = self._payload_from_qdrant(raw_payload)
-            self._rows_cache.append(
-                (
-                    self._original_id(getattr(point, "id", None), raw_payload),
-                    payload,
-                )
+        rows = []
+        offset = None
+        while True:
+            points, offset = self._client.scroll(
+                collection_name=self._collection_name,
+                limit=self._SCROLL_PAGE_SIZE,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
             )
+            for point in points:
+                raw_payload = getattr(point, "payload", None)
+                rows.append(
+                    (
+                        self._original_id(getattr(point, "id", None), raw_payload),
+                        self._payload_from_qdrant(raw_payload),
+                    )
+                )
+            if offset is None:
+                break
+        self._rows_cache = rows
+        self._count_cache = len(rows)
         return self._rows_cache
 
     def _hit_from_point(self, point: Any, rank: int) -> SearchHit:

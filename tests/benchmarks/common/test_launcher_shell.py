@@ -17,7 +17,7 @@ def repo(tmp_path: Path) -> Path:
     target = tmp_path / "repo $(printf keep-literal)"
     (target / "benchmarks/common").mkdir(parents=True)
     shutil.copytree(ROOT / "scripts", target / "scripts")
-    for path in ("benchmarks/__init__.py", "benchmarks/common/__init__.py", "benchmarks/common/config.py", "benchmarks/common/paths.py", "benchmarks/common/environment.py"):
+    for path in ("benchmarks/__init__.py", "benchmarks/common/__init__.py", "benchmarks/common/config.py", "benchmarks/common/paths.py", "benchmarks/common/environment.py", "benchmarks/common/qdrant_config.py"):
         shutil.copy2(ROOT / path, target / path)
     (target / "configs/launch").mkdir(parents=True)
     return target

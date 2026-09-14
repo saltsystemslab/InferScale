@@ -6,6 +6,7 @@ from typing import Any
 
 from benchmarks.common.vector_types import RetrievalMetrics, SearchHit, SearchMetrics
 from benchmarks.memory.mem0.fact_catalog import MemoryFact
+from benchmarks.memory.mem0.provider import close_mem0_stores
 
 
 class PreparedMem0Retriever:
@@ -81,13 +82,7 @@ class PreparedMem0Retriever:
         )
 
     def close(self) -> None:
-        for store in (
-            getattr(self.memory, "vector_store", None),
-            getattr(self.memory, "_entity_store", None),
-        ):
-            close = getattr(store, "close", None)
-            if callable(close):
-                close()
+        close_mem0_stores(self.memory)
 
     def _search_hit(self, row: Any, rank: int) -> SearchHit:
         if not isinstance(row, dict):

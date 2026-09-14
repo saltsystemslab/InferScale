@@ -16,7 +16,7 @@ from benchmarks.memory.mem0.fact_catalog import (
     locomo_timestamp,
     locomo_turn_role,
 )
-from benchmarks.memory.mem0.provider import build_mem0_config, create_mem0_memory
+from benchmarks.memory.mem0.provider import build_mem0_config, close_mem0_stores, create_mem0_memory
 from benchmarks.memory.mem0.memory_builder import (
     SampleMemoryBuilder,
     _mem0_observation_date,
@@ -555,12 +555,13 @@ def test_sample_builder_aborts_without_catalog_when_extraction_json_is_invalid(
 def test_mem0_2_inference_persists_turn_metadata_through_custom_adapter(
     monkeypatch: Any,
     tmp_path: Path,
+    qdrant_server_config: VectorStoreConfig,
 ) -> None:
     monkeypatch.setenv("MEM0_DIR", str(tmp_path / "mem0-global"))
     monkeypatch.setenv("MEM0_TELEMETRY", "false")
     memory = create_mem0_memory(
         store_root=tmp_path / "store",
-        vector_config=VectorStoreConfig(backend="qdrant"),
+        vector_config=qdrant_server_config,
         embedding_model="text-embedding-3-small",
         embedding_api_key="test-key",
         embedding_base_url=None,
@@ -589,7 +590,7 @@ def test_mem0_2_inference_persists_turn_metadata_through_custom_adapter(
             filters={"user_id": "sample-1"},
         )
     finally:
-        memory.vector_store.close()
+        close_mem0_stores(memory)
 
     assert result["results"][0]["memory"] == "Alice likes tea."
     rows = search_result["results"]
@@ -597,3 +598,55 @@ def test_mem0_2_inference_persists_turn_metadata_through_custom_adapter(
     assert rows[0]["id"] == "fact-1"
     assert rows[0]["memory"] == "Alice likes tea."
     assert rows[0]["metadata"]["turn_id"] == "sample-1:session_1:0"
+
+
+def test_mem0_fact_replay_links_entities_in_separate_server_collection(
+    monkeypatch: Any,
+    tmp_path: Path,
+    qdrant_server_config: VectorStoreConfig,
+) -> None:
+    monkeypatch.setenv("MEM0_DIR", str(tmp_path / "mem0-global"))
+    monkeypatch.setenv("MEM0_TELEMETRY", "false")
+    monkeypatch.setattr("mem0.memory.main.extract_entities", lambda _: [("PERSON", "Alice")])
+    monkeypatch.setattr("mem0.memory.main.lemmatize_for_bm25", lambda text: text)
+    memory = create_mem0_memory(
+        store_root=tmp_path / "store",
+        vector_config=qdrant_server_config,
+        embedding_model="text-embedding-3-small",
+        embedding_api_key="test-key",
+        embedding_base_url=None,
+        memory_llm_model="test-model",
+        memory_llm_api_key="test-key",
+    )
+    memory.embedding_model = _DeterministicEmbedder()
+    fact = MemoryFact(
+        id="fact-1",
+        text="Alice likes tea.",
+        created_at="2026-01-02T00:00:00+00:00",
+        timestamp_epoch=1767312000,
+        sample_id="sample-1",
+        source_session_index=1,
+        source_session_id="session_1",
+        source_turn_index=0,
+        source_turn_id="sample-1:session_1:0",
+        speaker="Alice",
+        role="user",
+    )
+    try:
+        load_facts_into_memory(memory, (fact,))
+        memory.vector_store.finalize()
+        memory.entity_store.finalize()
+        entities = memory.entity_store.list(filters={"user_id": "sample-1"})
+        assert len(entities) == 1
+        assert entities[0].payload["linked_memory_ids"] == [fact.id]
+        assert memory.entity_store.store.config.qdrant == qdrant_server_config.qdrant
+        assert memory.vector_store.store._collection_name != memory.entity_store.store._collection_name
+        retriever = PreparedMem0Retriever(
+            memory, sample_id="sample-1", fact_catalog=(fact,), vector_backend="qdrant",
+        )
+        hits, metrics = retriever.search("What does Alice like?", top_k=1)
+        assert [hit.id for hit in hits] == [fact.id]
+        assert hits[0].payload["source_turn_id"] == fact.source_turn_id
+        assert metrics.vector_backend == "qdrant"
+    finally:
+        close_mem0_stores(memory)

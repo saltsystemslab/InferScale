@@ -29,6 +29,7 @@ def run_benchmark(config: MemoryRunConfig, clients: RuntimeClients | None = None
         config.dataset_path,
         config.run_dir,
     )
+    _validate_qdrant_run_provenance(config)
     config.run_dir.mkdir(parents=True, exist_ok=True)
     write_json(config.run_dir / "config.json", config.to_jsonable())
 
@@ -58,6 +59,21 @@ def run_benchmark(config: MemoryRunConfig, clients: RuntimeClients | None = None
     _log_category_accuracy(summary)
     logger.info("Wrote results to {}", config.run_dir)
     return summary
+
+
+def _validate_qdrant_run_provenance(config: MemoryRunConfig) -> None:
+    path = config.run_dir / "config.json"
+    if not path.exists():
+        return
+    saved = read_json_or_default(path, {})
+    saved_backend = saved.get("vector_backend")
+    if "qdrant" not in {saved_backend, config.vector_backend}:
+        return
+    if saved_backend != config.vector_backend or saved.get("qdrant") != config.qdrant.to_dict():
+        raise RuntimeError(
+            f"Run directory {config.run_dir} contains different or missing Qdrant settings "
+            "or a different vector backend. Set a new run_id in the run JSON."
+        )
 
 
 def judge_existing_run(config: MemoryRunConfig) -> dict[str, Any]:

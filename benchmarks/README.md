@@ -13,6 +13,7 @@ Benchmark runs target a Linux GPU host; the reference environment is a Runpod co
 - Python >=3.10,<3.14.
 - CMake and the CUDA toolkit, used to build the `jasperpy` submodule.
 - Hugging Face API key (`HF_TOKEN` for gated models such as Llama 3.1) and an OpenAI API key for `text-embedding-3-small` embedding calls.
+- Docker with Docker Compose.
 
 We configure all default parameters to run on an RTX Pro 6000 GPU with 96 GB of VRAM.
 
@@ -45,7 +46,24 @@ To apply the optimization, edit `jasperpy/include/jasper/index/graph.cuh` and ch
 static constexpr index_t vectors_per_segment = 1u << 12;
 ```
 
-## 4. Install
+## 4. Start Qdrant
+
+Start Qdrant before setup, fact extraction, or memory benchmark runs.
+
+From the repository root:
+
+```bash
+bash scripts/qdrant.sh start
+```
+
+Inspect or stop the local server with:
+
+```bash
+docker compose logs --tail=100 qdrant
+bash scripts/qdrant.sh stop
+```
+
+## 5. Install
 
 ```bash
 bash scripts/setup_remote.sh
@@ -57,7 +75,7 @@ Activate the environment before running benchmark commands:
 source .venv/bin/activate
 ```
 
-## 5. Run Experiments
+## 6. Run Experiments
 
 ```bash
 bash scripts/full_run.sh
@@ -69,7 +87,7 @@ To run the throughput experiments:
 bash scripts/full_throughput.sh
 ```
 
-## 6. Judge Accuracy
+## 7. Judge Accuracy
 
 For local Gemma/vLLM judging on the same GPU, start the judge after answer runs finish:
 
@@ -83,7 +101,7 @@ bash scripts/serve_vllm.sh
 bash scripts/judge.sh
 ```
 
-## 7. Compare Results
+## 8. Compare Results
 
 Each run writes to `${BENCHMARK_RESULTS_ROOT}/<run-id>/`, where the run id encodes the swept axes:
 `<model>-kv-mem0-jasper10-k<topk>-s<window>-<stamp>` for KV runs and `<model>-prefix-mem0-<vector>10-k<topk>-s0-<stamp>` for the prompt baselines.
@@ -101,9 +119,9 @@ Primary summary metrics:
 - `metrics.query_to_answer_ms`: query embedding, retrieval, prompt/KV composition, and full answer generation.
 - `metrics.sample_setup_time_ms`: per-sample setup before the first query, including memory/index construction, KV precompute when applicable, and sample activation.
 
-## 8. RAG Benchmark
+## 9. RAG Benchmark
 
-Run the stages in order after sections 1 to 4.
+Run the stages in order after sections 1 to 5.
 
 ```bash
 bash scripts/rag/setup_data.sh

@@ -10,6 +10,7 @@ The setup targets a Linux GPU host; the reference environment is a Runpod contai
 - Python >=3.10,<3.14.
 - CMake and the CUDA toolkit, used to build the `jasperpy` submodule.
 - Hugging Face API key (`HF_TOKEN` for gated models such as Llama 3.1) and an OpenAI API key for `text-embedding-3-small` embedding calls.
+- For benchmarks, Docker with Docker Compose.
 
 We configure all default parameters to run on an RTX Pro 6000 GPU with 96 GB of VRAM.
 
@@ -64,6 +65,12 @@ Load credentials and runtime paths into your current shell, then activate the co
 ```bash
 source scripts/load_env.sh
 source "${VENV_DIR}/bin/activate"
+```
+
+Memory benchmarks require a running Qdrant server.
+
+```bash
+bash scripts/qdrant.sh start
 ```
 
 ## Example usage

@@ -10,7 +10,7 @@ from typing import Any
 from benchmarks.memory.data import ConversationSample, load_locomo
 from benchmarks.common.embedding_cache import CachedEmbedder
 from benchmarks.memory.mem0.fact_catalog import FactCatalogStore, MemoryFact
-from benchmarks.memory.mem0.provider import MEMORY_LLM_TEMPERATURE, create_mem0_memory
+from benchmarks.memory.mem0.provider import MEMORY_LLM_TEMPERATURE, close_mem0_stores, create_mem0_memory
 from benchmarks.memory.mem0.memory_builder import embed_mem0_query, load_facts_into_memory
 from benchmarks.common.vector_types import VectorStoreConfig
 from benchmarks.memory.throughput.config import ThroughputConfig
@@ -180,6 +180,7 @@ def _vector_config(config: ThroughputConfig, backend: str) -> VectorStoreConfig:
         beam_width = max(beam_width, config.top_k)
     return VectorStoreConfig(
         backend=backend,
+        qdrant=config.qdrant,
         n_neighbors=config.jasper_n_neighbors,
         alpha=config.jasper_alpha,
         workspace_budget=config.jasper_workspace_budget,
@@ -195,7 +196,4 @@ def _finalize_mem0(memory: Any) -> None:
 
 
 def close_mem0(memory: Any) -> None:
-    vector_store = getattr(memory, "vector_store", None)
-    close = getattr(vector_store, "close", None)
-    if callable(close):
-        close()
+    close_mem0_stores(memory)

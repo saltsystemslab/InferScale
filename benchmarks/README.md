@@ -13,7 +13,7 @@ Benchmark runs target a Linux GPU host; the reference environment is a Runpod co
 - Python >=3.10,<3.14.
 - CMake and the CUDA toolkit, used to build the `jasperpy` submodule.
 - Hugging Face API key (`HF_TOKEN` for gated models such as Llama 3.1) and an OpenAI API key for `text-embedding-3-small` embedding calls.
-- Docker with Docker Compose.
+- A separate Runpod CPU Pod running Qdrant for memory benchmarks and fact extraction.
 
 We configure all default parameters to run on an RTX Pro 6000 GPU with 96 GB of VRAM.
 
@@ -24,6 +24,7 @@ cp .env.example .env
 ```
 
 Put API keys in `.env`: `OPENAI_API_KEY` for embeddings, `JUDGE_LLM_API_KEY` and optional `EXTRACTION_LLM_API_KEY` for the configured servers, and `HF_TOKEN` for gated models.
+Set `QDRANT_URL` and `QDRANT_API_KEY` for the Qdrant Pod as described below.
 
 Load credentials and export runtime paths in each shell:
 
@@ -33,8 +34,7 @@ source scripts/load_env.sh
 
 ## 3. Optimize Jasper
 
-There is a minor optimization we can make to Jasper.
-First initialize and update the Jasper submodule:
+There is a minor optimization we can make to Jasper. First initialize and update the Jasper submodule:
 
 ```bash
 git submodule update --init --recursive jasperpy
@@ -46,21 +46,50 @@ To apply the optimization, edit `jasperpy/include/jasper/index/graph.cuh` and ch
 static constexpr index_t vectors_per_segment = 1u << 12;
 ```
 
-## 4. Start Qdrant
+## 4. Configure Runpod CPU Qdrant
 
-Start Qdrant before setup, fact extraction, or memory benchmark runs.
+Deploy a separate CPU Pod for Qdrant before fact extraction or memory benchmark runs.
+Use these Runpod template settings:
 
-From the repository root:
+| Field | Value |
+| --- | --- |
+| Template type | Pod |
+| Compute type | CPU |
+| Public template | Off |
+| Container image | `qdrant/qdrant:v1.17.0` |
+| Start command | Leave blank |
+| Container disk | 10 GB |
+| Persistent storage | Volume disk, 50 GB as a starting point |
+| Persistent storage mount path | `/workspace` |
+| HTTP port | Label `Qdrant`, port `6333` |
+| TCP ports | Leave blank |
+| UDP support | Off |
 
-```bash
-bash scripts/qdrant.sh start
+Add these environment variables to the Qdrant Pod:
+
+| Name | Value |
+| --- | --- |
+| `QDRANT__STORAGE__STORAGE_PATH` | `/workspace/qdrant/storage` |
+| `QDRANT__STORAGE__SNAPSHOTS_PATH` | `/workspace/qdrant/snapshots` |
+| `QDRANT__SERVICE__API_KEY` | A long, random secret |
+| `QDRANT__SERVICE__ENABLE_TLS` | `false` |
+
+Generate the secret with `openssl rand -hex 32` and use the same value as `QDRANT_API_KEY` in the benchmark host's `.env`.
+
+On the benchmark GPU host, set these entries in `.env`:
+
+```dotenv
+QDRANT_URL=https://YOUR_POD_ID-6333.proxy.runpod.net
+QDRANT_API_KEY=YOUR_SECRET
 ```
 
-Inspect or stop the local server with:
+Replace `YOUR_POD_ID` with the CPU Pod's ID and `YOUR_SECRET` with its configured API key.
+
+Verify the connection before installation or fact extraction:
 
 ```bash
-docker compose logs --tail=100 qdrant
-bash scripts/qdrant.sh stop
+source scripts/load_env.sh
+bash scripts/qdrant.sh check
 ```
 
 ## 5. Install
@@ -69,10 +98,11 @@ bash scripts/qdrant.sh stop
 bash scripts/setup_remote.sh
 ```
 
-Activate the environment before running benchmark commands:
+Load the environment and activate the installed dependencies before benchmark commands:
 
 ```bash
-source .venv/bin/activate
+source scripts/load_env.sh
+source "${VENV_DIR}/bin/activate"
 ```
 
 ## 6. Run Experiments

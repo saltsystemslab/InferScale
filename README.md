@@ -10,7 +10,7 @@ The setup targets a Linux GPU host; the reference environment is a Runpod contai
 - Python >=3.10,<3.14.
 - CMake and the CUDA toolkit, used to build the `jasperpy` submodule.
 - Hugging Face API key (`HF_TOKEN` for gated models such as Llama 3.1) and an OpenAI API key for `text-embedding-3-small` embedding calls.
-- For benchmarks, Docker with Docker Compose.
+- For memory benchmarks and fact extraction, a separate Runpod CPU Pod running Qdrant.
 
 We configure all default parameters to run on an RTX Pro 6000 GPU with 96 GB of VRAM.
 
@@ -23,10 +23,12 @@ cp .env.example .env
 Edit `.env` for your session.
 The common values are:
 
-- `BENCHMARK_RUNTIME_ROOT=/workspace`
-- `CUDA_MODULE=` for Runpod containers without environment modules
 - `OPENAI_API_KEY=...` for embeddings and Mem0 inference
 - `HF_TOKEN=...` if the model is gated
+- `QDRANT_URL=https://YOUR_POD_ID-6333.proxy.runpod.net` for the Qdrant CPU Pod
+- `QDRANT_API_KEY=...` matching the Pod's `QDRANT__SERVICE__API_KEY`
+
+Configure the CPU Pod using the [Runpod Qdrant HTTP setup](benchmarks/README.md#4-configure-runpod-cpu-qdrant).
 
 Load the environment in each shell that will run the project's commands:
 
@@ -36,7 +38,8 @@ source scripts/load_env.sh
 
 ## 3. Optimize Jasper
 
-There is a minor optimization we can make to Jasper. First initialize and update the Jasper submodule:
+There is a minor optimization we can make to Jasper.
+First initialize and update the Jasper submodule:
 
 ```bash
 git submodule update --init --recursive jasperpy
@@ -54,6 +57,12 @@ For the quickstart, set `extract_facts` to `false` in `configs/setup.json`.
 
 In `configs/runtime.json`, set `storage.runtime_root` to a writable directory; the default is `/workspace`, and `null` uses project-local storage.
 
+Before enabling fact extraction or running memory benchmarks, verify the configured Runpod CPU Qdrant connection:
+
+```bash
+bash scripts/qdrant.sh check
+```
+
 ```bash
 bash scripts/setup_remote.sh
 ```
@@ -65,12 +74,6 @@ Load credentials and runtime paths into your current shell, then activate the co
 ```bash
 source scripts/load_env.sh
 source "${VENV_DIR}/bin/activate"
-```
-
-Memory benchmarks require a running Qdrant server.
-
-```bash
-bash scripts/qdrant.sh start
 ```
 
 ## Example usage

@@ -117,6 +117,27 @@ def test_serve_uses_its_fixed_json_workflow(repo: Path) -> None:
     assert 'serve(Path("configs/serve.json"))' in result["code"]
 
 
+@pytest.mark.parametrize("args", [(), ("check",)])
+def test_qdrant_check_uses_configured_runtime_and_interpreter(repo: Path, args: tuple[str, ...]) -> None:
+    runtime = _runtime(repo, "qdrant")
+    shutil.copy2(runtime, repo / "configs/runtime.json")
+
+    process = _run(repo, "qdrant.sh", args)
+
+    assert process.returncode == 0, process.stderr
+    result = json.loads(process.stdout)
+    assert result["runtime"] == str(repo / "configs/runtime.json")
+    assert result["interpreter"] == str(repo / "qdrant venv/bin/python")
+    assert result["args"] == ["-m", "benchmarks.common.qdrant_check"]
+
+
+@pytest.mark.parametrize("args", [("start",), ("stop",), ("check", "extra")])
+def test_qdrant_script_rejects_local_lifecycle_commands(repo: Path, args: tuple[str, ...]) -> None:
+    process = _run(repo, "qdrant.sh", args)
+    assert process.returncode == 2
+    assert "Runpod console" in process.stderr
+
+
 def test_programmatic_serve_preview_reads_json_without_starting_a_server(tmp_path, monkeypatch, capsys):
     from benchmarks.common.config import RuntimeConfig
     from benchmarks.common import serve

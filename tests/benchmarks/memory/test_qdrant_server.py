@@ -125,6 +125,8 @@ class FakeQdrantClient:
 
 @pytest.fixture
 def fake_server(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    monkeypatch.setenv("QDRANT_URL", "https://example-pod-6333.proxy.runpod.net")
+    monkeypatch.delenv("QDRANT_API_KEY", raising=False)
     server = SimpleNamespace(collections={}, clients=[])
 
     def create_client(**kwargs: Any) -> FakeQdrantClient:
@@ -148,13 +150,15 @@ def test_connects_to_configured_server_and_owns_unique_collections(
 ) -> None:
     config = VectorStoreConfig(
         backend="qdrant",
-        qdrant=QdrantConfig(url="http://qdrant:7333", grpc_port=7334, timeout=12),
+        qdrant=QdrantConfig(url="http://qdrant:7333", grpc_port=7334, prefer_grpc=True, timeout=12),
     )
     first = QdrantVectorStore(tmp_path / "sample one", config)
     second = QdrantVectorStore(tmp_path / "sample one", config)
     try:
         assert first._client.options == {
             "url": "http://qdrant:7333", "grpc_port": 7334, "prefer_grpc": True, "timeout": 12,
+            "port": None, "api_key": None,
+            "check_compatibility": False,
         }
         assert first._collection_name.startswith("benchmark_jasper_sample_one_")
         assert first._collection_name != second._collection_name
@@ -170,6 +174,33 @@ def test_connects_to_configured_server_and_owns_unique_collections(
         second.close()
     assert fake_server.collections == {}
     assert all(client.closed for client in fake_server.clients)
+
+
+def test_connects_to_runpod_rest_proxy_with_environment_api_key(
+    tmp_path: Path, fake_server: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("QDRANT_API_KEY", "test-secret")
+    store = QdrantVectorStore(tmp_path, VectorStoreConfig(backend="qdrant"))
+    try:
+        assert fake_server.clients[0].options == {
+            "url": "https://example-pod-6333.proxy.runpod.net",
+            "port": None,
+            "grpc_port": 6334,
+            "prefer_grpc": False,
+            "timeout": 60.0,
+            "api_key": "test-secret",
+        }
+    finally:
+        store.close()
+
+
+def test_missing_endpoint_fails_before_creating_client(
+    tmp_path: Path, fake_server: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("QDRANT_URL")
+    with pytest.raises(ValueError, match="Qdrant URL is not configured"):
+        QdrantVectorStore(tmp_path, VectorStoreConfig(backend="qdrant"))
+    assert fake_server.clients == []
 
 
 def test_empty_store_does_not_query_nonexistent_collection(store: QdrantVectorStore) -> None:
@@ -295,16 +326,27 @@ def test_server_failure_is_not_reported_as_empty_store(
         _ = store.vector_count
 
 
+@pytest.mark.parametrize("prefer_grpc", [True, False])
 def test_connection_failure_closes_client_and_explains_server_requirement(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_server: SimpleNamespace,
+    prefer_grpc: bool,
 ) -> None:
     def fail(self: FakeQdrantClient) -> None:
         raise ConnectionError("refused")
 
     monkeypatch.setattr(FakeQdrantClient, "get_collections", fail)
     with pytest.raises(RuntimeError, match="Cannot connect to the Qdrant server") as error:
-        QdrantVectorStore(tmp_path, VectorStoreConfig(backend="qdrant"))
+        QdrantVectorStore(
+            tmp_path,
+            VectorStoreConfig(
+                backend="qdrant",
+                qdrant=QdrantConfig(url="https://qdrant.example", prefer_grpc=prefer_grpc),
+            ),
+        )
     assert isinstance(error.value.__cause__, ConnectionError)
+    assert "Runpod CPU Pod" in str(error.value)
+    assert "QDRANT_API_KEY" in str(error.value)
+    assert ("public gRPC port 6334" if prefer_grpc else "HTTP port 6333") in str(error.value)
     assert fake_server.clients[0].closed
 
 

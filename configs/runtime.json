@@ -34,9 +34,8 @@
     "quantization": null
   },
   "qdrant": {
-    "url": "http://127.0.0.1:6333",
     "grpc_port": 6334,
-    "prefer_grpc": true,
+    "prefer_grpc": false,
     "timeout": 60.0,
     "exact": true
   },

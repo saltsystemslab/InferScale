@@ -33,7 +33,7 @@ def config(tmp_path: Path) -> MemoryRunConfig:
         ("qdrant", {"exact": False}),
         ("qdrant", {"url": "http://another-server:6333"}),
         ("qdrant", {"grpc_port": 7334}),
-        ("qdrant", {"prefer_grpc": False}),
+        ("qdrant", {"prefer_grpc": True}),
         ("qdrant", {"timeout": 120.0}),
         ("jasper", {}),
     ],

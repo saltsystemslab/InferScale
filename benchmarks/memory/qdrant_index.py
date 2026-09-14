@@ -239,24 +239,32 @@ class QdrantVectorStore:
             self._client.close()
 
     def _create_client(self) -> Any:
+        connection = self.config.qdrant
+        client_kwargs = connection.client_kwargs()
         try:
             from qdrant_client import QdrantClient
         except ImportError as exc:
             raise RuntimeError("Install qdrant-client to use --vector-backend qdrant.") from exc
-        connection = self.config.qdrant
-        client = QdrantClient(
-            url=connection.url,
-            grpc_port=connection.grpc_port,
-            prefer_grpc=connection.prefer_grpc,
-            timeout=connection.timeout,
-        )
+        client = QdrantClient(**client_kwargs)
         try:
             client.get_collections()
         except Exception as exc:
             client.close()
+            if connection.prefer_grpc:
+                guidance = (
+                    f"Check that the Runpod CPU Pod exposes container TCP port 6334 at "
+                    f"the configured public gRPC port {connection.grpc_port}, "
+                    "QDRANT_URL uses its direct host, and QDRANT_API_KEY matches the Pod. "
+                    "The URL scheme must match the server's TLS configuration."
+                )
+            else:
+                guidance = (
+                    "Check that the Runpod CPU Pod is running, HTTP port 6333 is exposed, "
+                    "and QDRANT_URL and QDRANT_API_KEY match the Pod's endpoint and API key."
+                )
             raise RuntimeError(
                 f"Cannot connect to the Qdrant server at {connection.url}. "
-                "Start the Qdrant Docker service and check the configured HTTP and gRPC ports."
+                f"{guidance}"
             ) from exc
         return client
 

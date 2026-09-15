@@ -65,7 +65,7 @@ class MemoryFact:
             "speaker": self.speaker,
             "source_role": self.role,
             "role": self.role,
-            # Aliases consumed by the KV/prefix source-turn join.
+            # Aliases consumed by the KV-injection/prompt-injection source-turn join.
             "session_id": self.source_session_id,
             "turn_index": self.source_turn_index,
             "turn_id": self.source_turn_id,

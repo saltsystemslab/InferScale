@@ -67,6 +67,20 @@ def test_partial_rag_sweep_uses_config_defaults_for_other_axes(tmp_path, runtime
     assert len({run["run_id"] for run in runs}) == 4
 
 
+def test_rag_sweep_uses_prompt_injection_run_marker(tmp_path, runtime):
+    data = {
+        "benchmark": "rag", "model": "llama",
+        "sweeps": {"standard": {"top_k": [1, 3], "answer_backends": ["prompt-injection"]}},
+    }
+    runs = launcher.expand_runs(plan_for(tmp_path, data, sweep="standard"), runtime, "run", "stamp")
+
+    assert {run["run_id"] for run in runs} == {
+        "multihoprag-llama-prompt-injection-k1-s5-stamp",
+        "multihoprag-llama-prompt-injection-k3-s5-stamp",
+    }
+    assert all(run["answer_backend"] == "prompt-injection" for run in runs)
+
+
 def test_empty_rag_sweep_uses_authored_run_defaults(tmp_path, runtime):
     data = {"benchmark": "rag", "top_k": 3, "sweeps": {"single": {}}}
     runs = launcher.expand_runs(plan_for(tmp_path, data, sweep="single"), runtime, "run", "stamp")

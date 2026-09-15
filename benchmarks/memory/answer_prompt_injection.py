@@ -23,7 +23,7 @@ from .prompting import (
 logger = logging.getLogger(__name__)
 
 
-class PrefixAnswerClient:
+class PromptInjectionAnswerClient:
     """In-process vLLM answer client for same-token KV-equivalence prompt injection."""
 
     def __init__(self, config: MemoryRunConfig) -> None:
@@ -62,7 +62,7 @@ class PrefixAnswerClient:
         query_started_at: float | None = None,
     ) -> ChatResult:
         if not self._engine.started or self._tokenizer is None:
-            raise RuntimeError("PrefixAnswerClient.prepare_sample() must be called before answering.")
+            raise RuntimeError("PromptInjectionAnswerClient.prepare_sample() must be called before answering.")
         if self._active_sample_id != id(sample):
             raise RuntimeError(f"prompt-injection sample_id={sample.sample_id} is not the active prepared sample.")
 
@@ -127,7 +127,7 @@ class PrefixAnswerClient:
         if query_started_at is not None:
             metrics["query_to_answer_ms"] = max(0.0, (finished - query_started_at) * 1000)
         ttft_ms = output.ttft_ms
-        metrics["prefix_engine_time_to_first_token_ms"] = ttft_ms
+        metrics["prompt_injection_engine_time_to_first_token_ms"] = ttft_ms
         metrics["answer_time_to_first_token_ms"] = max(0.0, (generate_started - request_started) * 1000) + ttft_ms
         if query_started_at is not None:
             metrics["query_to_first_token_ms"] = max(0.0, (generate_started - query_started_at) * 1000) + ttft_ms

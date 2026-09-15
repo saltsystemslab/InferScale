@@ -70,6 +70,9 @@ MEMORY_AUDIT_NUMERIC_METRIC_KEYS = (
 QDRANT_DIAGNOSTIC_METRIC_KEYS = (
     "qdrant_deepcopy_time_ms",
     "qdrant_deepcopy_calls",
+    "qdrant_entity_deepcopy_time_ms",
+    "qdrant_entity_deepcopy_wall_time_ms",
+    "qdrant_entity_deepcopy_calls",
 )
 
 LEGACY_KV_QUERY_METRIC_KEYS = (
@@ -96,7 +99,7 @@ LEGACY_KV_QUERY_METRIC_KEYS = (
     "kv_h2d_overlap_ratio",
     "kv_staging_stall_ms",
     "jasper_effective_beam_width",
-    "prefix_engine_time_to_first_token_ms",
+    "prompt_injection_engine_time_to_first_token_ms",
 )
 
 

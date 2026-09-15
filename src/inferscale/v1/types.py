@@ -125,6 +125,9 @@ class RetrievalMetrics:
     jasper_effective_beam_width: int | None = None
     qdrant_deepcopy_time_ms: float | None = None
     qdrant_deepcopy_calls: int | None = None
+    qdrant_entity_deepcopy_time_ms: float | None = None
+    qdrant_entity_deepcopy_wall_time_ms: float | None = None
+    qdrant_entity_deepcopy_calls: int | None = None
 
 
 @dataclass(slots=True)

@@ -126,6 +126,7 @@ def test_pipeline_smoke_end_to_end(tmp_path) -> None:
         setup_metrics={"chunk_count": len(chunks)},
     )
     metrics = summary["metrics"]
+    assert summary["mode"] == "rag-prompt-injection"
     assert summary["question_count"] == 4
     assert summary["judged_count"] == 0
     assert metrics["accuracy"] is None
@@ -155,6 +156,23 @@ def test_pipeline_smoke_end_to_end(tmp_path) -> None:
     write_csv(tmp_path / "query_metrics.csv", rows, QUERY_METRICS_COLUMNS)
     header = (tmp_path / "query_metrics.csv").read_text(encoding="utf-8").splitlines()[0]
     assert header == ",".join(QUERY_METRICS_COLUMNS)
+
+
+def test_summary_aggregates_prompt_injection_timing() -> None:
+    timing_key = "prompt_injection_engine_time_to_first_token_ms"
+    records = [
+        {"metrics": {timing_key: 10.0}},
+        {"metrics": {timing_key: 20.0}},
+        {"metrics": {timing_key: 30.0}},
+        {"metrics": {timing_key: None}},
+    ]
+
+    summary = summarize_rag_records(
+        records, run_id="existing", mode="rag-prompt-injection", config={}, system_metadata={}
+    )
+
+    assert summary["metrics"][timing_key]["count"] == 3
+    assert summary["metrics"][timing_key]["avg"] == 20.0
 
 
 def test_kv_client_passes_cuda_device_to_store_and_closes_it(tmp_path, monkeypatch) -> None:

@@ -6,7 +6,7 @@ import os
 import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from time import perf_counter_ns
 from typing import Any, Callable, Iterator
 
@@ -15,10 +15,45 @@ from typing import Any, Callable, Iterator
 class DeepcopyTiming:
     elapsed_ns: int = 0
     calls: int = 0
+    intervals_ns: list[tuple[int, int]] | None = None
 
     @property
     def time_ms(self) -> float:
         return self.elapsed_ns / 1_000_000
+
+
+@dataclass(slots=True)
+class DeepcopyTotals:
+    """Sum copy durations and merge their wall intervals across joined workers."""
+
+    elapsed_ns: int = 0
+    calls: int = 0
+    _intervals_ns: list[tuple[int, int]] = field(default_factory=list, repr=False)
+    _lock: Any = field(default_factory=threading.Lock, repr=False)
+
+    def add(self, timing: DeepcopyTiming) -> None:
+        if timing.intervals_ns is None:
+            raise ValueError("Aggregated deepcopy timing requires recorded intervals.")
+        # Each worker owns its timing until it publishes at query completion.
+        with self._lock:
+            self.elapsed_ns += timing.elapsed_ns
+            self.calls += timing.calls
+            self._intervals_ns.extend(timing.intervals_ns)
+
+    @property
+    def time_ms(self) -> float:
+        return self.elapsed_ns / 1_000_000
+
+    @property
+    def wall_time_ms(self) -> float:
+        with self._lock:
+            intervals = sorted(self._intervals_ns)
+        elapsed_ns = 0
+        end = 0
+        for start, stop in intervals:
+            elapsed_ns += max(0, stop - max(start, end))
+            end = max(end, stop)
+        return elapsed_ns / 1_000_000
 
 
 @dataclass(slots=True)
@@ -52,14 +87,17 @@ def _timed_copy(original: Callable[..., Any]) -> Callable[..., Any]:
             # copy.deepcopy remain untouched and are counted once inclusively.
             return original(*args, **kwargs)
         finally:
-            timing.elapsed_ns += perf_counter_ns() - started
+            finished = perf_counter_ns()
+            timing.elapsed_ns += finished - started
             timing.calls += 1
+            if timing.intervals_ns is not None:
+                timing.intervals_ns.append((started, finished))
 
     return wrapper
 
 
 @contextmanager
-def measure_qdrant_deepcopy() -> Iterator[DeepcopyTiming]:
+def measure_qdrant_deepcopy(*, record_intervals: bool = False) -> Iterator[DeepcopyTiming]:
     """Time the original calls, preserving results, errors, and concurrent queries.
 
     The hook is scoped to active diagnostics and restored on exit. A context-local
@@ -84,7 +122,7 @@ def measure_qdrant_deepcopy() -> Iterator[DeepcopyTiming]:
         patch = _patch
         patch.users += 1
 
-    timing = DeepcopyTiming()
+    timing = DeepcopyTiming(intervals_ns=[] if record_intervals else None)
     token = _active.set(timing)
     try:
         yield timing

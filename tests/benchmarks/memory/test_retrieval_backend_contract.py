@@ -608,7 +608,7 @@ def test_qdrant_has_no_effective_jasper_beam() -> None:
     assert _store_config(config).beam_width == 64
 
 
-def test_nonzero_turn_context_is_accepted_for_prefix_backend() -> None:
+def test_nonzero_turn_context_is_accepted_for_prompt_injection_backend() -> None:
     config = make_memory_config(
         answer_backend="prompt-injection", vector_backend="qdrant", context_window=1
     )

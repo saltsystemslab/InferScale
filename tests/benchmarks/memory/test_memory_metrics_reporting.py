@@ -79,16 +79,38 @@ def test_summary_aggregates_kv_verify_time() -> None:
     assert summary["metrics"]["kv_verify_time_ms"]["avg"] == 20.0
 
 
+def test_summary_aggregates_prompt_injection_timing() -> None:
+    key = "prompt_injection_engine_time_to_first_token_ms"
+    rows = [
+        _record({key: 10.0}),
+        _record({key: 20.0}),
+        _record({key: 30.0}),
+    ]
+
+    metrics = summarize_records(
+        rows, run_id="run", mode="mem0-prompt-injection", config={}, system_metadata={},
+    )["metrics"]
+
+    assert metrics[key]["count"] == 3
+    assert metrics[key]["avg"] == 20.0
+
+
 def test_summary_aggregates_only_profiled_deepcopies_without_adjusting_latency() -> None:
     rows = [
         _record({"vector_db_query_time_ms": 10.0, "query_to_answer_ms": 100.0}),
         _record({
             "vector_db_query_time_ms": 20.0, "query_to_answer_ms": 200.0,
             "qdrant_deepcopy_time_ms": 0.0, "qdrant_deepcopy_calls": 0,
+            "qdrant_entity_deepcopy_time_ms": 0.0,
+            "qdrant_entity_deepcopy_wall_time_ms": 0.0,
+            "qdrant_entity_deepcopy_calls": 0,
         }),
         _record({
             "vector_db_query_time_ms": 30.0, "query_to_answer_ms": 300.0,
             "qdrant_deepcopy_time_ms": 4.0, "qdrant_deepcopy_calls": 6,
+            "qdrant_entity_deepcopy_time_ms": 8.0,
+            "qdrant_entity_deepcopy_wall_time_ms": 5.0,
+            "qdrant_entity_deepcopy_calls": 12,
         }),
     ]
     metrics = summarize_records(
@@ -99,39 +121,58 @@ def test_summary_aggregates_only_profiled_deepcopies_without_adjusting_latency()
     assert metrics["qdrant_deepcopy_time_ms"]["avg"] == 2.0
     assert metrics["qdrant_deepcopy_calls"]["count"] == 2
     assert metrics["qdrant_deepcopy_calls"]["avg"] == 3.0
+    assert metrics["qdrant_entity_deepcopy_time_ms"]["count"] == 2
+    assert metrics["qdrant_entity_deepcopy_time_ms"]["avg"] == 4.0
+    assert metrics["qdrant_entity_deepcopy_wall_time_ms"]["count"] == 2
+    assert metrics["qdrant_entity_deepcopy_wall_time_ms"]["avg"] == 2.5
+    assert metrics["qdrant_entity_deepcopy_calls"]["count"] == 2
+    assert metrics["qdrant_entity_deepcopy_calls"]["avg"] == 6.0
     assert metrics["vector_db_query_time_total_ms"] == 60.0
     assert metrics["vector_db_query_time_ms"]["avg"] == 20.0
     assert metrics["query_to_answer_ms"]["avg"] == 200.0
 
 
 def test_unprofiled_summary_omits_deepcopy_diagnostics() -> None:
+    diagnostic_keys = (
+        "qdrant_deepcopy_time_ms", "qdrant_deepcopy_calls",
+        "qdrant_entity_deepcopy_time_ms", "qdrant_entity_deepcopy_wall_time_ms",
+        "qdrant_entity_deepcopy_calls",
+    )
     metrics = summarize_records(
-        [_record({"qdrant_deepcopy_time_ms": None, "qdrant_deepcopy_calls": None})],
+        [_record(dict.fromkeys(diagnostic_keys))],
         run_id="run", mode="full", config={}, system_metadata={},
     )["metrics"]
-    assert "qdrant_deepcopy_time_ms" not in metrics
-    assert "qdrant_deepcopy_calls" not in metrics
+    assert not set(diagnostic_keys) & metrics.keys()
 
 
-@pytest.mark.parametrize("copy_ms,copy_calls", [(None, None), (0.0, 0), (2.5, 3)])
+@pytest.mark.parametrize(
+    "copy_ms,copy_calls,entity_ms,entity_wall_ms,entity_calls",
+    [(None, None, None, None, None), (0.0, 0, 0.0, 0.0, 0), (2.5, 3, 8.0, 5.5, 7)],
+)
 def test_query_metrics_csv_preserves_optional_deepcopy_diagnostics(
     tmp_path: Path, copy_ms: float | None, copy_calls: int | None,
+    entity_ms: float | None, entity_wall_ms: float | None, entity_calls: int | None,
 ) -> None:
-    row = query_metric_rows([_record({
+    diagnostics = {
         "qdrant_deepcopy_time_ms": copy_ms,
         "qdrant_deepcopy_calls": copy_calls,
+        "qdrant_entity_deepcopy_time_ms": entity_ms,
+        "qdrant_entity_deepcopy_wall_time_ms": entity_wall_ms,
+        "qdrant_entity_deepcopy_calls": entity_calls,
+    }
+    row = query_metric_rows([_record({
+        **diagnostics,
         "query_to_answer_ms": 100.0,
     })])[0]
-    assert row["qdrant_deepcopy_time_ms"] == copy_ms
-    assert row["qdrant_deepcopy_calls"] == copy_calls
+    assert {key: row[key] for key in diagnostics} == diagnostics
     assert row["query_to_answer_ms"] == 100.0
 
     path = tmp_path / "query_metrics.csv"
     write_csv(path, [row], QUERY_METRICS_COLUMNS)
     with path.open(newline="", encoding="utf-8") as fh:
         written = next(csv.DictReader(fh))
-    assert written["qdrant_deepcopy_time_ms"] == ("" if copy_ms is None else str(copy_ms))
-    assert written["qdrant_deepcopy_calls"] == ("" if copy_calls is None else str(copy_calls))
+    for key, value in diagnostics.items():
+        assert written[key] == ("" if value is None else str(value))
 
 
 def test_query_metrics_expose_backend_neutral_memory_audit_fields(tmp_path: Path) -> None:

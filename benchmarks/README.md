@@ -93,7 +93,7 @@ bash scripts/judge.sh
 ## 7. Compare Results
 
 Each run writes to `${BENCHMARK_RESULTS_ROOT}/<run-id>/`, where the run id encodes the swept axes:
-`<model>-kv-mem0-jasper10-k<topk>-s<window>-<stamp>` for KV runs and `<model>-prefix-mem0-<vector>10-k<topk>-s0-<stamp>` for the prompt baselines.
+`<model>-kv-mem0-jasper10-k<topk>-s<window>-<stamp>` for KV runs and `<model>-prompt-injection-mem0-<vector>10-k<topk>-s0-<stamp>` for the prompt-injection baselines.
 
 ```bash
 ls "${BENCHMARK_RESULTS_ROOT}"

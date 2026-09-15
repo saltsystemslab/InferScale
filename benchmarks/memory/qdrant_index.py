@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import threading
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 
 import numpy as np
 
 from benchmarks.common.vector_types import SearchHit, SearchMetrics, VectorStoreConfig
 from benchmarks.memory.qdrant_profiling import (
+    DeepcopyTotals,
     deepcopy_profiling_enabled,
     measure_qdrant_deepcopy,
 )
@@ -25,6 +28,8 @@ class QdrantVectorStore:
         self.root = Path(root)
         self.config = config
         self._profile_deepcopy = deepcopy_profiling_enabled()
+        self._deepcopy_collector: DeepcopyTotals | None = None
+        self._deepcopy_scope_lock = threading.Lock()
         self.root.mkdir(parents=True, exist_ok=True)
         self._collection_name = "memories"
         self._client = self._create_client()
@@ -105,6 +110,24 @@ class QdrantVectorStore:
     def finalize(self) -> None:
         self._load_rows()
 
+    @contextmanager
+    def collect_deepcopy_timings(self) -> Iterator[DeepcopyTotals | None]:
+        """Collect this store's worker queries within one retrieval request."""
+        if not self._profile_deepcopy:
+            yield None
+            return
+        collector = DeepcopyTotals()
+        with self._deepcopy_scope_lock:
+            if self._deepcopy_collector is not None:
+                raise RuntimeError("Concurrent deepcopy collection scopes cannot share a Qdrant store.")
+            self._deepcopy_collector = collector
+        try:
+            # Mem0 joins every entity-search worker before returning.
+            yield collector
+        finally:
+            with self._deepcopy_scope_lock:
+                self._deepcopy_collector = None
+
     def search(
         self,
         query_vector: np.ndarray | list[float],
@@ -139,8 +162,14 @@ class QdrantVectorStore:
             query_kwargs["query_filter"] = query_filter
         copy_timing = None
         if self._profile_deepcopy:
-            with measure_qdrant_deepcopy() as copy_timing:
-                result = self._client.query_points(**query_kwargs)
+            collector = self._deepcopy_collector
+            with measure_qdrant_deepcopy(record_intervals=collector is not None) as copy_timing:
+                try:
+                    result = self._client.query_points(**query_kwargs)
+                finally:
+                    # Mem0 can catch failed entity searches; retain their copies too.
+                    if collector is not None:
+                        collector.add(copy_timing)
         else:
             result = self._client.query_points(**query_kwargs)
         elapsed_ms = (time.perf_counter() - started) * 1000

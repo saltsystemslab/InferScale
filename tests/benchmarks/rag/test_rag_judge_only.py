@@ -46,7 +46,7 @@ def _record(query_id: str, *, judged: bool, legacy: bool = False) -> dict[str, A
         record_gold["gold_answers"] = ["gold", "golden answer"]
     return {
         "run_id": "r1",
-        "mode": "rag-prefix",
+        "mode": "rag-prompt-injection",
         "dataset": "multihoprag",
         "query_id": query_id,
         "question_type": "inference_query",
@@ -99,10 +99,11 @@ def test_judge_only_fills_only_missing_records(tmp_path, monkeypatch) -> None:
 
     assert stub.calls == 2
     assert summary["judged_count"] == 3
-    assert summary["mode"] == "rag-prefix"
+    assert summary["mode"] == "rag-prompt-injection"
     assert summary["metrics"]["accuracy"] == 1.0
     records = read_jsonl(config.run_dir / "predictions.jsonl")
     assert all(is_judged(record) for record in records)
+    assert all(record["mode"] == "rag-prompt-injection" for record in records)
     assert (config.run_dir / "summary.json").exists()
     assert (config.run_dir / "query_metrics.csv").exists()
 

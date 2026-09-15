@@ -188,7 +188,7 @@ def expand_runs(plan: dict[str, Any], runtime: RuntimeConfig, stage: str, stamp:
                         item["answer_backend"] = backend
                         if stage == "run" and sweep_name:
                             item["skip_judge"] = True
-                        marker = "kv" if backend == "kv-injection" else "prefix"
+                        marker = "kv" if backend == "kv-injection" else "prompt-injection"
                         if item.get("run_id") is None:
                             item["run_id"] = f"{config.dataset_name}-{runtime.model_label(model)}-{marker}-k{top_k}-s{config.context_window}-{stamp}"
                         RagBenchConfig.from_dict(item, runtime=runtime)

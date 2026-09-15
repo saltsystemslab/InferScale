@@ -88,6 +88,69 @@ def test_unprofiled_thread_is_not_counted() -> None:
     assert timing.calls == 1
 
 
+def test_aggregate_merges_overlapping_intervals_without_counting_gaps() -> None:
+    totals = qdrant_profiling.DeepcopyTotals()
+    first = qdrant_profiling.DeepcopyTiming(150, 2, [(100, 200), (400, 450)])
+    second = qdrant_profiling.DeepcopyTiming(130, 2, [(150, 250), (160, 190)])
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(totals.add, [second, first]))
+
+    assert totals.calls == 4
+    assert totals.time_ms == 280 / 1_000_000
+    assert totals.wall_time_ms == 200 / 1_000_000
+    assert qdrant_profiling.DeepcopyTotals().wall_time_ms == 0
+
+
+def test_copy_intervals_include_failed_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail(*args: object, **kwargs: object) -> None:
+        raise ValueError("copy failed")
+
+    monkeypatch.setattr(local_collection, "deepcopy", fail)
+    ticks = iter([10, 30])
+    monkeypatch.setattr(qdrant_profiling, "perf_counter_ns", lambda: next(ticks))
+    with pytest.raises(ValueError, match="copy failed"):
+        with qdrant_profiling.measure_qdrant_deepcopy(record_intervals=True) as timing:
+            local_collection.deepcopy({"data": "fact"})
+
+    assert timing.intervals_ns == [(10, 30)]
+    assert timing.elapsed_ns == 20
+    assert local_collection.deepcopy is fail
+
+
+def test_store_collection_restores_after_errors_and_rejects_overlap(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("QDRANT_PROFILE_DEEPCOPY", "1")
+    store = QdrantVectorStore(tmp_path, VectorStoreConfig(backend="qdrant"))
+    try:
+        store.add_many([[1., 0.]], [{"data": "entity"}], ["entity"])
+
+        def failed_query(**kwargs: object) -> None:
+            local_collection.deepcopy({"data": "entity"})
+            raise ValueError("entity search failed")
+
+        monkeypatch.setattr(store._client, "query_points", failed_query)
+        with store.collect_deepcopy_timings() as totals:
+            with pytest.raises(RuntimeError, match="cannot share"):
+                with store.collect_deepcopy_timings():
+                    pytest.fail("Overlapping query scopes must not replace the collector")
+            # Mem0 catches failed entity futures and continues the request.
+            with pytest.raises(ValueError, match="entity search failed"):
+                store.search([1., 0.], 1)
+        assert totals.calls == 1
+        assert totals.time_ms > 0
+        assert totals.wall_time_ms == totals.time_ms
+        assert store._deepcopy_collector is None
+        with store.collect_deepcopy_timings() as next_totals:
+            assert next_totals.calls == 0
+        with pytest.raises(ValueError, match="outer failure"):
+            with store.collect_deepcopy_timings():
+                raise ValueError("outer failure")
+        assert store._deepcopy_collector is None
+    finally:
+        store.close()
+
+
 def test_profiled_query_preserves_search_results_and_copy_isolation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:

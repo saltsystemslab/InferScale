@@ -45,6 +45,9 @@ def test_prediction_uses_fact_catalog_then_live_retriever_and_closes(
                 jasper_effective_beam_width=None if profile_deepcopy else 64,
                 qdrant_deepcopy_time_ms=0.75 if profile_deepcopy else None,
                 qdrant_deepcopy_calls=1 if profile_deepcopy else None,
+                qdrant_entity_deepcopy_time_ms=1.5 if profile_deepcopy else None,
+                qdrant_entity_deepcopy_wall_time_ms=0.9 if profile_deepcopy else None,
+                qdrant_entity_deepcopy_calls=3 if profile_deepcopy else None,
             )
 
         def close(self) -> None:
@@ -149,6 +152,9 @@ def test_prediction_uses_fact_catalog_then_live_retriever_and_closes(
     assert metrics["time_to_first_token_ms"] == 6.0
     assert metrics["qdrant_deepcopy_time_ms"] == (0.75 if profile_deepcopy else None)
     assert metrics["qdrant_deepcopy_calls"] == (1 if profile_deepcopy else None)
+    assert metrics["qdrant_entity_deepcopy_time_ms"] == (1.5 if profile_deepcopy else None)
+    assert metrics["qdrant_entity_deepcopy_wall_time_ms"] == (0.9 if profile_deepcopy else None)
+    assert metrics["qdrant_entity_deepcopy_calls"] == (3 if profile_deepcopy else None)
 
 
 def _sample() -> ConversationSample:

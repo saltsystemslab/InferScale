@@ -35,6 +35,10 @@ def test_authored_sweeps_expand_to_complete_unique_grids(runtime, name, count):
     if name == "memory":
         assert {run["top_k"] for run in runs} == {5, 10, 20, 50}
         assert {run["context_window"] for run in runs} == {0, 5, 20, 50}
+        assert all(
+            "-prompt-injection-mem0-" in run["run_id"]
+            for run in runs if run["answer_backend"] == "prompt-injection"
+        )
         assert all(run["skip_judge"] for run in runs)
 
 

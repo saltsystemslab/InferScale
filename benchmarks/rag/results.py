@@ -36,7 +36,7 @@ TIMING_METRIC_KEYS = (
     "kv_loaded_memory_tokens",
     "kv_recomputed_memory_tail_tokens",
     "kv_engine_time_to_first_token_ms",
-    "prefix_engine_time_to_first_token_ms",
+    "prompt_injection_engine_time_to_first_token_ms",
     "answer_generate_time_ms",
     "answer_total_time_ms",
     "answer_time_to_first_token_ms",

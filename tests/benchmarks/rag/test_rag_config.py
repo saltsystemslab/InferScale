@@ -74,7 +74,7 @@ def test_nested_json_populates_downstream_settings(custom_runtime) -> None:
 
     assert data == original
     assert config.model == "custom/qwen"
-    assert config.result_mode() == "rag-prefix"
+    assert config.result_mode() == "rag-prompt-injection"
     assert config.data_dir == custom_runtime.root / "data/qasper"
     assert config.kv_max_model_len == config.kv_max_position == 65536
     assert config.kv_gpu_memory_utilization == 0.5
@@ -157,7 +157,7 @@ def test_memory_budget_validation_rejects_oversized_grids(custom_runtime) -> Non
     assert config.top_k == 50
 
 
-def test_prefix_requires_prefix_caching(custom_runtime) -> None:
+def test_prompt_injection_requires_prefix_caching(custom_runtime) -> None:
     with pytest.raises(ConfigError, match="requires.*enable_prefix_caching"):
         RagBenchConfig.from_dict(
             {"answer_backend": "prompt-injection", "inferscale": {"engine": {"enable_prefix_caching": False}}},

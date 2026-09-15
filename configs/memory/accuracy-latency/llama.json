@@ -68,7 +68,7 @@
       "top_k": [5, 10, 20, 50],
       "variants": [
         {"name": "kv", "answer_backend": "kv-injection", "vector_backend": "jasper", "kv_store_backend": "gpu", "context_window": [0, 5, 20, 50]},
-        {"name": "prefix", "answer_backend": "prompt-injection", "vector_backend": "qdrant", "kv_store_backend": "gpu", "context_window": [0]}
+        {"name": "prompt-injection", "answer_backend": "prompt-injection", "vector_backend": "qdrant", "kv_store_backend": "gpu", "context_window": [0]}
       ]
     },
     "cpu-store": {

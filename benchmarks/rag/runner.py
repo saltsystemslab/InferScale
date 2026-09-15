@@ -220,9 +220,9 @@ def run_answer(config: RagBenchConfig) -> dict[str, Any]:
                 prompt_profile=spec.prompt_profile,
             )
         else:
-            from benchmarks.rag.answer_prefix import RagPrefixAnswerClient
+            from benchmarks.rag.answer_prompt_injection import RagPromptInjectionAnswerClient
 
-            client = RagPrefixAnswerClient(
+            client = RagPromptInjectionAnswerClient(
                 config,
                 chunks_by_id=chunks_by_id,
                 prompt_profile=spec.prompt_profile,
@@ -301,7 +301,7 @@ def judge_existing_run(config: RagBenchConfig) -> dict[str, Any]:
             config.run_id,
             saved_dataset,
         )
-    mode = str(saved_config.get("mode") or config.result_mode())
+    mode = config.result_mode()
     system_metadata = read_json_or_default(config.run_dir / "system.json", {})
     setup_metrics = read_json_or_default(config.run_dir / "setup.json", {})
 

@@ -24,8 +24,8 @@ from .prompting import (
 )
 
 
-class RagPrefixAnswerClient:
-    """Text-prompt baseline: identical chunk token ids stuffed as a plain prefix."""
+class RagPromptInjectionAnswerClient:
+    """Prompt-injection baseline using the same chunk token ids in the prompt."""
 
     def __init__(
         self,
@@ -67,7 +67,7 @@ class RagPrefixAnswerClient:
         query_started_at: float | None = None,
     ) -> ChatResult:
         if not self._engine.started or self._tokenizer is None:
-            raise RuntimeError("RagPrefixAnswerClient.start_llm() must be called before answering.")
+            raise RuntimeError("RagPromptInjectionAnswerClient.start_llm() must be called before answering.")
         request_started = time.perf_counter()
         ordered_chunk_ids = reverse_ranked_chunk_ids(hits)
         memory_token_ids = build_rag_memory_token_ids(
@@ -119,7 +119,7 @@ class RagPrefixAnswerClient:
         if query_started_at is not None:
             metrics["query_to_answer_ms"] = max(0.0, (finished - query_started_at) * 1000)
         ttft_ms = output.ttft_ms
-        metrics["prefix_engine_time_to_first_token_ms"] = ttft_ms
+        metrics["prompt_injection_engine_time_to_first_token_ms"] = ttft_ms
         metrics["answer_time_to_first_token_ms"] = (
             max(0.0, (generate_started - request_started) * 1000) + ttft_ms
         )

@@ -367,7 +367,7 @@ def test_composer_reports_gpu_map_separately_from_host_metadata(
     assert "llama_kv_chunk_map_cpu_bytes" not in stats
 
 
-def test_w0_prefix_and_kv_use_identical_header_fact_footer_question_tokens(
+def test_w0_prompt_injection_and_kv_use_identical_header_fact_footer_question_tokens(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sample = _sample()
@@ -410,7 +410,7 @@ def test_w0_prefix_and_kv_use_identical_header_fact_footer_question_tokens(
         composed.token_ids,
         query_tokens,
     )
-    prefix_prompt = build_prompt_tokens(
+    prompt_injection_prompt = build_prompt_tokens(
         prompted.token_ids,
         query_tokens,
     )
@@ -422,7 +422,7 @@ def test_w0_prefix_and_kv_use_identical_header_fact_footer_question_tokens(
     assert composed.fact_plan.injected_fact_ids == ("earlier", "later")
     assert MEMORY_SYSTEM_PROMPT in header_text
     assert composed.token_ids == prompted.token_ids
-    assert kv_prompt.prompt_token_ids == prefix_prompt.prompt_token_ids
+    assert kv_prompt.prompt_token_ids == prompt_injection_prompt.prompt_token_ids
     assert all(plan.context_token_ids == [] for plan in encoder.fact_plans)
 
 
@@ -544,9 +544,9 @@ def test_kv_block_size_is_configured_for_both_vllm_backends() -> None:
 
     assert config.kv_block_size == 32
     assert vllm_engine_kwargs(model=config.model, dtype=config.kv_dtype, engine=config.engine_config())["block_size"] == 32
-    prefix_config = make_memory_config(answer_backend="prompt-injection")
+    prompt_injection_config = make_memory_config(answer_backend="prompt-injection")
     assert vllm_engine_kwargs(
-        model=prefix_config.model, dtype=prefix_config.kv_dtype, engine=prefix_config.engine_config()
+        model=prompt_injection_config.model, dtype=prompt_injection_config.kv_dtype, engine=prompt_injection_config.engine_config()
     )["block_size"] == 16
 
 
@@ -563,7 +563,7 @@ def test_live_vllm_memory_tokens_must_match_precomputed_hf_tokens() -> None:
         require_identical_token_ids([1, 2, 3], [1, 9, 3])
 
 
-def test_prefix_renders_deduplicated_context_turns_before_their_facts() -> None:
+def test_prompt_injection_renders_deduplicated_context_turns_before_their_facts() -> None:
     sample = _sample()
     tokenizer = _DeterministicTokenizer()
     scaffold = extract_memory_scaffold_token_ids(tokenizer)
@@ -619,7 +619,7 @@ def test_prefix_renders_deduplicated_context_turns_before_their_facts() -> None:
     assert prompted.fact_plan.memory_tokens == len(expected)
 
 
-def test_prefix_without_context_rendering_matches_kv_fact_only_tokens(
+def test_prompt_injection_without_context_rendering_matches_kv_fact_only_tokens(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     catalog = [
@@ -654,7 +654,7 @@ def test_prefix_without_context_rendering_matches_kv_fact_only_tokens(
     )
 
     # The KV verification path (render_context_turns=False) stays token-identical
-    # to the composed KV memory at any window; the prefix answer path renders
+    # to the composed KV memory at any window; the prompt-injection answer path renders
     # the context turns and is deliberately longer.
     assert composed.token_ids == fact_only.token_ids
     assert len(with_context.token_ids) > len(fact_only.token_ids)

@@ -28,9 +28,9 @@ def build_clients(config: MemoryRunConfig) -> RuntimeClients:
 
         answer_client = KVAnswerClient(config)
     else:
-        from benchmarks.memory.answer_prefix import PrefixAnswerClient
+        from benchmarks.memory.answer_prompt_injection import PromptInjectionAnswerClient
 
-        answer_client = PrefixAnswerClient(config)
+        answer_client = PromptInjectionAnswerClient(config)
     return RuntimeClients(answer_client=answer_client, judge_client=judge_client_for(config))
 
 

@@ -5,7 +5,7 @@ from typing import Any
 
 from benchmarks.common.files import replace_jsonl, write_json
 from benchmarks.memory.config import MemoryRunConfig
-from benchmarks.memory.modes import existing_run_mode
+from benchmarks.memory.modes import result_mode
 from benchmarks.memory.reporting import write_query_reports
 from benchmarks.memory.results import summarize_records
 
@@ -24,7 +24,7 @@ def write_deferred_judging_outputs(
     summary = summarize_records(
         records,
         run_id=config.run_id,
-        mode=existing_run_mode(saved_config, records, config),
+        mode=result_mode(config),
         config=saved_config,
         system_metadata=system_metadata,
         sample_setup_metrics=sample_setup_metrics,

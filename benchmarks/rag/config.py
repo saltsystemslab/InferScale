@@ -107,7 +107,7 @@ class RagBenchConfig:
         self.model = (runtime or load_runtime_config()).resolve_model(self.model)
 
     def result_mode(self) -> str:
-        return "rag-kv" if self.answer_backend == "kv-injection" else "rag-prefix"
+        return "rag-kv" if self.answer_backend == "kv-injection" else "rag-prompt-injection"
 
     @property
     def jasper_effective_beam_width(self) -> int:

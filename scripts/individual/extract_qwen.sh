@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-#
-# Extract the qwen fact catalogs on this pod.
-
 set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-export EXTRACTION_MODELS="qwen"
-
-exec bash "${SCRIPT_DIR}/../extract_facts.sh"
+if (($#)); then
+  echo "This script takes no arguments; edit configs/launch/extract-qwen.json." >&2
+  exit 2
+fi
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/launch.sh
+source "${SCRIPT_DIR}/../launch.sh"
+run_launch "${PROJECT_ROOT}/configs/launch/extract-qwen.json"

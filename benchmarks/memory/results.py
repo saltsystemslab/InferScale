@@ -67,6 +67,11 @@ MEMORY_AUDIT_NUMERIC_METRIC_KEYS = (
     "memory_token_budget",
 )
 
+QDRANT_DIAGNOSTIC_METRIC_KEYS = (
+    "qdrant_deepcopy_time_ms",
+    "qdrant_deepcopy_calls",
+)
+
 LEGACY_KV_QUERY_METRIC_KEYS = (
     "kv_memory_tokens",
     "kv_compose_time_ms",
@@ -126,7 +131,11 @@ def summarize_records(
         "vector_db_query_time_total_ms": vector_query_total_ms,
         "vector_db_queries_per_sec": queries_per_second(vector_query_count, vector_query_total_ms),
     }
-    for key in (*MEMORY_AUDIT_NUMERIC_METRIC_KEYS, *LEGACY_KV_QUERY_METRIC_KEYS):
+    for key in (
+        *MEMORY_AUDIT_NUMERIC_METRIC_KEYS,
+        *LEGACY_KV_QUERY_METRIC_KEYS,
+        *QDRANT_DIAGNOSTIC_METRIC_KEYS,
+    ):
         summary = numeric_summary(_metric_values(rows, key))
         if summary["count"]:
             metrics[key] = summary

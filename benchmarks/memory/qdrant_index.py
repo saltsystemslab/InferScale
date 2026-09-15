@@ -8,6 +8,10 @@ from typing import Any, Iterable
 import numpy as np
 
 from benchmarks.common.vector_types import SearchHit, SearchMetrics, VectorStoreConfig
+from benchmarks.memory.qdrant_profiling import (
+    deepcopy_profiling_enabled,
+    measure_qdrant_deepcopy,
+)
 from inferscale.v1.index.filters import payload_matches
 
 
@@ -20,6 +24,7 @@ class QdrantVectorStore:
     def __init__(self, root: str | Path, config: VectorStoreConfig) -> None:
         self.root = Path(root)
         self.config = config
+        self._profile_deepcopy = deepcopy_profiling_enabled()
         self.root.mkdir(parents=True, exist_ok=True)
         self._collection_name = "memories"
         self._client = self._create_client()
@@ -108,7 +113,12 @@ class QdrantVectorStore:
     ) -> tuple[list[SearchHit], SearchMetrics]:
         vector_count = self.vector_count
         if vector_count == 0:
-            return [], SearchMetrics(0.0, vector_backend="qdrant")
+            return [], SearchMetrics(
+                0.0,
+                vector_backend="qdrant",
+                qdrant_deepcopy_time_ms=0.0 if self._profile_deepcopy else None,
+                qdrant_deepcopy_calls=0 if self._profile_deepcopy else None,
+            )
         query = np.asarray(query_vector, dtype=np.float32)
         if query.ndim != 1:
             raise ValueError("query_vector must be one-dimensional")
@@ -127,9 +137,12 @@ class QdrantVectorStore:
         }
         if query_filter is not None:
             query_kwargs["query_filter"] = query_filter
-        result = self._client.query_points(
-            **query_kwargs,
-        )
+        copy_timing = None
+        if self._profile_deepcopy:
+            with measure_qdrant_deepcopy() as copy_timing:
+                result = self._client.query_points(**query_kwargs)
+        else:
+            result = self._client.query_points(**query_kwargs)
         elapsed_ms = (time.perf_counter() - started) * 1000
         points = getattr(result, "points", result)
         hits = [
@@ -139,7 +152,12 @@ class QdrantVectorStore:
         ][:top_k]
         for rank, hit in enumerate(hits, start=1):
             hit.rank = rank
-        return hits, SearchMetrics(elapsed_ms, vector_backend="qdrant")
+        return hits, SearchMetrics(
+            elapsed_ms,
+            vector_backend="qdrant",
+            qdrant_deepcopy_time_ms=copy_timing.time_ms if copy_timing is not None else None,
+            qdrant_deepcopy_calls=copy_timing.calls if copy_timing is not None else None,
+        )
 
     def rows(self, filters: dict[str, Any] | None = None) -> list[tuple[str, dict[str, Any]]]:
         return [

@@ -18,6 +18,8 @@ QUERY_METRICS_COLUMNS = [
     "category",
     "resolved_vector_backend",
     "jasper_effective_beam_width",
+    "qdrant_deepcopy_time_ms",
+    "qdrant_deepcopy_calls",
     "memory_tokens",
     "query_tokens",
     "total_prompt_tokens",
@@ -214,6 +216,8 @@ def query_metric_rows(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]
                 "category": record.get("category"),
                 "resolved_vector_backend": metrics.get("resolved_vector_backend"),
                 "jasper_effective_beam_width": _number(metrics.get("jasper_effective_beam_width")),
+                "qdrant_deepcopy_time_ms": _number(metrics.get("qdrant_deepcopy_time_ms")),
+                "qdrant_deepcopy_calls": _integer(metrics.get("qdrant_deepcopy_calls")),
                 "memory_tokens": memory_tokens,
                 "query_tokens": query_tokens,
                 "total_prompt_tokens": total_prompt_tokens,
@@ -439,6 +443,13 @@ def _csv_read_number(value: Any) -> Any:
         return None
     number = _number(value)
     return number
+
+
+def _integer(value: Any) -> int | None:
+    number = _number(value)
+    if number is None or not number.is_integer() or number < 0:
+        return None
+    return int(number)
 
 
 def _list(value: Any) -> list[Any] | None:

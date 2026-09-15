@@ -85,6 +85,8 @@ class QuestionEvaluator:
                     "query_embedding_time_ms": retrieval_metrics.embedding_time_ms,
                     "vector_db_query_time_ms": retrieval_metrics.search_time_ms,
                     "query_retrieval_time_ms": retrieval_metrics.total_time_ms,
+                    "qdrant_deepcopy_time_ms": retrieval_metrics.qdrant_deepcopy_time_ms,
+                    "qdrant_deepcopy_calls": retrieval_metrics.qdrant_deepcopy_calls,
                 }
             )
             if retrieval_metrics.vector_backend is not None:

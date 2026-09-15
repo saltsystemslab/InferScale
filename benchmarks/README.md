@@ -69,6 +69,13 @@ To run the throughput experiments:
 bash scripts/full_throughput.sh
 ```
 
+To diagnose time spent in `deepcopy` during local Qdrant searches, enable optional profiling for either suite:
+
+```bash
+QDRANT_PROFILE_DEEPCOPY=1 bash scripts/full_run.sh
+QDRANT_PROFILE_DEEPCOPY=1 bash scripts/full_throughput.sh
+```
+
 ## 6. Judge Accuracy
 
 For local Gemma/vLLM judging on the same GPU, start the judge after answer runs finish:

@@ -3,6 +3,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from benchmarks.common.clients import ChatResult
 from benchmarks.memory.runtime_clients import RuntimeClients
 from benchmarks.memory.config import MemoryRunConfig
@@ -13,9 +15,11 @@ from benchmarks.memory.mem0.fact_catalog import MemoryFact
 from benchmarks.common.vector_types import RetrievalMetrics, SearchHit
 
 
+@pytest.mark.parametrize("profile_deepcopy", [False, True])
 def test_prediction_uses_fact_catalog_then_live_retriever_and_closes(
     monkeypatch: Any,
     tmp_path: Any,
+    profile_deepcopy: bool,
 ) -> None:
     events: list[tuple[str, Any]] = []
     sample = _sample()
@@ -37,8 +41,10 @@ def test_prediction_uses_fact_catalog_then_live_retriever_and_closes(
                 embedding_time_ms=1.0,
                 search_time_ms=2.0,
                 total_time_ms=3.0,
-                vector_backend="jasper",
-                jasper_effective_beam_width=64,
+                vector_backend="qdrant" if profile_deepcopy else "jasper",
+                jasper_effective_beam_width=None if profile_deepcopy else 64,
+                qdrant_deepcopy_time_ms=0.75 if profile_deepcopy else None,
+                qdrant_deepcopy_calls=1 if profile_deepcopy else None,
             )
 
         def close(self) -> None:
@@ -115,7 +121,7 @@ def test_prediction_uses_fact_catalog_then_live_retriever_and_closes(
         results_dir=tmp_path / "results",
         run_id="fact-lifecycle",
         answer_backend="kv-injection",
-        vector_backend="jasper",
+        vector_backend="qdrant" if profile_deepcopy else "jasper",
         top_k=1,
         max_samples=1,
         skip_judge=True,
@@ -138,6 +144,11 @@ def test_prediction_uses_fact_catalog_then_live_retriever_and_closes(
     assert result.records[0]["retrieved_memories"][0]["id"] == fact.id
     assert result.records[0]["retrieved_memories"][0]["source_turn_id"] == fact.source_turn_id
     assert result.records[0]["metrics"]["query_retrieval_time_ms"] == 3.0
+    metrics = result.records[0]["metrics"]
+    assert metrics["vector_db_query_time_ms"] == 2.0
+    assert metrics["time_to_first_token_ms"] == 6.0
+    assert metrics["qdrant_deepcopy_time_ms"] == (0.75 if profile_deepcopy else None)
+    assert metrics["qdrant_deepcopy_calls"] == (1 if profile_deepcopy else None)
 
 
 def _sample() -> ConversationSample:

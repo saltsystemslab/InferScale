@@ -78,6 +78,8 @@ class PreparedMem0Retriever:
             total_time_ms=total_time_ms,
             vector_backend=store_metrics.vector_backend,
             jasper_effective_beam_width=store_metrics.jasper_effective_beam_width,
+            qdrant_deepcopy_time_ms=store_metrics.qdrant_deepcopy_time_ms,
+            qdrant_deepcopy_calls=store_metrics.qdrant_deepcopy_calls,
         )
 
     def close(self) -> None:
@@ -163,4 +165,6 @@ def _last_store_metrics(memory: Any, backend: str) -> SearchMetrics:
         search_time_ms=float(getattr(metrics, "search_time_ms", 0.0) or 0.0),
         vector_backend=getattr(metrics, "vector_backend", None) or backend,
         jasper_effective_beam_width=getattr(metrics, "jasper_effective_beam_width", None),
+        qdrant_deepcopy_time_ms=getattr(metrics, "qdrant_deepcopy_time_ms", None),
+        qdrant_deepcopy_calls=getattr(metrics, "qdrant_deepcopy_calls", None),
     )

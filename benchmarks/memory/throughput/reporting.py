@@ -25,6 +25,8 @@ RESULT_COLUMNS = (
     "generation_time_s",
     "retrieval_time_s",
     "vector_search_time_s",
+    "qdrant_deepcopy_time_ms",
+    "qdrant_deepcopy_calls",
     "prompt_build_time_s",
     "kv_compose_time_s",
     "kv_verify_time_s",
@@ -254,10 +256,9 @@ def _coerce_row(row: dict[str, Any]) -> dict[str, Any]:
         # .get: rows read from CSVs written before a column existed must
         # coerce to 0, not crash the resume/merge path.
         normalized[column] = int(normalized.get(column) or 0)
-    beam_width = normalized.get("jasper_effective_beam_width")
-    normalized["jasper_effective_beam_width"] = (
-        None if beam_width in (None, "") else int(beam_width)
-    )
+    for column in ("jasper_effective_beam_width", "qdrant_deepcopy_calls"):
+        value = normalized.get(column)
+        normalized[column] = None if value in (None, "") else int(value)
     for column in (
         "fact_count",
         "throughput_qps",
@@ -265,6 +266,7 @@ def _coerce_row(row: dict[str, Any]) -> dict[str, Any]:
         "generation_time_s",
         "retrieval_time_s",
         "vector_search_time_s",
+        "qdrant_deepcopy_time_ms",
         "prompt_build_time_s",
         "kv_compose_time_s",
         "kv_verify_time_s",
@@ -318,6 +320,8 @@ def build_result_row(
     generation_time_s: float,
     retrieval_time_s: float = 0.0,
     vector_search_time_s: float = 0.0,
+    qdrant_deepcopy_time_ms: float | None = None,
+    qdrant_deepcopy_calls: int | None = None,
     prompt_build_time_s: float = 0.0,
     memory_setup_time_s: float = 0.0,
     kv_precompute_time_s: float = 0.0,
@@ -356,6 +360,8 @@ def build_result_row(
         "generation_time_s": generation_time_s,
         "retrieval_time_s": retrieval_time_s,
         "vector_search_time_s": vector_search_time_s,
+        "qdrant_deepcopy_time_ms": qdrant_deepcopy_time_ms,
+        "qdrant_deepcopy_calls": qdrant_deepcopy_calls,
         "prompt_build_time_s": prompt_build_time_s,
         "kv_compose_time_s": kv_compose_time_s,
         "kv_verify_time_s": kv_verify_time_s,

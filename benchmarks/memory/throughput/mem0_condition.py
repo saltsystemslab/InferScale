@@ -70,6 +70,8 @@ def run_mem0(
                 "prompts": [],
                 "retrieval_time_s": 0.0,
                 "vector_search_time_s": 0.0,
+                "qdrant_deepcopy_time_ms": None,
+                "qdrant_deepcopy_calls": None,
                 "prompt_build_time_s": 0.0,
                 "memory_setup_time_s": 0.0,
                 "fact_count_total": 0,
@@ -126,6 +128,11 @@ def run_mem0(
                     request.query,
                     top_k=config.top_k,
                 )
+                search_metrics = getattr(
+                    getattr(open_memory, "vector_store", None), "last_search_metrics", None
+                )
+                deepcopy_time_ms = getattr(search_metrics, "qdrant_deepcopy_time_ms", None)
+                deepcopy_calls = getattr(search_metrics, "qdrant_deepcopy_calls", None)
 
                 prompt_started = time.perf_counter()
                 memory_prompt = build_memory_prompt_token_ids(
@@ -148,6 +155,14 @@ def run_mem0(
                     accumulator = accumulators[count]
                     accumulator["retrieval_time_s"] += elapsed_s
                     accumulator["vector_search_time_s"] += search_s
+                    if deepcopy_time_ms is not None:
+                        accumulator["qdrant_deepcopy_time_ms"] = (
+                            accumulator["qdrant_deepcopy_time_ms"] or 0.0
+                        ) + deepcopy_time_ms
+                    if deepcopy_calls is not None:
+                        accumulator["qdrant_deepcopy_calls"] = (
+                            accumulator["qdrant_deepcopy_calls"] or 0
+                        ) + deepcopy_calls
                     accumulator["prompts"].append({"prompt_token_ids": prompt_token_ids})
                     accumulator["prompt_build_time_s"] += prompt_build_s
             if (user_index + 1) % 10 == 0 or user_index + 1 == max_users:
@@ -175,6 +190,8 @@ def run_mem0(
                     generation_time_s=measured["generation_time_s"],
                     retrieval_time_s=accumulator["retrieval_time_s"],
                     vector_search_time_s=accumulator["vector_search_time_s"],
+                    qdrant_deepcopy_time_ms=accumulator["qdrant_deepcopy_time_ms"],
+                    qdrant_deepcopy_calls=accumulator["qdrant_deepcopy_calls"],
                     prompt_build_time_s=accumulator["prompt_build_time_s"],
                     memory_setup_time_s=accumulator["memory_setup_time_s"],
                     engine_startup_time_s=engine_startup_time_s,

@@ -103,6 +103,8 @@ class SearchMetrics:
     search_time_ms: float
     vector_backend: str | None = None
     jasper_effective_beam_width: int | None = None
+    qdrant_deepcopy_time_ms: float | None = None
+    qdrant_deepcopy_calls: int | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -121,6 +123,8 @@ class RetrievalMetrics:
     total_time_ms: float
     vector_backend: str | None = None
     jasper_effective_beam_width: int | None = None
+    qdrant_deepcopy_time_ms: float | None = None
+    qdrant_deepcopy_calls: int | None = None
 
 
 @dataclass(slots=True)

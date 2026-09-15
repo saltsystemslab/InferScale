@@ -58,3 +58,41 @@ def test_prepared_retriever_rejects_more_results_than_top_k() -> None:
 
     with pytest.raises(RuntimeError, match="returned 2 facts for top_k=1"):
         retriever.search("question", top_k=1)
+
+
+@pytest.mark.parametrize("metrics_type", [SearchMetrics, SimpleNamespace])
+@pytest.mark.parametrize("copy_ms,copy_calls", [(None, None), (0.0, 0), (1.25, 2)])
+def test_prepared_retriever_preserves_optional_deepcopy_diagnostics_and_existing_timings(
+    monkeypatch: pytest.MonkeyPatch, metrics_type: type,
+    copy_ms: float | None, copy_calls: int | None,
+) -> None:
+    fact = _fact("fact-1")
+    store_metrics = metrics_type(
+        search_time_ms=7.0,
+        vector_backend="qdrant",
+        qdrant_deepcopy_time_ms=copy_ms,
+        qdrant_deepcopy_calls=copy_calls,
+    )
+    memory = SimpleNamespace(
+        embedding_model=None,
+        vector_store=SimpleNamespace(last_search_metrics=store_metrics),
+        search=lambda *_args, **_kwargs: {
+            "results": [{"memory": fact.text, "score": 0.9, "metadata": {"fact_id": fact.id}}],
+        },
+    )
+    clock = iter([1.0, 1.009])
+    monkeypatch.setattr(
+        "benchmarks.memory.mem0.prepared_retriever.time.perf_counter", lambda: next(clock),
+    )
+    retriever = PreparedMem0Retriever(
+        memory, sample_id="sample-1", fact_catalog=(fact,), vector_backend="qdrant",
+    )
+
+    hits, metrics = retriever.search("question", top_k=1)
+
+    assert [hit.id for hit in hits] == [fact.id]
+    assert metrics.qdrant_deepcopy_time_ms == copy_ms
+    assert metrics.qdrant_deepcopy_calls == copy_calls
+    assert metrics.search_time_ms == 7.0
+    assert metrics.total_time_ms == pytest.approx(9.0)
+    assert metrics.embedding_time_ms == 0.0

@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
+import pytest
+
 from benchmarks.memory.reporting import QUERY_METRICS_COLUMNS, query_metric_rows
 from benchmarks.common.files import write_csv
 from benchmarks.memory.results import summarize_records
@@ -75,6 +77,61 @@ def test_summary_aggregates_kv_verify_time() -> None:
     )
 
     assert summary["metrics"]["kv_verify_time_ms"]["avg"] == 20.0
+
+
+def test_summary_aggregates_only_profiled_deepcopies_without_adjusting_latency() -> None:
+    rows = [
+        _record({"vector_db_query_time_ms": 10.0, "query_to_answer_ms": 100.0}),
+        _record({
+            "vector_db_query_time_ms": 20.0, "query_to_answer_ms": 200.0,
+            "qdrant_deepcopy_time_ms": 0.0, "qdrant_deepcopy_calls": 0,
+        }),
+        _record({
+            "vector_db_query_time_ms": 30.0, "query_to_answer_ms": 300.0,
+            "qdrant_deepcopy_time_ms": 4.0, "qdrant_deepcopy_calls": 6,
+        }),
+    ]
+    metrics = summarize_records(
+        rows, run_id="run", mode="full", config={}, system_metadata={},
+    )["metrics"]
+
+    assert metrics["qdrant_deepcopy_time_ms"]["count"] == 2
+    assert metrics["qdrant_deepcopy_time_ms"]["avg"] == 2.0
+    assert metrics["qdrant_deepcopy_calls"]["count"] == 2
+    assert metrics["qdrant_deepcopy_calls"]["avg"] == 3.0
+    assert metrics["vector_db_query_time_total_ms"] == 60.0
+    assert metrics["vector_db_query_time_ms"]["avg"] == 20.0
+    assert metrics["query_to_answer_ms"]["avg"] == 200.0
+
+
+def test_unprofiled_summary_omits_deepcopy_diagnostics() -> None:
+    metrics = summarize_records(
+        [_record({"qdrant_deepcopy_time_ms": None, "qdrant_deepcopy_calls": None})],
+        run_id="run", mode="full", config={}, system_metadata={},
+    )["metrics"]
+    assert "qdrant_deepcopy_time_ms" not in metrics
+    assert "qdrant_deepcopy_calls" not in metrics
+
+
+@pytest.mark.parametrize("copy_ms,copy_calls", [(None, None), (0.0, 0), (2.5, 3)])
+def test_query_metrics_csv_preserves_optional_deepcopy_diagnostics(
+    tmp_path: Path, copy_ms: float | None, copy_calls: int | None,
+) -> None:
+    row = query_metric_rows([_record({
+        "qdrant_deepcopy_time_ms": copy_ms,
+        "qdrant_deepcopy_calls": copy_calls,
+        "query_to_answer_ms": 100.0,
+    })])[0]
+    assert row["qdrant_deepcopy_time_ms"] == copy_ms
+    assert row["qdrant_deepcopy_calls"] == copy_calls
+    assert row["query_to_answer_ms"] == 100.0
+
+    path = tmp_path / "query_metrics.csv"
+    write_csv(path, [row], QUERY_METRICS_COLUMNS)
+    with path.open(newline="", encoding="utf-8") as fh:
+        written = next(csv.DictReader(fh))
+    assert written["qdrant_deepcopy_time_ms"] == ("" if copy_ms is None else str(copy_ms))
+    assert written["qdrant_deepcopy_calls"] == ("" if copy_calls is None else str(copy_calls))
 
 
 def test_query_metrics_expose_backend_neutral_memory_audit_fields(tmp_path: Path) -> None:

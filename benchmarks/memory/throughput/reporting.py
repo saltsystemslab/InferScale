@@ -48,6 +48,8 @@ RESULT_COLUMNS = (
     "total_output_tokens",
     "input_tokens_per_second",
     "output_tokens_per_second",
+    "qdrant_query_deepcopy_time_ms",
+    "qdrant_query_deepcopy_calls",
 )
 
 
@@ -256,7 +258,7 @@ def _coerce_row(row: dict[str, Any]) -> dict[str, Any]:
         # .get: rows read from CSVs written before a column existed must
         # coerce to 0, not crash the resume/merge path.
         normalized[column] = int(normalized.get(column) or 0)
-    for column in ("jasper_effective_beam_width", "qdrant_deepcopy_calls"):
+    for column in ("jasper_effective_beam_width", "qdrant_deepcopy_calls", "qdrant_query_deepcopy_calls"):
         value = normalized.get(column)
         normalized[column] = None if value in (None, "") else int(value)
     for column in (
@@ -267,6 +269,7 @@ def _coerce_row(row: dict[str, Any]) -> dict[str, Any]:
         "retrieval_time_s",
         "vector_search_time_s",
         "qdrant_deepcopy_time_ms",
+        "qdrant_query_deepcopy_time_ms",
         "prompt_build_time_s",
         "kv_compose_time_s",
         "kv_verify_time_s",
@@ -322,6 +325,8 @@ def build_result_row(
     vector_search_time_s: float = 0.0,
     qdrant_deepcopy_time_ms: float | None = None,
     qdrant_deepcopy_calls: int | None = None,
+    qdrant_query_deepcopy_time_ms: float | None = None,
+    qdrant_query_deepcopy_calls: int | None = None,
     prompt_build_time_s: float = 0.0,
     memory_setup_time_s: float = 0.0,
     kv_precompute_time_s: float = 0.0,
@@ -383,6 +388,8 @@ def build_result_row(
         "total_output_tokens": total_output_tokens,
         "input_tokens_per_second": total_input_tokens / generation_time_s,
         "output_tokens_per_second": total_output_tokens / generation_time_s,
+        "qdrant_query_deepcopy_time_ms": qdrant_query_deepcopy_time_ms,
+        "qdrant_query_deepcopy_calls": qdrant_query_deepcopy_calls,
     }
     if tuple(row) != RESULT_COLUMNS:
         raise AssertionError("Throughput result columns do not match the report schema.")

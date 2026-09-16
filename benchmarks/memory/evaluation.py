@@ -91,6 +91,11 @@ class QuestionEvaluator:
                     "qdrant_entity_deepcopy_time_ms": retrieval_metrics.qdrant_entity_deepcopy_time_ms,
                     "qdrant_entity_deepcopy_wall_time_ms": retrieval_metrics.qdrant_entity_deepcopy_wall_time_ms,
                     "qdrant_entity_deepcopy_calls": retrieval_metrics.qdrant_entity_deepcopy_calls,
+                    "qdrant_query_deepcopy_time_ms": retrieval_metrics.qdrant_query_deepcopy_time_ms,
+                    "qdrant_query_deepcopy_calls": retrieval_metrics.qdrant_query_deepcopy_calls,
+                    "qdrant_entity_query_deepcopy_time_ms": retrieval_metrics.qdrant_entity_query_deepcopy_time_ms,
+                    "qdrant_entity_query_deepcopy_wall_time_ms": retrieval_metrics.qdrant_entity_query_deepcopy_wall_time_ms,
+                    "qdrant_entity_query_deepcopy_calls": retrieval_metrics.qdrant_entity_query_deepcopy_calls,
                 }
             )
             if retrieval_metrics.vector_backend is not None:

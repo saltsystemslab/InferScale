@@ -16,10 +16,17 @@ class DeepcopyTiming:
     elapsed_ns: int = 0
     calls: int = 0
     intervals_ns: list[tuple[int, int]] | None = None
+    query_elapsed_ns: int = 0
+    query_calls: int = 0
+    query_intervals_ns: list[tuple[int, int]] | None = None
 
     @property
     def time_ms(self) -> float:
         return self.elapsed_ns / 1_000_000
+
+    @property
+    def query_time_ms(self) -> float:
+        return self.query_elapsed_ns / 1_000_000
 
 
 @dataclass(slots=True)
@@ -30,37 +37,64 @@ class DeepcopyTotals:
     calls: int = 0
     _intervals_ns: list[tuple[int, int]] = field(default_factory=list, repr=False)
     _lock: Any = field(default_factory=threading.Lock, repr=False)
+    query_elapsed_ns: int = 0
+    query_calls: int = 0
+    _query_intervals_ns: list[tuple[int, int]] = field(default_factory=list, repr=False)
 
     def add(self, timing: DeepcopyTiming) -> None:
         if timing.intervals_ns is None:
             raise ValueError("Aggregated deepcopy timing requires recorded intervals.")
+        if timing.query_intervals_ns is None and (timing.query_calls or timing.query_elapsed_ns):
+            raise ValueError("Aggregated query deepcopy timing requires recorded intervals.")
         # Each worker owns its timing until it publishes at query completion.
         with self._lock:
             self.elapsed_ns += timing.elapsed_ns
             self.calls += timing.calls
             self._intervals_ns.extend(timing.intervals_ns)
+            self.query_elapsed_ns += timing.query_elapsed_ns
+            self.query_calls += timing.query_calls
+            self._query_intervals_ns.extend(timing.query_intervals_ns or ())
 
     @property
     def time_ms(self) -> float:
         return self.elapsed_ns / 1_000_000
 
     @property
+    def query_time_ms(self) -> float:
+        return self.query_elapsed_ns / 1_000_000
+
+    @property
     def wall_time_ms(self) -> float:
         with self._lock:
-            intervals = sorted(self._intervals_ns)
-        elapsed_ns = 0
-        end = 0
-        for start, stop in intervals:
-            elapsed_ns += max(0, stop - max(start, end))
-            end = max(end, stop)
-        return elapsed_ns / 1_000_000
+            intervals = list(self._intervals_ns)
+        return _wall_time_ms(intervals)
+
+    @property
+    def query_wall_time_ms(self) -> float:
+        with self._lock:
+            intervals = list(self._query_intervals_ns)
+        return _wall_time_ms(intervals)
+
+
+def _wall_time_ms(intervals: list[tuple[int, int]]) -> float:
+    elapsed_ns = 0
+    end = 0
+    for start, stop in sorted(intervals):
+        elapsed_ns += max(0, stop - max(start, end))
+        end = max(end, stop)
+    return elapsed_ns / 1_000_000
+
+
+@dataclass(slots=True)
+class _CopyHook:
+    module: Any
+    original: Callable[..., Any]
+    wrapper: Callable[..., Any]
 
 
 @dataclass(slots=True)
 class _Patch:
-    module: Any
-    original: Callable[..., Any]
-    wrapper: Callable[..., Any]
+    hooks: tuple[_CopyHook, ...]
     users: int = 0
 
 
@@ -76,7 +110,7 @@ def deepcopy_profiling_enabled() -> bool:
     return value == "1"
 
 
-def _timed_copy(original: Callable[..., Any]) -> Callable[..., Any]:
+def _timed_copy(original: Callable[..., Any], *, query: bool = False) -> Callable[..., Any]:
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         timing = _active.get()
         if timing is None:
@@ -88,10 +122,16 @@ def _timed_copy(original: Callable[..., Any]) -> Callable[..., Any]:
             return original(*args, **kwargs)
         finally:
             finished = perf_counter_ns()
-            timing.elapsed_ns += finished - started
-            timing.calls += 1
-            if timing.intervals_ns is not None:
-                timing.intervals_ns.append((started, finished))
+            if query:
+                timing.query_elapsed_ns += finished - started
+                timing.query_calls += 1
+                intervals = timing.query_intervals_ns
+            else:
+                timing.elapsed_ns += finished - started
+                timing.calls += 1
+                intervals = timing.intervals_ns
+            if intervals is not None:
+                intervals.append((started, finished))
 
     return wrapper
 
@@ -100,29 +140,45 @@ def _timed_copy(original: Callable[..., Any]) -> Callable[..., Any]:
 def measure_qdrant_deepcopy(*, record_intervals: bool = False) -> Iterator[DeepcopyTiming]:
     """Time the original calls, preserving results, errors, and concurrent queries.
 
-    The hook is scoped to active diagnostics and restored on exit. A context-local
+    The hooks are scoped to active diagnostics and restored on exit. A context-local
     collector separates concurrent or nested queries without serializing them.
-    It measures calls through local_collection.deepcopy, not all payload work.
+    local_collection.deepcopy measures payload copies; qdrant_local.deepcopy
+    measures query-object copies separately. Neither measures all payload work.
     """
     global _patch
-    from qdrant_client.local import local_collection
+    from qdrant_client.local import local_collection, qdrant_local
 
     with _lock:
         if _patch is None:
-            original = getattr(local_collection, "deepcopy", None)
-            if not callable(original):
-                raise RuntimeError(
-                    "This qdrant-client version has no local deepcopy hook; "
-                    "disable QDRANT_PROFILE_DEEPCOPY or use a supported client version."
-                )
-            _patch = _Patch(local_collection, original, _timed_copy(original))
-            local_collection.deepcopy = _patch.wrapper
-        elif local_collection.deepcopy is not _patch.wrapper:
+            hooks = []
+            for module, query in ((local_collection, False), (qdrant_local, True)):
+                original = getattr(module, "deepcopy", None)
+                if not callable(original):
+                    raise RuntimeError(
+                        f"This qdrant-client version has no local deepcopy hook in {module.__name__}; "
+                        "disable QDRANT_PROFILE_DEEPCOPY or use a supported client version."
+                    )
+                hooks.append(_CopyHook(module, original, _timed_copy(original, query=query)))
+            # Validate both aliases before installing either. Roll back an
+            # interrupted installation rather than leave a partial global hook.
+            try:
+                for hook in hooks:
+                    hook.module.deepcopy = hook.wrapper
+            except BaseException:
+                for hook in reversed(hooks):
+                    if getattr(hook.module, "deepcopy", None) is hook.wrapper:
+                        hook.module.deepcopy = hook.original
+                raise
+            _patch = _Patch(tuple(hooks))
+        elif any(getattr(hook.module, "deepcopy", None) is not hook.wrapper for hook in _patch.hooks):
             raise RuntimeError("Qdrant's deepcopy hook changed during profiling.")
         patch = _patch
         patch.users += 1
 
-    timing = DeepcopyTiming(intervals_ns=[] if record_intervals else None)
+    timing = DeepcopyTiming(
+        intervals_ns=[] if record_intervals else None,
+        query_intervals_ns=[] if record_intervals else None,
+    )
     token = _active.set(timing)
     try:
         yield timing
@@ -131,6 +187,7 @@ def measure_qdrant_deepcopy(*, record_intervals: bool = False) -> Iterator[Deepc
         with _lock:
             patch.users -= 1
             if patch.users == 0:
-                if patch.module.deepcopy is patch.wrapper:
-                    patch.module.deepcopy = patch.original
+                for hook in reversed(patch.hooks):
+                    if getattr(hook.module, "deepcopy", None) is hook.wrapper:
+                        hook.module.deepcopy = hook.original
                 _patch = None

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from math import isfinite
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -87,6 +88,29 @@ def test_real_mem0_pipeline_stage_diagnostics_preserve_results_and_reset(
             assert retriever.memory._entity_store._retrieval_profile is None
             assert mem0_main.extract_entities is original_extract
             assert mem0_main.Memory._search_vector_store is original_pipeline
+            copy_fields = (
+                "qdrant_deepcopy_time_ms", "qdrant_deepcopy_calls",
+                "qdrant_entity_deepcopy_time_ms", "qdrant_entity_deepcopy_wall_time_ms",
+                "qdrant_entity_deepcopy_calls", "qdrant_query_deepcopy_time_ms",
+                "qdrant_query_deepcopy_calls", "qdrant_entity_query_deepcopy_time_ms",
+                "qdrant_entity_query_deepcopy_wall_time_ms", "qdrant_entity_query_deepcopy_calls",
+            )
+            if backend == "qdrant" and copies:
+                assert all(isfinite(getattr(metrics, field)) for field in copy_fields)
+                assert metrics.qdrant_deepcopy_calls == 2
+                assert metrics.qdrant_entity_deepcopy_calls == (0 if query == "none" else 6)
+                assert metrics.qdrant_query_deepcopy_calls == 1
+                assert metrics.qdrant_entity_query_deepcopy_calls == (0 if query == "none" else 2)
+                assert 0 < metrics.qdrant_query_deepcopy_time_ms <= metrics.total_time_ms
+                assert 0 <= metrics.qdrant_entity_query_deepcopy_wall_time_ms <= metrics.qdrant_entity_query_deepcopy_time_ms
+                assert metrics.qdrant_entity_query_deepcopy_wall_time_ms <= metrics.total_time_ms
+                if query == "none":
+                    assert metrics.qdrant_entity_query_deepcopy_time_ms == 0
+                    assert metrics.qdrant_entity_query_deepcopy_wall_time_ms == 0
+                else:
+                    assert metrics.qdrant_entity_query_deepcopy_time_ms > 0
+            else:
+                assert all(getattr(metrics, field) is None for field in copy_fields)
             data = metrics.stage_timings
             if not stages:
                 assert data is None
@@ -115,18 +139,23 @@ def test_real_mem0_pipeline_stage_diagnostics_preserve_results_and_reset(
                 assert data["mem0_primary_qdrant_filter_time_ms"] > 0
                 assert data["mem0_primary_qdrant_point_construction_time_ms"] > 0
                 if copies:
-                    assert metrics.qdrant_deepcopy_calls == 2
                     assert data["mem0_primary_payload_access_time_ms"] >= metrics.qdrant_deepcopy_time_ms
                     assert data["mem0_entity_payload_access_wall_time_ms"] >= metrics.qdrant_entity_deepcopy_wall_time_ms
+                    assert data["mem0_primary_backend_search_time_ms"] >= metrics.qdrant_query_deepcopy_time_ms
+                    assert data["mem0_entity_backend_search_wall_time_ms"] >= metrics.qdrant_entity_query_deepcopy_wall_time_ms
             else:
                 assert "mem0_primary_qdrant_scoring_time_ms" not in data
                 assert data["mem0_primary_jasper_exact_cpu_search_time_ms"] > 0
                 assert data["mem0_primary_jasper_graph_search_time_ms"] == 0
         # Compare the same live stores with diagnostics disabled, not reconstructed data.
         monkeypatch.setenv("MEM0_PROFILE_RETRIEVAL", "0")
+        if backend == "qdrant":
+            for adapter in (retriever.memory.vector_store, retriever.memory._entity_store):
+                monkeypatch.setattr(adapter.store, "_profile_deepcopy", False)
         baseline_hits, baseline_metrics = retriever.search("Alice in Paris?", top_k=1)
         assert baseline_hits == first_hits
         assert baseline_metrics.stage_timings is None
+        assert all(getattr(baseline_metrics, field) is None for field in copy_fields)
     finally:
         retriever.close()
 
@@ -136,6 +165,7 @@ def test_entity_failure_caught_by_mem0_is_profiled_and_later_queries_recover(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str,
 ) -> None:
     monkeypatch.setenv("MEM0_PROFILE_RETRIEVAL", "1")
+    monkeypatch.setenv("QDRANT_PROFILE_DEEPCOPY", "1")
     monkeypatch.setattr(mem0_main, "lemmatize_for_bm25", lambda text: text)
     monkeypatch.setattr(mem0_main, "extract_entities", lambda text: [("PERSON", "Alice")])
     retriever = _retriever(tmp_path, backend)
@@ -152,8 +182,12 @@ def test_entity_failure_caught_by_mem0_is_profiled_and_later_queries_recover(
         assert metrics.stage_timings["mem0_entity_search_calls"] == 1
         assert metrics.stage_timings["mem0_entity_backend_search_time_ms"] > 0
         assert metrics.stage_timings["mem0_entity_adapter_count_time_ms"] == 0
+        assert metrics.qdrant_entity_query_deepcopy_calls == (0 if backend == "qdrant" else None)
+        assert metrics.qdrant_entity_query_deepcopy_time_ms == (0 if backend == "qdrant" else None)
+        assert metrics.qdrant_entity_query_deepcopy_wall_time_ms == (0 if backend == "qdrant" else None)
         monkeypatch.setattr(store, "search", original)
         _, next_metrics = retriever.search("Alice", top_k=1)
         assert next_metrics.stage_timings["mem0_entity_adapter_count_time_ms"] > 0
+        assert next_metrics.qdrant_entity_query_deepcopy_calls == (1 if backend == "qdrant" else None)
     finally:
         retriever.close()

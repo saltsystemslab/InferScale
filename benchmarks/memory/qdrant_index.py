@@ -141,6 +141,8 @@ class QdrantVectorStore:
                 vector_backend="qdrant",
                 qdrant_deepcopy_time_ms=0.0 if self._profile_deepcopy else None,
                 qdrant_deepcopy_calls=0 if self._profile_deepcopy else None,
+                qdrant_query_deepcopy_time_ms=0.0 if self._profile_deepcopy else None,
+                qdrant_query_deepcopy_calls=0 if self._profile_deepcopy else None,
             )
         query = np.asarray(query_vector, dtype=np.float32)
         if query.ndim != 1:
@@ -186,6 +188,8 @@ class QdrantVectorStore:
             vector_backend="qdrant",
             qdrant_deepcopy_time_ms=copy_timing.time_ms if copy_timing is not None else None,
             qdrant_deepcopy_calls=copy_timing.calls if copy_timing is not None else None,
+            qdrant_query_deepcopy_time_ms=copy_timing.query_time_ms if copy_timing is not None else None,
+            qdrant_query_deepcopy_calls=copy_timing.query_calls if copy_timing is not None else None,
         )
 
     def rows(self, filters: dict[str, Any] | None = None) -> list[tuple[str, dict[str, Any]]]:

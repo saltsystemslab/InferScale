@@ -48,6 +48,11 @@ def test_prediction_uses_fact_catalog_then_live_retriever_and_closes(
                 qdrant_entity_deepcopy_time_ms=1.5 if profile_deepcopy else None,
                 qdrant_entity_deepcopy_wall_time_ms=0.9 if profile_deepcopy else None,
                 qdrant_entity_deepcopy_calls=3 if profile_deepcopy else None,
+                qdrant_query_deepcopy_time_ms=0.05 if profile_deepcopy else None,
+                qdrant_query_deepcopy_calls=1 if profile_deepcopy else None,
+                qdrant_entity_query_deepcopy_time_ms=0.1 if profile_deepcopy else None,
+                qdrant_entity_query_deepcopy_wall_time_ms=0.08 if profile_deepcopy else None,
+                qdrant_entity_query_deepcopy_calls=2 if profile_deepcopy else None,
             )
 
         def close(self) -> None:
@@ -155,6 +160,11 @@ def test_prediction_uses_fact_catalog_then_live_retriever_and_closes(
     assert metrics["qdrant_entity_deepcopy_time_ms"] == (1.5 if profile_deepcopy else None)
     assert metrics["qdrant_entity_deepcopy_wall_time_ms"] == (0.9 if profile_deepcopy else None)
     assert metrics["qdrant_entity_deepcopy_calls"] == (3 if profile_deepcopy else None)
+    assert metrics["qdrant_query_deepcopy_time_ms"] == (0.05 if profile_deepcopy else None)
+    assert metrics["qdrant_query_deepcopy_calls"] == (1 if profile_deepcopy else None)
+    assert metrics["qdrant_entity_query_deepcopy_time_ms"] == (0.1 if profile_deepcopy else None)
+    assert metrics["qdrant_entity_query_deepcopy_wall_time_ms"] == (0.08 if profile_deepcopy else None)
+    assert metrics["qdrant_entity_query_deepcopy_calls"] == (2 if profile_deepcopy else None)
 
 
 def _sample() -> ConversationSample:

@@ -100,6 +100,11 @@ class PreparedMem0Retriever:
             qdrant_entity_deepcopy_time_ms=entity_timing.time_ms if entity_timing is not None else None,
             qdrant_entity_deepcopy_wall_time_ms=entity_timing.wall_time_ms if entity_timing is not None else None,
             qdrant_entity_deepcopy_calls=entity_timing.calls if entity_timing is not None else None,
+            qdrant_query_deepcopy_time_ms=store_metrics.qdrant_query_deepcopy_time_ms,
+            qdrant_query_deepcopy_calls=store_metrics.qdrant_query_deepcopy_calls,
+            qdrant_entity_query_deepcopy_time_ms=entity_timing.query_time_ms if entity_timing is not None else None,
+            qdrant_entity_query_deepcopy_wall_time_ms=entity_timing.query_wall_time_ms if entity_timing is not None else None,
+            qdrant_entity_query_deepcopy_calls=entity_timing.query_calls if entity_timing is not None else None,
         )
 
     def close(self) -> None:
@@ -189,4 +194,6 @@ def _last_store_metrics(memory: Any, backend: str) -> SearchMetrics:
         jasper_effective_beam_width=getattr(metrics, "jasper_effective_beam_width", None),
         qdrant_deepcopy_time_ms=getattr(metrics, "qdrant_deepcopy_time_ms", None),
         qdrant_deepcopy_calls=getattr(metrics, "qdrant_deepcopy_calls", None),
+        qdrant_query_deepcopy_time_ms=getattr(metrics, "qdrant_query_deepcopy_time_ms", None),
+        qdrant_query_deepcopy_calls=getattr(metrics, "qdrant_query_deepcopy_calls", None),
     )

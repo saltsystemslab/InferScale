@@ -49,6 +49,11 @@ QUERY_METRICS_COLUMNS = [
     "query_to_answer_ms",
     "judge_correct",
     "retrieved_count",
+    "qdrant_query_deepcopy_time_ms",
+    "qdrant_query_deepcopy_calls",
+    "qdrant_entity_query_deepcopy_time_ms",
+    "qdrant_entity_query_deepcopy_wall_time_ms",
+    "qdrant_entity_query_deepcopy_calls",
 ]
 
 ACCURACY_BIN_COLUMNS = [
@@ -259,6 +264,11 @@ def query_metric_rows(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]
                 "query_to_answer_ms": _number(metrics.get("query_to_answer_ms")),
                 "judge_correct": judge_correct,
                 "retrieved_count": len(retrieved) if isinstance(retrieved, list) else None,
+                "qdrant_query_deepcopy_time_ms": _number(metrics.get("qdrant_query_deepcopy_time_ms")),
+                "qdrant_query_deepcopy_calls": _integer(metrics.get("qdrant_query_deepcopy_calls")),
+                "qdrant_entity_query_deepcopy_time_ms": _number(metrics.get("qdrant_entity_query_deepcopy_time_ms")),
+                "qdrant_entity_query_deepcopy_wall_time_ms": _number(metrics.get("qdrant_entity_query_deepcopy_wall_time_ms")),
+                "qdrant_entity_query_deepcopy_calls": _integer(metrics.get("qdrant_entity_query_deepcopy_calls")),
             }
         )
     return rows

@@ -71,6 +71,8 @@ def _row(condition: str, qps: float, *, num_users: int = 10) -> dict[str, object
         "total_output_tokens": 1000,
         "input_tokens_per_second": 5120.0,
         "output_tokens_per_second": 500.0,
+        "qdrant_query_deepcopy_time_ms": None,
+        "qdrant_query_deepcopy_calls": None,
     }
     assert tuple(values) == RESULT_COLUMNS
     return values
@@ -134,6 +136,8 @@ def test_coerce_row_tolerates_pre_change_csv_rows() -> None:
         "kv_staging_stall_ms",
         "qdrant_deepcopy_time_ms",
         "qdrant_deepcopy_calls",
+        "qdrant_query_deepcopy_time_ms",
+        "qdrant_query_deepcopy_calls",
     ):
         legacy.pop(column)
 
@@ -143,32 +147,39 @@ def test_coerce_row_tolerates_pre_change_csv_rows() -> None:
     assert coerced["kv_store_backend"] == "gpu"
     assert coerced["qdrant_deepcopy_time_ms"] is None
     assert coerced["qdrant_deepcopy_calls"] is None
+    assert coerced["qdrant_query_deepcopy_time_ms"] is None
+    assert coerced["qdrant_query_deepcopy_calls"] is None
 
 
 @pytest.mark.parametrize(
     "time_ms,calls,expected_time_ms,expected_calls",
     [(None, None, None, None), ("", "", None, None), ("0", "0", 0.0, 0), ("2.75", "4", 2.75, 4)],
 )
+@pytest.mark.parametrize("prefix", ["qdrant_deepcopy", "qdrant_query_deepcopy"])
 def test_coerce_qdrant_deepcopy_diagnostics(
     time_ms: object,
     calls: object,
     expected_time_ms: float | None,
     expected_calls: int | None,
+    prefix: str,
 ) -> None:
     row = _row("mem0_qdrant", 10.0)
-    row.update(qdrant_deepcopy_time_ms=time_ms, qdrant_deepcopy_calls=calls)
+    row.update({f"{prefix}_time_ms": time_ms, f"{prefix}_calls": calls})
 
     coerced = _coerce_row(row)
 
-    assert coerced["qdrant_deepcopy_time_ms"] == expected_time_ms
-    assert coerced["qdrant_deepcopy_calls"] == expected_calls
+    assert coerced[f"{prefix}_time_ms"] == expected_time_ms
+    assert coerced[f"{prefix}_calls"] == expected_calls
     if expected_time_ms is not None:
-        assert isinstance(coerced["qdrant_deepcopy_time_ms"], float)
+        assert isinstance(coerced[f"{prefix}_time_ms"], float)
     if expected_calls is not None:
-        assert isinstance(coerced["qdrant_deepcopy_calls"], int)
+        assert isinstance(coerced[f"{prefix}_calls"], int)
 
 
-def test_qdrant_deepcopy_diagnostics_round_trip_without_changing_timing(tmp_path: Path) -> None:
+@pytest.mark.parametrize("query_ms,query_calls", [(None, None), (0.0, 0), (0.75, 3)])
+def test_qdrant_deepcopy_diagnostics_round_trip_without_changing_timing(
+    tmp_path: Path, query_ms: float | None, query_calls: int | None,
+) -> None:
     config = _config(tmp_path)
     qdrant = build_result_row(
         config,
@@ -180,6 +191,8 @@ def test_qdrant_deepcopy_diagnostics_round_trip_without_changing_timing(tmp_path
         vector_search_time_s=0.3,
         qdrant_deepcopy_time_ms=125.5,
         qdrant_deepcopy_calls=12,
+        qdrant_query_deepcopy_time_ms=query_ms,
+        qdrant_query_deepcopy_calls=query_calls,
         total_input_tokens=100,
         total_output_tokens=40,
     )
@@ -191,6 +204,10 @@ def test_qdrant_deepcopy_diagnostics_round_trip_without_changing_timing(tmp_path
     assert saved[0]["qdrant_deepcopy_calls"] == "12"
     assert saved[1]["qdrant_deepcopy_time_ms"] == ""
     assert saved[1]["qdrant_deepcopy_calls"] == ""
+    assert saved[0]["qdrant_query_deepcopy_time_ms"] == ("" if query_ms is None else str(query_ms))
+    assert saved[0]["qdrant_query_deepcopy_calls"] == ("" if query_calls is None else str(query_calls))
+    assert saved[1]["qdrant_query_deepcopy_time_ms"] == ""
+    assert saved[1]["qdrant_query_deepcopy_calls"] == ""
 
     restored, jasper = read_existing_results(config.run_dir)
     assert restored == qdrant
@@ -200,6 +217,9 @@ def test_qdrant_deepcopy_diagnostics_round_trip_without_changing_timing(tmp_path
     assert restored["vector_search_time_s"] == 0.3
     assert jasper["qdrant_deepcopy_time_ms"] is None
     assert jasper["qdrant_deepcopy_calls"] is None
+    assert jasper["qdrant_query_deepcopy_time_ms"] is None
+    assert jasper["qdrant_query_deepcopy_calls"] is None
+    assert RESULT_COLUMNS[-2:] == ("qdrant_query_deepcopy_time_ms", "qdrant_query_deepcopy_calls")
 
 
 def test_legacy_csv_without_deepcopy_diagnostics_can_resume_and_merge(tmp_path: Path) -> None:
@@ -207,6 +227,8 @@ def test_legacy_csv_without_deepcopy_diagnostics_can_resume_and_merge(tmp_path: 
     legacy = _row("mem0_qdrant", 10.0)
     del legacy["qdrant_deepcopy_time_ms"]
     del legacy["qdrant_deepcopy_calls"]
+    del legacy["qdrant_query_deepcopy_time_ms"]
+    del legacy["qdrant_query_deepcopy_calls"]
     path = condition_csv_path(config.run_dir, "mem0_qdrant")
     path.parent.mkdir(parents=True)
     with path.open("w", newline="", encoding="utf-8") as handle:
@@ -219,3 +241,5 @@ def test_legacy_csv_without_deepcopy_diagnostics_can_resume_and_merge(tmp_path: 
     assert len(merged) == 2
     assert merged[0]["qdrant_deepcopy_time_ms"] is None
     assert merged[0]["qdrant_deepcopy_calls"] is None
+    assert merged[0]["qdrant_query_deepcopy_time_ms"] is None
+    assert merged[0]["qdrant_query_deepcopy_calls"] is None

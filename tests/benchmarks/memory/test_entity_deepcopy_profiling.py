@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from math import isfinite
 from pathlib import Path
 from threading import Barrier, Event
 from types import SimpleNamespace
@@ -83,19 +84,34 @@ def test_prepared_retrieval_collects_all_mem0_entity_workers_and_resets_per_ques
             assert [(hit.id, hit.payload["data"], hit.score) for hit in hits] == [(fact.id, fact.text, 0.9)]
             assert metrics.qdrant_deepcopy_calls == (1 if profiling else None)
             assert metrics.qdrant_entity_deepcopy_calls == (entity_calls if profiling else None)
+            assert metrics.qdrant_query_deepcopy_calls == (1 if profiling else None)
+            assert metrics.qdrant_entity_query_deepcopy_calls == (entity_calls // 3 if profiling else None)
             if profiling:
+                assert isfinite(metrics.qdrant_query_deepcopy_time_ms)
+                assert 0 < metrics.qdrant_query_deepcopy_time_ms <= metrics.total_time_ms
                 assert 0 <= metrics.qdrant_entity_deepcopy_wall_time_ms <= metrics.qdrant_entity_deepcopy_time_ms
                 assert metrics.qdrant_entity_deepcopy_wall_time_ms <= metrics.total_time_ms
+                assert isfinite(metrics.qdrant_entity_query_deepcopy_time_ms)
+                assert isfinite(metrics.qdrant_entity_query_deepcopy_wall_time_ms)
+                assert 0 <= metrics.qdrant_entity_query_deepcopy_wall_time_ms <= metrics.qdrant_entity_query_deepcopy_time_ms
+                assert metrics.qdrant_entity_query_deepcopy_wall_time_ms <= metrics.total_time_ms
                 if entity_calls:
                     assert metrics.qdrant_entity_deepcopy_time_ms > 0
+                    assert metrics.qdrant_entity_query_deepcopy_time_ms > 0
                     # A shared last-search slot contains only one worker's three copies.
                     assert memory._entity_store.last_search_metrics.qdrant_deepcopy_calls == 3
+                    assert memory._entity_store.last_search_metrics.qdrant_query_deepcopy_calls == 1
                 else:
                     assert metrics.qdrant_entity_deepcopy_time_ms == 0
                     assert metrics.qdrant_entity_deepcopy_wall_time_ms == 0
+                    assert metrics.qdrant_entity_query_deepcopy_time_ms == 0
+                    assert metrics.qdrant_entity_query_deepcopy_wall_time_ms == 0
             else:
                 assert metrics.qdrant_entity_deepcopy_time_ms is None
                 assert metrics.qdrant_entity_deepcopy_wall_time_ms is None
+                assert metrics.qdrant_query_deepcopy_time_ms is None
+                assert metrics.qdrant_entity_query_deepcopy_time_ms is None
+                assert metrics.qdrant_entity_query_deepcopy_wall_time_ms is None
             assert entities._deepcopy_collector is None
     finally:
         primary.close()

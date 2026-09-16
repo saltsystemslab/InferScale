@@ -251,6 +251,59 @@ def test_retrieval_stage_summary_counts_only_profiled_queries() -> None:
         assert metrics[key]["avg"] == 2.0
 
 
+@pytest.mark.parametrize(
+    "query_ms,query_calls,entity_ms,entity_wall_ms,entity_calls",
+    [(None, None, None, None, None), (0.0, 0, 0.0, 0.0, 0), (0.5, 1, 2.0, 1.25, 3)],
+)
+def test_query_deepcopy_metrics_survive_record_summary_and_csv(
+    tmp_path: Path, query_ms: float | None, query_calls: int | None,
+    entity_ms: float | None, entity_wall_ms: float | None, entity_calls: int | None,
+) -> None:
+    diagnostics = {
+        "qdrant_query_deepcopy_time_ms": query_ms,
+        "qdrant_query_deepcopy_calls": query_calls,
+        "qdrant_entity_query_deepcopy_time_ms": entity_ms,
+        "qdrant_entity_query_deepcopy_wall_time_ms": entity_wall_ms,
+        "qdrant_entity_query_deepcopy_calls": entity_calls,
+    }
+    config = make_memory_config(run_id="copies", skip_judge=True)
+    qa = QuestionAnswer("sample", "question", "What?", "Answer", "1")
+    sample = ConversationSample("sample", [], [qa], {})
+    evaluator = QuestionEvaluator(config, RuntimeClients(answer_client=None, judge_client=None))
+    record = evaluator.record_answer(
+        sample, qa, [],
+        ChatResult(content="Answer", ttft_ms=3.0, metrics={"query_to_first_token_ms": 14.0}),
+        retrieval_metrics=RetrievalMetrics(
+            1.0, 2.0, 5.0, qdrant_deepcopy_time_ms=0.75,
+            qdrant_entity_deepcopy_time_ms=4.0, **diagnostics,
+        ),
+    )
+    summary = summarize_records(
+        [record, _record({})], run_id="copies", mode=record["mode"], config={}, system_metadata={},
+    )["metrics"]
+    row = query_metric_rows([record])[0]
+    path = tmp_path / "query_metrics.csv"
+    write_csv(path, [row], QUERY_METRICS_COLUMNS)
+    with path.open(newline="", encoding="utf-8") as fh:
+        written = next(csv.DictReader(fh))
+
+    assert QUERY_METRICS_COLUMNS[-5:] == list(diagnostics)
+    assert record["metrics"]["qdrant_deepcopy_time_ms"] == 0.75
+    assert record["metrics"]["qdrant_entity_deepcopy_time_ms"] == 4.0
+    assert summary["query_to_first_token_ms"]["avg"] == 14.0
+    assert summary["vector_db_query_time_ms"]["avg"] == 2.0
+    assert summary["query_retrieval_time_ms"]["avg"] == 5.0
+    for key, value in diagnostics.items():
+        assert record["metrics"][key] == value
+        assert row[key] == value
+        assert written[key] == ("" if value is None else str(value))
+        if value is None:
+            assert key not in summary
+        else:
+            assert summary[key]["count"] == 1
+            assert summary[key]["avg"] == value
+
+
 def test_query_metrics_expose_backend_neutral_memory_audit_fields(tmp_path: Path) -> None:
     record = _record(
         {

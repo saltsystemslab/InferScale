@@ -107,11 +107,12 @@ def _run_with_search_metrics(
     return rows
 
 
+@pytest.mark.parametrize("prefix", ["qdrant_deepcopy", "qdrant_query_deepcopy"])
 def test_deepcopy_diagnostics_accumulate_for_each_applicable_batch(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, prefix: str,
 ) -> None:
     def diagnostics(time_ms, calls):
-        return SimpleNamespace(qdrant_deepcopy_time_ms=time_ms, qdrant_deepcopy_calls=calls)
+        return SimpleNamespace(**{f"{prefix}_time_ms": time_ms, f"{prefix}_calls": calls})
 
     rows = _run_with_search_metrics(
         monkeypatch,
@@ -126,8 +127,11 @@ def test_deepcopy_diagnostics_accumulate_for_each_applicable_batch(
         ],
     )
 
-    assert [row["qdrant_deepcopy_time_ms"] for row in rows] == [0.0, 1.25, 5.75]
-    assert [row["qdrant_deepcopy_calls"] for row in rows] == [0, 2, 5]
+    assert [row[f"{prefix}_time_ms"] for row in rows] == [0.0, 1.25, 5.75]
+    assert [row[f"{prefix}_calls"] for row in rows] == [0, 2, 5]
+    other = "qdrant_query_deepcopy" if prefix == "qdrant_deepcopy" else "qdrant_deepcopy"
+    assert all(row[f"{other}_time_ms"] is None for row in rows)
+    assert all(row[f"{other}_calls"] is None for row in rows)
 
 
 @pytest.mark.parametrize("backend", ["qdrant", "jasper"])
@@ -147,3 +151,5 @@ def test_unavailable_deepcopy_diagnostics_remain_none(
 
     assert all(row["qdrant_deepcopy_time_ms"] is None for row in rows)
     assert all(row["qdrant_deepcopy_calls"] is None for row in rows)
+    assert all(row["qdrant_query_deepcopy_time_ms"] is None for row in rows)
+    assert all(row["qdrant_query_deepcopy_calls"] is None for row in rows)

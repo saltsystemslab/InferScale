@@ -3,7 +3,7 @@
 This directory runs memory and RAG baseline comparisons on InferScale between an array of model families and sizes (Llama-3.1-8B-Instruct, Mistral-7B-Instruct-v0.3, Qwen2.5-7B-Instruct, and Qwen3-14B).
 
 - `kv-injection`: retrieved Mem0 facts are encoded with the package's chunked-RoPE implementation, then injected directly into the KV cache.
-- `prompt-injection`: the same retrieved Mem0 facts are included as a normal prompt injection.
+- `prompt-injection`: retrieved Mem0 facts are included as normal prompt text.
 
 ## 1. Requirements
 

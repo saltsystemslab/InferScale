@@ -7,6 +7,7 @@ from typing import Any
 
 from benchmarks.common.vector_types import RetrievalMetrics, SearchHit, SearchMetrics
 from benchmarks.memory.mem0.fact_catalog import MemoryFact
+from benchmarks.memory.mem0.profiling import measure_retrieval, profile_stage
 
 
 class PreparedMem0Retriever:
@@ -37,6 +38,13 @@ class PreparedMem0Retriever:
         *,
         top_k: int,
     ) -> tuple[list[SearchHit], RetrievalMetrics]:
+        with measure_retrieval(self.memory, backend=self.vector_backend) as profile:
+            hits, metrics = self._search(query, top_k=top_k)
+        if profile is not None:
+            metrics.stage_timings = profile.metrics()
+        return hits, metrics
+
+    def _search(self, query: str, *, top_k: int) -> tuple[list[SearchHit], RetrievalMetrics]:
         if top_k < 1:
             raise ValueError("top_k must be >= 1.")
         search = getattr(self.memory, "search", None)
@@ -55,28 +63,30 @@ class PreparedMem0Retriever:
                 self.memory.embedding_model = timed_embedder
             started = time.perf_counter()
             try:
-                result = search(
-                    query,
-                    top_k=top_k,
-                    filters={"user_id": self.sample_id},
-                )
+                with profile_stage("retrieval"):
+                    result = search(
+                        query,
+                        top_k=top_k,
+                        filters={"user_id": self.sample_id},
+                    )
             finally:
                 total_time_ms = (time.perf_counter() - started) * 1000
                 if timed_embedder is not None:
                     self.memory.embedding_model = original_embedder
 
-        rows = result.get("results") if isinstance(result, dict) else None
-        if not isinstance(rows, list):
-            raise RuntimeError("Mem0 search did not return a results list.")
-        if len(rows) > top_k:
-            raise RuntimeError(
-                f"Mem0 search returned {len(rows)} facts for top_k={top_k}; "
-                "refusing to inject more facts than requested."
-            )
-        hits = [self._search_hit(row, rank) for rank, row in enumerate(rows, start=1)]
-        ids = [hit.id for hit in hits]
-        if len(ids) != len(set(ids)):
-            raise RuntimeError("Mem0 search returned duplicate stable fact ids.")
+        with profile_stage("result_conversion"):
+            rows = result.get("results") if isinstance(result, dict) else None
+            if not isinstance(rows, list):
+                raise RuntimeError("Mem0 search did not return a results list.")
+            if len(rows) > top_k:
+                raise RuntimeError(
+                    f"Mem0 search returned {len(rows)} facts for top_k={top_k}; "
+                    "refusing to inject more facts than requested."
+                )
+            hits = [self._search_hit(row, rank) for rank, row in enumerate(rows, start=1)]
+            ids = [hit.id for hit in hits]
+            if len(ids) != len(set(ids)):
+                raise RuntimeError("Mem0 search returned duplicate stable fact ids.")
 
         store_metrics = _last_store_metrics(self.memory, self.vector_backend)
         return hits, RetrievalMetrics(
@@ -154,14 +164,16 @@ class _TimedEmbedder:
     def embed(self, *args: Any, **kwargs: Any) -> Any:
         started = time.perf_counter()
         try:
-            return self._wrapped.embed(*args, **kwargs)
+            with profile_stage("query_embedding"):
+                return self._wrapped.embed(*args, **kwargs)
         finally:
             self.elapsed_ms += (time.perf_counter() - started) * 1000
 
     def embed_batch(self, *args: Any, **kwargs: Any) -> Any:
         started = time.perf_counter()
         try:
-            return self._wrapped.embed_batch(*args, **kwargs)
+            with profile_stage("entity_embedding"):
+                return self._wrapped.embed_batch(*args, **kwargs)
         finally:
             self.elapsed_ms += (time.perf_counter() - started) * 1000
 

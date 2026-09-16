@@ -33,7 +33,9 @@ venv.bak/
 
 results/
 results-rag/
+results-rebuttal/
 jasperpy/build/
+/output
 
 # AI agents
 /.agents/skills

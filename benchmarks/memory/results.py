@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Iterable
 
 from benchmarks.common.stats import number_values, numeric_summary, queries_per_second, safe_div
+from benchmarks.memory.mem0.profiling import RETRIEVAL_STAGE_METRIC_KEYS
 
 
 # Upstream memory-benchmarks LoCoMo category names; 5 (adversarial) is excluded
@@ -138,6 +139,7 @@ def summarize_records(
         *MEMORY_AUDIT_NUMERIC_METRIC_KEYS,
         *LEGACY_KV_QUERY_METRIC_KEYS,
         *QDRANT_DIAGNOSTIC_METRIC_KEYS,
+        *RETRIEVAL_STAGE_METRIC_KEYS,
     ):
         summary = numeric_summary(_metric_values(rows, key))
         if summary["count"]:

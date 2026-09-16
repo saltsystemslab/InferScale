@@ -128,6 +128,7 @@ class RetrievalMetrics:
     qdrant_entity_deepcopy_time_ms: float | None = None
     qdrant_entity_deepcopy_wall_time_ms: float | None = None
     qdrant_entity_deepcopy_calls: int | None = None
+    stage_timings: dict[str, float] | None = None
 
 
 @dataclass(slots=True)

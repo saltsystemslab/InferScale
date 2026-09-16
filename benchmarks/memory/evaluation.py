@@ -10,6 +10,7 @@ from benchmarks.common.answers import final_answer_text
 from benchmarks.common.judge import skipped_judge_payload
 from benchmarks.memory.judging import judge_metadata, judge_qa
 from benchmarks.memory.modes import result_mode
+from benchmarks.memory.mem0.profiling import RETRIEVAL_STAGE_METRIC_KEYS
 from benchmarks.common.vector_types import RetrievalMetrics, SearchHit
 
 
@@ -96,6 +97,14 @@ class QuestionEvaluator:
                 metrics["resolved_vector_backend"] = retrieval_metrics.vector_backend
             if retrieval_metrics.jasper_effective_beam_width is not None:
                 metrics["jasper_effective_beam_width"] = retrieval_metrics.jasper_effective_beam_width
+            if retrieval_metrics.stage_timings is not None:
+                metrics.update(
+                    {
+                        key: retrieval_metrics.stage_timings[key]
+                        for key in RETRIEVAL_STAGE_METRIC_KEYS
+                        if key in retrieval_metrics.stage_timings
+                    }
+                )
         return {
             "run_id": self.config.run_id,
             "mode": result_mode(self.config),

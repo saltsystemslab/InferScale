@@ -5,9 +5,17 @@ from pathlib import Path
 
 import pytest
 
+from memory_config import make_memory_config
+
+from benchmarks.common.clients import ChatResult
+from benchmarks.common.vector_types import RetrievalMetrics
+from benchmarks.memory.data import ConversationSample, QuestionAnswer
+from benchmarks.memory.evaluation import QuestionEvaluator
+from benchmarks.memory.mem0.profiling import RETRIEVAL_STAGE_METRIC_KEYS
 from benchmarks.memory.reporting import QUERY_METRICS_COLUMNS, query_metric_rows
 from benchmarks.common.files import write_csv
 from benchmarks.memory.results import summarize_records
+from benchmarks.memory.runtime_clients import RuntimeClients
 
 
 def _record(metrics: dict[str, object]) -> dict[str, object]:
@@ -173,6 +181,74 @@ def test_query_metrics_csv_preserves_optional_deepcopy_diagnostics(
         written = next(csv.DictReader(fh))
     for key, value in diagnostics.items():
         assert written[key] == ("" if value is None else str(value))
+
+
+@pytest.mark.parametrize("stage_ms", [None, 0.0, 2.5])
+def test_retrieval_stage_metrics_survive_record_summary_and_csv(
+    tmp_path: Path, stage_ms: float | None,
+) -> None:
+    config = make_memory_config(run_id="stages", skip_judge=True)
+    qa = QuestionAnswer("sample", "question", "What?", "Answer", "1")
+    sample = ConversationSample("sample", [], [qa], {})
+    diagnostics = (
+        None if stage_ms is None else dict.fromkeys(RETRIEVAL_STAGE_METRIC_KEYS, stage_ms)
+    )
+    if diagnostics is not None:
+        # Diagnostic extensions must not overwrite the headline timing fields.
+        diagnostics.update({
+            "query_to_first_token_ms": 999.0,
+            "query_retrieval_time_ms": 999.0,
+            "unknown_diagnostic": 999.0,
+        })
+    evaluator = QuestionEvaluator(config, RuntimeClients(answer_client=None, judge_client=None))
+    record = evaluator.record_answer(
+        sample, qa, [],
+        ChatResult(content="Answer", ttft_ms=3.0, metrics={"query_to_first_token_ms": 14.0}),
+        retrieval_metrics=RetrievalMetrics(1.0, 2.0, 5.0, stage_timings=diagnostics),
+    )
+    summary = summarize_records(
+        [record], run_id="stages", mode=record["mode"], config={}, system_metadata={},
+    )["metrics"]
+    row = query_metric_rows([record])[0]
+    path = tmp_path / "query_metrics.csv"
+    write_csv(path, [row], QUERY_METRICS_COLUMNS)
+    with path.open(newline="", encoding="utf-8") as fh:
+        written = next(csv.DictReader(fh))
+
+    assert record["metrics"]["query_retrieval_time_ms"] == 5.0
+    assert record["metrics"]["query_to_first_token_ms"] == 14.0
+    assert "unknown_diagnostic" not in record["metrics"]
+    assert "stage_timings" not in record["metrics"]
+    assert summary["query_retrieval_time_ms"]["avg"] == 5.0
+    assert summary["query_to_first_token_ms"]["avg"] == 14.0
+    assert written["query_to_first_token_ms"] == "14.0"
+    for key in RETRIEVAL_STAGE_METRIC_KEYS:
+        if stage_ms is None:
+            assert key not in record["metrics"]
+            assert key not in summary
+            assert row[key] is None
+            assert written[key] == ""
+        else:
+            assert record["metrics"][key] == stage_ms
+            assert summary[key]["count"] == 1
+            assert summary[key]["avg"] == stage_ms
+            assert row[key] == stage_ms
+            assert written[key] == str(stage_ms)
+
+
+def test_retrieval_stage_summary_counts_only_profiled_queries() -> None:
+    rows = [
+        _record({}),
+        _record(dict.fromkeys(RETRIEVAL_STAGE_METRIC_KEYS)),
+        _record(dict.fromkeys(RETRIEVAL_STAGE_METRIC_KEYS, 0.0)),
+        _record(dict.fromkeys(RETRIEVAL_STAGE_METRIC_KEYS, 4.0)),
+    ]
+    metrics = summarize_records(
+        rows, run_id="stages", mode="mem0-prompt-injection", config={}, system_metadata={},
+    )["metrics"]
+    for key in RETRIEVAL_STAGE_METRIC_KEYS:
+        assert metrics[key]["count"] == 2
+        assert metrics[key]["avg"] == 2.0
 
 
 def test_query_metrics_expose_backend_neutral_memory_audit_fields(tmp_path: Path) -> None:

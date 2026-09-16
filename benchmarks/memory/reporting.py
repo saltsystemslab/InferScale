@@ -9,6 +9,7 @@ from typing import Any, Iterable
 from loguru import logger
 
 from benchmarks.common.files import write_csv
+from benchmarks.memory.mem0.profiling import RETRIEVAL_STAGE_METRIC_KEYS
 
 QUERY_METRICS_COLUMNS = [
     "run_id",
@@ -23,6 +24,7 @@ QUERY_METRICS_COLUMNS = [
     "qdrant_entity_deepcopy_time_ms",
     "qdrant_entity_deepcopy_wall_time_ms",
     "qdrant_entity_deepcopy_calls",
+    *RETRIEVAL_STAGE_METRIC_KEYS,
     "memory_tokens",
     "query_tokens",
     "total_prompt_tokens",
@@ -224,6 +226,7 @@ def query_metric_rows(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]
                 "qdrant_entity_deepcopy_time_ms": _number(metrics.get("qdrant_entity_deepcopy_time_ms")),
                 "qdrant_entity_deepcopy_wall_time_ms": _number(metrics.get("qdrant_entity_deepcopy_wall_time_ms")),
                 "qdrant_entity_deepcopy_calls": _integer(metrics.get("qdrant_entity_deepcopy_calls")),
+                **{key: _number(metrics.get(key)) for key in RETRIEVAL_STAGE_METRIC_KEYS},
                 "memory_tokens": memory_tokens,
                 "query_tokens": query_tokens,
                 "total_prompt_tokens": total_prompt_tokens,

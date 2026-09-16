@@ -12,6 +12,7 @@ from benchmarks.common.vector_types import (
     VECTOR_DISTANCE,
     VectorStoreConfig,
 )
+from benchmarks.memory.mem0.profiling import profile_search, profile_stage
 from inferscale.v1.index.jasper import JasperDeviceSearchResult, JasperIndex
 from benchmarks.memory.qdrant_index import QdrantVectorStore
 
@@ -73,6 +74,7 @@ class Mem0JasperVectorStore(VectorStoreBase):
             beam_width=beam_width,
         )
         self.store = self._create_store()
+        self._retrieval_profile = None
         self.last_search_metrics = SearchMetrics(
             search_time_ms=0.0,
             vector_backend=self.config.backend,
@@ -115,17 +117,22 @@ class Mem0JasperVectorStore(VectorStoreBase):
         filters: dict[str, Any] | None = None,
         **_: Any,
     ) -> list[SearchHit]:
-        requested_top_k = 5 if top_k is None else int(top_k)
-        if requested_top_k < 1:
-            raise ValueError("top_k must be >= 1.")
-        query_vector = _first_vector(vectors)
-        hits, metrics = self.store.search(query_vector, top_k=requested_top_k, filters=filters)
-        count = getattr(self.store, "count", None)
-        matching_count = int(count(filters)) if callable(count) else len(self.store.rows(filters))
-        expected_count = min(requested_top_k, matching_count)
-        _validate_search_hits(hits, expected_count=expected_count, backend=self.config.backend)
-        self.last_search_metrics = metrics
-        return hits
+        with profile_search(self):
+            with profile_stage("adapter_prepare"):
+                requested_top_k = 5 if top_k is None else int(top_k)
+                if requested_top_k < 1:
+                    raise ValueError("top_k must be >= 1.")
+                query_vector = _first_vector(vectors)
+            with profile_stage("backend_search"):
+                hits, metrics = self.store.search(query_vector, top_k=requested_top_k, filters=filters)
+            with profile_stage("adapter_count"):
+                count = getattr(self.store, "count", None)
+                matching_count = int(count(filters)) if callable(count) else len(self.store.rows(filters))
+            with profile_stage("adapter_validation"):
+                expected_count = min(requested_top_k, matching_count)
+                _validate_search_hits(hits, expected_count=expected_count, backend=self.config.backend)
+            self.last_search_metrics = metrics
+            return hits
 
     def search_device(
         self,

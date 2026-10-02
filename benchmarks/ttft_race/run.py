@@ -43,7 +43,7 @@ def measure(args: argparse.Namespace) -> None:
 
     # The sweep's Mem0 baseline and InferScale cells: variant, answer and vector backends, k, w.
     cell = {
-        "mem0": MemoryCell("prefix", "prompt-injection", "qdrant", TOP_K, 0),
+        "mem0": MemoryCell("prompt-injection", "prompt-injection", "qdrant", TOP_K, 0),
         "inferscale": MemoryCell("kv", "kv-injection", "jasper", TOP_K, CONTEXT_WINDOW),
     }[args.mode]
     runtime = load_runtime_config()

@@ -1,0 +1,9 @@
+{
+  "family": "throughput",
+  "name": "throughput-single",
+  "configs": [
+    "configs/memory/throughput/llama.json"
+  ],
+  "stage": "run",
+  "dry_run": false
+}

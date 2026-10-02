@@ -1,0 +1,7 @@
+{
+  "family": "memory",
+  "name": "memory-judge",
+  "manifest": "/workspace/results/launches/<memory-launch>/manifest.json",
+  "stage": "judge",
+  "dry_run": false
+}

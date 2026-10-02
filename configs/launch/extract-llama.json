@@ -1,0 +1,9 @@
+{
+  "family": "memory",
+  "name": "extract-llama",
+  "configs": [
+    "configs/memory/accuracy-latency/llama.json"
+  ],
+  "stage": "extract",
+  "dry_run": false
+}

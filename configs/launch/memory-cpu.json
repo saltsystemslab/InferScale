@@ -1,0 +1,13 @@
+{
+  "family": "memory",
+  "name": "memory-cpu",
+  "configs": [
+    "configs/memory/accuracy-latency/llama.json",
+    "configs/memory/accuracy-latency/mistral.json",
+    "configs/memory/accuracy-latency/qwen.json",
+    "configs/memory/accuracy-latency/qwen3.json"
+  ],
+  "sweep": "cpu-store",
+  "stage": "run",
+  "dry_run": false
+}

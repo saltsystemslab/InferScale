@@ -1,0 +1,9 @@
+{
+  "family": "memory",
+  "name": "extract-qwen",
+  "configs": [
+    "configs/memory/accuracy-latency/qwen.json"
+  ],
+  "stage": "extract",
+  "dry_run": false
+}

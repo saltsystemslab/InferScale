@@ -1,50 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
+if (($#)); then
+  echo "serve_vllm.sh takes no arguments; edit configs/serve.json and its runtime JSON." >&2
+  exit 2
+fi
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+# shellcheck source=scripts/environment.sh
+source "${SCRIPT_DIR}/environment.sh"
+cd "${PROJECT_ROOT}"
+load_benchmark_environment "${PROJECT_ROOT}/configs/serve.json"
+PYTHON="$(benchmark_python)"
+export PATH="${VENV_DIR}/bin:${PATH}"
+exec "${PYTHON}" - <<'PY'
+from pathlib import Path
+from benchmarks.common.serve import serve
 
-# shellcheck source=scripts/load_env.sh
-source "${SCRIPT_DIR}/load_env.sh"
-
-if [[ -z "${VIRTUAL_ENV:-}" && -f "${PROJECT_ROOT}/.venv/bin/activate" ]]; then
-  # shellcheck disable=SC1091
-  source "${PROJECT_ROOT}/.venv/bin/activate"
-fi
-
-# Model aliases resolve through config.py so precedence and alias tables have a
-# single source of truth. Raw HF ids and local paths pass through unchanged.
-resolve_model() {
-  python - "$1" <<'PY'
-import sys
-
-from locomo_jasper_bench.config import resolve_answer_model
-
-print(resolve_answer_model(sys.argv[1]))
+raise SystemExit(serve(Path("configs/serve.json")))
 PY
-}
-
-MODEL="$(resolve_model "${JUDGE_MODEL:-${LOCOMO_VLLM_MODEL:-Gemma-2-9B-Instruct}}")"
-API_KEY="${JUDGE_API_KEY:-${LOCOMO_VLLM_API_KEY:-token-abc123}}"
-TP="${LOCOMO_VLLM_TP:-1}"
-GPU_MEMORY_UTILIZATION="${LOCOMO_VLLM_GPU_MEMORY_UTILIZATION:-0.80}"
-JUDGE_MAX_MODEL_LEN="${JUDGE_MAX_MODEL_LEN:-8192}"
-DTYPE="${LOCOMO_VLLM_DTYPE:-auto}"
-QUANTIZATION="${LOCOMO_VLLM_QUANTIZATION:-}"
-
-# shellcheck source=scripts/vllm_env.sh
-source "${SCRIPT_DIR}/vllm_env.sh"
-
-QUANTIZATION_ARGS=()
-if [[ -n "${QUANTIZATION}" ]]; then
-  QUANTIZATION_ARGS=(--quantization "${QUANTIZATION}")
-fi
-
-exec vllm serve "${MODEL}" \
-  "${QUANTIZATION_ARGS[@]}" \
-  --trust-remote-code \
-  --dtype "${DTYPE}" \
-  --max-model-len "${JUDGE_MAX_MODEL_LEN}" \
-  --tensor-parallel-size "${TP}" \
-  --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
-  --api-key "${API_KEY}"

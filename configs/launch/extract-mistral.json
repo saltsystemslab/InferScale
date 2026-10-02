@@ -1,0 +1,9 @@
+{
+  "family": "memory",
+  "name": "extract-mistral",
+  "configs": [
+    "configs/memory/accuracy-latency/mistral.json"
+  ],
+  "stage": "extract",
+  "dry_run": false
+}

@@ -1,0 +1,43 @@
+{
+  "storage": {
+    "runtime_root": "/workspace",
+    "cache_root": null,
+    "results_root": null,
+    "tmp_dir": null,
+    "mem0_dir": null,
+    "local_store_dir": "/tmp"
+  },
+  "build": {
+    "cuda_module": "",
+    "pytorch_index": "https://download.pytorch.org/whl/cu128",
+    "jasper_cuda_architectures": "native",
+    "constraints_file": "constraints-cu128.txt",
+    "venv_dir": ".venv"
+  },
+  "models": {
+    "llama": "meta-llama/Llama-3.1-8B-Instruct",
+    "mistral": "mistralai/Mistral-7B-Instruct-v0.3",
+    "qwen": "Qwen/Qwen2.5-7B-Instruct",
+    "qwen3-14b": "Qwen/Qwen3-14B"
+  },
+  "reasoning_parsers": {
+    "qwen3-14b": "qwen3"
+  },
+  "judge_server": {
+    "model": "google/gemma-2-9b-it",
+    "base_url": "http://127.0.0.1:8000/v1",
+    "api_key": "token-abc123",
+    "tensor_parallel_size": 1,
+    "gpu_memory_utilization": 0.8,
+    "dtype": "auto",
+    "max_model_len": 8192,
+    "quantization": null
+  },
+  "environment": {
+    "NO_PROXY": "localhost,127.0.0.1,::1",
+    "no_proxy": "localhost,127.0.0.1,::1",
+    "VLLM_USE_FLASHINFER_SAMPLER": "0",
+    "VLLM_NO_USAGE_STATS": "1",
+    "MEM0_TELEMETRY": "false"
+  }
+}

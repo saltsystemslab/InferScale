@@ -1,19 +1,18 @@
 """Precompute a handful of context chunks, then answer a question with KV injection.
 
-Needs a CUDA host and OPENAI_API_KEY in the environment.
 Every chunk's KV is encoded once; at query time the retrieved
 chunks are composed and injected into vLLM's KV cache instead of being
 re-read as prompt text. Each target uses up to two preceding chunks as an
-encoding prefix; only the target chunk's KV is retained.
+encoding prefix.
 """
 
 from inferscale.v1 import Chunk, InferScale, InferScaleConfig
 
 CONTEXT = [
-    ("c1", "Alice moved to Berlin in March 2021 to join a robotics startup."),
-    ("c2", "Alice's favorite weekend activity is hiking in the Harz mountains."),
-    ("c3", "Bob, Alice's brother, teaches high-school chemistry in Leeds."),
-    ("c4", "Alice adopted a grey cat named Miso in 2023."),
+    ("c1", "Alice moved to San Francisco in March 2021 to join a robotics startup."),
+    ("c2", "Alice's favorite weekend activity is hiking in the Patagonia mountains."),
+    ("c3", "Bob, Alice's brother, teaches high-school computer science in Boston."),
+    ("c4", "Alice adopted a grey cat named Mr. Whiskers in 2023."),
 ]
 
 

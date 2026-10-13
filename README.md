@@ -4,7 +4,7 @@ Paper: [InferScale: GPU-Native KV Injection for Personalized LLM Serving](https:
 
 ## 1. Requirements
 
-The setup targets a Linux GPU host; the reference environment is a Runpod container with the persistent `/workspace` partition.
+The reference environment is a Runpod (Linux) container with the persistent `/workspace` partition.
 
 - GPU: one NVIDIA GPU with CUDA >=12.8.
 - Python >=3.10,<3.14.

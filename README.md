@@ -1,6 +1,7 @@
 # InferScale: GPU-Native KV Injection for Personalized LLM Serving
 
-Evaluation suite to run benchmarks on InferScale.
+### About
+InferScale is a fast inference framework for large language model memory. 
 
 Paper: [InferScale: GPU-Native KV Injection for Personalized LLM Serving](https://arxiv.org/abs/2607.27090) (arXiv:2607.27090)
 
@@ -8,12 +9,12 @@ Paper: [InferScale: GPU-Native KV Injection for Personalized LLM Serving](https:
 
 ## 1. Requirements
 
-Benchmark runs target a Linux GPU host; the reference environment is a Runpod container with the persistent `/workspace` partition.
+Linux environment; the reference environment is a Runpod container with the persistent `/workspace` partition.
 
 - GPU: one NVIDIA GPU with CUDA >=12.8.
 - Python >=3.10,<3.14.
 - CMake and the CUDA toolkit, used to build the `jasperpy` submodule.
-- Hugging Face API key (`HF_TOKEN` for gated models such as Llama 3.1) and an OpenAI API key for `text-embedding-3-small` embedding calls.
+- Hugging Face API key (`HF_TOKEN` for models such as Llama 3.1) and an OpenAI API key for `text-embedding-3-small` embedding calls.
 
 We configure all default parameters to run on an RTX Pro 6000 GPU with 96 GB of VRAM.
 
@@ -65,33 +66,22 @@ Activate the environment before running benchmark commands:
 source .venv/bin/activate
 ```
 
-## 5. Run Experiments
+## Run Benchmark Experiments
 
-Now we are ready to run answer generation.
+To run answer generation.
 
 ```bash
 bash scripts/full_run.sh
 ```
 
-To repeat the KV injection grid with the CPU KV store, run:
-
+To run supplemental experiments:
 ```bash
-bash scripts/full_run_cpu_store.sh
+bash scripts/full_run_cpu_store.sh # KV injection with the CPU KV store
+bash scripts/full_throughput.sh # Throughput experiments
+bash scripts/full_throughput_cpu_store.sh # Throughput experiments with CPU KV Store
 ```
 
-To run the throughput experiments:
-
-```bash
-bash scripts/full_throughput.sh
-```
-
-To repeat the `kv_injection` condition with the CPU KV store, run:
-
-```bash
-bash scripts/full_throughput_cpu_store.sh
-```
-
-## 6. Judge Accuracy
+## Judge Accuracy
 
 For local Gemma/vLLM judging on the same GPU, start the judge after answer runs finish:
 
@@ -108,7 +98,7 @@ STAMP=<stamp> bash scripts/judge.sh
 
 `STAMP` is the sweep stamp printed by `scripts/full_run.sh`, also visible in the `sweep-logs-<stamp>` directory name.
 
-## 7. Compare Results
+## Compare Results
 
 ```bash
 ls "${BENCHMARK_RESULTS_ROOT}"
@@ -127,7 +117,8 @@ InferScale keeps TTFT nearly flat as more memory is retrieved, while Mem0's pref
 
 Judged LoCoMo accuracy (%), micro-averaged over the 1,540 answerable questions.
 
-#### Llama-3.1-8B
+<details>
+<summary><strong>Llama-3.1-8B</strong></summary>
 
 | Method | `k=5` | `k=10` | `k=20` | `k=50` |
 | --- | ---: | ---: | ---: | ---: |
@@ -136,8 +127,10 @@ Judged LoCoMo accuracy (%), micro-averaged over the 1,540 answerable questions.
 | InferScale (`w=20`) | 60.13 | 62.08 | 61.62 | 59.22 |
 | InferScale (`w=50`) | 60.06 | 61.36 | 62.66 | 60.26 |
 | Mem0 | 56.95 | 59.29 | 61.49 | 63.25 |
+</details>
 
-#### Mistral-7B
+<details>
+<summary><strong>Mistral-7B</strong></summary>
 
 | Method | `k=5` | `k=10` | `k=20` | `k=50` |
 | --- | ---: | ---: | ---: | ---: |
@@ -146,8 +139,10 @@ Judged LoCoMo accuracy (%), micro-averaged over the 1,540 answerable questions.
 | InferScale (`w=20`) | 53.96 | 55.97 | 56.95 | 58.24 |
 | InferScale (`w=50`) | 55.78 | 56.49 | 58.70 | 58.30 |
 | Mem0 | 61.30 | 63.96 | 65.00 | 64.35 |
+</details>
 
-#### Qwen2.5-7B
+<details>
+<summary><strong>Qwen2.5-7B</strong></summary>
 
 | Method | `k=5` | `k=10` | `k=20` | `k=50` |
 | --- | ---: | ---: | ---: | ---: |
@@ -156,10 +151,12 @@ Judged LoCoMo accuracy (%), micro-averaged over the 1,540 answerable questions.
 | InferScale (`w=20`) | 60.00 | 59.68 | 58.25 | 58.64 |
 | InferScale (`w=50`) | 58.83 | 58.25 | 58.18 | 58.77 |
 | Mem0 | 60.06 | 63.64 | 65.13 | 64.61 |
+</details>
 
 Encoding each fact in isolation (`w=0`) trails Mem0 and degrades as more facts are retrieved, from 62.2% to 53.8% on Llama and, most steeply, 54.0% to 37.2% on Mistral as `k` grows from 5 to 50.
 
 A context window reverses this: with `w>=20`, accuracy is flat-to-rising in `k` and comes within a few points of Mem0 (on Llama, 60.3% vs. 63.3% at `k=50`) while often exceeding it at small `k`.
+
 
 ### Serving throughput
 

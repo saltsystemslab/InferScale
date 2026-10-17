@@ -1,0 +1,9 @@
+{
+  "dataset_path": "data/locomo10.json",
+  "dataset_url": "https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json",
+  "fresh_build": false,
+  "initialize_submodules": true,
+  "extract_facts": true,
+  "extraction_launch_config": "configs/launch/memory-extract.json",
+  "runtime_config": "configs/runtime.json"
+}

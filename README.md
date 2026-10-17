@@ -54,58 +54,61 @@ static constexpr index_t vectors_per_segment = 1u << 12;
 
 ## 4. Install
 
+For the quickstart, set `extract_facts` to `false` in `configs/setup.json`.
+
+In `configs/runtime.json`, set `storage.runtime_root` to a writable directory; the default is `/workspace`, and `null` uses project-local storage.
+
 ```bash
 bash scripts/setup_remote.sh
 ```
 
-`scripts/setup_remote.sh` initializes the `jasperpy` submodule, downloads the LoCoMo dataset when missing, installs the Python environment, builds the Jasper library, and extracts the Mem0 facts for every answer model.
+The script creates the virtual environment, installs InferScale and the pinned GPU dependencies, builds Jasper, and installs the Python bindings.
 
-Activate the environment before running benchmark commands:
-
-```bash
-source .venv/bin/activate
-```
-
-## Run Benchmark Experiments
-
-To run answer generation.
+Load credentials and runtime paths into your current shell, then activate the configured environment:
 
 ```bash
-bash scripts/full_run.sh
+source scripts/load_env.sh
+source "${VENV_DIR}/bin/activate"
 ```
 
-To run supplemental experiments:
-```bash
-bash scripts/full_run_cpu_store.sh # KV injection with the CPU KV store
-bash scripts/full_throughput.sh # Throughput experiments
-bash scripts/full_throughput_cpu_store.sh # Throughput experiments with CPU KV Store
-```
+## Example usage
 
-## Judge Accuracy
-
-For local Gemma/vLLM judging on the same GPU, start the judge after answer runs finish:
+Run [examples/quickstart.py](examples/quickstart.py):
 
 ```bash
-source .venv/bin/activate
-bash scripts/serve_vllm.sh
+python examples/quickstart.py
 ```
 
-Then judge each run from another shell that has sourced `scripts/load_env.sh`:
+The example precomputes four short chunks, retrieves the two most relevant chunks, and answers “What is the name of Alice's cat?”
 
-```bash
-STAMP=<stamp> bash scripts/judge.sh
+The core API follows three steps: `precompute()`, `start()`, and `query()`:
+
+```python
+from inferscale.v1 import Chunk, InferScale, InferScaleConfig
+
+config = InferScaleConfig(
+    model="meta-llama/Llama-3.1-8B-Instruct",
+    top_k=2,
+    context_window=2,
+    vector_backend="exact",
+)
+chunks = [
+    Chunk(id="c1", text="Alice moved to Berlin in March 2021."),
+    Chunk(id="c2", text="Alice adopted a grey cat named Miso in 2023."),
+]
+
+with InferScale(config) as engine:
+    engine.precompute(chunks)
+    engine.start()
+    result = engine.query("What is the name of Alice's cat?")
+    print(result.text)
+    print([hit.id for hit in result.hits])
 ```
 
-`STAMP` is the sweep stamp printed by `scripts/full_run.sh`, also visible in the `sweep-logs-<stamp>` directory name.
 
-## Compare Results
+## Benchmark Results
 
-```bash
-ls "${BENCHMARK_RESULTS_ROOT}"
-cat "${BENCHMARK_RESULTS_ROOT}/<run-id>/summary.json"
-```
-
-## Results
+See [/benchmarks](benchmarks/README.md) to run the memory and RAG experiments.
 
 ### Serving latency
 

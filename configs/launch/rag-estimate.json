@@ -1,0 +1,10 @@
+{
+  "family": "rag",
+  "name": "rag-estimate",
+  "configs": [
+    "configs/rag/multihoprag.json",
+    "configs/rag/qasper.json"
+  ],
+  "stage": "estimate",
+  "dry_run": false
+}

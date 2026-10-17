@@ -5,28 +5,24 @@ from unittest.mock import Mock
 
 import pytest
 
-from inferscale.v1.kv.chunk_map import GPUChunkMap
-from inferscale.v1.kv.prompt import ScaffoldTokens
-from inferscale.v1.types import KVChunk
+from benchmarks.rag.cpu_chunk_store import CpuChunkStore
 from benchmarks.rag.data_types import RagChunk
 from benchmarks.rag.kv_cache import (
     RAG_CHUNK_CACHE_VERSION,
-    CpuChunkStore,
-    cache_meta_base,
-    chunk_file_path,
-    chunk_meta,
+    RagChunkCache,
+    RagChunkCacheKey,
     chunk_payload_is_valid,
-    missing_chunk_files,
-    rag_chunk_cache_dir,
     rag_scaffold_chunks_match,
     save_chunk,
-    tables_meta,
     tables_payload_is_valid,
 )
+from inferscale.v1.kv.chunk_map import GPUChunkMap
+from inferscale.v1.kv.prompt import ScaffoldTokens
+from inferscale.v1.types import KVChunk
 
 
-def _meta_base() -> dict:
-    return cache_meta_base(
+def _key() -> RagChunkCacheKey:
+    return RagChunkCacheKey(
         dataset="multihoprag",
         model="meta-llama/Llama-3.1-8B-Instruct",
         dtype="bfloat16",
@@ -35,6 +31,10 @@ def _meta_base() -> dict:
         max_position=32768,
         corpus_fingerprint="abc123",
     )
+
+
+def _cache(directory: Path) -> RagChunkCache:
+    return RagChunkCache(key=_key(), directory=directory)
 
 
 def _chunk(doc_id: str = "d1", index: int = 0, token_ids: list[int] | None = None) -> RagChunk:
@@ -48,17 +48,7 @@ def _chunk(doc_id: str = "d1", index: int = 0, token_ids: list[int] | None = Non
 
 
 def test_cache_dir_composition(tmp_path) -> None:
-    cache_dir = rag_chunk_cache_dir(
-        model="meta-llama/Llama-3.1-8B-Instruct",
-        dtype="bfloat16",
-        chunk_size=1024,
-        context_window=5,
-        max_position=32768,
-        corpus_fingerprint="abc123",
-        cache_root=tmp_path,
-    )
-
-    assert cache_dir == (
+    assert _key().directory(tmp_path) == (
         tmp_path
         / f"v{RAG_CHUNK_CACHE_VERSION}"
         / "meta-llama__Llama-3.1-8B-Instruct"
@@ -68,11 +58,11 @@ def test_cache_dir_composition(tmp_path) -> None:
 
 
 def test_chunk_file_path_sanitizes_ids(tmp_path) -> None:
-    assert chunk_file_path(tmp_path, "d1a:0") == tmp_path / "chunks" / "d1a_0.pt"
+    assert _cache(tmp_path).chunk_path("d1a:0") == tmp_path / "chunks" / "d1a_0.pt"
 
 
 def test_chunk_payload_validation() -> None:
-    meta = chunk_meta(_meta_base(), _chunk())
+    meta = _key().chunk_meta(_chunk())
     payload = {
         "version": RAG_CHUNK_CACHE_VERSION,
         "meta": dict(meta),
@@ -87,17 +77,13 @@ def test_chunk_payload_validation() -> None:
     assert not chunk_payload_is_valid(
         payload, expected_meta=stale_meta, expected_token_ids=[1, 2, 3, 4]
     )
-    assert not chunk_payload_is_valid(
-        payload, expected_meta=meta, expected_token_ids=[1, 2, 3]
-    )
+    assert not chunk_payload_is_valid(payload, expected_meta=meta, expected_token_ids=[1, 2, 3])
     empty_kv = {**payload, "chunk": {"token_ids": [1, 2, 3, 4], "kv_by_layer": {}}}
-    assert not chunk_payload_is_valid(
-        empty_kv, expected_meta=meta, expected_token_ids=[1, 2, 3, 4]
-    )
+    assert not chunk_payload_is_valid(empty_kv, expected_meta=meta, expected_token_ids=[1, 2, 3, 4])
 
 
 def test_tables_payload_validation() -> None:
-    meta = tables_meta(_meta_base(), block_size=16)
+    meta = _key().tables_meta(block_size=16)
     payload = {
         "version": RAG_CHUNK_CACHE_VERSION,
         "meta": dict(meta),
@@ -132,27 +118,32 @@ def test_scaffold_chunks_match() -> None:
     assert not rag_scaffold_chunks_match({**chunks, "header": None}, scaffold)
 
 
-def test_missing_chunk_files(tmp_path) -> None:
-    present = chunk_file_path(tmp_path, "d1:0")
+def test_missing_chunk_ids(tmp_path) -> None:
+    cache = _cache(tmp_path)
+    present = cache.chunk_path("d1:0")
     present.parent.mkdir(parents=True)
     present.write_bytes(b"x")
 
-    assert missing_chunk_files(tmp_path, ["d1:0", "d1:1"]) == ["d1:1"]
+    assert cache.missing_chunk_ids(["d1:0", "d1:1"]) == ["d1:1"]
 
 
-def _save_test_chunk(cache_dir: Path, meta_base: dict, chunk: RagChunk) -> int:
-    torch = pytest.importorskip("torch", reason="CPU tensor serialization requires the optional torch dependency")
+def test_require_complete_names_the_precompute_settings(tmp_path) -> None:
+    with pytest.raises(RuntimeError, match="precompute-kv stage for dataset multihoprag") as raised:
+        _cache(tmp_path).require_complete([_chunk("d1", 0), _chunk("d1", 1)])
+    assert "2 of 2" in str(raised.value) and "chunk size 1024" in str(raised.value)
+
+
+def _save_test_chunk(cache: RagChunkCache, chunk: RagChunk) -> int:
+    torch = pytest.importorskip(
+        "torch", reason="CPU tensor serialization requires the optional torch dependency"
+    )
 
     encoded = KVChunk(
         chunk_id=chunk.chunk_id,
         token_ids=list(chunk.token_ids),
         kv_by_layer={"layer": torch.zeros(2, len(chunk.token_ids), 2, 4)},
     )
-    save_chunk(
-        chunk_file_path(cache_dir, chunk.chunk_id),
-        meta=chunk_meta(meta_base, chunk),
-        chunk=encoded,
-    )
+    save_chunk(cache.chunk_path(chunk.chunk_id), meta=cache.key.chunk_meta(chunk), chunk=encoded)
     return sum(int(tensor.nbytes) for tensor in encoded.kv_by_layer.values())
 
 
@@ -163,27 +154,27 @@ def gpu_map_constructor(monkeypatch):
     chunk_map.device = "cuda:2"
     chunk_map.nbytes = 48
     constructor = Mock(return_value=chunk_map)
-    monkeypatch.setattr("benchmarks.rag.kv_cache.GPUChunkMap", constructor)
+    monkeypatch.setattr("benchmarks.rag.cpu_chunk_store.GPUChunkMap", constructor)
     return constructor
 
 
 def test_cpu_chunk_store_loads_full_corpus_upfront(tmp_path, gpu_map_constructor) -> None:
-    meta_base = _meta_base()
+    cache = _cache(tmp_path)
     chunk_a = _chunk("d1", 0, [1, 2, 3, 4])
     chunk_b = _chunk("d1", 1, [5, 6, 7, 8])
-    nbytes_a = _save_test_chunk(tmp_path, meta_base, chunk_a)
-    nbytes_b = _save_test_chunk(tmp_path, meta_base, chunk_b)
+    nbytes_a = _save_test_chunk(cache, chunk_a)
+    nbytes_b = _save_test_chunk(cache, chunk_b)
 
-    store = CpuChunkStore(
-        tmp_path, meta_base=meta_base, chunks=[chunk_a, chunk_b], device="cuda:2"
-    )
+    store = CpuChunkStore(cache, chunks=[chunk_a, chunk_b], device="cuda:2")
     gpu_map_constructor.assert_called_once_with(["d1:0", "d1:1"], device="cuda:2")
     chunk_map = gpu_map_constructor.return_value
     chunk_map.lookup.return_value.detach.return_value.cpu.return_value.tolist.return_value = [1, 0]
 
     fetched = store.fetch([chunk_b.chunk_id, chunk_a.chunk_id])
     assert [chunk.token_ids for chunk in fetched] == [[5, 6, 7, 8], [1, 2, 3, 4]]
-    assert all(tensor.device.type == "cpu" for chunk in fetched for tensor in chunk.kv_by_layer.values())
+    assert all(
+        tensor.device.type == "cpu" for chunk in fetched for tensor in chunk.kv_by_layer.values()
+    )
     stats = store.stats()
     assert stats["kv_store_backend"] == "cpu"
     assert stats["kv_store_chunk_count"] == 2
@@ -198,46 +189,46 @@ def test_cpu_chunk_store_loads_full_corpus_upfront(tmp_path, gpu_map_constructor
 
 
 def test_cpu_chunk_store_missing_files_raise_before_loading(tmp_path) -> None:
-    meta_base = _meta_base()
+    cache = _cache(tmp_path)
     chunk_a = _chunk("d1", 0, [1, 2, 3, 4])
     chunk_b = _chunk("d1", 1, [5, 6, 7, 8])
-    _save_test_chunk(tmp_path, meta_base, chunk_a)
+    _save_test_chunk(cache, chunk_a)
 
     with pytest.raises(RuntimeError, match="precompute-kv stage"):
-        CpuChunkStore(tmp_path, meta_base=meta_base, chunks=[chunk_a, chunk_b], device="cuda:0")
+        CpuChunkStore(cache, chunks=[chunk_a, chunk_b], device="cuda:0")
 
 
 def test_cpu_chunk_store_stale_cache_raises_actionably(tmp_path, gpu_map_constructor) -> None:
-    meta_base = _meta_base()
-    chunk_a = _chunk("d1", 0, [1, 2, 3, 4])
-    _save_test_chunk(tmp_path, meta_base, chunk_a)
+    cache = _cache(tmp_path)
+    _save_test_chunk(cache, _chunk("d1", 0, [1, 2, 3, 4]))
     drifted = _chunk("d1", 0, [9, 9, 9, 9])
 
     with pytest.raises(RuntimeError, match="precompute-kv stage"):
-        CpuChunkStore(tmp_path, meta_base=meta_base, chunks=[drifted], device="cuda:2")
+        CpuChunkStore(cache, chunks=[drifted], device="cuda:2")
     gpu_map_constructor.return_value.close.assert_called_once_with()
 
 
-def _stub_payloads(tmp_path, monkeypatch, chunks: list[RagChunk]) -> Mock:
+def _stub_payloads(cache: RagChunkCache, monkeypatch, chunks: list[RagChunk]) -> Mock:
     encoded = [
         KVChunk(chunk_id=chunk.chunk_id, token_ids=chunk.token_ids, kv_by_layer={})
         for chunk in chunks
     ]
     for chunk in chunks:
-        path = chunk_file_path(tmp_path, chunk.chunk_id)
+        path = cache.chunk_path(chunk.chunk_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"cache-presence-only")
     loader = Mock(side_effect=encoded)
-    monkeypatch.setattr("benchmarks.rag.kv_cache.load_chunk", loader)
+    monkeypatch.setattr("benchmarks.rag.cpu_chunk_store.load_chunk", loader)
     return loader
 
 
 def test_cpu_chunk_store_uses_one_gpu_lookup_for_ordered_duplicate_rows(
     tmp_path, monkeypatch, gpu_map_constructor
 ) -> None:
+    cache = _cache(tmp_path)
     chunks = [_chunk("d1", 0, [1, 2]), _chunk("d1", 1, [3, 4])]
-    loader = _stub_payloads(tmp_path, monkeypatch, chunks)
-    store = CpuChunkStore(tmp_path, meta_base=_meta_base(), chunks=chunks, device="cuda:2")
+    loader = _stub_payloads(cache, monkeypatch, chunks)
+    store = CpuChunkStore(cache, chunks=chunks, device="cuda:2")
     chunk_map = gpu_map_constructor.return_value
     rows = chunk_map.lookup.return_value
     rows.detach.return_value.cpu.return_value.tolist.return_value = [1, 0, 1]
@@ -255,18 +246,19 @@ def test_cpu_chunk_store_uses_one_gpu_lookup_for_ordered_duplicate_rows(
     store.close()
     chunk_map.close.assert_called_once_with()
     assert store.resident_bytes == 0
-    assert store._entries == []
+    assert store.fetch([]) == []
 
 
 def test_cpu_chunk_store_does_not_fallback_when_cuda_map_fails(
     tmp_path, monkeypatch, gpu_map_constructor
 ) -> None:
+    cache = _cache(tmp_path)
     chunks = [_chunk()]
-    loader = _stub_payloads(tmp_path, monkeypatch, chunks)
+    loader = _stub_payloads(cache, monkeypatch, chunks)
     gpu_map_constructor.side_effect = RuntimeError("CUDA allocation failed")
 
     with pytest.raises(RuntimeError, match="CUDA allocation failed"):
-        CpuChunkStore(tmp_path, meta_base=_meta_base(), chunks=chunks, device="cuda:2")
+        CpuChunkStore(cache, chunks=chunks, device="cuda:2")
 
     loader.assert_not_called()
 
@@ -274,38 +266,43 @@ def test_cpu_chunk_store_does_not_fallback_when_cuda_map_fails(
 def test_cpu_chunk_store_releases_map_after_partial_load_failure(
     tmp_path, monkeypatch, gpu_map_constructor
 ) -> None:
+    cache = _cache(tmp_path)
     chunks = [_chunk("d1", 0), _chunk("d1", 1)]
-    loader = _stub_payloads(tmp_path, monkeypatch, chunks)
+    loader = _stub_payloads(cache, monkeypatch, chunks)
     loader.side_effect = [
         KVChunk(chunk_id="d1:0", token_ids=[1], kv_by_layer={}),
         None,
     ]
 
     with pytest.raises(RuntimeError, match="precompute-kv stage"):
-        CpuChunkStore(tmp_path, meta_base=_meta_base(), chunks=chunks, device="cuda:2")
+        CpuChunkStore(cache, chunks=chunks, device="cuda:2")
 
     gpu_map_constructor.return_value.close.assert_called_once_with()
 
 
 def test_cpu_chunk_store_rejects_cpu_mapping_device(tmp_path) -> None:
     with pytest.raises(ValueError, match="requires a CUDA device"):
-        CpuChunkStore(tmp_path, meta_base=_meta_base(), chunks=[], device="cpu")
+        CpuChunkStore(_cache(tmp_path), chunks=[], device="cpu")
 
 
 def test_cpu_chunk_store_cuda_lookup_with_cpu_payloads(tmp_path) -> None:
     torch = pytest.importorskip("torch", reason="CUDA lookup integration requires PyTorch")
     if not torch.cuda.is_available():
         pytest.skip("CUDA lookup integration requires a CUDA device")
+    cache = _cache(tmp_path)
     chunks = [_chunk("d1", 0, [1, 2]), _chunk("d1", 1, [3, 4])]
     for chunk in chunks:
-        _save_test_chunk(tmp_path, _meta_base(), chunk)
+        _save_test_chunk(cache, chunk)
 
-    store = CpuChunkStore(tmp_path, meta_base=_meta_base(), chunks=chunks, device="cuda:0")
+    store = CpuChunkStore(cache, chunks=chunks, device="cuda:0")
     try:
-        assert store._chunk_map.device.type == "cuda"
         fetched = store.fetch(["d1:1", "d1:0", "d1:1"])
         assert [chunk.chunk_id for chunk in fetched] == ["d1:1", "d1:0", "d1:1"]
-        assert all(tensor.device.type == "cpu" for chunk in fetched for tensor in chunk.kv_by_layer.values())
+        assert all(
+            tensor.device.type == "cpu"
+            for chunk in fetched
+            for tensor in chunk.kv_by_layer.values()
+        )
         with pytest.raises(RuntimeError, match="not part of the corpus"):
             store.fetch(["unknown:0"])
     finally:

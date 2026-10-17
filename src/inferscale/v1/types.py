@@ -90,6 +90,8 @@ class PromptTokens:
 
 @dataclass(slots=True)
 class ComposedMemory:
+    """Position-correct KV of one answer's memory, ready for the connector."""
+
     kv_by_layer: dict[str, Any]
     token_ids: list[int]
     num_tokens: int
@@ -107,7 +109,7 @@ class SearchMetrics:
 
 @dataclass(slots=True, frozen=True)
 class DeviceSearchResult:
-    """One best-first result row whose IDs and distances remain on the GPU."""
+    """One search's stable IDs and distances, kept on the GPU by either index."""
 
     stable_ids: Any
     distances: Any

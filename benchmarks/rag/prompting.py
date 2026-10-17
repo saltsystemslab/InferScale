@@ -1,20 +1,17 @@
+"""The RAG prompt: the dataset's scaffold around the passages, and the templated question."""
+
 from __future__ import annotations
 
-from collections.abc import Sequence
 from typing import Any
 
-from inferscale.v1.kv.compose import reverse_ranked_ids
 from inferscale.v1.kv.prompt import (
     QueryTokens,
     ScaffoldTokens,
-    build_memory_token_ids,
     build_query_tokens,
     build_scaffold_tokens,
-    memory_token_budget,
 )
-from inferscale.v1.types import SearchHit
 
-from .data_types import RagPromptProfile, RagQuery
+from .data_types import RagQuery
 
 RAG_TEMPLATE_PLACEHOLDER = "<<<RAG_JASPER_PASSAGES_GO_HERE>>>"
 EMPTY_PASSAGES_TEXT = "(No relevant passages found)\n"
@@ -39,18 +36,6 @@ def extract_rag_scaffold_token_ids(
     )
 
 
-def reverse_ranked_chunk_ids(hits: Sequence[SearchHit]) -> list[str]:
-    """Unique retrieved chunk ids with the best-ranked chunk last."""
-    return reverse_ranked_ids(hits)
-
-
-def build_rag_memory_token_ids(
-    scaffold: ScaffoldTokens,
-    ordered_chunk_token_ids: Sequence[Sequence[int]],
-) -> list[int]:
-    return build_memory_token_ids(scaffold, ordered_chunk_token_ids)
-
-
 def build_rag_query_messages(
     query: RagQuery,
     *,
@@ -58,12 +43,7 @@ def build_rag_query_messages(
 ) -> list[dict[str, str]]:
     if not answer_instruction:
         raise ValueError("answer_instruction must be non-empty.")
-    return [
-        {
-            "role": "user",
-            "content": f"{answer_instruction}Question: {query.question}",
-        }
-    ]
+    return [{"role": "user", "content": f"{answer_instruction}Question: {query.question}"}]
 
 
 def build_rag_query_tokens(
@@ -80,21 +60,6 @@ def build_rag_query_tokens(
     )
 
 
-def calculate_rag_memory_budget(
-    *,
-    query_token_count: int,
-    max_position: int,
-    max_model_len: int,
-    max_answer_tokens: int,
-) -> int:
-    return memory_token_budget(
-        query_token_count=query_token_count,
-        max_position=max_position,
-        max_model_len=max_model_len,
-        max_answer_tokens=max_answer_tokens,
-    )
-
-
 def require_memory_within_budget(
     memory_token_count: int,
     memory_token_budget: int,
@@ -102,7 +67,10 @@ def require_memory_within_budget(
     top_k: int,
     chunk_size: int,
 ) -> None:
-    """Strict fail on over-budget composition; retrieved chunks are never dropped."""
+    """Fail on an over-budget composition, naming the settings to lower.
+
+    Retrieved chunks are never dropped silently.
+    """
     if memory_token_count <= memory_token_budget:
         return
     raise RuntimeError(

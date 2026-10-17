@@ -1,3 +1,5 @@
+"""The result mode recorded on every prediction, named after the answer backend."""
+
 from __future__ import annotations
 
 from benchmarks.memory.config import MemoryRunConfig

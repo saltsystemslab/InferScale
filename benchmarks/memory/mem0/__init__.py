@@ -1,23 +1,12 @@
-from __future__ import annotations
+"""Mem0 glue for the memory benchmark: fact catalogs, caches, and the vector store adapter.
+
+Mem0 reads ``MEM0_DIR`` and ``MEM0_TELEMETRY`` when it is first imported, so
+the process-wide defaults are set here, before any submodule imports the SDK.
+"""
 
 import os
 
-# Set the harness default before importing adapters, which load the Mem0 SDK.
+from benchmarks.common.paths import mem0_dir_from_environment
+
 os.environ.setdefault("MEM0_TELEMETRY", "false")
-
-from benchmarks.memory.mem0.fact_catalog import MemoryFact, fact_catalog_hits
-from benchmarks.memory.mem0.memory_builder import (
-    SampleMemoryBuilder,
-    embed_mem0_query,
-    memory_embedder,
-)
-from benchmarks.memory.mem0.prepared_retriever import PreparedMem0Retriever
-
-__all__ = [
-    "MemoryFact",
-    "PreparedMem0Retriever",
-    "SampleMemoryBuilder",
-    "embed_mem0_query",
-    "fact_catalog_hits",
-    "memory_embedder",
-]
+os.environ.setdefault("MEM0_DIR", str(mem0_dir_from_environment()))

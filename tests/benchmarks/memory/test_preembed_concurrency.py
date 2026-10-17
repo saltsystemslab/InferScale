@@ -4,18 +4,36 @@ import time
 from pathlib import Path
 from threading import Barrier, Lock
 from types import SimpleNamespace
-from typing import Any
 
 import pytest
-
-from benchmarks.memory.config import MemoryRunConfig
 from memory_config import make_memory_config
-from benchmarks.memory.data import ConversationSample
+
 from benchmarks.memory import preembed
+from benchmarks.memory.config import MemoryRunConfig
+from benchmarks.memory.data import ConversationSample
 
 
 def _sample(sample_id: str) -> ConversationSample:
     return ConversationSample(sample_id=sample_id, turns=[], qa=[], raw={})
+
+
+class FakeBuiltMemory:
+    def __init__(self, sample_id: str, closed: list[str]) -> None:
+        self.memory = SimpleNamespace(sample_id=sample_id)
+        self.metrics = {"memory_inferred_record_count": 1}
+        self._closed = closed
+
+    def embedding_cache_stats(self) -> dict[str, int]:
+        return {"hits": 1, "misses": 2}
+
+    def llm_cache_stats(self) -> dict[str, int]:
+        return {"hits": 3, "misses": 4}
+
+    def log_cache_stats(self, sample_id: str) -> None:
+        del sample_id
+
+    def close(self) -> None:
+        self._closed.append(self.memory.sample_id)
 
 
 def test_preembed_runs_samples_concurrently_and_aggregates_metrics(
@@ -35,12 +53,12 @@ def test_preembed_runs_samples_concurrently_and_aggregates_metrics(
         def __init__(self, config: MemoryRunConfig, *, embedding_cache_mode: str) -> None:
             del config, embedding_cache_mode
 
-        def build_with_metrics(
+        def build_memory(
             self,
             sample: ConversationSample,
             *,
             finalize_index: bool,
-        ) -> tuple[Any, dict[str, int]]:
+        ) -> FakeBuiltMemory:
             assert finalize_index is False
             with self.lock:
                 type(self).started += 1
@@ -51,26 +69,10 @@ def test_preembed_runs_samples_concurrently_and_aggregates_metrics(
                 if started <= 2:
                     self.barrier.wait(timeout=5)
                 time.sleep(0.02)
-                return SimpleNamespace(sample_id=sample.sample_id), {
-                    "memory_inferred_record_count": 1,
-                }
+                return FakeBuiltMemory(sample.sample_id, type(self).closed)
             finally:
                 with self.lock:
                     type(self).active -= 1
-
-        def embedding_cache_stats(self, memory: Any) -> dict[str, int]:
-            del memory
-            return {"hits": 1, "misses": 2}
-
-        def memory_llm_cache_stats(self, memory: Any) -> dict[str, int]:
-            del memory
-            return {"hits": 3, "misses": 4}
-
-        def log_embedding_cache_stats(self, memory: Any, sample_id: str) -> None:
-            del memory, sample_id
-
-        def close(self, memory: Any) -> None:
-            type(self).closed.append(str(memory.sample_id))
 
     monkeypatch.setattr(preembed, "load_locomo", lambda *args, **kwargs: samples)
     monkeypatch.setattr(preembed, "SampleMemoryBuilder", FakeMemoryBuilder)
@@ -106,7 +108,9 @@ def test_preembed_rejects_duplicate_sample_ids_before_starting_workers(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setattr(preembed, "load_locomo", lambda *args, **kwargs: [_sample("same"), _sample("same")])
+    monkeypatch.setattr(
+        preembed, "load_locomo", lambda *args, **kwargs: [_sample("same"), _sample("same")]
+    )
     config = make_memory_config(results_dir=tmp_path, run_id="duplicate", preembed_workers=2)
 
     with pytest.raises(ValueError, match="Duplicate sample ids"):

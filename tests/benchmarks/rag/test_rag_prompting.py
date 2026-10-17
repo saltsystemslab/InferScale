@@ -3,23 +3,25 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from rag_fixtures import CharTokenizer, TemplateTokenizer
 
-from inferscale.v1.kv.prompt import require_identical_token_ids
-from inferscale.v1.types import SearchHit
 from benchmarks.rag.data_types import RagQuery
 from benchmarks.rag.datasets.multihop_rag import INSUFFICIENT_ANSWER_TEXT, MULTIHOP_PROMPT_PROFILE
 from benchmarks.rag.datasets.qasper import QASPER_PROMPT_PROFILE, UNANSWERABLE_TEXT
 from benchmarks.rag.prompting import (
     EMPTY_PASSAGES_TEXT,
-    build_rag_memory_token_ids,
     build_rag_query_messages,
     build_rag_query_tokens,
-    calculate_rag_memory_budget,
     extract_rag_scaffold_token_ids,
     require_memory_within_budget,
-    reverse_ranked_chunk_ids,
 )
-from rag_fixtures import CharTokenizer, TemplateTokenizer
+from inferscale.v1.kv.compose import reverse_ranked_ids
+from inferscale.v1.kv.prompt import (
+    build_memory_token_ids,
+    memory_token_budget,
+    require_identical_token_ids,
+)
+from inferscale.v1.types import SearchHit
 
 
 class BosCharTokenizer(CharTokenizer):
@@ -102,7 +104,7 @@ def test_memory_token_ids_are_header_chunks_footer() -> None:
     chunk_a = [1, 2, 3]
     chunk_b = [4, 5]
 
-    token_ids = build_rag_memory_token_ids(scaffold, [chunk_a, chunk_b])
+    token_ids = build_memory_token_ids(scaffold, [chunk_a, chunk_b])
 
     assert token_ids == (
         list(scaffold.header_token_ids) + chunk_a + chunk_b + list(scaffold.footer_token_ids)
@@ -112,7 +114,7 @@ def test_memory_token_ids_are_header_chunks_footer() -> None:
 def test_empty_retrieval_renders_empty_passages_marker() -> None:
     scaffold = _scaffold(CharTokenizer(), block_size=4)
 
-    token_ids = build_rag_memory_token_ids(scaffold, [])
+    token_ids = build_memory_token_ids(scaffold, [])
 
     assert token_ids == (
         list(scaffold.header_token_ids)
@@ -121,10 +123,10 @@ def test_empty_retrieval_renders_empty_passages_marker() -> None:
     )
 
 
-def test_reverse_ranked_chunk_ids_dedupes_and_reverses() -> None:
+def test_reverse_ranked_ids_dedupes_and_reverses() -> None:
     hits = [_hit("c1", 1), _hit("c2", 2), _hit("c1", 3), _hit("c3", 4)]
 
-    assert reverse_ranked_chunk_ids(hits) == ["c3", "c2", "c1"]
+    assert reverse_ranked_ids(hits) == ["c3", "c2", "c1"]
 
 
 def test_multihop_query_messages_pin_the_insufficient_phrase() -> None:
@@ -173,7 +175,7 @@ def test_query_tokens_strip_duplicate_bos() -> None:
 
 def test_memory_budget_math_and_overflow() -> None:
     assert (
-        calculate_rag_memory_budget(
+        memory_token_budget(
             query_token_count=10,
             max_position=100,
             max_model_len=1000,
@@ -182,7 +184,7 @@ def test_memory_budget_math_and_overflow() -> None:
         == 100
     )
     assert (
-        calculate_rag_memory_budget(
+        memory_token_budget(
             query_token_count=30,
             max_position=10000,
             max_model_len=100,
@@ -191,7 +193,7 @@ def test_memory_budget_math_and_overflow() -> None:
         == 40
     )
     with pytest.raises(RuntimeError, match="exceed max_model_len"):
-        calculate_rag_memory_budget(
+        memory_token_budget(
             query_token_count=90,
             max_position=10000,
             max_model_len=100,

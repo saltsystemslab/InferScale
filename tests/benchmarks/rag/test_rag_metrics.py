@@ -96,7 +96,7 @@ def test_answer_metrics_take_the_best_over_references() -> None:
 
 def test_normalize_passage_text_maps_unicode_punctuation() -> None:
     fancy = "It\u2019s a \u201cbig\u201d win \u2014 maybe\u2026"
-    plain = "it's a \"big\" win - maybe..."
+    plain = 'it\'s a "big" win - maybe...'
 
     assert normalize_passage_text(fancy) == plain
     assert normalize_passage_text("A  \n\t B") == "a b"
@@ -154,9 +154,11 @@ def test_fact_spanning_adjacent_chunks_counts_when_both_retrieved() -> None:
 
 def test_unicode_fact_matches_ascii_chunk_text() -> None:
     evidence = (
-        EvidenceRef(doc_id="dA", title="A", url="uA", fact="it\u2019s a \u201cwin\u201d \u2013 truly"),
+        EvidenceRef(
+            doc_id="dA", title="A", url="uA", fact="it\u2019s a \u201cwin\u201d \u2013 truly"
+        ),
     )
-    texts = {"dA:0": "they said it's a \"win\" - truly impressive"}
+    texts = {"dA:0": 'they said it\'s a "win" - truly impressive'}
 
     metrics = retrieval_metrics_for_query(_query(evidence), [_hit("dA:0", "dA", 0, 1)], texts)
 

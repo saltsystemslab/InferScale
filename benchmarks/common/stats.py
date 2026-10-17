@@ -2,7 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
+
+
+def as_number(value: Any) -> float | None:
+    """A float for numeric values; None for None, booleans, and text that is not a number."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def percentile(sorted_numbers: list[float], fraction: float) -> float:

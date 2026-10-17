@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 
 import pytest
+from rag_fixtures import CharTokenizer
 
 from benchmarks.rag.chunking import (
     chunk_corpus,
@@ -12,7 +13,6 @@ from benchmarks.rag.chunking import (
     render_document,
 )
 from benchmarks.rag.data_types import RagDocument, doc_id_for_url
-from rag_fixtures import CharTokenizer
 
 
 def _doc(url: str = "https://example.com/a", body: str | None = None) -> RagDocument:

@@ -14,55 +14,39 @@ Linux environment; the reference environment is a Runpod container with the pers
 - GPU: one NVIDIA GPU with CUDA >=12.8.
 - Python >=3.10,<3.14.
 - CMake and the CUDA toolkit, used to build the `jasperpy` submodule.
-- Hugging Face API key (`HF_TOKEN` for models such as Llama 3.1) and an OpenAI API key for `text-embedding-3-small` embedding calls.
 
 We configure all default parameters to run on an RTX Pro 6000 GPU with 96 GB of VRAM.
 
 ## 2. Setup
 
+Configure the credentials in `.env`.
+
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` for your session.
-The common values are:
+Set the credentials in `.env`:
 
-- `BENCHMARK_RUNTIME_ROOT=/workspace`
-- `CUDA_MODULE=` for Runpod containers without environment modules
-- `OPENAI_API_KEY=...` for embeddings and Mem0 inference
-- `HF_TOKEN=...` if the model is gated
+- `OPENAI_API_KEY=...` for `text-embedding-3-small` embeddings
+- `HF_TOKEN=...` if the answer model is gated
 
-Load the environment in each shell that will run the project's commands:
+Then review `configs/runtime.json`.
 
-```bash
-source scripts/load_env.sh
-```
-
-## 3. Optimize Jasper
-
-There is a minor optimization we can make to Jasper. First initialize and update the Jasper submodule:
-
-```bash
-git submodule update --init --recursive jasperpy
-```
-
-To apply the optimization, edit `jasperpy/include/jasper/index/graph.cuh` and change line 70 to:
-
-```cpp
-static constexpr index_t vectors_per_segment = 1u << 12;
-```
-
-## 4. Install
-
-In `configs/runtime.json`, set `storage.runtime_root` to a writable directory; the default is `/workspace`.
+## 3. Install
 
 ```bash
 bash scripts/setup_remote.sh
 ```
 
-The script creates the virtual environment, installs InferScale and the pinned GPU dependencies, builds Jasper, and installs the Python bindings.
+The script:
+- Creates the virtual environment
+- Installs InferScale and the GPU dependencies
+- Initializes the `jasperpy` submodule and builds Jasper
+- Installs the Python bindings
+- Downloads the LoCoMo dataset
+- Extracts the Mem0 facts
 
-Load credentials and runtime paths into your current shell, then activate the configured environment:
+Load credentials and runtime paths into your current shell, then activate the environment:
 
 ```bash
 source scripts/load_env.sh

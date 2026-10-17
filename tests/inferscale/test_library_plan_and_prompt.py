@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from library_fakes import FakeTokenizer
 
 from inferscale.v1.kv.plan import build_encoding_plan
 from inferscale.v1.kv.prompt import (
@@ -15,7 +16,6 @@ from inferscale.v1.kv.prompt import (
     require_memory_within_budget,
 )
 from inferscale.v1.kv.tokenization import encode_text_no_special
-from library_fakes import FakeTokenizer
 
 
 def test_encoding_plan_keeps_target_and_truncates_oldest_context() -> None:
@@ -52,7 +52,9 @@ def test_encoding_plan_without_context() -> None:
 )
 def test_encoding_plan_rejects_bad_inputs(kwargs, message) -> None:
     with pytest.raises((RuntimeError, ValueError), match=message):
-        build_encoding_plan("c", kwargs["target_token_ids"], max_input_tokens=kwargs["max_input_tokens"])
+        build_encoding_plan(
+            "c", kwargs["target_token_ids"], max_input_tokens=kwargs["max_input_tokens"]
+        )
 
 
 def test_scaffold_splits_the_template_and_pads_the_footer() -> None:
@@ -110,10 +112,22 @@ def test_query_tokens_strip_a_duplicate_bos_and_assemble_the_prompt() -> None:
 
 
 def test_memory_budget_and_alignment_guards() -> None:
-    assert memory_token_budget(query_token_count=10, max_position=100, max_model_len=200, max_answer_tokens=20) == 100
-    assert memory_token_budget(query_token_count=10, max_position=1000, max_model_len=200, max_answer_tokens=20) == 170
+    assert (
+        memory_token_budget(
+            query_token_count=10, max_position=100, max_model_len=200, max_answer_tokens=20
+        )
+        == 100
+    )
+    assert (
+        memory_token_budget(
+            query_token_count=10, max_position=1000, max_model_len=200, max_answer_tokens=20
+        )
+        == 170
+    )
     with pytest.raises(RuntimeError, match="exceed max_model_len"):
-        memory_token_budget(query_token_count=190, max_position=100, max_model_len=200, max_answer_tokens=20)
+        memory_token_budget(
+            query_token_count=190, max_position=100, max_model_len=200, max_answer_tokens=20
+        )
     require_memory_within_budget(100, 100)
     with pytest.raises(RuntimeError, match="memory budget"):
         require_memory_within_budget(101, 100)
@@ -124,7 +138,9 @@ def test_memory_budget_and_alignment_guards() -> None:
 
 
 def test_memory_token_ids_and_parity_guard() -> None:
-    scaffold = build_scaffold_tokens(FakeTokenizer(), system_prompt="S\n", empty_text="E\n", block_size=4)
+    scaffold = build_scaffold_tokens(
+        FakeTokenizer(), system_prompt="S\n", empty_text="E\n", block_size=4
+    )
     with_chunks = build_memory_token_ids(scaffold, [[9, 9], [8]])
     assert with_chunks == scaffold.header_token_ids + [9, 9, 8] + scaffold.footer_token_ids
     empty = build_memory_token_ids(scaffold, [])

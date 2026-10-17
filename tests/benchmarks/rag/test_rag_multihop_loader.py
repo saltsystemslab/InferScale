@@ -1,10 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
-from benchmarks.rag.data_types import doc_id_for_url
-from benchmarks.rag.datasets import get_dataset
-from benchmarks.rag.datasets.multihop_rag import load_multihop_rag
 from rag_fixtures import (
     FACT_B,
     multihop_corpus_records,
@@ -12,12 +8,15 @@ from rag_fixtures import (
     write_multihop_files,
 )
 
+from benchmarks.rag.data_types import doc_id_for_url
+from benchmarks.rag.datasets import get_dataset
+from benchmarks.rag.datasets.multihop_rag import load_multihop_rag
+
 
 def test_registry_exposes_multihoprag_spec() -> None:
     spec = get_dataset("multihoprag")
 
     assert spec.name == "multihoprag"
-    assert spec.chunking == "token-window"
     assert set(spec.download_urls) == {"corpus.json", "MultiHopRAG.json"}
     with pytest.raises(ValueError, match="Unknown RAG dataset"):
         get_dataset("nope")
@@ -47,7 +46,7 @@ def test_loader_parses_fixture_and_resolves_evidence(tmp_path) -> None:
     assert {ref.doc_id for ref in inference.evidence} == {docs[0].doc_id, docs[1].doc_id}
     assert inference.gold_answers == ("Alpha Corp",)
     assert inference.gold_answer == "Alpha Corp"
-    assert queries[3].is_null and queries[3].evidence == ()
+    assert queries[3].question_type == "null_query" and queries[3].evidence == ()
 
 
 def test_evidence_resolves_by_title_when_url_is_missing(tmp_path) -> None:
@@ -117,5 +116,5 @@ def test_missing_corpus_field_raises(tmp_path) -> None:
 
 
 def test_missing_files_raise_with_download_hint(tmp_path) -> None:
-    with pytest.raises(FileNotFoundError, match="setup-data"):
+    with pytest.raises(FileNotFoundError, match="setup_data.sh"):
         load_multihop_rag(tmp_path / "does-not-exist")

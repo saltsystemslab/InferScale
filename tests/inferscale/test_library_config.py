@@ -19,7 +19,9 @@ from inferscale.v1.config import DEFAULT_CONNECTOR_MODULE
 
 def test_defaults_match_the_serving_contract() -> None:
     config = InferScaleConfig(model="meta-llama/Llama-3.1-8B-Instruct")
-    assert config.engine.connector_module == DEFAULT_CONNECTOR_MODULE == "inferscale.v1.kv.connector"
+    assert (
+        config.engine.connector_module == DEFAULT_CONNECTOR_MODULE == "inferscale.v1.kv.connector"
+    )
     assert config.engine.block_size == 16
     assert config.kv.store_backend == "gpu"
     assert config.kv.max_position == 32768
@@ -102,12 +104,14 @@ def test_vector_backend_rejects_invalid_values(tmp_path, vector_backend, source)
 
 @pytest.mark.parametrize("selector", [{}, {"vector_backend": "exact"}])
 def test_exact_has_no_jasper_beam_width_limit(selector) -> None:
-    config = InferScaleConfig.from_dict({
-        "model": "m",
-        **selector,
-        "top_k": 2000,
-        "index": {"beam_width": 1000},
-    })
+    config = InferScaleConfig.from_dict(
+        {
+            "model": "m",
+            **selector,
+            "top_k": 2000,
+            "index": {"beam_width": 1000},
+        }
+    )
     assert config.top_k == 2000
     assert config.index.beam_width == 1000
 
@@ -153,8 +157,16 @@ def test_context_window_preserves_existing_positional_config_sections() -> None:
     prompt = PromptConfig(chunk_separator="\n\n")
     generation = GenerationConfig(max_tokens=64)
     config = InferScaleConfig(
-        "m", 5, engine, kv, index, embedding, prompt, generation,
-        context_window=2, vector_backend="exact",
+        "m",
+        5,
+        engine,
+        kv,
+        index,
+        embedding,
+        prompt,
+        generation,
+        context_window=2,
+        vector_backend="exact",
     )
 
     assert config.top_k == 5

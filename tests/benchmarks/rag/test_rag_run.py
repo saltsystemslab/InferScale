@@ -11,18 +11,37 @@ from benchmarks.rag.run import main
 @pytest.mark.parametrize(
     "stage,module,function,summary",
     [
-        ("estimate", "runner", "run_estimate", {}),
         (
-            "preembed", "preembed", "preembed_rag_embeddings",
-            {"cache": {"cache_dir": "cache", "hits": 1, "misses": 0},
-             "chunk_embedding_count": 1, "query_embedding_count": 1},
+            "estimate",
+            "estimate",
+            "run_estimate",
+            {
+                "dataset": "multihoprag",
+                "doc_count": 1,
+                "query_count": 1,
+                "chunk_count": 1,
+                "corpus_total_tokens": 4,
+                "projected_kv_cache_bytes": None,
+            },
         ),
         (
-            "precompute-kv", "kv_precompute", "precompute_rag_kv",
+            "preembed",
+            "preembed",
+            "preembed_rag_embeddings",
+            {
+                "cache": {"cache_dir": "cache", "hits": 1, "misses": 0},
+                "chunk_embedding_count": 1,
+                "query_embedding_count": 1,
+            },
+        ),
+        (
+            "precompute-kv",
+            "kv_precompute",
+            "precompute_rag_kv",
             {"cache_dir": "cache", "encoded": 1, "skipped": 0, "chunk_count": 1, "cache_bytes": 4},
         ),
-        ("run", "runner", "run_answer", {"question_count": 1, "judged_count": 0}),
-        ("judge", "runner", "judge_existing_run", {"question_count": 1, "judged_count": 1}),
+        ("run", "answer_run", "run_answer", {"question_count": 1, "judged_count": 0}),
+        ("judge", "judge_run", "judge_existing_run", {"question_count": 1, "judged_count": 1}),
     ],
 )
 def test_main_dispatches_json_config_to_selected_stage(

@@ -14,8 +14,8 @@ source "${SCRIPT_DIR}/environment.sh"
 load_benchmark_environment "${PROJECT_ROOT}/configs/setup.json" prepare-launch
 _SETUP_EXPORTS="$(python3 - <<'PYSETUP'
 from pathlib import Path
-from benchmarks.common.setup_config import shell_exports
-print(shell_exports(Path("configs/setup.json")))
+from benchmarks.common.setup_config import setup_shell_exports
+print(setup_shell_exports(Path("configs/setup.json")))
 PYSETUP
 )"
 eval "${_SETUP_EXPORTS}"
@@ -99,6 +99,21 @@ fi
 python -m pip install -c "${CONSTRAINTS_FILE}" torch torchvision torchaudio --index-url "${PYTORCH_INDEX}"
 python -m pip install -c "${CONSTRAINTS_FILE}" -e ".[dev,jasper]"
 python -m pip install -c "${CONSTRAINTS_FILE}" vllm accelerate hf_transfer --extra-index-url "${PYTORCH_INDEX}"
+
+# Jasper's graph segment size is a compile-time constant; set it from the setup JSON.
+python3 - "${JASPER_VECTORS_PER_SEGMENT_LOG2}" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path("jasperpy/include/jasper/index/graph.cuh")
+pattern = r"(static constexpr index_t vectors_per_segment = 1u << )\d+;"
+updated, count = re.subn(pattern, rf"\g<1>{int(sys.argv[1])};", path.read_text())
+if count != 1:
+    raise SystemExit(f"expected one vectors_per_segment definition in {path}, found {count}")
+path.write_text(updated)
+print(f"Jasper vectors_per_segment = 1 << {sys.argv[1]}")
+PY
 
 declare -a JASPER_CMAKE_PLATFORM_ARGS=()
 configure_runpod_cuda_cmake_args

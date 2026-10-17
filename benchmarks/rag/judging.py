@@ -1,12 +1,13 @@
+"""LLM-as-judge for RAG answers: one prompt over one or more references, and record judging."""
+
 from __future__ import annotations
 
 from collections.abc import Sequence
 from typing import Any
 
 from benchmarks.common.clients import ChatClient
-from benchmarks.common.judge import build_judge_client, judge_payload
-
-from .config import RagBenchConfig
+from benchmarks.common.judge import build_judge_client, judge_with
+from benchmarks.rag.config import RagBenchConfig
 
 RAG_JUDGE_INSTRUCTIONS = (
     "You are evaluating the correctness of an answer to a question about a collection "
@@ -51,24 +52,14 @@ def build_rag_judge_messages(
     return [{"role": "user", "content": user}]
 
 
-def judge_metadata(config: RagBenchConfig | None) -> dict[str, Any]:
-    if config is None:
-        return {}
-    return {
-        "provider": config.judge_provider,
-        "model": config.judge_model,
-    }
+def judge_metadata(config: RagBenchConfig) -> dict[str, Any]:
+    return {"provider": config.judge_provider, "model": config.judge_model}
 
 
 def judge_client_for(config: RagBenchConfig) -> ChatClient | None:
     if config.skip_judge or config.judge_provider != "vllm":
         return None
-    return build_judge_client(
-        provider=config.judge_provider,
-        model=config.judge_model,
-        base_url=config.judge_base_url,
-        api_key=config.judge_api_key,
-    )
+    return build_judge_client(config.judge())
 
 
 def judge_rag_answer(
@@ -79,13 +70,12 @@ def judge_rag_answer(
     gold_answers: Sequence[str] | str,
     predicted_answer: str,
 ) -> dict[str, Any]:
-    judge = judge_client.chat(
+    return judge_with(
+        judge_client,
         build_rag_judge_messages(question, gold_answers, predicted_answer),
         max_tokens=config.max_judge_tokens,
-        temperature=0.0,
-        top_p=1.0,
+        metadata=judge_metadata(config),
     )
-    return judge_payload(judge.content, judge_metadata(config))
 
 
 def judge_rag_record(
@@ -93,9 +83,10 @@ def judge_rag_record(
     judge_client: ChatClient,
     record: dict[str, Any],
 ) -> dict[str, Any]:
+    """Judge a saved prediction record from its own question and reference answers."""
     gold_answers = record.get("gold_answers")
     if not isinstance(gold_answers, list) or not gold_answers:
-        gold_answers = [str(record.get("gold_answer") or "")]
+        raise RuntimeError(f"Prediction record {record_label(record)} has no gold_answers.")
     return judge_rag_answer(
         config,
         judge_client,
@@ -107,6 +98,5 @@ def judge_rag_record(
 
 def record_label(record: dict[str, Any]) -> str:
     return (
-        f"query_id={record.get('query_id') or ''} "
-        f"question_type={record.get('question_type') or ''}"
+        f"query_id={record.get('query_id') or ''} question_type={record.get('question_type') or ''}"
     ).strip()

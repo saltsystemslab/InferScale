@@ -5,16 +5,21 @@ import os
 from pathlib import Path
 
 import pytest
+from memory_config import memory_config_data
 
 from benchmarks.common.config import ConfigError, load_runtime_config
 from benchmarks.memory.config import load_memory_config
-from memory_config import memory_config_data
 
 
 @pytest.fixture(autouse=True)
 def isolate_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(os, "environ", os.environ.copy())
-    for name in ("JUDGE_LLM_BASE_URL", "JUDGE_LLM_API_KEY", "EXTRACTION_LLM_BASE_URL", "EXTRACTION_LLM_API_KEY"):
+    for name in (
+        "JUDGE_LLM_BASE_URL",
+        "JUDGE_LLM_API_KEY",
+        "EXTRACTION_LLM_BASE_URL",
+        "EXTRACTION_LLM_API_KEY",
+    ):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -22,14 +27,20 @@ def isolate_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 def config_paths(tmp_path: Path) -> tuple[Path, Path]:
     config_path = tmp_path / "memory.json"
     config_path.write_text(
-        json.dumps(memory_config_data(model="custom", top_k=7, run_id="json-test")), encoding="utf-8"
+        json.dumps(memory_config_data(model="custom", top_k=7, run_id="json-test")),
+        encoding="utf-8",
     )
     runtime_path = tmp_path / "runtime.json"
     runtime_path.write_text(
-        json.dumps({
-            "models": {"custom": "example-org/custom-model"},
-            "storage": {"runtime_root": str(tmp_path), "local_store_dir": str(tmp_path / "local")},
-        }),
+        json.dumps(
+            {
+                "models": {"custom": "example-org/custom-model"},
+                "storage": {
+                    "runtime_root": str(tmp_path),
+                    "local_store_dir": str(tmp_path / "local"),
+                },
+            }
+        ),
         encoding="utf-8",
     )
     return config_path, runtime_path
@@ -40,14 +51,19 @@ def load(paths: tuple[Path, Path], *, stage: str = "run"):
     return load_memory_config(config_path, load_runtime_config(runtime_path), stage=stage)
 
 
-def test_loader_loads_json_and_runtime_paths(config_paths: tuple[Path, Path], tmp_path: Path) -> None:
+def test_loader_loads_json_and_runtime_paths(
+    config_paths: tuple[Path, Path], tmp_path: Path
+) -> None:
     config = load(config_paths)
 
     assert config.model == "example-org/custom-model"
     assert config.top_k == 7
     assert config.run_dir == tmp_path / "results" / "json-test"
     assert config.memory_llm_cache_dir == tmp_path / ".cache" / "mem0-inference"
-    assert config.local_store_scratch_dir() == tmp_path / "local" / "inferscale-bench-stores" / "json-test"
+    assert (
+        config.local_store_scratch_dir()
+        == tmp_path / "local" / "inferscale-bench-stores" / "json-test"
+    )
 
 
 def write_settings(config_paths: tuple[Path, Path], **values) -> None:
@@ -91,7 +107,9 @@ def test_loader_rejudge_setting_requires_judge_stage(config_paths: tuple[Path, P
 
 
 @pytest.mark.parametrize("values", [{"skip_judge": True}, {"judge": {"provider": "none"}}])
-def test_loader_judge_stage_requires_enabled_judging(config_paths: tuple[Path, Path], values) -> None:
+def test_loader_judge_stage_requires_enabled_judging(
+    config_paths: tuple[Path, Path], values
+) -> None:
     write_settings(config_paths, **values)
     with pytest.raises(ConfigError):
         load(config_paths, stage="judge")
@@ -109,10 +127,16 @@ def test_loader_judge_stage_requires_existing_run_id(config_paths: tuple[Path, P
         load(config_paths, stage="judge")
 
 
-@pytest.mark.parametrize(("name", "value"), [
-    ("log_every", -1), ("max_samples", -1), ("max_questions", 0),
-    ("run_id", "../other-run"), ("run_id", ""),
-])
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("log_every", -1),
+        ("max_samples", -1),
+        ("max_questions", 0),
+        ("run_id", "../other-run"),
+        ("run_id", ""),
+    ],
+)
 def test_loader_rejects_invalid_json_bounds_and_run_paths(config_paths, name, value) -> None:
     write_settings(config_paths, **{name: value})
     with pytest.raises(ConfigError, match=name):

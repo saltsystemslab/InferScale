@@ -3,10 +3,10 @@ from __future__ import annotations
 import sys
 
 import pytest
+from library_fakes import FakeChunkStore, FakeEmbedder, FakeEncoder, FakeEngine, FakeIndex
 
 import inferscale.v1.api as api_module
 from inferscale.v1 import Chunk, InferScale, InferScaleConfig, JasperIndex, MatmulIndex
-from library_fakes import FakeChunkStore, FakeEmbedder, FakeEncoder, FakeEngine, FakeIndex
 
 
 def test_facade_defaults_to_exact_without_loading_native_stacks(monkeypatch) -> None:
@@ -43,7 +43,10 @@ def test_explicit_index_takes_precedence_over_backend(monkeypatch, backend) -> N
     index = FakeIndex()
     with InferScale(
         InferScaleConfig(model="m", vector_backend=backend),
-        embedder=FakeEmbedder(), index=index, chunk_store=FakeChunkStore(), engine=FakeEngine(),
+        embedder=FakeEmbedder(),
+        index=index,
+        chunk_store=FakeChunkStore(),
+        engine=FakeEngine(),
     ) as facade:
         assert facade._index is index
 
@@ -56,9 +59,13 @@ def test_matmul_receives_configured_cuda_device(monkeypatch) -> None:
         return FakeIndex()
 
     monkeypatch.setattr(api_module, "MatmulIndex", make_index)
-    config = InferScaleConfig.from_dict({
-        "model": "m", "vector_backend": "exact", "kv": {"device": "cuda:2"},
-    })
+    config = InferScaleConfig.from_dict(
+        {
+            "model": "m",
+            "vector_backend": "exact",
+            "kv": {"device": "cuda:2"},
+        }
+    )
     with InferScale(
         config, embedder=FakeEmbedder(), chunk_store=FakeChunkStore(), engine=FakeEngine()
     ):
@@ -73,18 +80,25 @@ def test_matmul_precompute_start_query_uses_chunk_lookup_without_jasper(monkeypa
     monkeypatch.setitem(sys.modules, "tvm_ffi", None)
     monkeypatch.setattr(api_module, "ChunkedRopeEncoder", FakeEncoder)
     store = FakeChunkStore()
-    config = InferScaleConfig.from_dict({
-        "model": "m", "top_k": 2, "vector_backend": "exact", "engine": {"block_size": 4},
-    })
+    config = InferScaleConfig.from_dict(
+        {
+            "model": "m",
+            "top_k": 2,
+            "vector_backend": "exact",
+            "engine": {"block_size": 4},
+        }
+    )
     with InferScale(
         config, embedder=FakeEmbedder(), chunk_store=store, engine=FakeEngine()
     ) as facade:
-        facade.precompute([
-            Chunk(id="c1", text="Alice lives in Berlin."),
-            Chunk(id="c2", text="Alice enjoys hiking."),
-            Chunk(id="c3", text="Bob teaches chemistry."),
-            Chunk(id="c4", text="Alice has a cat named Miso."),
-        ])
+        facade.precompute(
+            [
+                Chunk(id="c1", text="Alice lives in Berlin."),
+                Chunk(id="c2", text="Alice enjoys hiking."),
+                Chunk(id="c3", text="Bob teaches chemistry."),
+                Chunk(id="c4", text="Alice has a cat named Miso."),
+            ]
+        )
         facade.start()
         result = facade.query("What is Alice's cat named?")
         assert len(result.hits) == 2

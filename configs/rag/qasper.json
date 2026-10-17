@@ -52,7 +52,6 @@
   },
   "sweeps": {
     "standard": {
-      "log_dir_prefix": "rag-sweep-logs",
       "top_k": [15],
       "answer_backends": ["kv-injection", "prompt-injection"]
     }

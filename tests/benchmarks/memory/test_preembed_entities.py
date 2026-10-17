@@ -5,8 +5,8 @@ from typing import Any
 
 import pytest
 
-from benchmarks.memory.data import ConversationSample, QuestionAnswer
 from benchmarks.memory import preembed
+from benchmarks.memory.data import ConversationSample, QuestionAnswer
 
 
 class _RecordingEmbedder:

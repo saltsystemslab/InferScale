@@ -12,7 +12,7 @@ from .types import SearchHit, SearchMetrics
 
 
 class Embedder(Protocol):
-    """Embeds stored texts and queries; benchmarks inject a cache-backed one."""
+    """Embeds stored texts and queries; callers may wrap one in a cache."""
 
     def embed_documents(self, texts: Sequence[str]) -> list[list[float]]: ...
 
@@ -49,13 +49,11 @@ class VectorIndex(Protocol):
     def close(self) -> None: ...
 
 
-class ChunkStore(Protocol):
-    """KV payload storage with mandatory CUDA chunk-ID to row lookup.
+class MemoryStore(Protocol):
+    """Registered KV memories as the connector reads them.
 
-    The corpus methods resolve IDs through a GPU map for both GPU and pinned
-    host payloads.
-    The single-user methods also serve the composed-request registry, whose
-    bookkeeping is separate from the text-to-KV corpus map.
+    A store without staging reports zero ``num_staging_slots`` and treats
+    prefetch and release as no-ops.
     """
 
     num_staging_slots: int
@@ -72,18 +70,6 @@ class ChunkStore(Protocol):
 
     def peek_user_memory(self, user_id: str) -> UserMemory | None: ...
 
-    def finalize_chunk_lookup(self) -> None: ...
-
-    def get_chunk_memories(
-        self, chunk_ids: Sequence[str]
-    ) -> list[tuple[str, UserMemory]]: ...
-
-    def build_device_row_map(self, stable_id_items: Iterable[tuple[int, str]]) -> Any: ...
-
-    def get_device_chunk_memories(
-        self, stable_ids: Any, id_to_row: Any, *, reverse: bool = False
-    ) -> list[tuple[str, UserMemory]]: ...
-
     def remove_user_memory(self, user_id: str) -> bool: ...
 
     def get_all_user_ids(self) -> list[str]: ...
@@ -94,12 +80,24 @@ class ChunkStore(Protocol):
 
     def release_staging(self, user_id: str) -> None: ...
 
+
+class ChunkStore(MemoryStore, Protocol):
+    """A memory store that also serves the corpus through a GPU ID lookup."""
+
+    def finalize_packed(self) -> None: ...
+
+    def finalize_chunk_lookup(self) -> None: ...
+
+    def close_chunk_lookup(self) -> None: ...
+
+    def get_chunk_memories(self, chunk_ids: Sequence[str]) -> list[tuple[str, UserMemory]]: ...
+
+    def build_device_row_map(self, stable_id_items: Iterable[tuple[int, str]]) -> Any: ...
+
+    def get_device_chunk_memories(
+        self, stable_ids: Any, id_to_row: Any, *, reverse: bool = False
+    ) -> list[tuple[str, UserMemory]]: ...
+
     def get_bench_summary(self) -> dict[str, float | int]: ...
 
     def transfer_totals(self) -> dict[str, float]: ...
-
-    def transfer_count(self) -> int: ...
-
-    def last_transfer_record(self) -> Any: ...
-
-    def reset_bench_metrics(self) -> None: ...

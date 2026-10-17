@@ -7,12 +7,9 @@ from typing import TYPE_CHECKING, Any
 
 from ..types import KVChunk, ScaffoldChunks
 from .chunk_store import (
-    build_device_chunk_row_map,
     chunk_nbytes,
     close_chunk_store,
     fetch_chunks,
-    fetch_device_chunk,
-    fetch_device_chunks,
     finalize_chunk_store,
     register_chunks,
     release_chunks,
@@ -23,14 +20,13 @@ if TYPE_CHECKING:
 
 
 class KVCorpus:
-    """Chunk KV with a GPU ID map and local planning metadata.
+    """Chunk KV in a store with a GPU ID map, plus local planning metadata.
 
     ``add`` moves a chunk's tensors into the store and keeps a metadata-only
     copy (token ids and context provenance) for planning and inspection. The
     scaffold chunks (header, empty context, footer) stay as local GPU tensors
-    and never enter the store, exactly like the corpus stores they wrap.
-    The store resolves text IDs to numeric KV rows on GPU regardless of
-    whether the corpus payloads are on GPU or in pinned host memory.
+    and never enter the store. The store resolves text IDs to KV rows on the
+    GPU whether the payloads live on the GPU or in pinned host memory.
     """
 
     def __init__(self, store: ChunkStore) -> None:
@@ -76,22 +72,8 @@ class KVCorpus:
         release_chunks(self._store, chunk_ids)
 
     def finalize(self) -> None:
-        """Build the mandatory GPU lookup and finalize the payload layout."""
+        """Finalize the payload layout and build the GPU lookup."""
         finalize_chunk_store(self._store)
-
-    def build_device_row_map(self, stable_id_items: Iterable[tuple[int, str]]) -> Any:
-        return build_device_chunk_row_map(self._store, stable_id_items)
-
-    def fetch_device_chunk(self, stable_ids: Any, id_to_row: Any) -> KVChunk:
-        return fetch_device_chunk(self._store, stable_ids, id_to_row)
-
-    def fetch_device_chunks(
-        self, stable_ids: Any, id_to_row: Any, *, reverse: bool = True
-    ) -> list[KVChunk]:
-        """Resolve Jasper IDs on GPU for either corpus payload backend."""
-        return fetch_device_chunks(
-            self._store, self._meta, stable_ids, id_to_row, reverse=reverse
-        )
 
     def stats(self) -> dict[str, Any]:
         stats: dict[str, Any] = {
@@ -102,12 +84,6 @@ class KVCorpus:
         for key, value in self._store.get_stats().items():
             stats[f"store_{key}"] = value
         return stats
-
-    def transfer_totals(self) -> dict[str, float]:
-        return dict(self._store.transfer_totals())
-
-    def bench_summary(self) -> dict[str, Any]:
-        return dict(self._store.get_bench_summary())
 
     def close(self) -> None:
         close_chunk_store(self._store)

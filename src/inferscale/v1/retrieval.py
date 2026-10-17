@@ -24,13 +24,18 @@ class Retriever:
         texts: Sequence[str],
         payloads: Sequence[Mapping[str, Any]] | None = None,
     ) -> float:
-        """Embed the texts in batches and add them to the index; returns the embedding time in ms."""
+        """Embed the texts in batches and add them to the index.
+
+        Returns the embedding time in milliseconds.
+        """
         id_list = [str(item_id) for item_id in ids]
         text_list = [str(text) for text in texts]
         if len(id_list) != len(text_list):
             raise ValueError("ids and texts must have the same length.")
         payload_list = (
-            [dict(payload) for payload in payloads] if payloads is not None else [{} for _ in id_list]
+            [dict(payload) for payload in payloads]
+            if payloads is not None
+            else [{} for _ in id_list]
         )
         if len(payload_list) != len(id_list):
             raise ValueError("payloads and ids must have the same length.")
@@ -39,7 +44,9 @@ class Retriever:
         started = time.perf_counter()
         vectors: list[list[float]] = []
         for start in range(0, len(text_list), self._batch_size):
-            vectors.extend(self.embedder.embed_documents(text_list[start : start + self._batch_size]))
+            vectors.extend(
+                self.embedder.embed_documents(text_list[start : start + self._batch_size])
+            )
         embed_ms = (time.perf_counter() - started) * 1000
         self.index.add_many(vectors, payload_list, ids=id_list)
         return embed_ms

@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from memory_config import make_memory_config
+
 from benchmarks.memory.data import (
     ConversationSample,
     QuestionAnswer,
@@ -11,7 +12,7 @@ from benchmarks.memory.data import (
     format_turn_for_memory,
     load_locomo,
 )
-from benchmarks.memory.evaluation import _evidence_context
+from benchmarks.memory.evaluation import evidence_context
 from benchmarks.memory.protocol import (
     ANSWER_PROMPT_PROTOCOL,
     JUDGE_PROMPT_PROTOCOL,
@@ -114,6 +115,63 @@ def test_evidence_context_matches_pinned_locomo_judge_format() -> None:
         evidence=["D1:1"],
     )
 
-    assert _evidence_context(sample, qa) == (
+    assert evidence_context(sample, qa) == (
         '[D1:1, said on 1:56 pm on 8 May, 2023] Alice: "We went to Lyon."'
     )
+
+
+def test_loader_reads_the_locomo_schema(tmp_path: Path) -> None:
+    dataset_path = tmp_path / "locomo.json"
+    dataset_path.write_text(
+        json.dumps(
+            [
+                {
+                    "sample_id": "conv-1",
+                    "conversation": {
+                        "speaker_a": "Alice",
+                        "speaker_b": "Bob",
+                        "session_1_date_time": "1:56 pm on 8 May, 2023",
+                        "session_1": [
+                            {
+                                "speaker": "Alice",
+                                "dia_id": "D1:1",
+                                "text": "Look at this.",
+                                "img_url": ["kayak.jpg"],
+                                "blip_caption": "a green kayak",
+                                "query": "kayak",
+                            },
+                            {"speaker": "Bob", "dia_id": "D1:2", "text": "Nice."},
+                        ],
+                    },
+                    "qa": [
+                        {
+                            "question": "What did Alice share?",
+                            "answer": "a kayak",
+                            "evidence": ["D1:1"],
+                            "category": 4,
+                        },
+                        {
+                            "question": "Did Alice buy a boat?",
+                            "adversarial_answer": "No",
+                            "evidence": ["D1:1"],
+                            "category": 5,
+                        },
+                    ],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    (sample,) = load_locomo(dataset_path)
+
+    assert [turn.id for turn in sample.turns] == ["conv-1:session_1:0", "conv-1:session_1:1"]
+    assert sample.turns[0].image_caption == "a green kayak"
+    assert sample.turns[0].timestamp == "1:56 pm on 8 May, 2023"
+    assert sample.turns[1].image_caption is None
+    assert [(qa.question_id, qa.category, qa.answer) for qa in sample.qa] == [
+        ("q0", "4", "a kayak"),
+        ("q1", "5", ""),
+    ]
+    assert sample.qa[0].evidence == ["D1:1"]
+    assert load_locomo(dataset_path, max_samples=0) == []

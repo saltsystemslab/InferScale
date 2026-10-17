@@ -12,10 +12,13 @@ def test_public_api_imports_without_gpu_stacks() -> None:
         "for name in ('torch', 'vllm', 'jasper', 'openai', 'transformers'):\n"
         "    sys.modules[name] = None\n"
         "import inferscale\n"
-        "from inferscale.v1 import InferScale, InferScaleConfig, Chunk, KVChunk, Retriever, JasperIndex, MatmulIndex\n"
+        "from inferscale.v1 import InferScale, InferScaleConfig, Chunk, KVChunk\n"
+        "from inferscale.v1 import Retriever, JasperIndex, MatmulIndex\n"
         "print(len(inferscale.__all__))\n"
     )
-    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True
+    )
     assert int(result.stdout.strip()) > 20
 
 

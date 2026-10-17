@@ -1,10 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
-from benchmarks.rag.data_types import doc_id_for_url
-from benchmarks.rag.datasets import get_dataset
-from benchmarks.rag.datasets.qasper import UNANSWERABLE_TEXT, load_qasper
 from rag_fixtures import (
     QASPER_EVIDENCE_RESULTS,
     QASPER_EVIDENCE_SURVEY,
@@ -12,12 +8,15 @@ from rag_fixtures import (
     write_qasper_files,
 )
 
+from benchmarks.rag.data_types import doc_id_for_url
+from benchmarks.rag.datasets import get_dataset
+from benchmarks.rag.datasets.qasper import UNANSWERABLE_TEXT, load_qasper
+
 
 def test_registry_exposes_qasper_spec() -> None:
     spec = get_dataset("qasper")
 
     assert spec.name == "qasper"
-    assert spec.chunking == "token-window"
     assert UNANSWERABLE_TEXT in spec.prompt_profile.answer_instruction
     assert "research papers" in spec.prompt_profile.system_prompt
 
@@ -111,7 +110,7 @@ def test_duplicate_question_ids_raise(tmp_path) -> None:
 
 
 def test_missing_file_raises_with_setup_hint(tmp_path) -> None:
-    with pytest.raises(FileNotFoundError, match="RAG_DATASET=qasper"):
+    with pytest.raises(FileNotFoundError, match="setup_data.sh"):
         load_qasper(tmp_path / "does-not-exist")
 
 

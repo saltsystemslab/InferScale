@@ -7,18 +7,18 @@ from typing import Any
 from unittest.mock import Mock
 
 import numpy as np
+from rag_fixtures import CharTokenizer, write_multihop_files
 
+from benchmarks.common.answers import final_answer_text
 from benchmarks.common.clients import ChatResult
-from benchmarks.common.files import write_csv
-from benchmarks.common.files import JsonlWriter
-from benchmarks.common.files import read_jsonl
+from benchmarks.common.files import JsonlWriter, read_jsonl, write_csv
+from benchmarks.common.judge import skipped_judge_payload
 from benchmarks.common.vector_types import RetrievalMetrics, SearchHit
 from benchmarks.rag.chunking import chunk_corpus
 from benchmarks.rag.config import RagBenchConfig
 from benchmarks.rag.data_types import RagChunk
 from benchmarks.rag.datasets.multihop_rag import load_multihop_rag
-from benchmarks.rag.evaluation import build_query_record, final_answer_text
-from benchmarks.common.judge import skipped_judge_payload
+from benchmarks.rag.evaluation import build_query_record
 from benchmarks.rag.judging import judge_metadata
 from benchmarks.rag.metrics import retrieval_metrics_for_query
 from benchmarks.rag.results import (
@@ -26,7 +26,6 @@ from benchmarks.rag.results import (
     build_query_metric_rows,
     summarize_rag_records,
 )
-from rag_fixtures import CharTokenizer, write_multihop_files
 
 
 def _letter_vector(text: str) -> np.ndarray:
@@ -175,28 +174,23 @@ def test_summary_aggregates_prompt_injection_timing() -> None:
     assert summary["metrics"][timing_key]["avg"] == 20.0
 
 
-def test_kv_client_passes_cuda_device_to_store_and_closes_it(tmp_path, monkeypatch) -> None:
-    from benchmarks.rag import answer_kv
+def test_kv_client_loads_its_store_on_start_and_closes_everything(tmp_path, monkeypatch) -> None:
+    from benchmarks.rag import answer_kv, engine_client
     from benchmarks.rag.data_types import RagPromptProfile
-    from benchmarks.rag.kv_cache import CachedRagScaffold
+    from benchmarks.rag.kv_cache import CachedRagScaffold, RagChunkCache, RagChunkCacheKey
     from inferscale.v1.kv.prompt import ScaffoldTokens
     from inferscale.v1.types import KVChunk
 
-    scaffold = ScaffoldTokens(
-        header_token_ids=[1], empty_token_ids=[2], footer_token_ids=[3]
-    )
+    scaffold = ScaffoldTokens(header_token_ids=[1], empty_token_ids=[2], footer_token_ids=[3])
     cached = CachedRagScaffold(
         cos_table=object(),
         sin_table=object(),
         scaffold_chunks={
             slot: KVChunk(chunk_id=slot, token_ids=ids, kv_by_layer={})
-            for slot, ids in (
-                ("header", [1]), ("empty_passages", [2]), ("footer", [3])
-            )
+            for slot, ids in (("header", [1]), ("empty_passages", [2]), ("footer", [3]))
         },
     )
     for name in (
-        "force_vllm_inprocess_mode",
         "get_gpu_memory_store",
         "load_encoder_tokenizer",
         "clear_namespace",
@@ -209,20 +203,29 @@ def test_kv_client_passes_cuda_device_to_store_and_closes_it(tmp_path, monkeypat
     encoder_factory = Mock()
     store_factory = Mock()
     engine_factory = Mock()
+    engine_factory.return_value.started = False
     monkeypatch.setattr(answer_kv, "ChunkedRopeEncoder", encoder_factory)
     monkeypatch.setattr(answer_kv, "CpuChunkStore", store_factory)
-    monkeypatch.setattr(answer_kv, "VLLMEngine", engine_factory)
+    monkeypatch.setattr(engine_client, "VLLMEngine", engine_factory)
+    monkeypatch.setattr(engine_client, "force_vllm_inprocess_mode", Mock())
+    monkeypatch.setattr(
+        engine_client, "extract_rag_scaffold_token_ids", Mock(return_value=scaffold)
+    )
     config = RagBenchConfig(kv_device="cuda:2")
+    cache = RagChunkCache(key=RagChunkCacheKey.from_config(config, []), directory=tmp_path)
 
     client = answer_kv.RagKvAnswerClient(
         config,
         chunks=[],
-        cache_dir=tmp_path,
-        meta_base={},
+        cache=cache,
         prompt_profile=RagPromptProfile(system_prompt="system", answer_instruction="answer"),
     )
+    store_factory.assert_not_called()
+    client.start_llm()
 
-    store_factory.assert_called_once_with(tmp_path, meta_base={}, chunks=[], device="cuda:2")
+    store_factory.assert_called_once_with(cache, chunks=[], device="cuda:2")
+    engine_factory.return_value.start.assert_called_once()
+    assert client.setup_stats() is store_factory.return_value.stats.return_value
     client.close()
     store_factory.return_value.close.assert_called_once_with()
     encoder_factory.from_tables.return_value.close.assert_called_once_with()

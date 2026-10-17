@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import pytest
-
 from memory_config import make_memory_config
+
 from benchmarks.memory.modes import result_mode
 
 

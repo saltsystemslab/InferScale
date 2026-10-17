@@ -14,9 +14,11 @@ from .kv.connector_utils import (
     DEFAULT_KV_STORE_BACKEND,
     KNOWN_KV_STORE_BACKENDS,
 )
+from .kv.encoder import KV_DTYPE_ALIASES
+from .kv.prompt import DEFAULT_BLOCK_SIZE
 
 DEFAULT_CONNECTOR_MODULE = "inferscale.v1.kv.connector"
-KV_DTYPES = ("bfloat16", "bf16", "float16", "fp16", "half", "float32", "fp32")
+KV_DTYPES = tuple(KV_DTYPE_ALIASES)
 
 
 @dataclass(slots=True)
@@ -25,7 +27,7 @@ class EngineConfig:
 
     gpu_memory_utilization: float = 0.40
     max_model_len: int = 32768
-    block_size: int = 16
+    block_size: int = DEFAULT_BLOCK_SIZE
     enable_prefix_caching: bool = True
     connector_module: str = DEFAULT_CONNECTOR_MODULE
 
@@ -54,7 +56,9 @@ class EmbeddingConfig:
 class PromptConfig:
     """Text around the injected context and between chunks."""
 
-    system_prompt: str = "You are a helpful assistant. Answer using the retrieved context below.\n\n"
+    system_prompt: str = (
+        "You are a helpful assistant. Answer using the retrieved context below.\n\n"
+    )
     empty_context_text: str = "(No relevant context found)\n"
     chunk_separator: str = "\n"
 
@@ -85,11 +89,18 @@ class InferScaleConfig:
         validate_config(self)
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "InferScaleConfig":
-        return _build(cls, data, "inferscale")
+    def from_dict(cls, data: Mapping[str, Any]) -> InferScaleConfig:
+        _require_known_keys(data, cls, "inferscale")
+        kwargs: dict[str, Any] = {}
+        for name, value in data.items():
+            section = _NESTED_SECTIONS.get(name)
+            kwargs[name] = (
+                _build_section(section, value, f"inferscale.{name}") if section else value
+            )
+        return cls(**kwargs)
 
     @classmethod
-    def from_json(cls, path: str | Path) -> "InferScaleConfig":
+    def from_json(cls, path: str | Path) -> InferScaleConfig:
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
         if not isinstance(raw, Mapping):
             raise ValueError(f"InferScale config must be a JSON object: {path}")
@@ -109,18 +120,17 @@ _NESTED_SECTIONS: dict[str, type] = {
 }
 
 
-def _build(cls: type, data: Mapping[str, Any], where: str) -> Any:
+def _require_known_keys(data: Any, cls: type, where: str) -> None:
     if not isinstance(data, Mapping):
         raise ValueError(f"{where} must be a JSON object.")
-    names = {item.name for item in fields(cls)}
-    unknown = sorted(set(data) - names)
+    unknown = sorted(set(data) - {item.name for item in fields(cls)})
     if unknown:
         raise ValueError(f"{where} has unknown keys: {', '.join(unknown)}.")
-    kwargs: dict[str, Any] = {}
-    for name, value in data.items():
-        nested = _NESTED_SECTIONS.get(name) if cls is InferScaleConfig else None
-        kwargs[name] = _build(nested, value, f"{where}.{name}") if nested is not None else value
-    return cls(**kwargs)
+
+
+def _build_section(cls: type, data: Any, where: str) -> Any:
+    _require_known_keys(data, cls, where)
+    return cls(**data)
 
 
 def validate_config(config: InferScaleConfig) -> None:
@@ -128,11 +138,22 @@ def validate_config(config: InferScaleConfig) -> None:
         raise ValueError("model must be a non-empty model id or path.")
     if config.top_k < 1:
         raise ValueError("top_k must be >= 1.")
-    if isinstance(config.context_window, bool) or not isinstance(config.context_window, int) or config.context_window < 0:
+    if (
+        isinstance(config.context_window, bool)
+        or not isinstance(config.context_window, int)
+        or config.context_window < 0
+    ):
         raise ValueError("context_window must be a nonnegative integer.")
     if config.vector_backend not in ("exact", "jasper"):
         raise ValueError("vector_backend must be 'exact' or 'jasper'.")
-    engine = config.engine
+    _validate_engine(config.engine)
+    _validate_kv(config.kv)
+    if config.vector_backend == "jasper":
+        _validate_jasper(config.index, config.top_k)
+    _validate_text_sections(config)
+
+
+def _validate_engine(engine: EngineConfig) -> None:
     if engine.block_size < 1:
         raise ValueError("engine.block_size must be >= 1.")
     if engine.max_model_len < 1:
@@ -141,7 +162,9 @@ def validate_config(config: InferScaleConfig) -> None:
         raise ValueError("engine.gpu_memory_utilization must be between zero and one.")
     if not str(engine.connector_module).strip():
         raise ValueError("engine.connector_module must be an importable module path.")
-    kv = config.kv
+
+
+def _validate_kv(kv: KVConfig) -> None:
     if kv.max_position < 1:
         raise ValueError("kv.max_position must be >= 1.")
     if kv.staging_slots < 1:
@@ -152,17 +175,21 @@ def validate_config(config: InferScaleConfig) -> None:
         )
     if kv.dtype.lower() not in KV_DTYPES:
         raise ValueError(f"kv.dtype must be one of {KV_DTYPES}, got {kv.dtype!r}.")
-    if config.vector_backend == "jasper":
-        index = config.index
-        if index.n_neighbors < 1:
-            raise ValueError("index.n_neighbors must be >= 1.")
-        if index.beam_width < 1:
-            raise ValueError("index.beam_width must be >= 1.")
-        if max(index.beam_width, config.top_k) > MAX_JASPER_BEAM_WIDTH:
-            raise ValueError(
-                "Effective Jasper beam width must be <= "
-                f"{MAX_JASPER_BEAM_WIDTH}; got max({index.beam_width}, {config.top_k})."
-            )
+
+
+def _validate_jasper(index: JasperIndexConfig, top_k: int) -> None:
+    if index.n_neighbors < 1:
+        raise ValueError("index.n_neighbors must be >= 1.")
+    if index.beam_width < 1:
+        raise ValueError("index.beam_width must be >= 1.")
+    if max(index.beam_width, top_k) > MAX_JASPER_BEAM_WIDTH:
+        raise ValueError(
+            "Effective Jasper beam width must be <= "
+            f"{MAX_JASPER_BEAM_WIDTH}; got max({index.beam_width}, {top_k})."
+        )
+
+
+def _validate_text_sections(config: InferScaleConfig) -> None:
     if config.embedding.batch_size < 1:
         raise ValueError("embedding.batch_size must be >= 1.")
     if not config.embedding.model:

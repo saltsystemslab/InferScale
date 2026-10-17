@@ -18,8 +18,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Convenience env vars some shells export that newer vLLM rejects as unknown.
-_UNKNOWN_VLLM_ENV = (
+KV_CONNECTOR_NAME = "MemoryKVConnector"
+
+# Shell conveniences for the vllm CLI. vLLM validates every VLLM_* name when its
+# environment module loads and rejects these as unknown settings.
+VLLM_CLI_ENV_VARIABLES = (
     "VLLM_MODEL",
     "VLLM_API_KEY",
     "VLLM_TP",
@@ -30,22 +33,18 @@ _UNKNOWN_VLLM_ENV = (
     "VLLM_BASE_URL",
 )
 
-KV_CONNECTOR_NAME = "MemoryKVConnector"
-
 
 def build_kv_transfer_config(
     *,
     connector_module: str,
     namespace: str,
     default_user_id: str | None = "default",
-    allow_prefix_scan: bool = False,
     log_memory_hits: bool = True,
     store_backend: str = DEFAULT_KV_STORE_BACKEND,
     num_staging_slots: int = DEFAULT_KV_STAGING_SLOTS,
 ) -> dict[str, Any]:
     extra_config: dict[str, Any] = {
         "memory_namespace": namespace,
-        "allow_prefix_scan": allow_prefix_scan,
         "log_memory_hits": log_memory_hits,
         "memory_store_backend": store_backend,
         "num_staging_slots": num_staging_slots,
@@ -63,10 +62,11 @@ def build_kv_transfer_config(
 def force_vllm_inprocess_mode() -> None:
     """Force vLLM V1 offline LLM execution into this process.
 
-    Strict GPU KV mode requires the engine in-process; prompt-prefix
-    baselines match so both paths measure the same engine execution mode.
+    Composed memories are registered in this process, so the connector must
+    run here too. Every serving path uses the same mode so measurements
+    compare the same engine execution path.
     """
-    clear_unknown_vllm_env()
+    clear_vllm_cli_env()
     current = os.environ.get("VLLM_ENABLE_V1_MULTIPROCESSING")
     if _is_truthy(current):
         logger.warning(
@@ -75,19 +75,19 @@ def force_vllm_inprocess_mode() -> None:
             current,
         )
     os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
-
+    # vllm.envs reads the environment once at import; patch it if it is loaded.
     loaded_envs = sys.modules.get("vllm.envs")
     if loaded_envs is not None and hasattr(loaded_envs, "VLLM_ENABLE_V1_MULTIPROCESSING"):
-        setattr(loaded_envs, "VLLM_ENABLE_V1_MULTIPROCESSING", False)
+        loaded_envs.VLLM_ENABLE_V1_MULTIPROCESSING = False
 
 
-def clear_unknown_vllm_env() -> None:
-    """Clear convenience env vars that vLLM treats as unknown."""
-    for name in _UNKNOWN_VLLM_ENV:
+def clear_vllm_cli_env() -> None:
+    """Drop the vllm CLI shell conveniences that vLLM rejects as unknown settings."""
+    for name in VLLM_CLI_ENV_VARIABLES:
         os.environ.pop(name, None)
 
 
-def vllm_engine_kwargs(*, model: str, dtype: str, engine: "EngineConfig") -> dict[str, Any]:
+def vllm_engine_kwargs(*, model: str, dtype: str, engine: EngineConfig) -> dict[str, Any]:
     return {
         "model": model,
         "dtype": dtype,
@@ -118,43 +118,40 @@ def empty_cuda_cache(*, collect_ipc: bool = False) -> None:
         return
 
 
-@dataclass(frozen=True)
-class VllmRequestTiming:
-    time_to_first_token_ms: float | None = None
-
-
 def require_engine_ttft_ms(output: Any) -> float:
     """Return the engine-reported TTFT, refusing to run without real metrics.
 
     TTFT is a headline metric; fabricating it from wall-clock probes or
-    reporting it as missing would silently corrupt cross-run comparisons, so
-    an engine build that does not populate RequestOutput.metrics fails.
+    reporting it as missing would silently corrupt comparisons between runs,
+    so an engine build that does not populate RequestOutput.metrics fails.
     """
-    timing = request_timing_from_output(output)
-    if timing.time_to_first_token_ms is None:
+    ttft_ms = request_ttft_ms(output)
+    if ttft_ms is None:
         raise RuntimeError(
             "vLLM did not report per-request metrics on RequestOutput.metrics; "
             "TTFT cannot be measured on this engine build. Use a vLLM build that "
             "populates request timing metrics."
         )
-    return timing.time_to_first_token_ms
+    return ttft_ms
 
 
-def request_timing_from_output(output: Any) -> VllmRequestTiming:
+def request_ttft_ms(output: Any) -> float | None:
+    """Time to first token from RequestOutput.metrics, whichever fields the build fills."""
     metrics = getattr(output, "metrics", None)
     if metrics is None:
-        return VllmRequestTiming()
-
+        return None
     first_token_latency = _float_attr(metrics, "first_token_latency")
     if first_token_latency is not None and first_token_latency > 0:
-        return VllmRequestTiming(time_to_first_token_ms=first_token_latency * 1000)
-
+        return first_token_latency * 1000
     arrival_time = _float_attr(metrics, "arrival_time")
     first_token_time = _float_attr(metrics, "first_token_time")
-    if arrival_time is not None and first_token_time is not None and first_token_time >= arrival_time:
-        return VllmRequestTiming(time_to_first_token_ms=(first_token_time - arrival_time) * 1000)
-
-    return VllmRequestTiming()
+    if (
+        arrival_time is not None
+        and first_token_time is not None
+        and first_token_time >= arrival_time
+    ):
+        return (first_token_time - arrival_time) * 1000
+    return None
 
 
 @dataclass(slots=True)
@@ -163,13 +160,12 @@ class GenerationOutput:
     ttft_ms: float
     started_at: float
     finished_at: float
-    raw: Any
 
 
 class VLLMEngine:
     """One in-process vLLM engine, optionally with the memory KV connector."""
 
-    def __init__(self, model: str, dtype: str, config: "EngineConfig") -> None:
+    def __init__(self, model: str, dtype: str, config: EngineConfig) -> None:
         self._model = model
         self._dtype = dtype
         self._config = config
@@ -208,34 +204,21 @@ class VLLMEngine:
         return time.perf_counter() - started
 
     def generate(
-        self,
-        prompt_token_ids: Sequence[int],
-        *,
-        max_tokens: int,
-        temperature: float,
-        top_p: float,
+        self, prompt_token_ids: Sequence[int], *, max_tokens: int, temperature: float, top_p: float
     ) -> GenerationOutput:
         if self._llm is None or self._sampling_cls is None:
             raise RuntimeError("VLLMEngine.start() must be called before generate().")
-        sampling = self._sampling_cls(
-            temperature=temperature,
-            top_p=top_p,
-            max_tokens=max_tokens,
-        )
+        sampling = self._sampling_cls(temperature=temperature, top_p=top_p, max_tokens=max_tokens)
         started_at = time.perf_counter()
         outputs = self._llm.generate(
-            [{"prompt_token_ids": list(prompt_token_ids)}],
-            sampling,
-            use_tqdm=False,
+            [{"prompt_token_ids": list(prompt_token_ids)}], sampling, use_tqdm=False
         )
         finished_at = time.perf_counter()
-        ttft_ms = require_engine_ttft_ms(outputs[0])
         return GenerationOutput(
             text=outputs[0].outputs[0].text.strip(),
-            ttft_ms=ttft_ms,
+            ttft_ms=require_engine_ttft_ms(outputs[0]),
             started_at=started_at,
             finished_at=finished_at,
-            raw=outputs[0],
         )
 
     def close(self) -> None:

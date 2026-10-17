@@ -9,7 +9,6 @@ import pytest
 
 from inferscale.v1.index.matmul import MatmulIndex
 
-
 VECTORS = [[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [1.0, 1.0, 0.0], [-1.0, 0.0, 1.0]]
 PAYLOADS = [{"group": "keep"}, {"group": "drop"}, {"group": "keep"}, {"group": "keep"}]
 IDS = ["a", "b", "c", "d"]
@@ -17,7 +16,7 @@ QUERY = [1.0, 2.0, -1.0]
 
 
 def test_import_registration_and_empty_search_need_no_gpu_dependencies():
-    code = '''
+    code = """
 import importlib.abc
 import sys
 
@@ -42,22 +41,27 @@ index.close()
 assert "torch" not in sys.modules
 assert "jasper" not in sys.modules
 print("MATMUL_IMPORT_OK")
-'''
-    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=30)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=30
+    )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "MATMUL_IMPORT_OK" in result.stdout
 
 
-@pytest.mark.parametrize("vectors,payloads,ids", [
-    ([[1.0, 2.0]], [], ["new"]),
-    ([[1.0, 2.0]], [{}], []),
-    ([[1.0]], [{}], ["new"]),
-    ([[]], [{}], ["new"]),
-    ([[float("nan"), 1.0]], [{}], ["new"]),
-    ([[float("inf"), 1.0]], [{}], ["new"]),
-    ([[1.0, 2.0]], [{}], ["existing"]),
-    ([[1.0, 2.0], [3.0, 4.0]], [{}, {}], ["same", "same"]),
-])
+@pytest.mark.parametrize(
+    "vectors,payloads,ids",
+    [
+        ([[1.0, 2.0]], [], ["new"]),
+        ([[1.0, 2.0]], [{}], []),
+        ([[1.0]], [{}], ["new"]),
+        ([[]], [{}], ["new"]),
+        ([[float("nan"), 1.0]], [{}], ["new"]),
+        ([[float("inf"), 1.0]], [{}], ["new"]),
+        ([[1.0, 2.0]], [{}], ["existing"]),
+        ([[1.0, 2.0], [3.0, 4.0]], [{}, {}], ["same", "same"]),
+    ],
+)
 def test_invalid_add_preserves_existing_vectors_and_payloads(vectors, payloads, ids):
     index = MatmulIndex()
     index.add_many([[1.0, 0.0]], [{"saved": True}], ["existing"])
@@ -124,10 +128,13 @@ def gpu_index(cuda_torch):
         index.close()
 
 
-@pytest.mark.parametrize("count,expected_ids,expected_scores", [
-    (1, ["a"], [1.0]),
-    (4, ["b", "c", "a", "d"], [4.0, 3.0, 1.0, -2.0]),
-])
+@pytest.mark.parametrize(
+    "count,expected_ids,expected_scores",
+    [
+        (1, ["a"], [1.0]),
+        (4, ["b", "c", "a", "d"], [4.0, 3.0, 1.0, -2.0]),
+    ],
+)
 def test_gpu_ranking_matches_known_inner_products(gpu_index, count, expected_ids, expected_scores):
     gpu_index.add_many(VECTORS[:count], PAYLOADS[:count], IDS[:count])
     gpu_index.finalize()
@@ -165,13 +172,18 @@ def test_device_results_keep_gpu_stable_ids_and_distances(gpu_index, cuda_torch)
     assert [hit.payload for hit in hits] == [PAYLOADS[1], PAYLOADS[2], PAYLOADS[0]]
 
 
-@pytest.mark.parametrize("filters,top_k,expected_ids", [
-    ({"group": "keep"}, 2, ["c", "a"]),
-    ({"group": {"eq": "keep"}}, 99, ["c", "a", "d"]),
-    ({"group": {"ne": "keep"}}, 4, ["b"]),
-    ({"group": "missing"}, 4, []),
-])
-def test_gpu_filtering_selects_highest_scoring_matching_rows(gpu_index, filters, top_k, expected_ids):
+@pytest.mark.parametrize(
+    "filters,top_k,expected_ids",
+    [
+        ({"group": "keep"}, 2, ["c", "a"]),
+        ({"group": {"eq": "keep"}}, 99, ["c", "a", "d"]),
+        ({"group": {"ne": "keep"}}, 4, ["b"]),
+        ({"group": "missing"}, 4, []),
+    ],
+)
+def test_gpu_filtering_selects_highest_scoring_matching_rows(
+    gpu_index, filters, top_k, expected_ids
+):
     gpu_index.add_many(VECTORS, PAYLOADS, IDS)
     hits, metrics = gpu_index.search(QUERY, top_k=top_k, filters=filters)
     assert [hit.id for hit in hits] == expected_ids

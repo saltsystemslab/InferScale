@@ -1,17 +1,13 @@
+"""Per-step connector metadata: which memories to inject into which slots."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
 import torch
-
 from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorMetadata
 
-from .connector_utils import (  # noqa: F401  (re-exported for the GPU connector)
-    align_to_block_size,
-    build_slot_mapping,
-    extra_config,
-    extract_user_id,
-)
+from .connector_utils import build_slot_mapping
 
 
 @dataclass
@@ -22,8 +18,8 @@ class MemoryLoadMeta:
     # Memory tokens covered by a native prefix-cache hit; the injected KV
     # starts at this offset into the user's stored memory.
     skip_tokens: int = 0
-    # Originating vLLM request, so load accounting can be per request rather
-    # than per event.
+    # Originating vLLM request, so load accounting is per request rather than
+    # per event.
     request_id: str = ""
 
 

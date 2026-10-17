@@ -1,18 +1,19 @@
+"""String and retrieval metrics of one RAG answer against its gold references."""
+
 from __future__ import annotations
 
 import re
 import string
+import unicodedata
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 from benchmarks.common.vector_types import SearchHit
-
 from benchmarks.rag.data_types import RagQuery
 
-# SQuAD-style answer normalization and token F1, following the legacy scorer in
-# ai-memory-code/mem0_locomo/score.py (lowercase, strip articles and
-# punctuation, collapse whitespace, multiset token overlap).
+# SQuAD-style answer normalization and token F1: lowercase, strip articles and
+# punctuation, collapse whitespace, multiset token overlap.
 _ARTICLES_RE = re.compile(r"\b(a|an|the)\b")
 _PUNCT_TABLE = str.maketrans("", "", string.punctuation)
 
@@ -110,8 +111,6 @@ def answer_metrics(prediction: str, gold_answers: Sequence[str] | str) -> dict[s
 
 
 def normalize_passage_text(text: str) -> str:
-    import unicodedata
-
     normalized = unicodedata.normalize("NFKC", str(text))
     normalized = normalized.translate(_PASSAGE_CHAR_MAP)
     return _WHITESPACE_RE.sub(" ", normalized).casefold().strip()

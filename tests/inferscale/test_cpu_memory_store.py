@@ -4,14 +4,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from inferscale.v1.kv.pinned_memory_store import (
-    TransferRecord,
-    _BenchMetrics,
-    _LayerKVView,
-    overlap_ratio,
-)
 from inferscale.v1.kv import registry
 from inferscale.v1.kv.memory_store import GPUMemoryStore
+from inferscale.v1.kv.staging import LayerKVView
+from inferscale.v1.kv.transfer_metrics import TransferMetrics, TransferRecord, overlap_ratio
 
 
 def _record(
@@ -32,14 +28,14 @@ def _record(
 
 class TestBenchMetrics:
     def test_empty_summary_shape(self) -> None:
-        summary = _BenchMetrics().summary()
+        summary = TransferMetrics().summary()
         assert summary["total_transfers"] == 0
         assert summary["total_bytes_transferred"] == 0
         assert summary["avg_h2d_latency_ms"] == 0.0
         assert summary["total_staging_stall_ms"] == 0.0
 
     def test_totals_and_averages(self) -> None:
-        metrics = _BenchMetrics()
+        metrics = TransferMetrics()
         metrics.add(_record(h2d=10.0, stall=5.0, num_bytes=1_000))
         metrics.add(_record(h2d=20.0, stall=0.0, num_bytes=3_000))
         summary = metrics.summary()
@@ -55,21 +51,18 @@ class TestBenchMetrics:
         # A stall longer than the transfer itself must clamp to 0.
         assert overlap_ratio(_record(h2d=10.0, stall=50.0)) == 0.0
         assert overlap_ratio(_record(h2d=0.0, stall=0.0)) == 0.0
-        metrics = _BenchMetrics()
+        metrics = TransferMetrics()
         metrics.add(_record(h2d=10.0, stall=50.0))
         assert metrics.summary()["avg_overlap_ratio"] == 0.0
 
-    def test_percentiles_and_last_record(self) -> None:
-        metrics = _BenchMetrics()
+    def test_percentiles_interpolate_linearly(self) -> None:
+        metrics = TransferMetrics()
         for latency in (1.0, 2.0, 3.0, 4.0, 100.0):
             metrics.add(_record(h2d=latency))
         summary = metrics.summary()
         assert summary["p50_h2d_latency_ms"] == 3.0
-        # Shared results._percentile semantics: linear interpolation, so
         # p95 of five values sits between the 4th and 5th.
         assert summary["p95_h2d_latency_ms"] == pytest.approx(4 + 0.8 * (100 - 4))
-        assert metrics.last_record().h2d_latency_ms == 100.0
-        assert _BenchMetrics().last_record() is None
 
 
 class _FakeEvent:
@@ -102,11 +95,11 @@ class _FakeTensor(SimpleNamespace):
         self.recorded_streams.append(stream)
 
 
-def _view(ready: bool = True) -> tuple[_LayerKVView, dict, dict, _FakeStream]:
+def _view(ready: bool = True) -> tuple[LayerKVView, dict, dict, _FakeStream]:
     tensors = {"layer.0": _FakeTensor(), "layer.1": _FakeTensor()}
     events = {"layer.0": _FakeEvent(ready), "layer.1": _FakeEvent(ready)}
     stream = _FakeStream()
-    view = _LayerKVView(
+    view = LayerKVView(
         gpu_tensors=tensors,
         layer_events=events,
         compute_stream_fn=lambda: stream,
@@ -162,17 +155,17 @@ class TestLayerKVView:
 
 class TestRegistryBackendSelection:
     def setup_method(self) -> None:
-        registry._STORES.clear()
-        registry._BACKENDS.clear()
+        registry._REGISTRY.clear()
 
     teardown_method = setup_method
 
-    def test_default_backend_is_gpu(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("LOCOMO_KV_STORE_BACKEND", raising=False)
+    def test_default_backend_is_gpu(self) -> None:
         store = registry.get_gpu_memory_store("ns-default")
         assert isinstance(store, GPUMemoryStore)
 
-    def test_explicit_cpu_backend_creates_the_pinned_store(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_explicit_cpu_backend_creates_the_pinned_store(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         created: list[int] = []
         import inferscale.v1.kv.pinned_memory_store as cpu_module
 
@@ -204,13 +197,6 @@ class TestRegistryBackendSelection:
     def test_unknown_backend_raises(self) -> None:
         with pytest.raises(ValueError, match="Unknown KV store backend"):
             registry.get_gpu_memory_store("ns-bad", backend="tpu")
-
-    def test_bench_helpers_noop_for_gpu_store(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("LOCOMO_KV_STORE_BACKEND", raising=False)
-        registry.get_gpu_memory_store("ns-gpu")
-        assert registry.namespace_bench_summary("ns-gpu") == {}
-        assert registry.namespace_last_transfer("ns-gpu") is None
-        registry.reset_namespace_bench_metrics("ns-gpu")  # must not raise
 
     def test_namespace_stats_empty_default_includes_host_mb(self) -> None:
         stats = registry.namespace_stats("ns-nonexistent")
@@ -278,15 +264,6 @@ class TestCpuPinnedMemoryStoreOnGpu:
         assert "u0" not in store._slots
         assert "u1" in store._slots
 
-    def test_reset_bench_metrics(self) -> None:
-        store = self._store()
-        store.add_user_memory("u0", self._kv(), num_tokens=8, token_ids=list(range(8)))
-        store.prefetch_user_to_gpu("u0")
-        store.release_staging("u0")
-        assert store.get_bench_summary()["total_transfers"] == 1
-        store.reset_bench_metrics()
-        assert store.get_bench_summary()["total_transfers"] == 0
-
     def test_peek_reads_metadata_without_staging(self) -> None:
         store = self._store()
         store.add_user_memory("u0", self._kv(), num_tokens=8, token_ids=list(range(8)))
@@ -301,9 +278,17 @@ class TestCpuPinnedMemoryStoreOnGpu:
         assert store.peek_user_memory("missing") is None
 
 
+class _StoredTensor:
+    device = "cuda:0"
+    nbytes = 0
+
+    def contiguous(self) -> _StoredTensor:
+        return self
+
+
 def test_gpu_store_peek_is_get() -> None:
     store = GPUMemoryStore()
-    store.add_user_memory("u0", {"layer.0": object()}, num_tokens=4, token_ids=[1, 2, 3, 4])
+    store.add_user_memory("u0", {"layer.0": _StoredTensor()}, num_tokens=4, token_ids=[1, 2, 3, 4])
 
     assert store.peek_user_memory("u0") is store.get_user_memory("u0")
     assert store.peek_user_memory("missing") is None

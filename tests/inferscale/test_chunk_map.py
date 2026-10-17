@@ -81,9 +81,7 @@ def test_stable_binding_validation(bindings: Any, error: str) -> None:
 
 
 def test_stable_bindings_are_ordered_by_stable_id() -> None:
-    assert chunk_map._stable_binding_ids(iter([(2, "b"), (0, "c"), (1, "a")])) == [
-        "c", "a", "b"
-    ]
+    assert chunk_map._stable_binding_ids(iter([(2, "b"), (0, "c"), (1, "a")])) == ["c", "a", "b"]
 
 
 @pytest.fixture

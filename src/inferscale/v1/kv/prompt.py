@@ -16,6 +16,7 @@ from ..types import PromptTokens, QueryTokens, ScaffoldTokens
 from .tokenization import encode_text_no_special
 
 SCAFFOLD_PLACEHOLDER = "<<<INFERSCALE_CONTEXT_GOES_HERE>>>"
+DEFAULT_BLOCK_SIZE = 16
 
 
 def build_scaffold_tokens(
@@ -23,7 +24,7 @@ def build_scaffold_tokens(
     *,
     system_prompt: str,
     empty_text: str,
-    block_size: int = 16,
+    block_size: int = DEFAULT_BLOCK_SIZE,
     placeholder: str = SCAFFOLD_PLACEHOLDER,
 ) -> ScaffoldTokens:
     """Chat-templated scaffold split around the context placeholder.
@@ -36,38 +37,14 @@ def build_scaffold_tokens(
         raise ValueError("block_size must be >= 1.")
     if not system_prompt:
         raise ValueError("system_prompt must be non-empty.")
-    apply_chat_template = getattr(tokenizer, "apply_chat_template", None)
-    if callable(apply_chat_template):
-        templated = apply_chat_template_non_thinking(
-            tokenizer,
-            [{"role": "system", "content": system_prompt + placeholder}],
-            tokenize=False,
-            add_generation_prompt=False,
-        )
-    else:
-        templated = f"SYSTEM: {system_prompt}{placeholder}"
-
-    if placeholder not in templated:
-        raise RuntimeError("The chat template removed the context placeholder.")
-    header_text, footer_text = templated.split(placeholder, 1)
+    header_text, footer_text = _templated_system_prompt(tokenizer, system_prompt, placeholder)
     header_token_ids = encode_text_no_special(tokenizer, header_text)
     empty_token_ids = encode_text_no_special(tokenizer, empty_text)
-    footer_close_token_ids = encode_text_no_special(tokenizer, footer_text)
-    newline_token_ids = encode_text_no_special(tokenizer, "\n")
-    if not newline_token_ids:
-        raise RuntimeError("Tokenizer produced no tokens for a newline pad.")
-    pad_repeats = max(0, block_size - 1 - len(footer_close_token_ids))
-    footer_token_ids = newline_token_ids * pad_repeats + footer_close_token_ids
+    footer_token_ids = _padded_footer(tokenizer, footer_text, block_size)
     if not header_token_ids or not empty_token_ids:
         raise RuntimeError(
             f"Empty scaffold tokens: header={len(header_token_ids)} "
             f"empty={len(empty_token_ids)} footer={len(footer_token_ids)}."
-        )
-    if len(footer_token_ids) < block_size - 1:
-        raise RuntimeError(
-            "The scaffold does not contain enough trailing whitespace to keep "
-            f"retrieved chunks outside the recomputed KV tail: {len(footer_token_ids)} "
-            f"footer token(s); need at least {block_size - 1}."
         )
     return ScaffoldTokens(
         header_token_ids=header_token_ids,
@@ -76,11 +53,45 @@ def build_scaffold_tokens(
     )
 
 
+def _templated_system_prompt(
+    tokenizer: Any, system_prompt: str, placeholder: str
+) -> tuple[str, str]:
+    """Render one system message through the chat template and split it at the placeholder."""
+    if callable(getattr(tokenizer, "apply_chat_template", None)):
+        templated = apply_chat_template_non_thinking(
+            tokenizer,
+            [{"role": "system", "content": system_prompt + placeholder}],
+            tokenize=False,
+            add_generation_prompt=False,
+        )
+    else:
+        templated = f"SYSTEM: {system_prompt}{placeholder}"
+    if placeholder not in templated:
+        raise RuntimeError("The chat template removed the context placeholder.")
+    header_text, footer_text = templated.split(placeholder, 1)
+    return header_text, footer_text
+
+
+def _padded_footer(tokenizer: Any, footer_text: str, block_size: int) -> list[int]:
+    footer_close_token_ids = encode_text_no_special(tokenizer, footer_text)
+    newline_token_ids = encode_text_no_special(tokenizer, "\n")
+    if not newline_token_ids:
+        raise RuntimeError("Tokenizer produced no tokens for a newline pad.")
+    pad_repeats = max(0, block_size - 1 - len(footer_close_token_ids))
+    footer_token_ids = newline_token_ids * pad_repeats + footer_close_token_ids
+    if len(footer_token_ids) < block_size - 1:
+        raise RuntimeError(
+            "The scaffold does not contain enough trailing whitespace to keep "
+            f"retrieved chunks outside the recomputed KV tail: {len(footer_token_ids)} "
+            f"footer token(s); need at least {block_size - 1}."
+        )
+    return footer_token_ids
+
+
 def build_memory_token_ids(
-    scaffold: ScaffoldTokens,
-    ordered_chunk_token_ids: Sequence[Sequence[int]],
+    scaffold: ScaffoldTokens, ordered_chunk_token_ids: Sequence[Sequence[int]]
 ) -> list[int]:
-    """Token ids of the memory section as the prompt-prefix baseline renders it."""
+    """Token ids of the memory section as the prompt lays it out."""
     token_ids = list(scaffold.header_token_ids)
     if ordered_chunk_token_ids:
         for chunk_token_ids in ordered_chunk_token_ids:
@@ -92,23 +103,16 @@ def build_memory_token_ids(
 
 
 def build_query_tokens(
-    tokenizer: Any,
-    memory_token_ids: Sequence[int],
-    messages: list[dict[str, str]],
+    tokenizer: Any, memory_token_ids: Sequence[int], messages: list[dict[str, str]]
 ) -> QueryTokens:
     query_token_ids = tokenize_messages(tokenizer, messages)
     query_token_ids, stripped_query_bos = strip_duplicate_query_bos(
-        tokenizer,
-        memory_token_ids=list(memory_token_ids),
-        query_token_ids=query_token_ids,
+        tokenizer, memory_token_ids=list(memory_token_ids), query_token_ids=query_token_ids
     )
     return QueryTokens(token_ids=query_token_ids, stripped_query_bos=stripped_query_bos)
 
 
-def build_prompt_tokens(
-    memory_token_ids: Sequence[int],
-    query_tokens: QueryTokens,
-) -> PromptTokens:
+def build_prompt_tokens(memory_token_ids: Sequence[int], query_tokens: QueryTokens) -> PromptTokens:
     return PromptTokens(
         memory_token_ids=list(memory_token_ids),
         query_token_ids=list(query_tokens.token_ids),
@@ -118,11 +122,7 @@ def build_prompt_tokens(
 
 
 def memory_token_budget(
-    *,
-    query_token_count: int,
-    max_position: int,
-    max_model_len: int,
-    max_answer_tokens: int,
+    *, query_token_count: int, max_position: int, max_model_len: int, max_answer_tokens: int
 ) -> int:
     if max_position < 1:
         raise ValueError("max_position must be >= 1.")
@@ -141,7 +141,7 @@ def memory_token_budget(
 
 
 def require_memory_within_budget(memory_token_count: int, memory_token_budget: int) -> None:
-    """Strict fail on over-budget composition; retrieved chunks are never dropped."""
+    """Fail on an over-budget composition; retrieved chunks are never dropped silently."""
     if memory_token_count <= memory_token_budget:
         return
     raise RuntimeError(
@@ -152,9 +152,7 @@ def require_memory_within_budget(memory_token_count: int, memory_token_budget: i
 
 
 def block_aligned_prefix(
-    memory_token_count: int,
-    footer_token_count: int,
-    block_size: int,
+    memory_token_count: int, footer_token_count: int, block_size: int
 ) -> tuple[int, int]:
     """Split the memory into the block-aligned injected prefix and the recomputed tail.
 
@@ -174,7 +172,9 @@ def block_aligned_prefix(
     return loaded_memory_tokens, memory_token_count - loaded_memory_tokens
 
 
-def require_identical_token_ids(precomputed_token_ids: list[int], live_token_ids: list[int]) -> None:
+def require_identical_token_ids(
+    precomputed_token_ids: list[int], live_token_ids: list[int]
+) -> None:
     """Injected token ids must match what the live tokenizer would produce."""
     if precomputed_token_ids == live_token_ids:
         return
@@ -194,10 +194,7 @@ def require_identical_token_ids(precomputed_token_ids: list[int], live_token_ids
 
 
 def strip_duplicate_query_bos(
-    tokenizer: Any,
-    *,
-    memory_token_ids: list[int],
-    query_token_ids: list[int],
+    tokenizer: Any, *, memory_token_ids: list[int], query_token_ids: list[int]
 ) -> tuple[list[int], bool]:
     bos_token_id = getattr(tokenizer, "bos_token_id", None)
     if (
@@ -212,36 +209,27 @@ def strip_duplicate_query_bos(
 
 
 def tokenize_messages(tokenizer: Any, messages: list[dict[str, str]]) -> list[int]:
-    apply_chat_template = getattr(tokenizer, "apply_chat_template", None)
-    if callable(apply_chat_template):
+    if callable(getattr(tokenizer, "apply_chat_template", None)):
         return list(
             apply_chat_template_non_thinking(
-                tokenizer,
-                messages,
-                tokenize=True,
-                add_generation_prompt=True,
+                tokenizer, messages, tokenize=True, add_generation_prompt=True
             )
         )
-
     text = "\n\n".join(f"{message['role'].upper()}: {message['content']}" for message in messages)
-    encode = getattr(tokenizer, "encode", None)
-    if not callable(encode):
-        raise RuntimeError("Tokenizer has neither apply_chat_template nor encode.")
-    return list(encode(text))
+    return list(tokenizer.encode(text))
 
 
 def apply_chat_template_non_thinking(
-    tokenizer: Any,
-    messages: list[dict[str, str]],
-    **kwargs: Any,
+    tokenizer: Any, messages: list[dict[str, str]], **kwargs: Any
 ) -> Any:
-    apply_chat_template = getattr(tokenizer, "apply_chat_template", None)
-    if not callable(apply_chat_template):
-        raise RuntimeError("Tokenizer has no apply_chat_template method.")
+    """Apply the chat template with reasoning disabled where the template supports it.
 
+    Qwen3 templates take ``enable_thinking``; other tokenizers reject the
+    unknown keyword with a TypeError, in which case the plain call is used.
+    """
     try:
-        return apply_chat_template(messages, enable_thinking=False, **kwargs)
+        return tokenizer.apply_chat_template(messages, enable_thinking=False, **kwargs)
     except TypeError as exc:
         if "enable_thinking" not in str(exc):
             raise
-        return apply_chat_template(messages, **kwargs)
+        return tokenizer.apply_chat_template(messages, **kwargs)

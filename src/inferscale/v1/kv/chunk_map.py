@@ -68,12 +68,8 @@ class GPUChunkMap:
             raise ValueError("Retrieved chunk ID has no pre-encoded KV chunk.")
 
         keys = [_fingerprint(chunk_id) for chunk_id in ids]
-        primary = torch.tensor(
-            [key[0] for key in keys], dtype=torch.long, device=self._device
-        )
-        secondary = torch.tensor(
-            [key[1] for key in keys], dtype=torch.long, device=self._device
-        )
+        primary = torch.tensor([key[0] for key in keys], dtype=torch.long, device=self._device)
+        secondary = torch.tensor([key[1] for key in keys], dtype=torch.long, device=self._device)
         positions = torch.searchsorted(self._primary, primary)
         safe_positions = positions.clamp(max=self._size - 1)
         valid = (
@@ -110,7 +106,7 @@ def _fingerprint(chunk_id: str) -> tuple[int, int]:
 
 
 def _string_ids(chunk_ids: Sequence[str]) -> list[str]:
-    if isinstance(chunk_ids, (str, bytes)):
+    if isinstance(chunk_ids, str | bytes):
         raise TypeError("Chunk IDs must be a sequence of strings.")
     ids = list(chunk_ids)
     if any(not isinstance(chunk_id, str) for chunk_id in ids):

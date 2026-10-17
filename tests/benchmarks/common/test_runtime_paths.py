@@ -1,15 +1,17 @@
 from __future__ import annotations
 
-from pathlib import Path
 import os
+from pathlib import Path
 
 import pytest
 
-from benchmarks.common.paths import StorageConfig, resolve_layout
 from benchmarks.common.config import RuntimeConfig
+from benchmarks.common.paths import StorageConfig, resolve_layout
 
 
-def test_local_store_scratch_dir_defaults_to_container_local_tmp(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_local_store_scratch_dir_defaults_to_container_local_tmp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # TMPDIR points at the network volume on remote hosts, which cannot host sqlite.
     monkeypatch.setenv("TMPDIR", "/workspace/tmp")
     layout = resolve_layout(StorageConfig(runtime_root=Path("/workspace")))
@@ -20,7 +22,9 @@ def test_local_store_scratch_dir_defaults_to_container_local_tmp(monkeypatch: py
 def test_local_store_scratch_dir_honors_storage_override() -> None:
     layout = resolve_layout(StorageConfig(local_store_dir=Path("/mnt/nvme")))
 
-    assert layout.local_store_scratch_dir("run-1") == Path("/mnt/nvme/inferscale-bench-stores/run-1")
+    assert layout.local_store_scratch_dir("run-1") == Path(
+        "/mnt/nvme/inferscale-bench-stores/run-1"
+    )
 
 
 def test_local_store_scratch_dir_separates_runs() -> None:
@@ -42,7 +46,9 @@ def test_project_local_and_explicit_runtime_roots(tmp_path: Path) -> None:
 
 def test_explicit_storage_paths_override_runtime_root(tmp_path: Path) -> None:
     layout = resolve_layout(
-        StorageConfig(runtime_root=Path("/workspace"), cache_root=tmp_path / "cache", tmp_dir=tmp_path / "tmp")
+        StorageConfig(
+            runtime_root=Path("/workspace"), cache_root=tmp_path / "cache", tmp_dir=tmp_path / "tmp"
+        )
     )
 
     assert layout.embedding_cache_dir == tmp_path / "cache" / "embeddings"
@@ -51,7 +57,8 @@ def test_explicit_storage_paths_override_runtime_root(tmp_path: Path) -> None:
 
 
 def test_runtime_json_controls_paths_and_exported_environment(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(os, "environ", os.environ.copy())
     monkeypatch.setenv("BENCHMARK_RUNTIME_ROOT", "/ignored/runtime")
@@ -60,10 +67,13 @@ def test_runtime_json_controls_paths_and_exported_environment(
     monkeypatch.setenv("MEM0_DIR", "/ignored/mem0")
     monkeypatch.setenv("VLLM_NO_USAGE_STATS", "0")
     monkeypatch.setenv("OPENAI_API_KEY", "environment-secret")
-    runtime = RuntimeConfig.from_dict({
-        "storage": {"runtime_root": str(tmp_path)},
-        "environment": {"VLLM_NO_USAGE_STATS": "1"},
-    }, root=tmp_path)
+    runtime = RuntimeConfig.from_dict(
+        {
+            "storage": {"runtime_root": str(tmp_path)},
+            "environment": {"VLLM_NO_USAGE_STATS": "1"},
+        },
+        root=tmp_path,
+    )
 
     runtime.apply_environment()
 

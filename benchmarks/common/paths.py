@@ -1,10 +1,10 @@
-"""Storage layout for caches, results, and scratch directories.
+"""Storage layout for datasets, caches, results, and scratch directories.
 
 The layout is derived from the ``storage`` section of ``configs/runtime.json``.
-An explicit ``runtime_root`` (the persistent ``/workspace`` partition on the
-reference Runpod host) places caches, results, and temp files under it; a
-null root keeps them project-local. Explicit ``cache_root``, ``results_root``,
-``tmp_dir``, and ``mem0_dir`` override the derived locations.
+An explicit ``runtime_root`` places caches, results, and temporary files under
+one persistent directory; a null root keeps them inside the project. Explicit
+``cache_root``, ``results_root``, ``tmp_dir``, and ``mem0_dir`` override the
+derived locations.
 """
 
 from __future__ import annotations
@@ -12,6 +12,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+
+DEFAULT_LOCAL_STORE_DIR = Path("/tmp")
 
 
 def project_root() -> Path:
@@ -25,7 +27,7 @@ class StorageConfig:
     results_root: Path | None = None
     tmp_dir: Path | None = None
     mem0_dir: Path | None = None
-    local_store_dir: Path = Path("/tmp")
+    local_store_dir: Path = DEFAULT_LOCAL_STORE_DIR
 
 
 @dataclass(slots=True, frozen=True)
@@ -50,11 +52,11 @@ class StorageLayout:
         return self.cache_root / "rag-kv-chunks"
 
     def local_store_scratch_dir(self, run_id: str) -> Path:
-        """Pod-local scratch root for rebuild-per-run vector stores.
+        """Host-local scratch root for the vector stores rebuilt by every run.
 
         Deliberately not under tmp_dir: remote hosts point tmp at a shared
         network volume whose FUSE mount cannot support sqlite file locking,
-        while local_store_dir is container-local.
+        while local_store_dir is local to the container.
         """
         return self.local_store_dir / "inferscale-bench-stores" / run_id
 
@@ -80,22 +82,15 @@ class StorageLayout:
             "FLASHINFER_WORKSPACE_DIR": str(self.cache_root / "flashinfer"),
         }
 
-    def directories(self) -> list[Path]:
-        return [
-            self.cache_root,
-            self.results_root,
-            self.tmp_dir,
-            self.mem0_dir,
-            *(Path(value) for value in self.environment().values()),
-        ]
-
     def apply_environment(self) -> None:
-        """Export the authoritative cache locations from the runtime JSON."""
+        """Export the cache locations from the runtime JSON, replacing any inherited values."""
         for key, value in self.environment().items():
             os.environ[key] = value
 
     def create_directories(self) -> None:
-        for directory in self.directories():
+        directories = [self.cache_root, self.results_root, self.tmp_dir, self.mem0_dir]
+        directories.extend(Path(value) for value in self.environment().values())
+        for directory in directories:
             directory.mkdir(parents=True, exist_ok=True)
 
 
@@ -103,7 +98,9 @@ def resolve_layout(storage: StorageConfig, *, root: Path | None = None) -> Stora
     project = root if root is not None else project_root()
     runtime_root = storage.runtime_root if storage.runtime_root is not None else project
     cache_root = storage.cache_root if storage.cache_root is not None else runtime_root / ".cache"
-    results_root = storage.results_root if storage.results_root is not None else runtime_root / "results"
+    results_root = (
+        storage.results_root if storage.results_root is not None else runtime_root / "results"
+    )
     tmp_dir = storage.tmp_dir if storage.tmp_dir is not None else runtime_root / "tmp"
     mem0_dir = storage.mem0_dir if storage.mem0_dir is not None else cache_root / "mem0"
     return StorageLayout(

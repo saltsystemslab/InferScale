@@ -1,96 +1,60 @@
+"""The precompute-kv stage: encode every corpus chunk once into the per-chunk disk cache."""
+
 from __future__ import annotations
 
 from typing import Any
 
 from loguru import logger
 
-from inferscale.v1.kv.encoder import ChunkedRopeEncoder
-from inferscale.v1.serving.vllm import empty_cuda_cache
-
-from benchmarks.rag.chunking import chunk_corpus, chunks_by_doc, corpus_fingerprint
+from benchmarks.rag.chunking import chunks_by_doc
 from benchmarks.rag.config import RagBenchConfig
-from benchmarks.rag.datasets import get_dataset
+from benchmarks.rag.corpus import RagCorpus, load_rag_corpus
+from benchmarks.rag.data_types import RagChunk
 from benchmarks.rag.kv_cache import (
-    cache_meta_base,
-    chunk_file_path,
-    chunk_meta,
+    RagChunkCache,
     load_tables_and_scaffold,
-    manifest_path,
-    rag_chunk_cache_dir,
     rag_scaffold_chunks_match,
     save_chunk,
     save_tables_and_scaffold,
-    tables_meta,
-    tables_scaffold_path,
-    write_manifest,
 )
 from benchmarks.rag.kv_plan import build_chunk_context_encoding_plan
 from benchmarks.rag.prompting import extract_rag_scaffold_token_ids
-from benchmarks.rag.tokenizer import load_rag_tokenizer
+from inferscale.v1.kv.encoder import ChunkedRopeEncoder
+from inferscale.v1.kv.prompt import ScaffoldTokens
+from inferscale.v1.serving.vllm import empty_cuda_cache
+from inferscale.v1.types import KVChunk
 
-_EMPTY_CACHE_EVERY = 25
+# Releasing the allocator cache after every batch of encodes keeps fragmentation
+# from growing across thousands of forward passes.
+EMPTY_CACHE_EVERY = 25
 
 
 def precompute_rag_kv(config: RagBenchConfig) -> dict[str, Any]:
-    """Resumable per-chunk KV precompute into the RAG chunk disk cache.
+    """Encode the chunks whose files are absent; interrupt and rerun freely.
 
-    Existing chunk files are skipped; interrupt and rerun freely. One
-    invocation covers one (model, chunk_size, context_window) configuration.
+    One invocation covers one (model, chunk_size, context_window) setting.
     """
-    spec = get_dataset(config.dataset_name)
-    docs, _ = spec.load(config.data_dir)
-    tokenizer = load_rag_tokenizer(config.model)
-    chunks = chunk_corpus(docs, tokenizer=tokenizer, chunk_size=config.chunk_size)
-    grouped = chunks_by_doc(chunks)
-    fingerprint = corpus_fingerprint(docs)
-    cache_dir = rag_chunk_cache_dir(
-        model=config.model,
-        dtype=config.kv_dtype,
-        chunk_size=config.chunk_size,
-        context_window=config.context_window,
-        max_position=config.kv_max_position,
-        corpus_fingerprint=fingerprint,
-        cache_root=config.kv_chunk_cache_root,
-    )
-    meta_base = cache_meta_base(
-        dataset=config.dataset_name,
-        model=config.model,
-        dtype=config.kv_dtype,
-        chunk_size=config.chunk_size,
-        context_window=config.context_window,
-        max_position=config.kv_max_position,
-        corpus_fingerprint=fingerprint,
-    )
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    write_manifest(cache_dir, meta=meta_base, chunks=chunks)
-
-    missing = [
-        chunk for chunk in chunks if not chunk_file_path(cache_dir, chunk.chunk_id).exists()
-    ]
+    corpus = load_rag_corpus(config)
+    cache = RagChunkCache.for_config(config, corpus.docs)
+    cache.directory.mkdir(parents=True, exist_ok=True)
+    cache.write_manifest(corpus.chunks)
+    missing_ids = set(cache.missing_chunk_ids(chunk.chunk_id for chunk in corpus.chunks))
+    missing = [chunk for chunk in corpus.chunks if chunk.chunk_id in missing_ids]
     scaffold = extract_rag_scaffold_token_ids(
-        tokenizer,
-        system_prompt=spec.prompt_profile.system_prompt,
+        corpus.tokenizer,
+        system_prompt=corpus.spec.prompt_profile.system_prompt,
         block_size=config.kv_block_size,
     )
-    tables_path = tables_scaffold_path(cache_dir, config.kv_block_size)
-    tables_expected_meta = tables_meta(meta_base, block_size=config.kv_block_size)
-    cached_tables = load_tables_and_scaffold(
-        tables_path, expected_meta=tables_expected_meta, device="cpu"
-    )
-    need_tables = cached_tables is None or not rag_scaffold_chunks_match(
-        cached_tables.scaffold_chunks, scaffold
-    )
+    need_tables = not _tables_are_current(cache, config, scaffold)
     logger.info(
         "RAG KV precompute dataset={} model={} chunks={} missing={} tables_needed={} cache_dir={}",
         config.dataset_name,
         config.model,
-        len(chunks),
+        len(corpus.chunks),
         len(missing),
         need_tables,
-        cache_dir,
+        cache.directory,
     )
-
-    encoded = 0
     if missing or need_tables:
         encoder = ChunkedRopeEncoder(
             model=config.model,
@@ -99,69 +63,80 @@ def precompute_rag_kv(config: RagBenchConfig) -> dict[str, Any]:
             max_position=config.kv_max_position,
         )
         try:
-            for index, chunk in enumerate(missing, start=1):
-                plan = build_chunk_context_encoding_plan(
-                    chunk,
-                    grouped[chunk.doc_id],
-                    context_window=config.context_window,
-                    max_input_tokens=config.kv_max_position,
-                )
-                encoded_chunk = encoder.encode_plan(plan)
-                save_chunk(
-                    chunk_file_path(cache_dir, chunk.chunk_id),
-                    meta=chunk_meta(meta_base, chunk),
-                    chunk=encoded_chunk,
-                )
-                del encoded_chunk
-                encoded += 1
-                if index % _EMPTY_CACHE_EVERY == 0 or index == len(missing):
-                    empty_cuda_cache()
-                    logger.info("Encoded {}/{} missing RAG KV chunks", index, len(missing))
+            _encode_missing_chunks(encoder, config, corpus, cache, missing)
             if need_tables:
-                scaffold_chunks = {
-                    "header": encoder.encode(
-                        "__rag_header__", scaffold.header_token_ids
-                    ),
-                    "empty_passages": encoder.encode(
-                        "__rag_empty_passages__", scaffold.empty_token_ids
-                    ),
-                    "footer": encoder.encode(
-                        "__rag_footer__", scaffold.footer_token_ids
-                    ),
-                }
-                save_tables_and_scaffold(
-                    tables_path,
-                    meta=tables_expected_meta,
-                    cos_table=encoder.cos_table,
-                    sin_table=encoder.sin_table,
-                    scaffold_chunks=scaffold_chunks,
-                )
+                _save_tables(encoder, config, cache, scaffold)
         finally:
             encoder.close()
-
-    cache_bytes = _cache_bytes(cache_dir)
     summary = {
-        "cache_dir": str(cache_dir),
-        "manifest": str(manifest_path(cache_dir)),
-        "corpus_fingerprint": fingerprint,
-        "chunk_count": len(chunks),
-        "encoded": encoded,
-        "skipped": len(chunks) - len(missing),
-        "cache_bytes": cache_bytes,
+        "cache_dir": str(cache.directory),
+        "manifest": str(cache.manifest_path),
+        "corpus_fingerprint": corpus.fingerprint,
+        "chunk_count": len(corpus.chunks),
+        "encoded": len(missing),
+        "skipped": len(corpus.chunks) - len(missing),
+        "cache_bytes": cache.total_bytes(),
     }
     logger.info(
         "RAG KV precompute complete: encoded={} skipped={} cache_bytes={}",
         summary["encoded"],
         summary["skipped"],
-        cache_bytes,
+        summary["cache_bytes"],
     )
     return summary
 
 
-def _cache_bytes(cache_dir) -> int:
-    total = 0
-    chunks_dir = cache_dir / "chunks"
-    if chunks_dir.exists():
-        total += sum(path.stat().st_size for path in chunks_dir.glob("*.pt"))
-    total += sum(path.stat().st_size for path in cache_dir.glob("tables-scaffold-*.pt"))
-    return total
+def _tables_are_current(
+    cache: RagChunkCache, config: RagBenchConfig, scaffold: ScaffoldTokens
+) -> bool:
+    cached = load_tables_and_scaffold(
+        cache.tables_path(config.kv_block_size),
+        expected_meta=cache.key.tables_meta(block_size=config.kv_block_size),
+        device="cpu",
+    )
+    return cached is not None and rag_scaffold_chunks_match(cached.scaffold_chunks, scaffold)
+
+
+def _encode_missing_chunks(
+    encoder: ChunkedRopeEncoder,
+    config: RagBenchConfig,
+    corpus: RagCorpus,
+    cache: RagChunkCache,
+    missing: list[RagChunk],
+) -> None:
+    grouped = chunks_by_doc(corpus.chunks)
+    for index, chunk in enumerate(missing, start=1):
+        plan = build_chunk_context_encoding_plan(
+            chunk,
+            grouped[chunk.doc_id],
+            context_window=config.context_window,
+            max_input_tokens=config.kv_max_position,
+        )
+        encoded = encoder.encode_plan(plan)
+        save_chunk(
+            cache.chunk_path(chunk.chunk_id), meta=cache.key.chunk_meta(chunk), chunk=encoded
+        )
+        del encoded
+        if index % EMPTY_CACHE_EVERY == 0 or index == len(missing):
+            empty_cuda_cache()
+            logger.info("Encoded {}/{} missing RAG KV chunks", index, len(missing))
+
+
+def _save_tables(
+    encoder: ChunkedRopeEncoder,
+    config: RagBenchConfig,
+    cache: RagChunkCache,
+    scaffold: ScaffoldTokens,
+) -> None:
+    scaffold_chunks: dict[str, KVChunk] = {
+        "header": encoder.encode("__rag_header__", scaffold.header_token_ids),
+        "empty_passages": encoder.encode("__rag_empty_passages__", scaffold.empty_token_ids),
+        "footer": encoder.encode("__rag_footer__", scaffold.footer_token_ids),
+    }
+    save_tables_and_scaffold(
+        cache.tables_path(config.kv_block_size),
+        meta=cache.key.tables_meta(block_size=config.kv_block_size),
+        cos_table=encoder.cos_table,
+        sin_table=encoder.sin_table,
+        scaffold_chunks=scaffold_chunks,
+    )

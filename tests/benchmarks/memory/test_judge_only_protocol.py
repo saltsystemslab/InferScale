@@ -4,14 +4,16 @@ import json
 from pathlib import Path
 
 import pytest
+from memory_config import make_memory_config
 
 from benchmarks.memory.config import MemoryRunConfig
-from memory_config import make_memory_config
 from benchmarks.memory.runner import _reconcile_with_evidence
 
 
 def _config(tmp_path: Path, *, with_evidence: bool, rejudge: bool) -> MemoryRunConfig:
-    return make_memory_config(results_dir=tmp_path, run_id='run', rejudge=rejudge, judge={'with_evidence': with_evidence})
+    return make_memory_config(
+        results_dir=tmp_path, run_id="run", rejudge=rejudge, judge={"with_evidence": with_evidence}
+    )
 
 
 def test_judge_only_adopts_the_saved_evidence_protocol(tmp_path: Path) -> None:
@@ -34,7 +36,7 @@ def test_judge_only_defaults_old_runs_to_no_evidence(tmp_path: Path) -> None:
 def test_judge_only_rejects_explicit_evidence_mismatch_without_rejudge(tmp_path: Path) -> None:
     config = _config(tmp_path, with_evidence=True, rejudge=False)
 
-    with pytest.raises(RuntimeError, match="pass --rejudge"):
+    with pytest.raises(RuntimeError, match="set rejudge=true"):
         _reconcile_with_evidence(config, {"with_evidence": False})
 
 

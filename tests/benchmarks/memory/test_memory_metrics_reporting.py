@@ -3,8 +3,8 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
-from benchmarks.memory.reporting import QUERY_METRICS_COLUMNS, query_metric_rows
 from benchmarks.common.files import write_csv
+from benchmarks.memory.reporting import QUERY_METRICS_COLUMNS, query_metric_rows
 from benchmarks.memory.results import summarize_records
 
 
@@ -86,7 +86,11 @@ def test_summary_aggregates_prompt_injection_timing() -> None:
     ]
 
     metrics = summarize_records(
-        rows, run_id="run", mode="mem0-prompt-injection", config={}, system_metadata={},
+        rows,
+        run_id="run",
+        mode="mem0-prompt-injection",
+        config={},
+        system_metadata={},
     )["metrics"]
 
     assert metrics[key]["count"] == 3
@@ -100,7 +104,11 @@ def test_summary_aggregates_vector_query_times() -> None:
         _record({"vector_db_query_time_ms": 30.0, "query_to_answer_ms": 300.0}),
     ]
     metrics = summarize_records(
-        rows, run_id="run", mode="full", config={}, system_metadata={},
+        rows,
+        run_id="run",
+        mode="full",
+        config={},
+        system_metadata={},
     )["metrics"]
 
     assert metrics["vector_db_query_count"] == 3

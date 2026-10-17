@@ -6,9 +6,14 @@ import pytest
 
 vllm = pytest.importorskip("vllm")
 
-from inferscale.v1.kv import connector
-from inferscale.v1.kv.connector_metadata import MemoryConnectorMetadata
-from inferscale.v1.kv.connector import MemoryKVConnector, reset_load_stats, snapshot_load_stats
+# The connector imports vllm at module level, so it can only be imported after the skip check.
+from inferscale.v1.kv import connector, connector_inject  # noqa: E402
+from inferscale.v1.kv.connector import (  # noqa: E402
+    MemoryKVConnector,
+    reset_load_stats,
+    snapshot_load_stats,
+)
+from inferscale.v1.kv.connector_metadata import MemoryConnectorMetadata  # noqa: E402
 
 torch = pytest.importorskip("torch")
 
@@ -34,6 +39,7 @@ class _FakeStore:
 def _connector(memories: dict[str, object], loads: list) -> MemoryKVConnector:
     connector = MemoryKVConnector.__new__(MemoryKVConnector)
     connector._memory_store = _FakeStore(memories)
+    connector._log_memory_hits = False
     metadata = MemoryConnectorMetadata()
     for load in loads:
         metadata.loads.append(load)
@@ -108,9 +114,7 @@ def test_successful_load_increments_stats(monkeypatch: pytest.MonkeyPatch) -> No
     memory = SimpleNamespace(kv_by_layer={"layer.0": src_kv})
     layers = {"layer.0": SimpleNamespace(kv_cache=torch.zeros((1, 2, 16, 1, 4)))}
     connector = _connector({"user-0": memory}, [_load("user-0", num_tokens=16)])
-    monkeypatch.setattr(
-        MemoryKVConnector, "_inject_kv_into_layer", lambda self, **kwargs: None
-    )
+    monkeypatch.setattr(connector_inject, "inject_layer", lambda **kwargs: None)
 
     reset_load_stats()
     connector.start_load_kv(_forward_context(attn_metadata=object(), layers=layers))
@@ -122,8 +126,8 @@ def test_successful_load_increments_stats(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_reset_load_stats_clears_counters() -> None:
-    connector._record_load(8, "req-a")
-    connector._record_native_covered("req-b")
+    connector.load_stats.record_load(8, "req-a")
+    connector.load_stats.record_native_covered("req-b")
     reset_load_stats()
 
     assert snapshot_load_stats() == {
@@ -135,9 +139,9 @@ def test_reset_load_stats_clears_counters() -> None:
 
 def test_requests_covered_unions_loaded_and_native_request_ids() -> None:
     reset_load_stats()
-    connector._record_load(8, "req-a")
-    connector._record_load(8, "req-a")  # preemption re-load: same request
-    connector._record_native_covered("req-b")
+    connector.load_stats.record_load(8, "req-a")
+    connector.load_stats.record_load(8, "req-a")  # preemption re-load: same request
+    connector.load_stats.record_native_covered("req-b")
 
     stats = snapshot_load_stats()
     assert stats["requests_loaded"] == 2
@@ -167,9 +171,7 @@ def test_staging_store_gets_prefetch_and_release(monkeypatch: pytest.MonkeyPatch
     connector = _connector({"user-0": memory}, [_load("user-0")])
     store = _FakeStagingStore({"user-0": memory})
     connector._memory_store = store
-    monkeypatch.setattr(
-        MemoryKVConnector, "_inject_kv_into_layer", lambda self, **kwargs: None
-    )
+    monkeypatch.setattr(connector_inject, "inject_layer", lambda **kwargs: None)
 
     reset_load_stats()
     connector.start_load_kv(_forward_context(attn_metadata=object(), layers=layers))
@@ -202,9 +204,7 @@ def test_prefetch_window_slides_with_staging_slots(monkeypatch: pytest.MonkeyPat
     connector = _connector(memories, [_load(user) for user in users])
     store = _FakeStagingStore(memories, num_staging_slots=2)
     connector._memory_store = store
-    monkeypatch.setattr(
-        MemoryKVConnector, "_inject_kv_into_layer", lambda self, **kwargs: None
-    )
+    monkeypatch.setattr(connector_inject, "inject_layer", lambda **kwargs: None)
 
     reset_load_stats()
     connector.start_load_kv(_forward_context(attn_metadata=object(), layers=layers))

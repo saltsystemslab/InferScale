@@ -1,12 +1,13 @@
+"""Render documents and cut them into fixed-size token chunks."""
+
 from __future__ import annotations
 
 import hashlib
 from collections.abc import Sequence
 from typing import Any
 
-from inferscale.v1.kv.tokenization import encode_text_no_special
-
 from benchmarks.rag.data_types import RagChunk, RagDocument, chunk_id_for
+from inferscale.v1.kv.tokenization import encode_text_no_special
 
 
 def render_document(doc: RagDocument) -> str:
@@ -91,7 +92,5 @@ def corpus_fingerprint(docs: Sequence[RagDocument]) -> str:
 
 
 def _decode(tokenizer: Any, token_ids: list[int]) -> str:
-    decode = getattr(tokenizer, "decode", None)
-    if not callable(decode):
-        raise RuntimeError("Tokenizer has no decode method.")
-    return str(decode(token_ids))
+    # vLLM and transformers tokenizers share the decode call but no base class.
+    return str(tokenizer.decode(token_ids))

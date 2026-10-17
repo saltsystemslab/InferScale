@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import pytest
+from library_fakes import FakeChunkStore, FakeEmbedder, FakeEncoder, FakeEngine, FakeIndex
 
 import inferscale.v1.api as api_module
 from inferscale.v1 import Chunk, InferScale, InferScaleConfig
 from inferscale.v1.kv.registry import namespace_stats
-from library_fakes import FakeChunkStore, FakeEmbedder, FakeEncoder, FakeEngine, FakeIndex
 
 
 class RecordingEncoder(FakeEncoder):
@@ -24,11 +24,16 @@ def make_engine(monkeypatch):
     engines = []
 
     def make(*, context_window=0, max_position=32768, separator="\n"):
-        config = InferScaleConfig.from_dict({
-            "model": "fake-model", "top_k": 2, "context_window": context_window,
-            "engine": {"block_size": 4}, "kv": {"max_position": max_position},
-            "prompt": {"chunk_separator": separator},
-        })
+        config = InferScaleConfig.from_dict(
+            {
+                "model": "fake-model",
+                "top_k": 2,
+                "context_window": context_window,
+                "engine": {"block_size": 4},
+                "kv": {"max_position": max_position},
+                "prompt": {"chunk_separator": separator},
+            }
+        )
         facade = InferScale(
             config,
             embedder=FakeEmbedder(),
@@ -78,7 +83,9 @@ def test_precompute_links_kv_chunks_and_index_entries_by_id(engine) -> None:
     assert engine.get_chunk("c3").context_prefix_tokens == len(engine.get_chunk("c1").token_ids) + 3
     assert engine.get_chunk("c3").context_ids == ("c1", "c2")
     tokenized = engine.get_chunk("c1").token_ids
-    assert tokenized == engine.tokenizer.encode("Alice has a cat named Miso.\n\n", add_special_tokens=False)
+    assert tokenized == engine.tokenizer.encode(
+        "Alice has a cat named Miso.\n\n", add_special_tokens=False
+    )
     assert engine._corpus.scaffold is not None
 
     with pytest.raises(ValueError, match="Duplicate chunk id"):
@@ -121,9 +128,12 @@ def test_phase_order_and_query_flow(engine) -> None:
         + len(scaffold.footer.token_ids)
     )
     assert result.metrics["kv_memory_tokens"] == memory_tokens
-    assert fake_engine.prompts[-1][:memory_tokens] == scaffold.header.token_ids + [
-        token for chunk_id in selected for token in engine.get_chunk(chunk_id).token_ids
-    ] + scaffold.footer.token_ids
+    assert (
+        fake_engine.prompts[-1][:memory_tokens]
+        == scaffold.header.token_ids
+        + [token for chunk_id in selected for token in engine.get_chunk(chunk_id).token_ids]
+        + scaffold.footer.token_ids
+    )
     assert result.metrics["kv_loaded_memory_tokens"] % 4 == 0
     assert result.metrics["kv_block_size"] == 4
     assert result.metrics["kv_engine_time_to_first_token_ms"] == 12.0
@@ -172,16 +182,21 @@ def test_windows_use_only_preceding_target_tokens(make_engine, context_window):
     assert stats.token_count == 6
     assert engine._embedder.document_calls == [[chunk.text for chunk in chunks]]
     for index, plan in enumerate(engine._encoder.plans):
-        previous = chunks[max(0, index - context_window):index] if context_window else []
+        previous = chunks[max(0, index - context_window) : index] if context_window else []
         prefix = [token for chunk in previous for token in chunk.token_ids]
         target = chunks[index]
         assert plan.context_ids == tuple(chunk.id for chunk in previous)
         assert plan.context_token_ids == prefix
         assert plan.input_token_ids == prefix + target.token_ids
-        assert (plan.slice_start, plan.slice_end) == (len(prefix), len(prefix) + len(target.token_ids))
+        assert (plan.slice_start, plan.slice_end) == (
+            len(prefix),
+            len(prefix) + len(target.token_ids),
+        )
         stored = engine._corpus.get(target.id)
         assert stored.token_ids == target.token_ids
-        assert all(tensor.shape[1] == len(target.token_ids) for tensor in stored.kv_by_layer.values())
+        assert all(
+            tensor.shape[1] == len(target.token_ids) for tensor in stored.kv_by_layer.values()
+        )
 
 
 @pytest.mark.parametrize("batch_sizes", [(4,), (1, 1, 1, 1), (1, 0, 2, 1), (2, 2)])
@@ -192,11 +207,13 @@ def test_windows_are_identical_across_precompute_batches(make_engine, batch_size
     batched = make_engine(context_window=2)
     offset = 0
     for size in batch_sizes:
-        batched.precompute(iter(chunks[offset:offset + size]))
+        batched.precompute(iter(chunks[offset : offset + size]))
         offset += size
 
     assert batched._encoder.plans == single._encoder.plans
-    assert [batched.get_chunk(chunk.id) for chunk in chunks] == [single.get_chunk(chunk.id) for chunk in chunks]
+    assert [batched.get_chunk(chunk.id) for chunk in chunks] == [
+        single.get_chunk(chunk.id) for chunk in chunks
+    ]
 
 
 def test_window_tokenization_honors_separator_and_supplied_target_tokens(make_engine):
@@ -213,10 +230,14 @@ def test_window_tokenization_honors_separator_and_supplied_target_tokens(make_en
 
 def test_window_truncates_oldest_tokens_without_truncating_target(make_engine):
     engine = make_engine(context_window=2, max_position=6)
-    engine.precompute([
-        Chunk("c1", "one", [1, 2, 3]), Chunk("c2", "two", [4, 5, 6]),
-        Chunk("c3", "three", [7, 8]), Chunk("c4", "four", [9, 10, 11, 12, 13, 14]),
-    ])
+    engine.precompute(
+        [
+            Chunk("c1", "one", [1, 2, 3]),
+            Chunk("c2", "two", [4, 5, 6]),
+            Chunk("c3", "three", [7, 8]),
+            Chunk("c4", "four", [9, 10, 11, 12, 13, 14]),
+        ]
+    )
 
     third, fourth = engine._encoder.plans[2:]
     assert third.context_token_ids == [3, 4, 5, 6]
@@ -236,10 +257,12 @@ def test_rejected_batch_does_not_enter_later_windows(make_engine):
     engine = make_engine(context_window=2, max_position=4)
     engine.precompute([Chunk("first", "first", [1, 2])])
     with pytest.raises(RuntimeError, match="exceeding max_position"):
-        engine.precompute([
-            Chunk("uncommitted", "uncommitted", [3]),
-            Chunk("too-long", "too long", [4, 5, 6, 7, 8]),
-        ])
+        engine.precompute(
+            [
+                Chunk("uncommitted", "uncommitted", [3]),
+                Chunk("too-long", "too long", [4, 5, 6, 7, 8]),
+            ]
+        )
 
     assert engine.chunk_ids() == ["first"]
     assert engine._embedder.document_calls == [["first"]]

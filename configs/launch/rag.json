@@ -1,0 +1,11 @@
+{
+  "family": "rag",
+  "name": "rag",
+  "configs": [
+    "configs/rag/multihoprag.json",
+    "configs/rag/qasper.json"
+  ],
+  "sweep": "standard",
+  "stage": "run",
+  "dry_run": false
+}

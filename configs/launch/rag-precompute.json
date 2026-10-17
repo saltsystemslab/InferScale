@@ -1,0 +1,10 @@
+{
+  "family": "rag",
+  "name": "rag-precompute",
+  "configs": [
+    "configs/rag/multihoprag.json",
+    "configs/rag/qasper.json"
+  ],
+  "stage": "precompute-kv",
+  "dry_run": false
+}

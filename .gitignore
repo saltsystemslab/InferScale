@@ -1,18 +1,49 @@
-.venv/
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .cache/
-.env
-/ai-memory-code/
-tmp/
-*.egg-info/
+
+# Distribution / packaging
 build/
 dist/
-data/
+eggs/
+.eggs/
+*.egg-info/
+*.egg
+
+# vscode
+.vs
+.vscode
+
+# Environments
+.env
+.venv*
+.venv
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# DS_Store (MacOS)
+.DS_Store
+
+# ruff
+.ruff_cache
+
 results/
 results-rag/
 jasperpy/build/
+
+# AI agents
+/.agents/skills
+/.claude/skills
 CLAUDE.md
 AGENTS.md
 OPINIONS.md
+
+# Data
+data/
+
+# Misc
+tmp/

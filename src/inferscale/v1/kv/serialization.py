@@ -46,8 +46,7 @@ def chunk_from_payload(chunk_id: str, payload: Mapping[str, Any], *, device: str
         chunk_id=chunk_id,
         token_ids=list(payload[TOKEN_IDS_KEY]),
         kv_by_layer={
-            layer_name: tensor.to(device)
-            for layer_name, tensor in payload[KV_BY_LAYER_KEY].items()
+            layer_name: tensor.to(device) for layer_name, tensor in payload[KV_BY_LAYER_KEY].items()
         },
         context_ids=tuple(payload[CONTEXT_IDS_KEY]),
         context_prefix_tokens=int(payload[CONTEXT_PREFIX_TOKENS_KEY]),

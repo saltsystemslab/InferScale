@@ -27,14 +27,14 @@ load_benchmark_environment() {
 from pathlib import Path
 import sys
 from benchmarks.common.config import load_runtime_config
-from benchmarks.common.environment import runtime_path_for_config, shell_exports
+from benchmarks.common.environment import runtime_path_for_config, runtime_shell_exports
 
 path = Path(sys.argv[1])
 runtime_path = path if sys.argv[2] in {"runtime", "prepare-runtime"} else runtime_path_for_config(path)
-print(shell_exports(load_runtime_config(runtime_path), prepare=sys.argv[2].startswith("prepare-")))
+print(runtime_shell_exports(load_runtime_config(runtime_path), prepare=sys.argv[2].startswith("prepare-")))
 PY
   )" || return 1
-  # shell_exports validates names and quotes every JSON-derived value.
+  # runtime_shell_exports validates names and quotes every JSON-derived value.
   eval "${exports}"
 }
 

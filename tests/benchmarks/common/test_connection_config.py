@@ -6,14 +6,10 @@ from typing import Any
 
 import pytest
 
-from benchmarks.common.cache_identity import endpoint_cache_key
-from benchmarks.common.config import (
-    ConfigError,
-    RuntimeConfig,
-    judge_config,
-)
+from benchmarks.common.cache_keys import endpoint_cache_key
+from benchmarks.common.config import ConfigError, RuntimeConfig
+from benchmarks.common.judge_config import judge_config
 from benchmarks.memory.config import MemoryRunConfig
-
 
 ROLE_ENVIRONMENT = (
     "JUDGE_LLM_BASE_URL",
@@ -53,7 +49,9 @@ def runtime(tmp_path: Path) -> RuntimeConfig:
 @pytest.fixture
 def memory_data() -> dict[str, Any]:
     root = Path(__file__).resolve().parents[3]
-    return json.loads((root / "configs/memory/accuracy-latency/llama.json").read_text(encoding="utf-8"))
+    return json.loads(
+        (root / "configs/memory/accuracy-latency/llama.json").read_text(encoding="utf-8")
+    )
 
 
 @pytest.mark.parametrize("name", LEGACY_ENVIRONMENT)
@@ -86,7 +84,9 @@ def test_default_connections_are_preserved(
             monkeypatch.setenv(name, "")
     memory_data.pop("mem0")
     memory_data.pop("judge")
-    config = MemoryRunConfig.from_dict(memory_data, runtime=RuntimeConfig.from_dict({}, root=tmp_path))
+    config = MemoryRunConfig.from_dict(
+        memory_data, runtime=RuntimeConfig.from_dict({}, root=tmp_path)
+    )
 
     assert config.judge.base_url == "http://127.0.0.1:8000/v1"
     assert config.judge.api_key == "token-abc123"
@@ -96,7 +96,9 @@ def test_default_connections_are_preserved(
 
 @pytest.mark.parametrize("section_url", [None, "https://json.example/v1"])
 def test_shared_judge_endpoint_comes_from_json(
-    monkeypatch: pytest.MonkeyPatch, runtime: RuntimeConfig, section_url: str | None,
+    monkeypatch: pytest.MonkeyPatch,
+    runtime: RuntimeConfig,
+    section_url: str | None,
 ) -> None:
     monkeypatch.setenv("JUDGE_LLM_BASE_URL", "https://env.example/v1")
     section = {"base_url": section_url} if section_url is not None else {}
@@ -105,7 +107,9 @@ def test_shared_judge_endpoint_comes_from_json(
 
 
 def test_json_connections_ignore_environment_settings_without_mutating_input(
-    monkeypatch: pytest.MonkeyPatch, runtime: RuntimeConfig, memory_data: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    runtime: RuntimeConfig,
+    memory_data: dict[str, Any],
 ) -> None:
     memory_data["judge"]["base_url"] = "https://json-judge.example/v1"
     memory_data["mem0"]["llm_base_url"] = "https://json-extraction.example/v1"
@@ -170,7 +174,8 @@ def test_serialized_connections_redact_all_credentials(
 
 
 def test_extraction_port_validation_uses_json_endpoint(
-    runtime: RuntimeConfig, memory_data: dict[str, Any],
+    runtime: RuntimeConfig,
+    memory_data: dict[str, Any],
 ) -> None:
     memory_data["mem0"]["llm_base_url"] = "http://extraction.example:9001/v1"
     with pytest.raises(ConfigError, match=r"port 9001 must equal extraction.port 8000"):
@@ -182,27 +187,43 @@ def test_extraction_port_validation_uses_json_endpoint(
 
 
 def test_extraction_cache_identity_uses_json_endpoint_and_ignores_key_rotation(
-    monkeypatch: pytest.MonkeyPatch, runtime: RuntimeConfig, memory_data: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    runtime: RuntimeConfig,
+    memory_data: dict[str, Any],
 ) -> None:
     baseline = MemoryRunConfig.from_dict(memory_data, runtime=runtime)
     memory_data["mem0"]["llm_base_url"] = "http://localhost:8000/v1/"
     monkeypatch.setenv("EXTRACTION_LLM_API_KEY", "rotated-token")
     rotated = MemoryRunConfig.from_dict(memory_data, runtime=runtime)
-    assert endpoint_cache_key(rotated.memory_llm_base_url) == endpoint_cache_key(baseline.memory_llm_base_url)
+    assert endpoint_cache_key(rotated.memory_llm_base_url) == endpoint_cache_key(
+        baseline.memory_llm_base_url
+    )
     assert rotated.memory_llm_cache_dir == baseline.memory_llm_cache_dir
     memory_data["mem0"]["llm_base_url"] = "http://other-extraction.example:8000/v1"
     other_endpoint = MemoryRunConfig.from_dict(memory_data, runtime=runtime)
-    assert endpoint_cache_key(other_endpoint.memory_llm_base_url) != endpoint_cache_key(baseline.memory_llm_base_url)
+    assert endpoint_cache_key(other_endpoint.memory_llm_base_url) != endpoint_cache_key(
+        baseline.memory_llm_base_url
+    )
 
 
-@pytest.mark.parametrize(("section", "name", "value"), [
-    ("engine", "block_size", True), ("engine", "max_model_len", "32768"),
-    ("engine", "enable_prefix_caching", "false"), ("kv", "device", 0),
-    ("index", "alpha", False), ("embedding", "batch_size", 1.5),
-    ("generation", "temperature", "0.1"),
-])
+@pytest.mark.parametrize(
+    ("section", "name", "value"),
+    [
+        ("engine", "block_size", True),
+        ("engine", "max_model_len", "32768"),
+        ("engine", "enable_prefix_caching", "false"),
+        ("kv", "device", 0),
+        ("index", "alpha", False),
+        ("embedding", "batch_size", 1.5),
+        ("generation", "temperature", "0.1"),
+    ],
+)
 def test_nested_json_types_are_validated_before_construction(
-    runtime: RuntimeConfig, memory_data: dict[str, Any], section: str, name: str, value: Any,
+    runtime: RuntimeConfig,
+    memory_data: dict[str, Any],
+    section: str,
+    name: str,
+    value: Any,
 ) -> None:
     memory_data["inferscale"][section][name] = value
     with pytest.raises(ConfigError, match=name):
@@ -212,23 +233,32 @@ def test_nested_json_types_are_validated_before_construction(
 def test_default_embedding_endpoint_cannot_be_replaced_by_sdk_environment(monkeypatch) -> None:
     import sys
     from types import SimpleNamespace
-    from inferscale.v1.embedding.openai import DEFAULT_OPENAI_BASE_URL, OpenAIEmbedder
-    from benchmarks.memory.mem0.provider import build_mem0_config
+
     from benchmarks.common.vector_types import VectorStoreConfig
+    from benchmarks.memory.mem0.provider import Mem0Settings, build_mem0_config
+    from inferscale.v1.embedding.openai import DEFAULT_OPENAI_BASE_URL, OpenAIEmbedder
 
     captured = {}
+
     def client(**kwargs):
         captured.update(kwargs)
         return SimpleNamespace()
+
     monkeypatch.setenv("OPENAI_BASE_URL", "https://environment.example/v1")
     monkeypatch.setenv("VLLM_BASE_URL", "https://environment-extraction.example/v1")
     monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=client))
     OpenAIEmbedder(model="embedding", api_key="test-key")
     assert captured["base_url"] == DEFAULT_OPENAI_BASE_URL
     config = build_mem0_config(
-        store_root="unused", vector_config=VectorStoreConfig(backend="jasper"),
-        embedding_model="embedding", embedding_api_key="test-key", embedding_base_url=None,
-        memory_llm_model="answer-model", memory_llm_base_url=None,
+        Mem0Settings(
+            store_root=Path("unused"),
+            vector_config=VectorStoreConfig(backend="jasper"),
+            embedding_model="embedding",
+            embedding_api_key="test-key",
+            embedding_base_url=None,
+            memory_llm_model="answer-model",
+            memory_llm_base_url=None,
+        )
     )
     assert config["embedder"]["config"]["openai_base_url"] == DEFAULT_OPENAI_BASE_URL
     assert config["llm"]["config"]["vllm_base_url"] == "http://localhost:8000/v1"

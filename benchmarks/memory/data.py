@@ -1,14 +1,29 @@
+"""LoCoMo dataset records and the dataset-specific helpers the benchmark shares.
+
+A LoCoMo file is a JSON list of samples. Each sample has a ``sample_id``, a
+``conversation`` object, and a ``qa`` list. The conversation holds
+``speaker_a`` and ``speaker_b`` and, per session N, a ``session_N`` list of
+turns plus a ``session_N_date_time`` string such as "1:56 pm on 8 May, 2023".
+A turn has ``speaker``, ``dia_id``, and ``text``; image turns add
+``img_url``, ``blip_caption``, and ``query``. A question has ``question``,
+``evidence`` (dialogue ids), an integer ``category`` from 1 to 5, and an
+``answer``; adversarial questions (category 5) carry ``adversarial_answer``
+instead. Questions have no id in the file, so they are numbered ``q0``,
+``q1``, ... in file order.
+"""
+
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
-
-SESSION_RE = re.compile(r"^session_(\d+)$")
+SESSION_KEY = re.compile(r"^session_(\d+)$")
+LOCOMO_DATE_FORMATS = ("%I:%M %p on %d %B, %Y", "%I:%M %p on %d %b, %Y")
 
 
 @dataclass(slots=True)
@@ -48,33 +63,15 @@ class ConversationSample:
 
 
 def load_locomo(path: str | Path, max_samples: int | None = None) -> list[ConversationSample]:
-    data = json.loads(Path(path).read_text())
-    if isinstance(data, dict):
-        records = data.get("data") or data.get("samples") or data.get("conversations") or []
-    elif isinstance(data, list):
-        records = data
-    else:
-        raise ValueError(f"Unsupported LoCoMo root type: {type(data).__name__}")
-
-    samples: list[ConversationSample] = []
-    for index, record in enumerate(records):
-        if max_samples is not None and len(samples) >= max_samples:
-            break
-        if not isinstance(record, dict):
-            continue
-        sample_id = str(
-            record.get("sample_id")
-            or record.get("conversation_id")
-            or record.get("id")
-            or f"sample-{index}"
-        )
-        turns = list(_extract_turns(sample_id, record))
-        qa = list(_extract_qa(sample_id, record))
-        samples.append(ConversationSample(sample_id=sample_id, turns=turns, qa=qa, raw=record))
-    return samples
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(data, list):
+        raise ValueError(f"A LoCoMo file must be a JSON list of samples: {path}")
+    records = data if max_samples is None else data[:max_samples]
+    return [_sample(record) for record in records]
 
 
 def format_turn_for_memory(turn: Turn) -> str:
+    """The turn text Mem0 ingests: speaker, utterance, and the shared image, if any."""
     text = turn.text.strip()
     raw = turn.raw if isinstance(turn.raw, dict) else {}
     image_query = str(raw.get("query") or "").strip()
@@ -93,139 +90,150 @@ def format_turn_for_memory(turn: Turn) -> str:
     return content
 
 
-def _extract_turns(sample_id: str, record: dict[str, Any]) -> Iterable[Turn]:
-    conversation = record.get("conversation", record)
-
-    if isinstance(conversation, list):
-        yield from _turns_from_session_list(sample_id, "session_1", 1, conversation, None)
-        return
-
+def locomo_turn_role(sample: ConversationSample, turn: Turn) -> str:
+    """Mem0's chat role for a turn: speaker_a is the user and speaker_b the assistant."""
+    conversation = sample.raw.get("conversation", sample.raw)
     if not isinstance(conversation, dict):
-        return
+        conversation = {}
+    speaker_a = str(conversation.get("speaker_a") or "").strip()
+    speaker_b = str(conversation.get("speaker_b") or "").strip()
+    if speaker_a and turn.speaker == speaker_a:
+        return "user"
+    if speaker_b and turn.speaker == speaker_b:
+        return "assistant"
+    normalized = turn.speaker.strip().lower()
+    if normalized in {"assistant", "ai", "bot"}:
+        return "assistant"
+    return "user"
 
-    session_keys: list[tuple[int, str, str | None]] = []
-    for key in conversation:
-        match = SESSION_RE.match(str(key))
-        if match and isinstance(conversation.get(key), list):
-            session_key = str(key)
-            session_keys.append(
-                (
-                    int(match.group(1)),
-                    session_key,
-                    _string_or_none(conversation.get(f"{session_key}_date_time")),
-                )
-            )
 
-    ordered_sessions = sorted(session_keys, key=_session_sort_key)
-    for session_index, (_, session_key, timestamp) in enumerate(ordered_sessions, start=1):
-        yield from _turns_from_session_list(
-            sample_id,
-            session_key,
-            session_index,
-            conversation[session_key],
-            timestamp,
+def locomo_timestamp(value: str | None) -> tuple[int, str]:
+    """A UTC epoch and ISO pair for a session date; records without a date use the Unix epoch."""
+    text = str(value or "").strip()
+    if not text:
+        parsed = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    else:
+        parsed = _parse_iso(text) or _parse_locomo_date(text)
+        if parsed is None:
+            raise ValueError(f"Unsupported LoCoMo timestamp: {text!r}.")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    else:
+        parsed = parsed.astimezone(timezone.utc)
+    return int(parsed.timestamp()), parsed.isoformat()
+
+
+def sample_fingerprint(sample: ConversationSample) -> str:
+    """A short digest of the conversation content, part of every per-sample cache key."""
+    conversation = sample.raw.get("conversation", sample.raw)
+    if not isinstance(conversation, dict):
+        conversation = {}
+    canonical = json.dumps(
+        {
+            "sample_id": sample.sample_id,
+            "speaker_a": conversation.get("speaker_a"),
+            "speaker_b": conversation.get("speaker_b"),
+            "turns": [
+                {
+                    "id": turn.id,
+                    "session_index": turn.session_index,
+                    "turn_index": turn.turn_index,
+                    "speaker": turn.speaker,
+                    "text": turn.text,
+                    "timestamp": turn.timestamp,
+                    "image_caption": turn.image_caption,
+                }
+                for turn in sample.turns
+            ],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:20]
+
+
+def _sample(record: dict[str, Any]) -> ConversationSample:
+    sample_id = str(record["sample_id"])
+    conversation = record["conversation"]
+    turns = [
+        turn
+        for session_index, (session_key, date_text) in enumerate(
+            _sessions_in_date_order(conversation), start=1
         )
+        for turn in _session_turns(sample_id, session_key, session_index, conversation, date_text)
+    ]
+    qa = [_question(sample_id, index, item) for index, item in enumerate(record.get("qa", []))]
+    return ConversationSample(sample_id=sample_id, turns=turns, qa=qa, raw=record)
 
 
-def _turns_from_session_list(
+def _sessions_in_date_order(conversation: dict[str, Any]) -> list[tuple[str, str | None]]:
+    """Session keys and dates, earliest first; undated sessions keep their numeric order."""
+    sessions = []
+    for key in conversation:
+        match = SESSION_KEY.match(key)
+        if match is None:
+            continue
+        date_text = conversation.get(f"{key}_date_time")
+        parsed = _parse_locomo_date(date_text) if date_text else None
+        order = (0, parsed) if parsed is not None else (1, int(match.group(1)))
+        sessions.append((order, key, date_text))
+    sessions.sort(key=lambda item: item[0])
+    return [(key, date_text) for _, key, date_text in sessions]
+
+
+def _session_turns(
     sample_id: str,
-    session_id: str,
+    session_key: str,
     session_index: int,
-    turns: list[Any],
-    session_timestamp: str | None,
-) -> Iterable[Turn]:
-    for turn_index, turn in enumerate(turns):
-        if isinstance(turn, str):
-            speaker = ""
-            text = turn
-            image_caption = None
-            raw = {"text": turn}
-        elif isinstance(turn, dict):
-            speaker = str(turn.get("speaker") or turn.get("role") or "")
-            text = str(
-                turn.get("text")
-                or turn.get("content")
-                or turn.get("message")
-                or turn.get("utterance")
-                or ""
-            )
-            image_caption = _string_or_none(
-                turn.get("blip_caption")
-                or turn.get("image_caption")
-                or turn.get("caption")
-            )
-            raw = turn
-        else:
-            continue
-        text = text.strip()
-        if not text and not image_caption:
-            continue
-        yield Turn(
+    conversation: dict[str, Any],
+    date_text: str | None,
+) -> list[Turn]:
+    return [
+        Turn(
             sample_id=sample_id,
-            session_id=session_id,
+            session_id=session_key,
             session_index=session_index,
             turn_index=turn_index,
-            speaker=speaker,
-            text=text,
-            timestamp=session_timestamp,
-            image_caption=image_caption,
-            raw=raw,
+            speaker=str(turn.get("speaker") or ""),
+            text=str(turn.get("text") or "").strip(),
+            timestamp=date_text,
+            image_caption=_text_or_none(turn.get("blip_caption")),
+            raw=turn,
         )
+        for turn_index, turn in enumerate(conversation[session_key])
+    ]
 
 
-def _extract_qa(sample_id: str, record: dict[str, Any]) -> Iterable[QuestionAnswer]:
-    qa_records = (
-        record.get("qa")
-        or record.get("qas")
-        or record.get("questions")
-        or record.get("question_answering")
-        or []
+def _question(sample_id: str, index: int, item: dict[str, Any]) -> QuestionAnswer:
+    return QuestionAnswer(
+        sample_id=sample_id,
+        question_id=f"q{index}",
+        question=str(item["question"]).strip(),
+        answer=str(item.get("answer", "")),
+        category=str(item["category"]),
+        evidence=item.get("evidence"),
+        raw=item,
     )
-    if isinstance(qa_records, dict):
-        iterable = qa_records.values()
-    else:
-        iterable = qa_records
-    for index, item in enumerate(iterable):
-        if not isinstance(item, dict):
-            continue
-        question = str(item.get("question") or item.get("query") or "").strip()
-        answer = item.get("answer", item.get("gold_answer", ""))
-        if isinstance(answer, list):
-            answer_text = "; ".join(str(part) for part in answer)
-        else:
-            answer_text = str(answer)
-        if not question:
-            continue
-        question_id = str(item.get("question_id") or item.get("qa_id") or item.get("id") or f"q{index}")
-        category = str(item.get("category") or item.get("type") or "unknown")
-        yield QuestionAnswer(
-            sample_id=sample_id,
-            question_id=question_id,
-            question=question,
-            answer=answer_text,
-            category=category,
-            evidence=item.get("evidence"),
-            raw=item,
-        )
 
 
-def _string_or_none(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
+def _text_or_none(value: Any) -> str | None:
+    text = str(value or "").strip()
     return text or None
 
 
-def _session_sort_key(item: tuple[int, str, str | None]) -> tuple[int, datetime | int]:
-    session_number, _, timestamp = item
-    if timestamp:
-        for date_format in (
-            "%I:%M %p on %d %B, %Y",
-            "%I:%M %p on %d %b, %Y",
-            "%Y-%m-%d",
-        ):
-            try:
-                return 0, datetime.strptime(timestamp, date_format)
-            except ValueError:
-                continue
-    return 1, session_number
+def _parse_iso(text: str) -> datetime | None:
+    iso_text = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        return datetime.fromisoformat(iso_text)
+    except ValueError:
+        return None
+
+
+def _parse_locomo_date(text: str) -> datetime | None:
+    for date_format in LOCOMO_DATE_FORMATS:
+        try:
+            return datetime.strptime(text, date_format)
+        except ValueError:
+            continue
+    return None

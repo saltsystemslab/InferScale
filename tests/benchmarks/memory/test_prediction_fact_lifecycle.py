@@ -3,14 +3,15 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-from benchmarks.common.clients import ChatResult
-from benchmarks.memory.runtime_clients import RuntimeClients
-from benchmarks.memory.config import MemoryRunConfig
 from memory_config import make_memory_config
-from benchmarks.memory.data import ConversationSample, QuestionAnswer, Turn
-from benchmarks.memory.prediction import run_prediction_mode
-from benchmarks.memory.mem0.fact_catalog import MemoryFact
+
+from benchmarks.common.clients import ChatResult
 from benchmarks.common.vector_types import RetrievalMetrics, SearchHit
+from benchmarks.memory.config import MemoryRunConfig
+from benchmarks.memory.data import ConversationSample, QuestionAnswer, Turn
+from benchmarks.memory.mem0.fact_catalog import MemoryFact
+from benchmarks.memory.prediction import run_prediction_mode
+from benchmarks.memory.runtime_clients import RuntimeClients
 
 
 def test_prediction_uses_fact_catalog_then_live_retriever_and_closes(
@@ -41,6 +42,9 @@ def test_prediction_uses_fact_catalog_then_live_retriever_and_closes(
                 jasper_effective_beam_width=64,
             )
 
+        def log_cache_stats(self) -> None:
+            events.append(("log_cache", sample.sample_id))
+
         def close(self) -> None:
             events.append(("retriever_close", None))
 
@@ -63,10 +67,6 @@ def test_prediction_uses_fact_catalog_then_live_retriever_and_closes(
                 "memory_setup_time_ms": 4.0,
                 "memory_inferred_record_count": 1,
             }
-
-        def log_embedding_cache_stats(self, memory: Any, sample_id: str) -> None:
-            assert memory is retriever.memory
-            events.append(("log_cache", sample_id))
 
     class FakeAnswerClient:
         def precompute_sample_cache(

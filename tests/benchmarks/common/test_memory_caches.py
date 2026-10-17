@@ -10,6 +10,11 @@ import numpy as np
 import pytest
 
 from benchmarks.common.embedding_cache import CachedEmbedder, CachedEmbeddingMissingError
+from benchmarks.memory.mem0.llm_cache import CachedMemoryLLM, CachedMemoryLLMMissingError
+from benchmarks.memory.mem0.llm_protocol import (
+    InvalidMemoryExtractionResponseError,
+    validate_memory_extraction_response,
+)
 from benchmarks.memory.protocol import (
     MEMORY_EXTRACTION_MAX_FACTS,
     MEMORY_EXTRACTION_MAX_MODEL_LEN,
@@ -18,11 +23,6 @@ from benchmarks.memory.protocol import (
     MEMORY_EXTRACTION_RESPONSE_PROTOCOL,
     MEMORY_EXTRACTION_RETRY_TEMPERATURES,
     MEMORY_EXTRACTION_RETRY_TOP_P,
-)
-from benchmarks.memory.mem0.llm_cache import CachedMemoryLLM, CachedMemoryLLMMissingError
-from benchmarks.memory.mem0.llm_protocol import (
-    InvalidMemoryExtractionResponseError,
-    validate_memory_extraction_response,
 )
 
 
@@ -126,7 +126,9 @@ def test_cached_embedder_batch_read_mode_never_calls_wrapped_embedder(tmp_path: 
     assert wrapped.scalar_calls == []
 
 
-def test_cached_embedder_batch_read_mode_rejects_corrupt_entries_without_fallback(tmp_path: Path) -> None:
+def test_cached_embedder_batch_read_mode_rejects_corrupt_entries_without_fallback(
+    tmp_path: Path,
+) -> None:
     cache_dir = tmp_path / "embeddings"
     writer = CachedEmbedder(RecordingEmbedder(), cache_dir=cache_dir, model="model", mode="write")
     writer.embed_batch(["value"], "add")
@@ -167,14 +169,19 @@ def test_cached_embedder_concurrent_same_key_writes_are_atomic(
     assert list(first.cache_dir.glob("*.tmp")) == []
 
 
-def test_cached_memory_llm_replays_canonical_requests_and_delegates_attributes(tmp_path: Path) -> None:
+def test_cached_memory_llm_replays_canonical_requests_and_delegates_attributes(
+    tmp_path: Path,
+) -> None:
     cache_dir = tmp_path / "memory-llm"
     messages = [{"role": "user", "content": "Remember blue."}]
     response = _valid_extraction_response()
     wrapped = RecordingMemoryLLM(response)
     writer = CachedMemoryLLM(wrapped, cache_dir, "openai", "gpt-5-mini", "write")
 
-    assert writer.generate_response(messages, response_format={"type": "json_object"}, temperature=0) == response
+    assert (
+        writer.generate_response(messages, response_format={"type": "json_object"}, temperature=0)
+        == response
+    )
     assert len(wrapped.calls) == 1
     effective_kwargs = wrapped.calls[0][2]
     assert effective_kwargs["max_tokens"] == MEMORY_EXTRACTION_MAX_TOKENS
@@ -189,7 +196,9 @@ def test_cached_memory_llm_replays_canonical_requests_and_delegates_attributes(t
 
     replay_wrapped = RecordingMemoryLLM("must not be returned")
     reader = CachedMemoryLLM(replay_wrapped, cache_dir, "openai", "gpt-5-mini", "read")
-    replayed = reader.generate_response(messages, temperature=0, response_format={"type": "json_object"})
+    replayed = reader.generate_response(
+        messages, temperature=0, response_format={"type": "json_object"}
+    )
 
     assert replayed == response
     assert replay_wrapped.calls == []
@@ -251,7 +260,10 @@ def test_cached_memory_llm_read_mode_fails_on_missing_or_corrupt_entries_without
     writer = CachedMemoryLLM(
         RecordingMemoryLLM(valid_response), cache_dir, "openai", "gpt-5-mini", "write"
     )
-    assert writer.generate_response(messages, response_format={"type": "json_object"}) == valid_response
+    assert (
+        writer.generate_response(messages, response_format={"type": "json_object"})
+        == valid_response
+    )
     cache_file = next(writer.cache_dir.glob("*.json"))
     cache_file.write_text("not json", encoding="utf-8")
 
@@ -295,9 +307,7 @@ def test_cached_memory_llm_retries_extraction_with_escalating_temperature(tmp_pa
     # would keep retries effectively greedy; the retry must widen it.
     assert retry_kwargs["top_p"] == MEMORY_EXTRACTION_RETRY_TOP_P
     assert {
-        key: value
-        for key, value in retry_kwargs.items()
-        if key not in {"temperature", "top_p"}
+        key: value for key, value in retry_kwargs.items() if key not in {"temperature", "top_p"}
     } == first_kwargs
 
     dumps = list((cached.cache_dir / "invalid").glob("*.json"))
@@ -359,9 +369,7 @@ def test_cached_memory_llm_write_mode_regenerates_invalid_cached_extraction(
     cache_dir = tmp_path / "memory-llm"
     messages = [{"role": "user", "content": "Remember blue."}]
     valid_response = _valid_extraction_response()
-    seed = CachedMemoryLLM(
-        RecordingMemoryLLM(valid_response), cache_dir, "vllm", "model", "write"
-    )
+    seed = CachedMemoryLLM(RecordingMemoryLLM(valid_response), cache_dir, "vllm", "model", "write")
     seed.generate_response(messages, response_format={"type": "json_object"})
     cache_file = next(seed.cache_dir.glob("*.json"))
     cache_file.write_text(
@@ -372,9 +380,10 @@ def test_cached_memory_llm_write_mode_regenerates_invalid_cached_extraction(
     wrapped = RecordingMemoryLLM(valid_response)
     replacement = CachedMemoryLLM(wrapped, cache_dir, "vllm", "model", "write")
 
-    assert replacement.generate_response(
-        messages, response_format={"type": "json_object"}
-    ) == valid_response
+    assert (
+        replacement.generate_response(messages, response_format={"type": "json_object"})
+        == valid_response
+    )
     assert len(wrapped.calls) == 1
 
 
@@ -465,11 +474,15 @@ def test_cached_memory_llm_write_mode_replaces_corrupt_entries_atomically(tmp_pa
     assert len(wrapped.calls) == 1
     assert list(cache_file.parent.glob("*.tmp")) == []
 
-    reader = CachedMemoryLLM(RecordingMemoryLLM("unused"), cache_dir, "openai", "gpt-5-mini", "read")
+    reader = CachedMemoryLLM(
+        RecordingMemoryLLM("unused"), cache_dir, "openai", "gpt-5-mini", "read"
+    )
     assert reader.generate_response(messages) == "second"
 
 
-def test_cached_memory_llm_ignores_current_date_but_preserves_observation_date(tmp_path: Path) -> None:
+def test_cached_memory_llm_ignores_current_date_but_preserves_observation_date(
+    tmp_path: Path,
+) -> None:
     cache_dir = tmp_path / "memory-llm"
     messages_day_one = [
         {
@@ -562,7 +575,9 @@ def test_cached_memory_llm_temperature_zero_keeps_baseline_cache_keys(tmp_path: 
     cache_dir = tmp_path / "memory-llm"
     messages = [{"role": "user", "content": "Remember blue."}]
 
-    baseline = CachedMemoryLLM(RecordingMemoryLLM("cached"), cache_dir, "openai", "gpt-5-mini", "write")
+    baseline = CachedMemoryLLM(
+        RecordingMemoryLLM("cached"), cache_dir, "openai", "gpt-5-mini", "write"
+    )
     assert baseline.generate_response(messages) == "cached"
 
     explicit_zero = CachedMemoryLLM(
@@ -581,7 +596,9 @@ def test_cached_memory_llm_nonzero_temperature_gets_distinct_cache_keys(tmp_path
     cache_dir = tmp_path / "memory-llm"
     messages = [{"role": "user", "content": "Remember blue."}]
 
-    zero_writer = CachedMemoryLLM(RecordingMemoryLLM("zero"), cache_dir, "openai", "gpt-5-mini", "write")
+    zero_writer = CachedMemoryLLM(
+        RecordingMemoryLLM("zero"), cache_dir, "openai", "gpt-5-mini", "write"
+    )
     assert zero_writer.generate_response(messages) == "zero"
 
     warm_reader = CachedMemoryLLM(

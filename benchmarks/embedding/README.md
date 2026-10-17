@@ -1,6 +1,6 @@
 # Fact embedding benchmark
 
-Measure local Qwen3-Embedding-0.6B latency and throughput using the Mem0 facts embedded with OpenAI during the memory benchmarks.
+Measure local Qwen3-Embedding-0.6B latency and throughput on the Mem0 facts that the memory benchmarks embedded with OpenAI.
 
 ## Setup and corpus selection
 
@@ -9,10 +9,11 @@ Run from the repository root on the GPU host after the memory fact extraction.
 ```bash
 python -m pip install -e '.[embedding]'
 ```
-The default remote cache is `/workspace/.cache/mem0-inference`; use the configured cache root if it differs.
+
+The fact catalogs live under the configured cache root, `${BENCHMARK_CACHE_ROOT}/mem0-inference`, which `source scripts/load_env.sh` exports.
 
 ```bash
-find /workspace/.cache/mem0-inference/fact-catalogs -type f -name '*.json' -exec dirname {} \; | sort -u
+find "${BENCHMARK_CACHE_ROOT}/mem0-inference/fact-catalogs" -type f -name '*.json' -exec dirname {} \; | sort -u
 ```
 
 Choose one leaf directory matching the extraction model, endpoint, and OpenAI embedding configuration of the memory run being compared.

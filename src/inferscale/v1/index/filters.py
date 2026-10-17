@@ -1,3 +1,5 @@
+"""Payload filters: plain equality or ``{"eq" | "in" | "ne": value}`` per key."""
+
 from __future__ import annotations
 
 from typing import Any

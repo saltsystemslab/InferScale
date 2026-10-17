@@ -6,22 +6,17 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
 from memory_config import make_memory_config, memory_runtime
-from benchmarks.memory.data import ConversationSample, Turn
-from benchmarks.memory.mem0.fact_catalog import (
-    FactCatalogStore,
-    MemoryFact,
-    fact_catalog_hits,
-    locomo_timestamp,
-    locomo_turn_role,
-)
-from benchmarks.memory.mem0.provider import build_mem0_config, create_mem0_memory
-from benchmarks.memory.mem0.memory_builder import (
-    SampleMemoryBuilder,
-    _mem0_observation_date,
-    load_facts_into_memory,
-)
+
+from benchmarks.common.vector_types import VECTOR_DISTANCE, VectorStoreConfig
+from benchmarks.memory.data import ConversationSample, Turn, locomo_timestamp, locomo_turn_role
+from benchmarks.memory.mem0.catalog_replay import load_facts_into_memory
+from benchmarks.memory.mem0.fact_catalog import FactCatalogStore, MemoryFact, fact_catalog_hits
+from benchmarks.memory.mem0.mem0_patches import OBSERVATION_DATE, mem0_observation_date
+from benchmarks.memory.mem0.memory_builder import SampleMemoryBuilder
+from benchmarks.memory.mem0.memory_handles import BuiltMemory
+from benchmarks.memory.mem0.prepared_retriever import PreparedMem0Retriever
+from benchmarks.memory.mem0.provider import Mem0Settings, build_mem0_config, create_mem0_memory
 from benchmarks.memory.protocol import (
     MEMORY_EXTRACTION_MAX_FACTS,
     MEMORY_EXTRACTION_MAX_MODEL_LEN,
@@ -29,8 +24,6 @@ from benchmarks.memory.protocol import (
     MEMORY_EXTRACTION_MAX_TOKENS,
     MEMORY_EXTRACTION_RESPONSE_PROTOCOL,
 )
-from benchmarks.memory.mem0.prepared_retriever import PreparedMem0Retriever
-from benchmarks.common.vector_types import VECTOR_DISTANCE, VectorStoreConfig
 
 
 class _RecordingLlm:
@@ -46,6 +39,23 @@ class _RecordingLlm:
         return self.response
 
 
+class _FakeStore:
+    def __init__(self, backend: str) -> None:
+        self.config = SimpleNamespace(backend=backend)
+
+    def memory_stats(self) -> dict[str, Any]:
+        return {}
+
+    def reset(self) -> None:
+        pass
+
+    def finalize(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
 class _FakeMemory:
     def __init__(self, response: str | None = None) -> None:
         self.llm = _RecordingLlm(response)
@@ -53,10 +63,12 @@ class _FakeMemory:
         # Materialization write-through-embeds every final fact text so
         # catalogs are replay-complete; record those calls.
         self.embedding_model = _RecordingEmbedder()
-        self.vector_store = SimpleNamespace(
-            config=SimpleNamespace(backend="qdrant"),
-            memory_stats=lambda: {},
-        )
+        self.vector_store = _FakeStore("qdrant")
+        self._entity_store = None
+        self.entity_store = _FakeStore("qdrant")
+
+    def _link_entities_for_memory(self, *_args: Any) -> None:
+        pass
 
     def add(self, messages: Any, **kwargs: Any) -> dict[str, list[dict[str, str]]]:
         self.add_calls.append((messages, kwargs))
@@ -112,15 +124,17 @@ def _sample() -> ConversationSample:
 
 def test_mem0_config_uses_explicit_memory_llm_settings(tmp_path: Path) -> None:
     config = build_mem0_config(
-        store_root=tmp_path,
-        vector_config=VectorStoreConfig(backend="qdrant"),
-        embedding_model="embedding-model",
-        embedding_api_key="embedding-secret",
-        embedding_base_url="https://embeddings.example/v1",
-        memory_llm_provider="vllm",
-        memory_llm_model="Qwen/Qwen2.5-7B-Instruct",
-        memory_llm_api_key="memory-secret",
-        memory_llm_base_url="https://memory.example/v1",
+        Mem0Settings(
+            store_root=tmp_path,
+            vector_config=VectorStoreConfig(backend="qdrant"),
+            embedding_model="embedding-model",
+            embedding_api_key="embedding-secret",
+            embedding_base_url="https://embeddings.example/v1",
+            memory_llm_provider="vllm",
+            memory_llm_model="Qwen/Qwen2.5-7B-Instruct",
+            memory_llm_api_key="memory-secret",
+            memory_llm_base_url="https://memory.example/v1",
+        )
     )
 
     assert config["llm"] == {
@@ -154,9 +168,10 @@ def test_locomo_roles_and_timestamps_match_pinned_memory_benchmark() -> None:
         1683554160,
         "2023-05-08T13:56:00+00:00",
     )
-    assert locomo_timestamp("1:56 pm on 8 May, 2023")[0] == locomo_timestamp(
-        "1:56 pm on 8 May, 2023"
-    )[0]
+    assert (
+        locomo_timestamp("1:56 pm on 8 May, 2023")[0]
+        == locomo_timestamp("1:56 pm on 8 May, 2023")[0]
+    )
     assert locomo_timestamp("1:56 pm on 8 Sep, 2023") == (
         1694181360,
         "2023-09-08T13:56:00+00:00",
@@ -177,7 +192,7 @@ def test_mem0_observation_date_shim_anchors_prompt_and_keeps_wrapper_installed(
     del mem0
     from mem0.memory import main as mem0_main
 
-    with _mem0_observation_date("2026-01-02T00:00:00+00:00"):
+    with mem0_observation_date("2026-01-02T00:00:00+00:00"):
         prompt = mem0_main.generate_additive_extraction_prompt(
             existing_memories=[],
             new_messages="user: Alice likes tea.",
@@ -186,9 +201,9 @@ def test_mem0_observation_date_shim_anchors_prompt_and_keeps_wrapper_installed(
 
     assert "## Observation Date\n2026-01-02" in prompt
     installed = mem0_main.generate_additive_extraction_prompt
-    assert getattr(installed, "_locomo_observation_date_wrapper", False) is True
+    assert installed is OBSERVATION_DATE.wrapper
 
-    with _mem0_observation_date("2026-02-03T00:00:00+00:00"):
+    with mem0_observation_date("2026-02-03T00:00:00+00:00"):
         second_prompt = mem0_main.generate_additive_extraction_prompt(
             existing_memories=[],
             new_messages="user: Bob likes coffee.",
@@ -208,7 +223,7 @@ def test_mem0_observation_dates_are_isolated_across_threads() -> None:
     barrier = Barrier(2)
 
     def render(created_at: str) -> str:
-        with _mem0_observation_date(created_at):
+        with mem0_observation_date(created_at):
             barrier.wait(timeout=5)
             return mem0_main.generate_additive_extraction_prompt(
                 existing_memories=[],
@@ -328,7 +343,9 @@ def test_fact_catalog_identity_includes_mem0_embedding_and_endpoints(tmp_path: P
         different_endpoint.load(sample)
 
 
-def test_fact_catalog_identity_requires_current_inner_product_and_temperature(tmp_path: Path) -> None:
+def test_fact_catalog_identity_requires_current_inner_product_and_temperature(
+    tmp_path: Path,
+) -> None:
     sample = _sample()
     fact = MemoryFact(
         id="fact-1",
@@ -439,17 +456,14 @@ def test_prepared_retriever_uses_live_mem0_search_and_returns_best_first_facts()
 
     memory = SearchMemory()
     retriever = PreparedMem0Retriever(
-        memory,
+        BuiltMemory(memory=memory, facts=(fact,), metrics={}, embedder=None),
         sample_id="sample-1",
-        fact_catalog=(fact,),
         vector_backend="qdrant",
     )
 
     hits, metrics = retriever.search("tea", top_k=5)
 
-    assert memory.calls == [
-        ("tea", {"top_k": 5, "filters": {"user_id": "sample-1"}})
-    ]
+    assert memory.calls == [("tea", {"top_k": 5, "filters": {"user_id": "sample-1"}})]
     assert [hit.id for hit in hits] == ["fact-1"]
     assert hits[0].rank == 1
     assert hits[0].payload["source_session_index"] == 1
@@ -461,11 +475,11 @@ def test_sample_builder_materializes_catalog_and_read_mode_never_reruns_inferenc
     monkeypatch: Any,
     tmp_path: Path,
 ) -> None:
-    created: list[tuple[_FakeMemory, dict[str, Any]]] = []
+    created: list[tuple[_FakeMemory, Mem0Settings]] = []
 
-    def fake_create_mem0_memory(**kwargs: Any) -> _FakeMemory:
+    def fake_create_mem0_memory(settings: Mem0Settings) -> _FakeMemory:
         memory = _FakeMemory()
-        created.append((memory, kwargs))
+        created.append((memory, settings))
         return memory
 
     monkeypatch.setattr(
@@ -483,12 +497,12 @@ def test_sample_builder_materializes_catalog_and_read_mode_never_reruns_inferenc
     )
 
     writer = SampleMemoryBuilder(config, memory_llm_cache_mode="write")
-    _, write_metrics = writer.build_with_metrics(_sample(), finalize_index=False)
+    write_metrics = writer.build_memory(_sample(), finalize_index=False).metrics
 
-    write_memory, create_kwargs = created[0]
-    assert create_kwargs["memory_llm_provider"] == "vllm"
-    assert create_kwargs["memory_llm_model"] == "Qwen/Qwen2.5-7B-Instruct"
-    assert create_kwargs["memory_llm_api_key"] == "memory-secret"
+    write_memory, settings = created[0]
+    assert settings.memory_llm_provider == "vllm"
+    assert settings.memory_llm_model == "Qwen/Qwen2.5-7B-Instruct"
+    assert settings.memory_llm_api_key == "memory-secret"
     assert len(write_memory.llm._wrapped.calls) == 1
     assert write_metrics["memory_input_turn_count"] == 1
     assert write_metrics["memory_inferred_record_count"] == 1
@@ -518,7 +532,7 @@ def test_sample_builder_materializes_catalog_and_read_mode_never_reruns_inferenc
     assert facts[0].source_turn_id == "sample-1:session_1:0"
 
     reader = SampleMemoryBuilder(config)
-    _, read_metrics = reader.build_with_metrics(_sample(), finalize_index=False)
+    read_metrics = reader.build_memory(_sample(), finalize_index=False).metrics
 
     read_memory, _ = created[1]
     assert read_memory.llm.calls == []
@@ -533,7 +547,7 @@ def test_sample_builder_aborts_without_catalog_when_extraction_json_is_invalid(
 ) -> None:
     monkeypatch.setattr(
         "benchmarks.memory.mem0.memory_builder.create_mem0_memory",
-        lambda **_: _FakeMemory('{"memory":[{"id":"0"}]'),
+        lambda settings: _FakeMemory('{"memory":[{"id":"0"}]'),
     )
     config = make_memory_config(
         results_dir=tmp_path / "results",
@@ -546,7 +560,7 @@ def test_sample_builder_aborts_without_catalog_when_extraction_json_is_invalid(
     writer = SampleMemoryBuilder(config, memory_llm_cache_mode="write")
 
     with pytest.raises(RuntimeError, match="malformed JSON"):
-        writer.build_with_metrics(_sample(), finalize_index=False)
+        writer.build_memory(_sample(), finalize_index=False)
 
     with pytest.raises(RuntimeError, match="Missing Mem0 fact catalog"):
         writer.load_fact_catalog(_sample())
@@ -559,15 +573,17 @@ def test_mem0_2_inference_persists_turn_metadata_through_custom_adapter(
     monkeypatch.setenv("MEM0_DIR", str(tmp_path / "mem0-global"))
     monkeypatch.setenv("MEM0_TELEMETRY", "false")
     memory = create_mem0_memory(
-        store_root=tmp_path / "store",
-        vector_config=VectorStoreConfig(backend="qdrant"),
-        embedding_model="text-embedding-3-small",
-        embedding_api_key="test-key",
-        embedding_base_url=None,
-        memory_llm_provider="vllm",
-        memory_llm_model="Qwen/Qwen2.5-7B-Instruct",
-        memory_llm_api_key="test-key",
-        memory_llm_base_url=None,
+        Mem0Settings(
+            store_root=tmp_path / "store",
+            vector_config=VectorStoreConfig(backend="qdrant"),
+            embedding_model="text-embedding-3-small",
+            embedding_api_key="test-key",
+            embedding_base_url=None,
+            memory_llm_provider="vllm",
+            memory_llm_model="Qwen/Qwen2.5-7B-Instruct",
+            memory_llm_api_key="test-key",
+            memory_llm_base_url=None,
+        )
     )
     memory.llm = _RecordingLlm()
     memory.embedding_model = _DeterministicEmbedder()

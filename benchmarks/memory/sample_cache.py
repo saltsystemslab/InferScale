@@ -1,23 +1,25 @@
+"""The precomputed composers of the samples one answer client is serving."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
 
+from .composer import SampleComposer
+
 
 @dataclass(slots=True)
-class GpuSampleCacheEntry:
-    composer: Any
+class PrecomputedSample:
+    composer: SampleComposer
     metrics: dict[str, Any]
 
 
-class GpuSampleCacheStore:
-    """Owns precomputed GPU-resident sample KV caches for one answer client."""
+class PrecomputedSamples:
+    """Composers keyed by sample, with at most one sample active for answering."""
 
     def __init__(self) -> None:
-        self._entries: dict[int, GpuSampleCacheEntry] = {}
-        self.active_sample_key: int | None = None
-        self.active_composer: Any | None = None
-        self.active_metrics: dict[str, Any] = {}
+        self._entries: dict[int, PrecomputedSample] = {}
+        self._active_key: int | None = None
 
     def __bool__(self) -> bool:
         return bool(self._entries)
@@ -25,54 +27,45 @@ class GpuSampleCacheStore:
     def __len__(self) -> int:
         return len(self._entries)
 
-    def put(self, sample_key: int, composer: Any, metrics: dict[str, Any]) -> None:
-        self.release(sample_key)
-        self._entries[sample_key] = GpuSampleCacheEntry(composer=composer, metrics=dict(metrics))
+    @property
+    def active_key(self) -> int | None:
+        return self._active_key
 
-    def prepare(self, sample_key: int, sample_id: str) -> GpuSampleCacheEntry:
-        if self.active_sample_key is not None and self.active_sample_key != sample_key:
+    @property
+    def active_composer(self) -> SampleComposer | None:
+        if self._active_key is None:
+            return None
+        return self._entries[self._active_key].composer
+
+    @property
+    def active_metrics(self) -> dict[str, Any]:
+        if self._active_key is None:
+            return {}
+        return dict(self._entries[self._active_key].metrics)
+
+    def put(self, key: int, composer: SampleComposer, metrics: dict[str, Any]) -> None:
+        self.release(key)
+        self._entries[key] = PrecomputedSample(composer=composer, metrics=dict(metrics))
+
+    def activate(self, key: int, sample_id: str) -> None:
+        if self._active_key is not None and self._active_key != key:
             self.release_active()
+        if key not in self._entries:
+            raise RuntimeError(f"The KV cache for sample_id={sample_id} was not precomputed.")
+        self._active_key = key
 
-        entry = self._entries.get(sample_key)
-        if entry is None:
-            raise RuntimeError(f"GPU-resident KV cache for sample_id={sample_id} was not precomputed.")
-
-        self.active_sample_key = sample_key
-        self.active_composer = entry.composer
-        self.active_metrics = dict(entry.metrics)
-        return entry
-
-    def release(self, sample_key: int) -> None:
-        entry = self._entries.pop(sample_key, None)
+    def release(self, key: int) -> None:
+        entry = self._entries.pop(key, None)
         if entry is not None:
-            _close(entry.composer)
-
-        if self.active_sample_key == sample_key:
-            if entry is None:
-                _close(self.active_composer)
-            self.active_sample_key = None
-            self.active_composer = None
-            self.active_metrics = {}
+            entry.composer.close()
+        if self._active_key == key:
+            self._active_key = None
 
     def release_active(self) -> None:
-        if self.active_sample_key is not None:
-            self.release(self.active_sample_key)
-            return
-        _close(self.active_composer)
-        self.active_composer = None
-        self.active_metrics = {}
+        if self._active_key is not None:
+            self.release(self._active_key)
 
     def release_all(self) -> None:
-        if self.active_sample_key is not None:
-            self.release_active()
-        for sample_key in list(self._entries):
-            self.release(sample_key)
-        self.active_sample_key = None
-        self.active_composer = None
-        self.active_metrics = {}
-
-
-def _close(value: Any) -> None:
-    close = getattr(value, "close", None)
-    if callable(close):
-        close()
+        for key in list(self._entries):
+            self.release(key)
+        self._active_key = None

@@ -10,14 +10,15 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from memory_config import memory_runtime
 
 from benchmarks.common.clients import ChatResult
 from benchmarks.common.config import RuntimeConfig
 from benchmarks.common.vector_types import RetrievalMetrics
 from benchmarks.memory.data import ConversationSample, QuestionAnswer
 from benchmarks.memory.runtime_clients import RuntimeClients
+from benchmarks.ttft_race import gif, measure
 from benchmarks.ttft_race import run as race
-from memory_config import memory_runtime
 
 Image = pytest.importorskip("PIL.Image")
 ROOT = Path(__file__).resolve().parents[3]
@@ -35,7 +36,7 @@ def test_measure_runs_one_benchmark_cell_and_keeps_the_questions_after_warmup(
     vector_backend: str,
     context_window: int,
 ) -> None:
-    questions = [f"Question {index}?" for index in range(race.WARMUP + 4)]
+    questions = [f"Question {index}?" for index in range(measure.WARMUP + 4)]
     sample = ConversationSample(
         sample_id="conv-1",
         turns=[],
@@ -56,6 +57,9 @@ def test_measure_runs_one_benchmark_cell_and_keeps_the_questions_after_warmup(
                 embedding_time_ms=0.0, search_time_ms=0.0, total_time_ms=0.0
             )
 
+        def log_cache_stats(self) -> None:
+            pass
+
         def close(self) -> None:
             pass
 
@@ -70,9 +74,6 @@ def test_measure_runs_one_benchmark_cell_and_keeps_the_questions_after_warmup(
             self, selected_sample: ConversationSample
         ) -> tuple[FakeRetriever, dict[str, Any]]:
             return FakeRetriever(), {}
-
-        def log_embedding_cache_stats(self, memory: Any, sample_id: str) -> None:
-            pass
 
     class FakeAnswerClient:
         def start_llm(self) -> None:
@@ -100,7 +101,7 @@ def test_measure_runs_one_benchmark_cell_and_keeps_the_questions_after_warmup(
         return RuntimeClients(answer_client=FakeAnswerClient(), judge_client=None)
 
     monkeypatch.setattr(
-        "benchmarks.common.config.load_runtime_config",
+        "benchmarks.ttft_race.measure.load_runtime_config",
         lambda: memory_runtime(storage={"runtime_root": str(tmp_path)}),
     )
     monkeypatch.setattr(RuntimeConfig, "apply_environment", lambda self: None)
@@ -127,7 +128,7 @@ def test_measure_runs_one_benchmark_cell_and_keeps_the_questions_after_warmup(
     assert (config.top_k, config.context_window) == (100, context_window)
     assert (config.max_samples, config.max_questions, config.skip_judge) == (
         1,
-        race.WARMUP + 2,
+        measure.WARMUP + 2,
         True,
     )
     assert closed == [True]
@@ -144,15 +145,15 @@ def test_measure_runs_one_benchmark_cell_and_keeps_the_questions_after_warmup(
                 "ttft_ms": 10.0 + index,
                 "total_ms": 100.0 + index,
             }
-            for index in (race.WARMUP, race.WARMUP + 1)
+            for index in (measure.WARMUP, measure.WARMUP + 1)
         ],
     }
 
 
 def test_stream_spaces_words_evenly_between_the_first_token_and_the_end() -> None:
     row = {"answer": "one two three", "ttft_ms": 10.0, "total_ms": 30.0}
-    assert race.stream(row) == [(10.0, "one "), (20.0, "two "), (30.0, "three")]
-    assert race.stream({**row, "answer": "yes"}) == [(10.0, "yes")]
+    assert gif.stream(row) == [(10.0, "one "), (20.0, "two "), (30.0, "three")]
+    assert gif.stream({**row, "answer": "yes"}) == [(10.0, "yes")]
 
 
 def _timelines(tmp_path: Path, **mem0_changes: Any) -> tuple[Path, Path]:
@@ -241,6 +242,7 @@ def repo(tmp_path: Path) -> Path:
         "benchmarks/__init__.py",
         "benchmarks/common/__init__.py",
         "benchmarks/common/config.py",
+        "benchmarks/common/json_fields.py",
         "benchmarks/common/paths.py",
         "benchmarks/common/environment.py",
         "benchmarks/ttft_race/run.sh",

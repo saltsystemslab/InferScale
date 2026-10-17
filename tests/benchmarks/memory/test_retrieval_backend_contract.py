@@ -5,25 +5,28 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from memory_config import make_memory_config
 from pydantic import ValidationError
 
 from benchmarks.common.config import ConfigError
-from memory_config import make_memory_config
-from inferscale.v1.index.jasper import JasperDeviceSearchResult, JasperIndex, JasperIndexConfig
-from benchmarks.memory.mem0.adapter import Mem0JasperVectorStore, _validate_search_hits
-from benchmarks.memory.mem0.provider import (
-    _install_jasper_config_module,
-    _validate_resolved_backend,
-    build_mem0_config,
-)
-from benchmarks.memory.mem0.memory_builder import _store_config
-from benchmarks.memory.qdrant_index import QdrantVectorStore
 from benchmarks.common.vector_types import (
     VECTOR_DISTANCE,
     SearchHit,
     SearchMetrics,
     VectorStoreConfig,
 )
+from benchmarks.memory.mem0.adapter import Mem0JasperVectorStore
+from benchmarks.memory.mem0.memory_builder import vector_store_config
+from benchmarks.memory.mem0.provider import (
+    Mem0Settings,
+    build_mem0_config,
+    install_jasper_config_module,
+    validate_resolved_backend,
+)
+from benchmarks.memory.mem0.search_contract import validate_search_hits
+from benchmarks.memory.qdrant_index import QdrantVectorStore
+from inferscale.v1.index.jasper import JasperIndex, JasperIndexConfig
+from inferscale.v1.types import DeviceSearchResult
 
 
 class _FakeStore:
@@ -46,14 +49,16 @@ def _hit(item_id: str, rank: int, distance: float = 0.5) -> SearchHit:
 
 def test_mem0_pydantic_config_retains_backend_and_enforces_inner_product(tmp_path: object) -> None:
     config = build_mem0_config(
-        store_root=tmp_path,
-        vector_config=VectorStoreConfig(backend="qdrant"),
-        embedding_model="embedding-model",
-        embedding_api_key=None,
-        embedding_base_url=None,
-        memory_llm_model="answer/model",
+        Mem0Settings(
+            store_root=tmp_path,
+            vector_config=VectorStoreConfig(backend="qdrant"),
+            embedding_model="embedding-model",
+            embedding_api_key=None,
+            embedding_base_url=None,
+            memory_llm_model="answer/model",
+        )
     )
-    _install_jasper_config_module()
+    install_jasper_config_module()
     jasper_config = sys.modules["mem0.configs.vector_stores.jasper"].JasperConfig
 
     parsed = jasper_config(**config["vector_store"]["config"])
@@ -89,7 +94,7 @@ def test_adapter_forwards_jasper_device_results_and_metrics() -> None:
         vector_backend="jasper",
         jasper_effective_beam_width=64,
     )
-    result = JasperDeviceSearchResult(
+    result = DeviceSearchResult(
         stable_ids=object(),
         distances=object(),
         metrics=metrics,
@@ -99,9 +104,7 @@ def test_adapter_forwards_jasper_device_results_and_metrics() -> None:
     adapter.config = VectorStoreConfig(backend="jasper")
     adapter.last_search_metrics = SearchMetrics(0.0)
     adapter.store = SimpleNamespace(
-        search_device=lambda vector, top_k, filters: calls.append(
-            (vector, top_k, filters)
-        )
+        search_device=lambda vector, top_k, filters: calls.append((vector, top_k, filters))
         or result
     )
 
@@ -127,18 +130,22 @@ def test_backend_validation_rejects_concrete_store_mismatch() -> None:
     )
 
     with pytest.raises(RuntimeError, match="backend mismatch"):
-        _validate_resolved_backend(SimpleNamespace(vector_store=vector_store), requested_backend="qdrant")
+        validate_resolved_backend(
+            SimpleNamespace(vector_store=vector_store), requested_backend="qdrant"
+        )
 
     assert closed == [True]
 
 
 def test_search_contract_rejects_incomplete_duplicate_and_sentinel_hits() -> None:
     with pytest.raises(RuntimeError, match="returned 1 hits, expected 2"):
-        _validate_search_hits([_hit("one", 1)], expected_count=2, backend="jasper")
+        validate_search_hits([_hit("one", 1)], expected_count=2, backend="jasper")
     with pytest.raises(RuntimeError, match="duplicate result ids"):
-        _validate_search_hits([_hit("one", 1), _hit("one", 2)], expected_count=2, backend="jasper")
+        validate_search_hits([_hit("one", 1), _hit("one", 2)], expected_count=2, backend="jasper")
     with pytest.raises(RuntimeError, match="sentinel-like"):
-        _validate_search_hits([_hit("one", 1, float(np.finfo(np.float32).max))], expected_count=1, backend="jasper")
+        validate_search_hits(
+            [_hit("one", 1, float(np.finfo(np.float32).max))], expected_count=1, backend="jasper"
+        )
 
 
 def test_jasper_stages_exact_search_and_builds_graph_only_once(
@@ -227,7 +234,9 @@ def test_jasper_all_matching_scope_filter_keeps_top_k_gpu_search(
     store._graph = object()
     searches: list[tuple[int, int]] = []
 
-    def fake_search(query: np.ndarray, top_k: int, *, beam_width: int) -> tuple[list[SearchHit], float]:
+    def fake_search(
+        query: np.ndarray, top_k: int, *, beam_width: int
+    ) -> tuple[list[SearchHit], float]:
         searches.append((top_k, beam_width))
         return store._search_exact(query, top_k)
 
@@ -572,7 +581,9 @@ def test_jasper_partial_filter_uses_complete_exact_fallback(
     monkeypatch.setattr(
         store,
         "_search_jasper",
-        lambda *_args, **_kwargs: pytest.fail("partial filters must not use incomplete GPU over-fetch"),
+        lambda *_args, **_kwargs: pytest.fail(
+            "partial filters must not use incomplete GPU over-fetch"
+        ),
     )
 
     hits, _ = store.search(
@@ -586,26 +597,25 @@ def test_jasper_partial_filter_uses_complete_exact_fallback(
 
 def test_effective_beam_expands_to_top_k_and_is_recorded(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LOCOMO_KV_CONTEXT_WINDOW", raising=False)
-    config = make_memory_config(top_k=100, inferscale={'index': {'beam_width': 64}})
+    config = make_memory_config(top_k=100, inferscale={"index": {"beam_width": 64}})
 
     assert config.context_window == 0
-    assert config.context_window_unit == "turns"
-    assert config.context_window_semantics == "encoding-prefix-discard-v1"
-    assert config.memory_unit == "mem0-fact"
-    assert config.mem0_infer is True
+    assert config.to_jsonable()["context_window_unit"] == "turns"
     assert config.jasper_effective_beam_width == 100
     assert config.to_jsonable()["context_window_semantics"] == "encoding-prefix-discard-v1"
     assert config.to_jsonable()["memory_unit"] == "mem0-fact"
     assert config.to_jsonable()["mem0_infer"] is True
     assert config.to_jsonable()["jasper_effective_beam_width"] == 100
-    assert _store_config(config).beam_width == 100
+    assert vector_store_config(config).beam_width == 100
 
 
 def test_qdrant_has_no_effective_jasper_beam() -> None:
-    config = make_memory_config(vector_backend='qdrant', top_k=100, inferscale={'index': {'beam_width': 64}})
+    config = make_memory_config(
+        vector_backend="qdrant", top_k=100, inferscale={"index": {"beam_width": 64}}
+    )
 
     assert config.jasper_effective_beam_width is None
-    assert _store_config(config).beam_width == 64
+    assert vector_store_config(config).beam_width == 64
 
 
 def test_nonzero_turn_context_is_accepted_for_prompt_injection_backend() -> None:
@@ -641,7 +651,7 @@ def test_local_qdrant_returns_complete_unique_results(tmp_path: object) -> None:
     )
 
     hits, metrics = store.search([1.0, 0.0], top_k=2)
-    _validate_search_hits(hits, expected_count=2, backend="qdrant")
+    validate_search_hits(hits, expected_count=2, backend="qdrant")
 
     collection = store._client.get_collection(collection_name="memories")
     assert collection.config.params.vectors.distance == models.Distance.DOT

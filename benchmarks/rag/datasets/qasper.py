@@ -25,6 +25,7 @@ from typing import Any
 
 from benchmarks.rag.data_types import (
     EvidenceRef,
+    RagDatasetSpec,
     RagDocument,
     RagPromptProfile,
     RagQuery,
@@ -33,9 +34,7 @@ from benchmarks.rag.data_types import (
 
 TEST_FILENAME = "qasper-test-v0.3.json"
 ARCHIVE_FILENAME = "qasper-test-and-evaluator-v0.3.tgz"
-ARCHIVE_URL = (
-    "https://qasper-dataset.s3.us-west-2.amazonaws.com/qasper-test-and-evaluator-v0.3.tgz"
-)
+ARCHIVE_URL = "https://qasper-dataset.s3.us-west-2.amazonaws.com/qasper-test-and-evaluator-v0.3.tgz"
 
 UNANSWERABLE_TEXT = "Unanswerable"
 QASPER_PROMPT_PROFILE = RagPromptProfile(
@@ -47,7 +46,8 @@ QASPER_PROMPT_PROFILE = RagPromptProfile(
     answer_instruction=(
         "Answer the question using only the paper excerpts above.\n"
         "Answer with a short phrase, an exact span from the paper, or Yes or No. "
-        f"If the excerpts do not contain the information needed, answer exactly: {UNANSWERABLE_TEXT}\n"
+        "If the excerpts do not contain the information needed, answer exactly: "
+        f"{UNANSWERABLE_TEXT}\n"
     ),
 )
 
@@ -58,8 +58,8 @@ def load_qasper(data_dir: Path) -> tuple[list[RagDocument], list[RagQuery]]:
     path = Path(data_dir) / TEST_FILENAME
     if not path.exists():
         raise FileNotFoundError(
-            f"{path} does not exist. Download it with: RAG_DATASET=qasper "
-            f"the rag setup-data stage (source: {ARCHIVE_URL})."
+            f"{path} does not exist. Run bash scripts/rag/setup_data.sh to download it "
+            f"(source: {ARCHIVE_URL})."
         )
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
@@ -162,9 +162,7 @@ def _derive_reference(
         reference = "No"
         reference_type = "boolean"
     else:
-        raise ValueError(
-            f"{path}: question {question_id} has an annotation without an answer."
-        )
+        raise ValueError(f"{path}: question {question_id} has an annotation without an answer.")
     evidence = [
         text.strip()
         for text in answer_info.get("evidence") or []
@@ -202,18 +200,11 @@ def _published_from_arxiv_id(paper_id: str) -> str:
     return f"{year}-{match.group(2)}"
 
 
-def _spec():
-    from benchmarks.rag.datasets import RagDatasetSpec
-
-    return RagDatasetSpec(
-        name="qasper",
-        corpus_filename=TEST_FILENAME,
-        queries_filename=TEST_FILENAME,
-        download_urls={ARCHIVE_FILENAME: ARCHIVE_URL},
-        chunking="token-window",
-        prompt_profile=QASPER_PROMPT_PROFILE,
-        load=load_qasper,
-    )
-
-
-QASPER_SPEC = _spec()
+QASPER_SPEC = RagDatasetSpec(
+    name="qasper",
+    corpus_filename=TEST_FILENAME,
+    queries_filename=TEST_FILENAME,
+    download_urls={ARCHIVE_FILENAME: ARCHIVE_URL},
+    prompt_profile=QASPER_PROMPT_PROFILE,
+    load=load_qasper,
+)

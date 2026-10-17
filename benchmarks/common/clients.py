@@ -1,3 +1,5 @@
+"""Chat completion clients for the judge and extraction endpoints."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -20,22 +22,19 @@ class ChatClient(Protocol):
         temperature: float,
         top_p: float,
         response_format: dict[str, str] | None = None,
-    ) -> ChatResult:
-        ...
+    ) -> ChatResult: ...
 
 
 class OpenAICompatibleChatClient:
-    def __init__(
-        self,
-        *,
-        base_url: str,
-        api_key: str,
-        model: str,
-    ) -> None:
+    """A chat client for any server that speaks the OpenAI chat completions API, such as vLLM."""
+
+    def __init__(self, *, base_url: str, api_key: str, model: str) -> None:
         try:
             from openai import OpenAI
         except ImportError as exc:
-            raise RuntimeError("Install the openai package to use the OpenAI-compatible vLLM client.") from exc
+            raise RuntimeError(
+                "Install the openai package to use the OpenAI-compatible vLLM client."
+            ) from exc
 
         self._client = OpenAI(base_url=base_url, api_key=api_key)
         self._model = model
@@ -67,39 +66,27 @@ class OpenAICompatibleChatClient:
         return ChatResult(content=content)
 
 
-"""
-Converts different response-content formats into one plain string.
-- None becomes "".
-- A list of content blocks has its text extracted and concatenated, without
-adding separators.
-"""
 def _normalize_message_content(content: Any) -> str:
+    """One plain string from the response content shapes the API allows.
+
+    None becomes the empty string and a list of content blocks is concatenated
+    without separators.
+    """
     if content is None:
         return ""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            text = _content_part_text(item)
-            if text:
-                parts.append(text)
-        return "".join(parts)
+        return "".join(text for text in (_content_part_text(item) for item in content) if text)
     return str(content)
 
 
-"""
-Extracts text from one item in a multipart response
-- String: returns it unchanged
-- Dictionary: reads "text" as if that key exists, otherwise "content"
-- Object: reads .text, falling back to .content if .text is None
-"""
 def _content_part_text(item: Any) -> str:
+    """The text of one content block: a string, a dict with text or content, or an object."""
     if isinstance(item, str):
         return item
     if isinstance(item, dict):
-        value = item.get("text", item.get("content"))
-        return _normalize_message_content(value)
+        return _normalize_message_content(item.get("text", item.get("content")))
     value = getattr(item, "text", None)
     if value is None:
         value = getattr(item, "content", None)
@@ -107,11 +94,12 @@ def _content_part_text(item: Any) -> str:
 
 
 def _raise_context_limit_error(exc: Exception) -> None:
+    """Replace a server-side context overflow with advice on the judge server setting."""
     text = str(exc).lower()
     context_terms = ("context", "prompt", "token", "sequence")
     limit_terms = ("too long", "maximum", "max", "limit", "length")
     if any(term in text for term in context_terms) and any(term in text for term in limit_terms):
         raise RuntimeError(
-            "The vLLM server rejected the prompt as too long. Increase the judge server max model length "
-            "before starting scripts/serve_vllm.sh."
+            "The vLLM server rejected the prompt as too long. Increase the judge server "
+            "max model length before starting scripts/serve_vllm.sh."
         ) from exc

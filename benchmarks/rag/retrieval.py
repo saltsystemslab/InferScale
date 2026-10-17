@@ -1,15 +1,17 @@
+"""One Jasper index over the whole corpus, searched through the embedding cache."""
+
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
 from typing import Any
 
 from loguru import logger
 
+from benchmarks.common.embedding_cache import CachedEmbedder, CachedEmbeddingMissingError
 from inferscale.v1.index.jasper import JasperIndex, JasperIndexConfig
 from inferscale.v1.retrieval import Retriever
 from inferscale.v1.types import RetrievalMetrics, SearchHit
-
-from benchmarks.common.embedding_cache import CachedEmbedder, CachedEmbeddingMissingError
 
 from .config import RagBenchConfig
 from .data_types import RagChunk
@@ -50,8 +52,6 @@ class CorpusRetriever:
             raise RuntimeError("CorpusRetriever.build() was already called.")
         if not self._chunks:
             raise RuntimeError("Cannot build a retriever over an empty corpus.")
-        import time
-
         started = time.perf_counter()
         payloads = [
             {

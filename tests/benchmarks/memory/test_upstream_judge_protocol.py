@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from benchmarks.common.clients import ChatResult
-from benchmarks.memory.data import QuestionAnswer
 from memory_config import make_memory_config
-from benchmarks.memory.judging import judge_qa
-from benchmarks.memory.judge_prompt import build_judge_messages
+
+from benchmarks.common.clients import ChatResult
 from benchmarks.common.judge import parse_judge_response
+from benchmarks.memory.data import QuestionAnswer
+from benchmarks.memory.judging import build_judge_messages, judge_qa
 
 
 def _qa() -> QuestionAnswer:
@@ -55,4 +55,4 @@ def test_judge_does_not_request_structured_output() -> None:
 
 def test_with_evidence_setting_remains_available_for_saved_run_compatibility() -> None:
     assert make_memory_config(skip_judge=True).with_evidence is False
-    assert make_memory_config(skip_judge=True, judge={'with_evidence': True}).with_evidence is True
+    assert make_memory_config(skip_judge=True, judge={"with_evidence": True}).with_evidence is True

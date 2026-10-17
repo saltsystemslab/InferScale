@@ -1,12 +1,15 @@
-"""LLM-as-judge plumbing shared by the benchmarks: payloads, parsing, client."""
+"""LLM-as-judge plumbing shared by the benchmarks: verdict payloads, parsing, client."""
 
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .clients import ChatClient, OpenAICompatibleChatClient
+from benchmarks.common.clients import ChatClient, OpenAICompatibleChatClient
+from benchmarks.common.judge_config import JudgeConfig
+
+MODEL_END_TOKENS = ("<end_of_turn>", "<eos>", "</s>", "<|eot_id|>", "<|endoftext|>")
 
 
 def skipped_judge_payload(metadata: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -19,7 +22,9 @@ def skipped_judge_payload(metadata: Mapping[str, Any] | None = None) -> dict[str
     }
 
 
-def failed_judge_payload(exc: Exception, metadata: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def failed_judge_payload(
+    exc: Exception, metadata: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
     return {
         "correct": None,
         "reason": f"{type(exc).__name__}: {exc}",
@@ -59,25 +64,35 @@ def format_accuracy(value: Any) -> str:
     return f"{float(value):.4f}"
 
 
-def build_judge_client(
-    *,
-    provider: str,
-    model: str,
-    base_url: str | None,
-    api_key: str | None,
-) -> ChatClient | None:
-    if provider == "none":
+def build_judge_client(config: JudgeConfig) -> ChatClient | None:
+    """The chat client for the configured judge, or None when judging is disabled."""
+    if config.provider == "none":
         return None
-    if provider == "vllm":
-        if not base_url:
+    if config.provider == "vllm":
+        if not config.base_url:
             raise RuntimeError("A judge base URL is required to use the vllm judge.")
-        if not api_key:
+        if not config.api_key:
             raise RuntimeError("A judge API key is required to use the vllm judge.")
-        return OpenAICompatibleChatClient(base_url=base_url, api_key=api_key, model=model)
-    raise RuntimeError(f"Unsupported judge provider: {provider}")
+        return OpenAICompatibleChatClient(
+            base_url=config.base_url, api_key=config.api_key, model=config.model
+        )
+    raise RuntimeError(f"Unsupported judge provider: {config.provider}")
+
+
+def judge_with(
+    client: ChatClient,
+    messages: Sequence[dict[str, str]],
+    *,
+    max_tokens: int,
+    metadata: Mapping[str, Any],
+) -> dict[str, Any]:
+    """One deterministic verdict for ``messages``, as a judge payload."""
+    verdict = client.chat(list(messages), max_tokens=max_tokens, temperature=0.0, top_p=1.0)
+    return judge_payload(verdict.content, metadata)
 
 
 def parse_judge_response(text: str) -> tuple[bool | None, str]:
+    """A verdict and, when the text is not a verdict, the stripped text as the reason."""
     stripped = text.strip()
     parsed = _parse_json_verdict(stripped)
     if parsed is not None:
@@ -118,7 +133,7 @@ def _json_value_to_bool(value: object) -> bool | None:
 
 
 def _parse_boolean_token(text: str) -> bool | None:
-    cleaned = _strip_code_fence(_strip_known_model_tokens(text)).strip()
+    cleaned = _strip_code_fence(_strip_model_end_tokens(text)).strip()
     token = cleaned.strip(" \t\r\n`'\".,;:!()[]{}")
     lowered = token.lower()
     if lowered == "true":
@@ -138,14 +153,8 @@ def _strip_code_fence(text: str) -> str:
     return "\n".join(lines[1:-1]).strip()
 
 
-def _strip_known_model_tokens(text: str) -> str:
+def _strip_model_end_tokens(text: str) -> str:
     cleaned = text
-    for token in (
-        "<end_of_turn>",
-        "<eos>",
-        "</s>",
-        "<|eot_id|>",
-        "<|endoftext|>",
-    ):
+    for token in MODEL_END_TOKENS:
         cleaned = cleaned.replace(token, " ")
     return cleaned

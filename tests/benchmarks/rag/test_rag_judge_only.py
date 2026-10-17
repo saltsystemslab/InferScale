@@ -6,12 +6,11 @@ from typing import Any
 import pytest
 
 from benchmarks.common.clients import ChatResult
-from benchmarks.common.files import JsonlWriter
-from benchmarks.common.files import read_jsonl
-from benchmarks.rag import runner as rag_runner
-from benchmarks.rag.config import RagBenchConfig
+from benchmarks.common.files import JsonlWriter, read_jsonl
 from benchmarks.common.judge import is_judged, skipped_judge_payload
-from benchmarks.rag.judging import build_rag_judge_messages
+from benchmarks.rag import judge_run
+from benchmarks.rag.config import RagBenchConfig
+from benchmarks.rag.judging import build_rag_judge_messages, judge_rag_record
 
 
 class StubJudgeClient:
@@ -35,15 +34,12 @@ class StubJudgeClient:
         return ChatResult(content="true")
 
 
-def _record(query_id: str, *, judged: bool, legacy: bool = False) -> dict[str, Any]:
-    judge = {"correct": True, "reason": "", "raw": "true", "status": "ok"} if judged else (
-        skipped_judge_payload()
+def _record(query_id: str, *, judged: bool) -> dict[str, Any]:
+    judge = (
+        {"correct": True, "reason": "", "raw": "true", "status": "ok"}
+        if judged
+        else skipped_judge_payload()
     )
-    record_gold: dict[str, Any] = {"gold_answer": "gold"}
-    if not legacy:
-        # Legacy records predate the multi-reference field; judge_rag_record
-        # must fall back to gold_answer for them.
-        record_gold["gold_answers"] = ["gold", "golden answer"]
     return {
         "run_id": "r1",
         "mode": "rag-prompt-injection",
@@ -52,7 +48,8 @@ def _record(query_id: str, *, judged: bool, legacy: bool = False) -> dict[str, A
         "question_type": "inference_query",
         "category": "inference_query",
         "question": f"question {query_id}",
-        **record_gold,
+        "gold_answer": "gold",
+        "gold_answers": ["gold", "golden answer"],
         "predicted_answer": "gold",
         "evidence": [],
         "retrieved_chunks": [],
@@ -83,19 +80,17 @@ def _write_run(tmp_path, *, rejudge: bool = False) -> RagBenchConfig:
     with JsonlWriter(config.run_dir / "predictions.jsonl") as writer:
         writer.write(_record("q0000", judged=False))
         writer.write(_record("q0001", judged=True))
-        writer.write(_record("q0002", judged=False, legacy=True))
-    (config.run_dir / "config.json").write_text(
-        json.dumps(config.to_jsonable()), encoding="utf-8"
-    )
+        writer.write(_record("q0002", judged=False))
+    (config.run_dir / "config.json").write_text(json.dumps(config.to_jsonable()), encoding="utf-8")
     return config
 
 
 def test_judge_only_fills_only_missing_records(tmp_path, monkeypatch) -> None:
     config = _write_run(tmp_path)
     stub = StubJudgeClient()
-    monkeypatch.setattr(rag_runner, "judge_client_for", lambda _: stub)
+    monkeypatch.setattr(judge_run, "judge_client_for", lambda _: stub)
 
-    summary = rag_runner.judge_existing_run(config)
+    summary = judge_run.judge_existing_run(config)
 
     assert stub.calls == 2
     assert summary["judged_count"] == 3
@@ -111,9 +106,9 @@ def test_judge_only_fills_only_missing_records(tmp_path, monkeypatch) -> None:
 def test_rejudge_replaces_existing_judgements(tmp_path, monkeypatch) -> None:
     config = _write_run(tmp_path, rejudge=True)
     stub = StubJudgeClient()
-    monkeypatch.setattr(rag_runner, "judge_client_for", lambda _: stub)
+    monkeypatch.setattr(judge_run, "judge_client_for", lambda _: stub)
 
-    rag_runner.judge_existing_run(config)
+    judge_run.judge_existing_run(config)
 
     assert stub.calls == 3
 
@@ -121,10 +116,10 @@ def test_rejudge_replaces_existing_judgements(tmp_path, monkeypatch) -> None:
 def test_judge_failure_persists_progress_and_raises(tmp_path, monkeypatch) -> None:
     config = _write_run(tmp_path)
     stub = StubJudgeClient(fail_at=2)
-    monkeypatch.setattr(rag_runner, "judge_client_for", lambda _: stub)
+    monkeypatch.setattr(judge_run, "judge_client_for", lambda _: stub)
 
     with pytest.raises(RuntimeError, match="rerun the judge stage"):
-        rag_runner.judge_existing_run(config)
+        judge_run.judge_existing_run(config)
 
     records = read_jsonl(config.run_dir / "predictions.jsonl")
     by_id = {record["query_id"]: record for record in records}
@@ -137,7 +132,15 @@ def test_missing_predictions_file_raises(tmp_path) -> None:
     config = RagBenchConfig(results_dir=tmp_path, run_id="missing")
 
     with pytest.raises(FileNotFoundError):
-        rag_runner.judge_existing_run(config)
+        judge_run.judge_existing_run(config)
+
+
+def test_record_without_references_cannot_be_judged() -> None:
+    record = _record("q0000", judged=False)
+    del record["gold_answers"]
+
+    with pytest.raises(RuntimeError, match="no gold_answers"):
+        judge_rag_record(RagBenchConfig(), StubJudgeClient(), record)
 
 
 def test_judge_messages_include_question_and_answers() -> None:

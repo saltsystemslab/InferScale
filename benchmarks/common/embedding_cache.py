@@ -1,30 +1,40 @@
+"""Content-addressed disk cache in front of an embedding model.
+
+Every embedding the benchmarks need is computed once by the preembed stage and
+written here, so timed runs read vectors from disk and never call the remote
+embedding service. In read mode a missing or corrupt entry is an error rather
+than a silent recomputation.
+"""
+
 from __future__ import annotations
 
 import hashlib
-import os
-import tempfile
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
 
-from benchmarks.common.cache_identity import endpoint_cache_key, normalize_endpoint, safe_path_part
+from benchmarks.common.atomic_files import atomic_write_npy
+from benchmarks.common.cache_keys import endpoint_cache_key, normalize_endpoint, safe_path_part
 
 CacheMode = Literal["read", "write"]
+DEFAULT_PURPOSE = "default"
 
 
 class CachedEmbeddingMissingError(RuntimeError):
-    pass
+    """Read mode found no usable cached vector for an input."""
 
 
 class CachedEmbedder:
-    """Content-addressed disk cache in front of an embedder.
+    """Wrap an embedder so repeated inputs are served from ``cache_dir``.
 
-    The wrapped embedder is either Mem0-style (``embed(text, purpose)`` and
-    ``embed_batch(texts, purpose)``) or an ``inferscale`` ``Embedder``
-    (``embed_documents``/``embed_query``). Cache keys carry the purpose:
-    ``"add"`` for stored text and ``"search"`` for queries, so the same cache
-    serves both the Mem0 path and the library's retriever.
+    The wrapped embedder is either a Mem0 embedder (``embed(text, memory_action)``
+    and ``embed_batch(texts, memory_action)``) or the library's ``Embedder``
+    (``embed_documents`` and ``embed_query``). Cache keys include the purpose,
+    ``"add"`` for stored text and ``"search"`` for queries, so one cache serves
+    both the Mem0 path and the library's retriever.
     """
 
     DOCUMENT_PURPOSE = "add"
@@ -42,20 +52,19 @@ class CachedEmbedder:
         if mode not in {"read", "write"}:
             raise ValueError(f"Unsupported embedding cache mode: {mode}")
         self._wrapped = wrapped
+        self._calls = _wrapped_calls(wrapped)
         self.endpoint = normalize_endpoint(endpoint)
-        self.cache_dir = (
-            Path(cache_dir)
-            / safe_path_part(model)
-            / endpoint_cache_key(self.endpoint)
-        )
+        self.cache_dir = Path(cache_dir) / safe_path_part(model) / endpoint_cache_key(self.endpoint)
         self.model = model
         self.mode = mode
         self.hits = 0
         self.misses = 0
+        self.embed_time_ms = 0.0
         if self.mode == "write":
             self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def __getattr__(self, name: str) -> Any:
+        # Mem0 reads provider attributes such as ``config`` from its embedder.
         return getattr(self._wrapped, name)
 
     def embed_documents(self, texts: Any) -> list[list[float]]:
@@ -64,166 +73,28 @@ class CachedEmbedder:
     def embed_query(self, text: str) -> np.ndarray:
         return self.embed_array(text, self.QUERY_PURPOSE)
 
-    def _wrapped_embed(self, text: Any, *args: Any, **kwargs: Any) -> Any:
-        embed_documents = getattr(self._wrapped, "embed_documents", None)
-        if callable(embed_documents):
-            return embed_documents([text])[0]
-        return self._wrapped.embed(text, *args, **kwargs)
+    def embed(self, text: str, memory_action: str | None = None) -> list[float]:
+        return self.embed_array(text, memory_action).tolist()
 
-    def _wrapped_embed_batch(self, texts: list[Any], *args: Any, **kwargs: Any) -> list[Any]:
-        embed_documents = getattr(self._wrapped, "embed_documents", None)
-        if callable(embed_documents):
-            return list(embed_documents(texts))
-        embed_batch = getattr(self._wrapped, "embed_batch", None)
-        if callable(embed_batch):
-            return list(embed_batch(texts, *args, **kwargs))
-        return [self._wrapped.embed(text, *args, **kwargs) for text in texts]
-
-    def embed(self, text: Any, *args: Any, **kwargs: Any) -> list[float]:
-        if not isinstance(text, str):
-            if self.mode == "read":
-                raise CachedEmbeddingMissingError(
-                    "Benchmark embedding cache is read-only and cannot serve non-string embedding input. "
-                    "Disable the embedding cache only for debugging."
-                )
-            return self._wrapped_embed(text, *args, **kwargs)
-
-        return self.embed_array(text, *args, **kwargs).tolist()
-
-    def embed_array(self, text: Any, *args: Any, **kwargs: Any) -> np.ndarray:
-        if not isinstance(text, str):
-            if self.mode == "read":
-                raise CachedEmbeddingMissingError(
-                    "Benchmark embedding cache is read-only and cannot serve non-string embedding input. "
-                    "Disable the embedding cache only for debugging."
-                )
-            return np.asarray(self._wrapped_embed(text, *args, **kwargs), dtype=np.float32)
-
-        purpose = _embedding_purpose(args, kwargs)
-        path = self._cache_path(text, purpose)
-        if path.exists():
-            try:
-                self.hits += 1
-                return np.load(path).astype(np.float32, copy=False)
-            except Exception as exc:
-                self.hits -= 1
-                if self.mode == "read":
-                    self.misses += 1
-                    raise CachedEmbeddingMissingError(
-                        f"Cached embedding at {path} could not be loaded. "
-                        "Delete the corrupt file and rerun the preembed stage with the same "
-                        "dataset, embedding model, and embedding cache dir."
-                    ) from exc
-                path.unlink(missing_ok=True)
-
-        self.misses += 1
-        if self.mode == "read":
-            raise CachedEmbeddingMissingError(
-                f"Missing cached embedding for model={self.model!r} purpose={purpose!r}. "
-                "Run the preembed stage with the same dataset, embedding model, "
-                "and embedding cache dir before running the benchmark."
-            )
-        vector = self._wrapped_embed(text, *args, **kwargs)
-        array = np.asarray(vector, dtype=np.float32)
-        self._write_array(path, array)
-        return array
-
-    def embed_batch(self, texts: Any, *args: Any, **kwargs: Any) -> list[list[float]]:
-        if isinstance(texts, (str, bytes)):
-            raise TypeError("embed_batch() requires an iterable of embedding inputs, not a single string.")
+    def embed_array(self, text: str, memory_action: str | None = None) -> np.ndarray:
+        started = time.perf_counter()
         try:
-            text_list = list(texts)
-        except TypeError as exc:
-            raise TypeError("embed_batch() requires an iterable of embedding inputs.") from exc
-        if not text_list:
-            return []
+            return self._embed_one(_require_text(text), memory_action)
+        finally:
+            self.embed_time_ms += (time.perf_counter() - started) * 1000
 
-        purpose = _embedding_purpose(args, kwargs)
-        vectors: list[np.ndarray | None] = [None] * len(text_list)
-        loaded_by_path: dict[Path, np.ndarray] = {}
-        missing_inputs: list[Any] = []
-        missing_indices: list[list[int]] = []
-        missing_paths: list[Path | None] = []
-        missing_group_by_path: dict[Path, int] = {}
-
-        for index, text in enumerate(text_list):
-            if not isinstance(text, str):
-                if self.mode == "read":
-                    raise CachedEmbeddingMissingError(
-                        "Benchmark embedding cache is read-only and cannot serve non-string embedding input. "
-                        "Disable the embedding cache only for debugging."
-                    )
-                self.misses += 1
-                missing_inputs.append(text)
-                missing_indices.append([index])
-                missing_paths.append(None)
-                continue
-
-            path = self._cache_path(text, purpose)
-            loaded = loaded_by_path.get(path)
-            if loaded is not None:
-                self.hits += 1
-                vectors[index] = loaded
-                continue
-
-            missing_group = missing_group_by_path.get(path)
-            if missing_group is not None:
-                self.misses += 1
-                missing_indices[missing_group].append(index)
-                continue
-
-            if path.exists():
-                try:
-                    loaded = np.load(path).astype(np.float32, copy=False)
-                except Exception as exc:
-                    self.misses += 1
-                    if self.mode == "read":
-                        raise CachedEmbeddingMissingError(
-                            f"Cached embedding at {path} could not be loaded. "
-                            "Delete the corrupt file and rerun the preembed stage with the same "
-                            "dataset, embedding model, and embedding cache dir."
-                        ) from exc
-                    path.unlink(missing_ok=True)
-                else:
-                    self.hits += 1
-                    loaded_by_path[path] = loaded
-                    vectors[index] = loaded
-                    continue
-            else:
-                self.misses += 1
-
-            if self.mode == "read":
-                raise CachedEmbeddingMissingError(
-                    f"Missing cached embedding for model={self.model!r} purpose={purpose!r}. "
-                    "Run the preembed stage with the same dataset, embedding model, "
-                    "and embedding cache dir before running the benchmark."
-                )
-            missing_group_by_path[path] = len(missing_inputs)
-            missing_inputs.append(text)
-            missing_indices.append([index])
-            missing_paths.append(path)
-
-        if missing_inputs:
-            raw_vectors = self._wrapped_embed_batch(missing_inputs, *args, **kwargs)
-            if len(raw_vectors) != len(missing_inputs):
-                raise ValueError(
-                    f"Wrapped embed_batch() returned {len(raw_vectors)} embeddings for "
-                    f"{len(missing_inputs)} inputs."
-                )
-
-            for raw_vector, indices, path in zip(raw_vectors, missing_indices, missing_paths, strict=True):
-                array = np.asarray(raw_vector, dtype=np.float32)
-                if path is not None:
-                    self._write_array(path, array)
-                for index in indices:
-                    vectors[index] = array
-
-        result: list[list[float]] = []
-        for vector in vectors:
-            if vector is None:
-                raise RuntimeError("Embedding cache failed to resolve every batch input.")
-            result.append(vector.tolist())
-        return result
+    def embed_batch(self, texts: Any, memory_action: str = DOCUMENT_PURPOSE) -> list[list[float]]:
+        started = time.perf_counter()
+        try:
+            text_list = _text_list(texts)
+            if not text_list:
+                return []
+            plan = self._plan_batch(text_list, memory_action)
+            if plan.missing_texts:
+                self._fetch_missing(plan, memory_action)
+            return [vector.tolist() for vector in plan.vectors]
+        finally:
+            self.embed_time_ms += (time.perf_counter() - started) * 1000
 
     def stats(self) -> dict[str, Any]:
         return {
@@ -235,43 +106,146 @@ class CachedEmbedder:
             "misses": self.misses,
         }
 
-    def _cache_path(self, text: str, purpose: str) -> Path:
+    def _embed_one(self, text: str, memory_action: str | None) -> np.ndarray:
+        path = self._cache_path(text, memory_action)
+        cached = self._load_cached(path)
+        if cached is not None:
+            self.hits += 1
+            return cached
+        self.misses += 1
+        self._require_write_mode(memory_action)
+        array = np.asarray(self._calls.embed_one(text, memory_action), dtype=np.float32)
+        atomic_write_npy(path, array)
+        return array
+
+    def _plan_batch(self, texts: list[str], memory_action: str) -> _BatchPlan:
+        """Resolve cache hits and group the misses by unique input, in first-seen order."""
+        plan = _BatchPlan(vectors=[None] * len(texts))
+        loaded: dict[Path, np.ndarray] = {}
+        for index, text in enumerate(texts):
+            path = self._cache_path(text, memory_action)
+            if path in loaded:
+                self.hits += 1
+                plan.vectors[index] = loaded[path]
+                continue
+            if path in plan.positions_by_path:
+                self.misses += 1
+                plan.positions_by_path[path].append(index)
+                continue
+            cached = self._load_cached(path)
+            if cached is not None:
+                self.hits += 1
+                loaded[path] = cached
+                plan.vectors[index] = cached
+                continue
+            self.misses += 1
+            self._require_write_mode(memory_action)
+            plan.missing_texts.append(text)
+            plan.missing_paths.append(path)
+            plan.positions_by_path[path] = [index]
+        return plan
+
+    def _fetch_missing(self, plan: _BatchPlan, memory_action: str) -> None:
+        raw_vectors = self._calls.embed_many(plan.missing_texts, memory_action)
+        if len(raw_vectors) != len(plan.missing_texts):
+            raise ValueError(
+                f"Wrapped embed_batch() returned {len(raw_vectors)} embeddings for "
+                f"{len(plan.missing_texts)} inputs."
+            )
+        for raw_vector, path in zip(raw_vectors, plan.missing_paths):
+            array = np.asarray(raw_vector, dtype=np.float32)
+            atomic_write_npy(path, array)
+            for index in plan.positions_by_path[path]:
+                plan.vectors[index] = array
+
+    def _load_cached(self, path: Path) -> np.ndarray | None:
+        """The cached vector, or None when absent; corrupt files are replaced in write mode."""
+        if not path.exists():
+            return None
+        try:
+            return np.load(path).astype(np.float32, copy=False)
+        except Exception as exc:
+            if self.mode == "read":
+                raise CachedEmbeddingMissingError(
+                    f"Cached embedding at {path} could not be loaded. "
+                    "Delete the corrupt file and rerun the preembed stage with the same "
+                    "dataset, embedding model, and embedding cache dir."
+                ) from exc
+            path.unlink(missing_ok=True)
+            return None
+
+    def _require_write_mode(self, memory_action: str | None) -> None:
+        if self.mode == "read":
+            raise CachedEmbeddingMissingError(
+                f"Missing cached embedding for model={self.model!r} "
+                f"purpose={_purpose(memory_action)!r}. Run the preembed stage with the same "
+                "dataset, embedding model, and embedding cache dir before running the benchmark."
+            )
+
+    def _cache_path(self, text: str, memory_action: str | None) -> Path:
         key = hashlib.sha256()
-        key.update(self.model.encode("utf-8"))
-        key.update(b"\0")
-        key.update(self.endpoint.encode("utf-8"))
-        key.update(b"\0")
-        key.update(purpose.encode("utf-8"))
-        key.update(b"\0")
-        key.update(text.encode("utf-8"))
+        for part in (self.model, self.endpoint, _purpose(memory_action), text):
+            key.update(part.encode("utf-8"))
+            key.update(b"\0")
         return self.cache_dir / f"{key.hexdigest()}.npy"
 
-    def _write_array(self, path: Path, array: np.ndarray) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="wb",
-                dir=path.parent,
-                prefix=f".{path.name}.",
-                suffix=".tmp",
-                delete=False,
-            ) as fh:
-                tmp_path = Path(fh.name)
-                np.save(fh, array.astype(np.float32, copy=False))
-                fh.flush()
-                os.fsync(fh.fileno())
-            os.replace(tmp_path, path)
-        finally:
-            if tmp_path is not None:
-                tmp_path.unlink(missing_ok=True)
+
+@dataclass(slots=True)
+class _BatchPlan:
+    vectors: list[np.ndarray | None]
+    missing_texts: list[str] = field(default_factory=list)
+    missing_paths: list[Path] = field(default_factory=list)
+    positions_by_path: dict[Path, list[int]] = field(default_factory=dict)
 
 
-def _embedding_purpose(args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
-    for key in ("purpose", "memory_action", "mode"):
-        value = kwargs.get(key)
-        if value is not None:
-            return str(value)
-    if args and isinstance(args[0], str):
-        return args[0]
-    return "default"
+class _Mem0EmbedderCalls:
+    """Call shape of a Mem0 embedder: the memory action is passed positionally."""
+
+    def __init__(self, wrapped: Any) -> None:
+        self._wrapped = wrapped
+
+    def embed_one(self, text: str, memory_action: str | None) -> Any:
+        return self._wrapped.embed(text, memory_action)
+
+    def embed_many(self, texts: list[str], memory_action: str) -> list[Any]:
+        return list(self._wrapped.embed_batch(texts, memory_action))
+
+
+class _LibraryEmbedderCalls:
+    """Call shape of the library's ``Embedder`` protocol, which has no memory action."""
+
+    def __init__(self, wrapped: Any) -> None:
+        self._wrapped = wrapped
+
+    def embed_one(self, text: str, memory_action: str | None) -> Any:
+        return self._wrapped.embed_documents([text])[0]
+
+    def embed_many(self, texts: list[str], memory_action: str) -> list[Any]:
+        return list(self._wrapped.embed_documents(texts))
+
+
+def _wrapped_calls(wrapped: Any) -> _Mem0EmbedderCalls | _LibraryEmbedderCalls:
+    # The two embedder families have no common base class, so the call shape is
+    # chosen once here, by the method the wrapped object provides.
+    if hasattr(wrapped, "embed_documents"):
+        return _LibraryEmbedderCalls(wrapped)
+    return _Mem0EmbedderCalls(wrapped)
+
+
+def _purpose(memory_action: str | None) -> str:
+    return DEFAULT_PURPOSE if memory_action is None else str(memory_action)
+
+
+def _require_text(text: Any) -> str:
+    if not isinstance(text, str):
+        raise TypeError("The embedding cache serves text inputs only.")
+    return text
+
+
+def _text_list(texts: Any) -> list[str]:
+    if isinstance(texts, str | bytes):
+        raise TypeError("embed_batch() requires an iterable of texts, not a single string.")
+    try:
+        return [_require_text(text) for text in texts]
+    except TypeError as exc:
+        raise TypeError("embed_batch() requires an iterable of texts.") from exc

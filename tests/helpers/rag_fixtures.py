@@ -91,7 +91,10 @@ def multihop_corpus_records() -> list[dict[str, Any]]:
 def multihop_query_records() -> list[dict[str, Any]]:
     return [
         {
-            "query": "Which company announced a solar breakthrough while Beta Industries doubled profits?",
+            "query": (
+                "Which company announced a solar breakthrough "
+                "while Beta Industries doubled profits?"
+            ),
             "answer": "Alpha Corp",
             "question_type": "inference_query",
             "evidence_list": [

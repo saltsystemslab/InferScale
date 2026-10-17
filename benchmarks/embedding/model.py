@@ -1,14 +1,17 @@
+"""A local Qwen embedding model: left padding, last-token pooling, L2 normalization."""
+
 from __future__ import annotations
 
 import time
 from importlib.metadata import version
 
+TOKENIZE_BATCH_SIZE = 256
+
 
 class QwenEmbedder:
-    """Qwen document embeddings: left padding, last-token pooling, L2 normalization."""
-
-    def __init__(self, *, model: str, revision: str, device: str, dtype: str,
-                 attention: str, max_length: int):
+    def __init__(
+        self, *, model: str, revision: str, device: str, dtype: str, attention: str, max_length: int
+    ):
         import torch
         from transformers import AutoModel, AutoTokenizer
 
@@ -21,37 +24,49 @@ class QwenEmbedder:
                 self.device = torch.device("cuda", torch.cuda.current_device())
             torch.cuda.set_device(self.device)
         if dtype == "auto":
-            dtype = ("bfloat16" if torch.cuda.is_bf16_supported() else "float16") \
-                if self.device.type == "cuda" else "float32"
+            dtype = self._default_dtype()
         self.max_length = max_length
         started = time.perf_counter()
-        self.tokenizer = AutoTokenizer.from_pretrained(model, revision=revision, padding_side="left")
-        self.model = AutoModel.from_pretrained(
-            model, revision=revision, torch_dtype=getattr(torch, dtype),
-            attn_implementation=attention,
-        ).to(self.device).eval()
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            model, revision=revision, padding_side="left"
+        )
+        self.model = (
+            AutoModel.from_pretrained(
+                model,
+                revision=revision,
+                torch_dtype=getattr(torch, dtype),
+                attn_implementation=attention,
+            )
+            .to(self.device)
+            .eval()
+        )
         self.synchronize()
         self.metadata = {
-            "model": model, "revision": revision,
+            "model": model,
+            "revision": revision,
             "resolved_revision": getattr(self.model.config, "_commit_hash", None),
-            "device": str(self.device), "dtype": dtype, "attention": attention,
-            "max_length": max_length, "embedding_dimensions": self.model.config.hidden_size,
+            "device": str(self.device),
+            "dtype": dtype,
+            "attention": attention,
+            "max_length": max_length,
+            "embedding_dimensions": self.model.config.hidden_size,
             "load_seconds": time.perf_counter() - started,
-            "torch": version("torch"), "transformers": version("transformers"),
+            "torch": version("torch"),
+            "transformers": version("transformers"),
             "cpu_threads": torch.get_num_threads(),
             "cuda": torch.version.cuda,
             "gpu": torch.cuda.get_device_name(self.device) if self.device.type == "cuda" else None,
         }
 
     def token_lengths(self, texts: list[str]) -> list[int]:
-        lengths = []
-        for start in range(0, len(texts), 256):
-            encoded = self.tokenizer(texts[start:start + 256], truncation=False)
+        lengths: list[int] = []
+        for start in range(0, len(texts), TOKENIZE_BATCH_SIZE):
+            encoded = self.tokenizer(texts[start : start + TOKENIZE_BATCH_SIZE], truncation=False)
             lengths.extend(len(ids) for ids in encoded["input_ids"])
         if max(lengths) > self.max_length:
             raise ValueError(
-                f"Longest fact has {max(lengths)} tokens, exceeding --max-length {self.max_length}; "
-                "increase the limit to embed the complete facts"
+                f"Longest fact has {max(lengths)} tokens, exceeding --max-length "
+                f"{self.max_length}; increase the limit to embed the complete facts"
             )
         return lengths
 
@@ -83,3 +98,8 @@ class QwenEmbedder:
         if self.device.type == "cuda":
             return self.torch.cuda.max_memory_allocated(self.device)
         return None
+
+    def _default_dtype(self) -> str:
+        if self.device.type != "cuda":
+            return "float32"
+        return "bfloat16" if self.torch.cuda.is_bf16_supported() else "float16"

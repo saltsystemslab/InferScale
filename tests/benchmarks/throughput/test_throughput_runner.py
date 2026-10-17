@@ -5,16 +5,21 @@ import sys
 from pathlib import Path
 
 import pytest
+from throughput_config import make_throughput_config
 
+from benchmarks.common.json_fields import ConfigError
 from benchmarks.memory.throughput.config import DEFAULT_USER_COUNTS, ThroughputConfig
-from benchmarks.memory.throughput.runner import build_worker_job, run_throughput, worker_specs
+from benchmarks.memory.throughput.runner import (
+    _validate_existing_config,
+    build_worker_job,
+    run_throughput,
+    worker_specs,
+)
 
 
 def _config(tmp_path: Path) -> ThroughputConfig:
-    return ThroughputConfig(
-        model="test/model",
-        model_label="test",
-        results_dir=tmp_path,
+    return make_throughput_config(
+        tmp_path,
         run_id="dry-run-test",
         conditions=("mem0_qdrant", "kv_injection"),
         user_counts=(2, 3),
@@ -38,16 +43,12 @@ def test_worker_specs_isolate_each_kv_user_count(tmp_path: Path) -> None:
 
 
 def test_default_plan_isolates_kv_workers_per_user_count(tmp_path: Path) -> None:
-    config = ThroughputConfig(
-        model="test/model",
-        model_label="test",
-        results_dir=tmp_path,
-        run_id="full-plan-test",
-    )
+    config = make_throughput_config(tmp_path, run_id="full-plan-test")
 
     specs = worker_specs(config)
 
-    assert len(specs) == 2 + len(DEFAULT_USER_COUNTS)  # 2 single workers + 1 kv worker per user count
+    # Two single workers plus one kv worker per user count.
+    assert len(specs) == 2 + len(DEFAULT_USER_COUNTS)
     assert sum(spec.condition == "kv_injection" for spec in specs) == len(DEFAULT_USER_COUNTS)
     single_worker_conditions = [
         spec.condition for spec in specs if spec.condition != "kv_injection"
@@ -55,10 +56,7 @@ def test_default_plan_isolates_kv_workers_per_user_count(tmp_path: Path) -> None
     assert single_worker_conditions == ["mem0_qdrant", "mem0_jasper"]
 
 
-def test_dry_run_prints_jobs_without_creating_run_directory(
-    tmp_path: Path,
-    capsys,
-) -> None:
+def test_dry_run_prints_jobs_without_creating_run_directory(tmp_path: Path, capsys) -> None:
     config = _config(tmp_path)
 
     assert run_throughput(config, dry_run=True) is None
@@ -79,13 +77,21 @@ def test_runner_sends_json_to_isolated_workers_and_collects_results(
     config = _config(tmp_path)
     monkeypatch.setattr(runner, "_validate_runtime_requirements", lambda config: None)
     monkeypatch.setattr(runner, "collect_system_metadata", lambda: {})
-    monkeypatch.setattr(worker, "run_condition", lambda config, condition, counts: [
-        build_result_row(
-            config, count, condition=condition, generation_time_s=1.0,
-            total_input_tokens=count * 20, total_output_tokens=count * 10,
-        )
-        for count in counts
-    ])
+    monkeypatch.setattr(
+        worker,
+        "run_condition",
+        lambda config, condition, counts: [
+            build_result_row(
+                config,
+                count,
+                condition=condition,
+                generation_time_s=1.0,
+                total_input_tokens=count * 20,
+                total_output_tokens=count * 10,
+            )
+            for count in counts
+        ],
+    )
     jobs = []
 
     def run(command, *, input, text, check, cwd, env):
@@ -106,49 +112,30 @@ def test_runner_sends_json_to_isolated_workers_and_collects_results(
     assert (config.run_dir / "throughput_merged.csv").is_file()
 
 
-def test_validate_existing_config_accepts_pre_change_config_json(tmp_path: Path) -> None:
-    from benchmarks.memory.throughput.runner import _validate_existing_config
-
+def test_resumed_run_must_match_its_recorded_settings(tmp_path: Path) -> None:
     config = _config(tmp_path)
     config.run_dir.mkdir(parents=True)
-    legacy = config.to_jsonable()
-    # A config.json written before these fields existed has no such keys;
-    # the recorded behavior was prefix caching off and the GPU store.
-    for key in (
-        "kv_enable_prefix_caching",
-        "kv_store_backend",
-        "kv_staging_slots",
-        "local_store_dir",
-    ):
-        legacy.pop(key)
-    (config.run_dir / "config.json").write_text(json.dumps(legacy), encoding="utf-8")
-
-    resumed = _config(tmp_path)
-    resumed.kv_enable_prefix_caching = False
-    resumed.kv_store_backend = "gpu"
-    resumed.kv_staging_slots = 4
-    _validate_existing_config(resumed)  # must not raise
-
-    mismatched = _config(tmp_path)
-    mismatched.kv_enable_prefix_caching = True
-    try:
-        _validate_existing_config(mismatched)
-    except RuntimeError as exc:
-        assert "kv_enable_prefix_caching" in str(exc)
-    else:
-        raise AssertionError("Expected a config mismatch error for prefix caching on")
-
-
-@pytest.mark.parametrize("value", [False, True])
-def test_validate_existing_config_ignores_removed_device_kv_selection_switch(
-    tmp_path: Path, value: bool
-) -> None:
-    from benchmarks.memory.throughput.runner import _validate_existing_config
-
-    config = _config(tmp_path)
-    config.run_dir.mkdir(parents=True)
-    legacy = config.to_jsonable()
-    legacy["jasper_device_kv_selection"] = value
-    (config.run_dir / "config.json").write_text(json.dumps(legacy), encoding="utf-8")
+    saved_path = config.run_dir / "config.json"
+    saved_path.write_text(json.dumps(config.to_jsonable()), encoding="utf-8")
 
     _validate_existing_config(config)
+    relabeled = _config(tmp_path)
+    relabeled.conditions = ("kv_injection",)
+    relabeled.log_level = "DEBUG"
+    _validate_existing_config(relabeled)
+
+    changed = _config(tmp_path)
+    changed.kv_enable_prefix_caching = False
+    with pytest.raises(ConfigError, match="kv_enable_prefix_caching"):
+        _validate_existing_config(changed)
+
+
+def test_resumed_run_rejects_a_snapshot_missing_a_setting(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config.run_dir.mkdir(parents=True)
+    saved = config.to_jsonable()
+    saved.pop("kv_store_backend")
+    (config.run_dir / "config.json").write_text(json.dumps(saved), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="new run_id"):
+        _validate_existing_config(config)

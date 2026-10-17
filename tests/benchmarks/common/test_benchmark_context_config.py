@@ -11,11 +11,14 @@ from benchmarks.memory.throughput.config import ThroughputConfig
 from benchmarks.rag.config import RagBenchConfig
 
 
-@pytest.fixture(params=[
-    (MemoryRunConfig, "configs/memory/accuracy-latency/llama.json", 0),
-    (ThroughputConfig, "configs/memory/throughput/llama.json", 50),
-    (RagBenchConfig, "configs/rag/multihoprag.json", 5),
-], ids=["memory", "throughput", "rag"])
+@pytest.fixture(
+    params=[
+        (MemoryRunConfig, "configs/memory/accuracy-latency/llama.json", 0),
+        (ThroughputConfig, "configs/memory/throughput/llama.json", 50),
+        (RagBenchConfig, "configs/rag/multihoprag.json", 5),
+    ],
+    ids=["memory", "throughput", "rag"],
+)
 def benchmark_input(request, tmp_path):
     config_type, relative_path, default_window = request.param
     root = Path(__file__).resolve().parents[3]
@@ -54,7 +57,9 @@ def test_context_window_has_one_authored_source(benchmark_input, nested_context_
 
 
 @pytest.mark.parametrize("vector_backend", ["exact", "jasper"])
-def test_benchmarks_reject_standalone_api_retrieval_selector(benchmark_input, vector_backend) -> None:
+def test_benchmarks_reject_standalone_api_retrieval_selector(
+    benchmark_input, vector_backend
+) -> None:
     config_type, data, runtime, _ = benchmark_input
     data["inferscale"]["vector_backend"] = vector_backend
 

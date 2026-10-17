@@ -1,12 +1,13 @@
 """Internal process boundary for benchmark jobs supplied as JSON on stdin."""
+
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 from typing import Any
 
-from benchmarks.common.config import ConfigError, optional, reject_unknown_keys, require
+from benchmarks.common.json_fields import ConfigError, optional, reject_unknown_keys, require
 
 
 def execute(job: dict[str, Any]) -> None:

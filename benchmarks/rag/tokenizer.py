@@ -1,3 +1,5 @@
+"""The answer model's tokenizer, resolved the way the engine resolves it."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -18,9 +20,7 @@ def load_rag_tokenizer(model: str, *, allow_transformers_fallback: bool = False)
     try:
         from inferscale.v1.kv.encoder import load_encoder_tokenizer
     except ModuleNotFoundError as exc:  # pragma: no cover - import environment specific
-        raise RuntimeError(
-            "inferscale is required to load the RAG tokenizer."
-        ) from exc
+        raise RuntimeError("inferscale is required to load the RAG tokenizer.") from exc
 
     try:
         return load_encoder_tokenizer(model)

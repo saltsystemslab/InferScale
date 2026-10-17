@@ -1,3 +1,12 @@
+"""Run every throughput condition in its own worker subprocess and merge the result rows.
+
+Each worker gets a fresh CUDA process so conditions cannot share engine state;
+kv_injection additionally gets one worker per user count because its composed
+memories stay GPU-resident for the whole measurement. Rows are merged into the
+run directory after every worker, so an interrupted run resumes by rerunning
+the same run id.
+"""
+
 from __future__ import annotations
 
 import importlib.util
@@ -9,17 +18,37 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from inferscale.v1.kv.connector_utils import DEFAULT_KV_STAGING_SLOTS, DEFAULT_KV_STORE_BACKEND
+from loguru import logger
+
 from benchmarks.common.files import write_json
+from benchmarks.common.json_fields import ConfigError
 from benchmarks.common.paths import project_root
 from benchmarks.common.system import collect_system_metadata
-from benchmarks.memory.throughput.config import ALL_CONDITIONS, ThroughputConfig, user_counts_text
+from benchmarks.memory.throughput.config import (
+    WORKER_API_KEY_VARIABLE,
+    ThroughputConfig,
+    user_counts_text,
+)
 from benchmarks.memory.throughput.reporting import (
     merge_result_rows,
     read_existing_results,
     validate_result_row,
     write_reports,
 )
+
+# Settings that may differ between invocations of the same run id without
+# changing the measured workload: conditions can be added later, the key is
+# redacted in the snapshot, the scratch store path can move between hosts, and
+# the log level is operational.
+VOLATILE_CONFIG_KEYS = frozenset(
+    {"conditions", "embedding_api_key", "local_store_dir", "log_level"}
+)
+REQUIRED_MODULES = {"vllm", "mem0"}
+CONDITION_MODULES = {
+    "kv_injection": ("torch", "transformers", "jasper"),
+    "mem0_qdrant": ("qdrant_client",),
+    "mem0_jasper": ("jasper",),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,21 +63,13 @@ def worker_specs(config: ThroughputConfig) -> list[WorkerSpec]:
     worker_dir = config.run_dir / "worker-results"
     for condition in config.conditions:
         if condition == "kv_injection":
-            for count in config.user_counts:
-                specs.append(
-                    WorkerSpec(
-                        condition=condition,
-                        user_counts=(count,),
-                        output_path=worker_dir / f"{condition}-{count}u.json",
-                    )
-                )
+            specs.extend(
+                WorkerSpec(condition, (count,), worker_dir / f"{condition}-{count}u.json")
+                for count in config.user_counts
+            )
         else:
             specs.append(
-                WorkerSpec(
-                    condition=condition,
-                    user_counts=config.user_counts,
-                    output_path=worker_dir / f"{condition}.json",
-                )
+                WorkerSpec(condition, config.user_counts, worker_dir / f"{condition}.json")
             )
     return specs
 
@@ -76,38 +97,37 @@ def run_throughput(config: ThroughputConfig, *, dry_run: bool = False) -> dict[s
     config.run_dir.mkdir(parents=True, exist_ok=True)
     _validate_existing_config(config)
     rows = read_existing_results(config.run_dir)
-    completed_conditions = {str(row["condition"]) for row in rows}
-    requested_conditions = set(config.conditions)
-    config.conditions = tuple(
-        condition
-        for condition in ALL_CONDITIONS
-        if condition in completed_conditions or condition in requested_conditions
-    )
     write_json(config.run_dir / "config.json", config.to_jsonable())
     system_metadata = collect_system_metadata()
     write_json(config.run_dir / "system.json", system_metadata)
 
     for index, spec in enumerate(specs, start=1):
-        print(
-            f"[{index}/{len(specs)}] {spec.condition} users={user_counts_text(spec.user_counts)}",
-            flush=True,
+        logger.info(
+            "[{}/{}] {} users={}",
+            index,
+            len(specs),
+            spec.condition,
+            user_counts_text(spec.user_counts),
         )
-        spec.output_path.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            [sys.executable, "-m", "benchmarks.memory.throughput.worker"],
-            input=json.dumps(build_worker_job(config, spec)),
-            text=True,
-            check=True,
-            cwd=project_root(),
-            env=_worker_environment(config),
-        )
-        replacements = _load_worker_results(spec)
-        rows = merge_result_rows(rows, replacements)
+        _run_worker(config, spec)
+        rows = merge_result_rows(rows, _load_worker_results(spec))
         write_reports(config, rows, system_metadata=system_metadata)
 
     summary = write_reports(config, rows, system_metadata=system_metadata)
     print(f"wrote {summary['row_count']} throughput rows to {config.run_dir}")
     return summary
+
+
+def _run_worker(config: ThroughputConfig, spec: WorkerSpec) -> None:
+    spec.output_path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [sys.executable, "-m", "benchmarks.memory.throughput.worker"],
+        input=json.dumps(build_worker_job(config, spec)),
+        text=True,
+        check=True,
+        cwd=project_root(),
+        env=_worker_environment(config),
+    )
 
 
 def _load_worker_results(spec: WorkerSpec) -> list[dict[str, Any]]:
@@ -119,7 +139,7 @@ def _load_worker_results(spec: WorkerSpec) -> list[dict[str, Any]]:
         raise RuntimeError(f"Worker output has no result list: {spec.output_path}")
     rows = [validate_result_row(row) for row in raw_results if isinstance(row, dict)]
     expected = set(spec.user_counts)
-    actual = {int(row["num_users"]) for row in rows}
+    actual = {row["num_users"] for row in rows}
     if actual != expected:
         raise RuntimeError(
             f"Worker output user-count mismatch for {spec.condition}: "
@@ -129,17 +149,10 @@ def _load_worker_results(spec: WorkerSpec) -> list[dict[str, Any]]:
 
 
 def _validate_runtime_requirements(config: ThroughputConfig) -> None:
-    retrieval_conditions = {"mem0_qdrant", "mem0_jasper", "kv_injection"}
-    required_modules = {"vllm"}
-    if "kv_injection" in config.conditions:
-        required_modules.update(("torch", "transformers", "jasper"))
-    if "mem0_qdrant" in config.conditions:
-        required_modules.add("qdrant_client")
-    if "mem0_jasper" in config.conditions:
-        required_modules.add("jasper")
-    if retrieval_conditions & set(config.conditions):
-        required_modules.add("mem0")
-    missing = sorted(module for module in required_modules if importlib.util.find_spec(module) is None)
+    required = set(REQUIRED_MODULES)
+    for condition in config.conditions:
+        required.update(CONDITION_MODULES[condition])
+    missing = sorted(module for module in required if importlib.util.find_spec(module) is None)
     if missing:
         raise RuntimeError(
             "Throughput runtime modules are missing: "
@@ -148,61 +161,47 @@ def _validate_runtime_requirements(config: ThroughputConfig) -> None:
         )
     if not Path(config.dataset_path).exists():
         raise RuntimeError(
-            f"LoCoMo dataset not found at {config.dataset_path}; set dataset_path in the run JSON or download it "
-            "with scripts/setup_remote.sh."
+            f"LoCoMo dataset not found at {config.dataset_path}; set dataset_path in the run "
+            "JSON or download it with scripts/setup_remote.sh."
         )
-    if retrieval_conditions & set(config.conditions):
-        catalog_root = Path(config.memory_llm_cache_dir) / "fact-catalogs"
-        if not any(catalog_root.rglob("*.json")):
-            raise RuntimeError(
-                f"No Mem0 fact catalogs found under {catalog_root}. Run "
-                "the extract-facts stage with matching extraction settings first."
-            )
-    needs_embeddings = sorted(retrieval_conditions & set(config.conditions))
-    if needs_embeddings and not config.embedding_api_key and not config.embedding_base_url:
+    catalog_root = Path(config.memory_llm_cache_dir) / "fact-catalogs"
+    if not any(catalog_root.rglob("*.json")):
         raise RuntimeError(
-            "Conditions "
-            + ", ".join(needs_embeddings)
-            + " require OPENAI_API_KEY or inferscale.embedding.base_url in the run JSON."
+            f"No Mem0 fact catalogs found under {catalog_root}. Run the extract-facts stage "
+            "with matching extraction settings first."
         )
-
-
-# Values a config.json written before these fields existed is treated as
-# having used, so old run dirs stay resumable. Pre-change behavior was prefix
-# caching hard-off, the GPU store, and context-free chunk encoding.
-_LEGACY_CONFIG_DEFAULTS: dict[str, Any] = {
-    "kv_enable_prefix_caching": False,
-    "kv_store_backend": DEFAULT_KV_STORE_BACKEND,
-    "kv_staging_slots": DEFAULT_KV_STAGING_SLOTS,
-    "context_window": 0,
-}
+    if not config.embedding_api_key and not config.embedding_base_url:
+        raise RuntimeError(
+            "Every throughput condition embeds queries live; set OPENAI_API_KEY or "
+            "inferscale.embedding.base_url in the run JSON."
+        )
 
 
 def _validate_existing_config(config: ThroughputConfig) -> None:
+    """A resumed run id must carry exactly the settings its first invocation recorded."""
     path = config.run_dir / "config.json"
     if not path.exists():
         return
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(raw, dict):
-        raise RuntimeError(f"Existing config is not a JSON object: {path}")
-    expected_config = config.to_jsonable()
-    for key, expected in expected_config.items():
-        # Rebuilt vector-store scratch can move between runs without changing
-        # the measured workload, including runs recorded before this field.
-        if key in {"conditions", "embedding_api_key", "local_store_dir", "log_level"}:
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(saved, dict):
+        raise ConfigError(f"Existing config is not a JSON object: {path}")
+    for key, expected in config.to_jsonable().items():
+        if key in VOLATILE_CONFIG_KEYS:
             continue
-        if key in _LEGACY_CONFIG_DEFAULTS and key not in raw:
-            recorded = _LEGACY_CONFIG_DEFAULTS[key]
-        else:
-            recorded = raw.get(key)
-        if recorded != expected:
-            raise RuntimeError(
-                f"Run directory {config.run_dir} already contains a different {key}. Set a new run_id in the run JSON."
+        if key not in saved:
+            raise ConfigError(
+                f"Run directory {config.run_dir} was written without the {key} setting; "
+                "set a new run_id in the run JSON instead of resuming it."
+            )
+        if saved[key] != expected:
+            raise ConfigError(
+                f"Run directory {config.run_dir} already contains a different {key}. "
+                "Set a new run_id in the run JSON."
             )
 
 
 def _worker_environment(config: ThroughputConfig) -> dict[str, str]:
     environment = dict(os.environ)
     if config.embedding_api_key:
-        environment["LOCOMO_THROUGHPUT_EMBEDDING_API_KEY"] = config.embedding_api_key
+        environment[WORKER_API_KEY_VARIABLE] = config.embedding_api_key
     return environment

@@ -1,13 +1,17 @@
+"""Per-query and per-sample CSV reports of a memory run."""
+
 from __future__ import annotations
 
 import csv
 import math
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
-
-from loguru import logger
+from typing import Any
 
 from benchmarks.common.files import write_csv
+from benchmarks.common.stats import as_number
+from benchmarks.memory.plots import write_token_plots
+from benchmarks.memory.setup_metrics import SAMPLE_SETUP_COLUMNS, SETUP_NUMERIC_COLUMNS
 
 QUERY_METRICS_COLUMNS = [
     "run_id",
@@ -43,6 +47,34 @@ QUERY_METRICS_COLUMNS = [
     "retrieved_count",
 ]
 
+# Columns copied from the record itself.
+RECORD_COLUMNS = ("run_id", "mode", "sample_id", "question_id", "category")
+# Columns read from the record's metrics as numbers, under the same key.
+NUMERIC_METRIC_COLUMNS = (
+    "jasper_effective_beam_width",
+    "memory_context_turn_count",
+    "memory_context_encoding_tokens_total",
+    "memory_context_encoding_tokens_max",
+    "memory_context_encoding_truncated_tokens",
+    "memory_context_text_tokens",
+    "memory_token_budget",
+    "kv_block_size",
+    "kv_loaded_memory_tokens",
+    "kv_recomputed_memory_tail_tokens",
+    "kv_fact_tokens_end",
+    "kv_verify_time_ms",
+    "time_to_first_token_ms",
+    "query_to_first_token_ms",
+    "query_to_answer_ms",
+)
+# Columns read from the record's metrics as lists, under the same key.
+LIST_METRIC_COLUMNS = (
+    "memory_retrieved_fact_ids",
+    "memory_retrieved_fact_text_hashes",
+    "memory_injected_fact_ids",
+    "memory_context_turn_ids",
+)
+
 ACCURACY_BIN_COLUMNS = [
     "token_bin_start",
     "token_bin_end",
@@ -54,104 +86,16 @@ ACCURACY_BIN_COLUMNS = [
     "ci_upper",
 ]
 
-SAMPLE_SETUP_COLUMNS = [
-    "run_id",
-    "mode",
-    "sample_id",
-    "question_count",
-    "turn_count",
-    "vector_backend",
-    "memory_create_time_ms",
-    "embedding_memory_build_time_ms",
-    "memory_input_turn_count",
-    "memory_inferred_record_count",
-    "memory_fact_catalog_loaded",
-    "memory_llm_cache_hits",
-    "memory_llm_cache_misses",
-    "vector_index_build_time_ms",
-    "jasper_vector_count",
-    "jasper_embedding_dim",
-    "jasper_embedding_matrix_cpu_bytes",
-    "jasper_embedding_matrix_cpu_mb",
-    "jasper_embedding_matrix_gpu_logical_bytes",
-    "jasper_embedding_matrix_gpu_logical_mb",
-    "jasper_graph_gpu_bytes",
-    "jasper_graph_gpu_mb",
-    "jasper_graph_torch_allocated_delta_bytes",
-    "jasper_graph_torch_allocated_delta_mb",
-    "memory_setup_time_ms",
-    "kv_precompute_time_ms",
-    "kv_precomputed_chunks",
-    "kv_precomputed_chunks_with_prefix",
-    "kv_precomputed_tokens",
-    "kv_precomputed_layers",
-    "kv_precomputed_gpu_mb",
-    "kv_chunk_cache_residency_is_gpu",
-    "llama_kv_chunk_count",
-    "llama_kv_chunk_metadata_cpu_bytes",
-    "llama_kv_chunk_metadata_cpu_mb",
-    "llama_kv_chunk_map_gpu_bytes",
-    "llama_kv_chunk_map_gpu_mb",
-    "llama_kv_chunk_tensor_gpu_bytes",
-    "llama_kv_chunk_tensor_gpu_mb",
-    "llama_kv_prefix_tensor_gpu_bytes",
-    "llama_kv_prefix_tensor_gpu_mb",
-    "llama_kv_total_tensor_gpu_bytes",
-    "llama_kv_total_tensor_gpu_mb",
-    "answer_prepare_sample_time_ms",
-    "sample_setup_time_ms",
-]
-
-SAMPLE_SETUP_NUMERIC_COLUMNS = set(SAMPLE_SETUP_COLUMNS) - {"run_id", "mode", "sample_id", "vector_backend"}
-
 
 def write_query_reports(run_dir: str | Path, records: Iterable[dict[str, Any]]) -> None:
-    """Write per-query token metrics and token-vs-latency/accuracy plots."""
+    """Write per-query token metrics, binned accuracy, and the token-vs-latency plots."""
     run_path = Path(run_dir)
     rows = query_metric_rows(records)
     write_csv(run_path / "query_metrics.csv", rows, QUERY_METRICS_COLUMNS)
-
     plots_dir = run_path / "plots"
     accuracy_bins = accuracy_bin_rows(rows)
     write_csv(plots_dir / "tokens_vs_accuracy_binned.csv", accuracy_bins, ACCURACY_BIN_COLUMNS)
-
-    try:
-        pd, plt = _load_plotting()
-    except ImportError as exc:
-        logger.warning("Skipping token plots because pandas/matplotlib is unavailable: {}", exc)
-        return
-
-    df = pd.DataFrame(rows, columns=QUERY_METRICS_COLUMNS)
-    _write_latency_scatter(
-        df,
-        plt,
-        output_path=plots_dir / "tokens_vs_ttft.png",
-        y_column="time_to_first_token_ms",
-        title="Input Tokens vs Engine TTFT",
-        y_label="Engine time to first token (ms)",
-    )
-    _write_latency_scatter(
-        df,
-        plt,
-        output_path=plots_dir / "tokens_vs_query_to_first_token.png",
-        y_column="query_to_first_token_ms",
-        title="Input Tokens vs Query-To-First-Token Latency",
-        y_label="Query to first token (ms)",
-    )
-    _write_latency_scatter(
-        df,
-        plt,
-        output_path=plots_dir / "tokens_vs_query_to_answer.png",
-        y_column="query_to_answer_ms",
-        title="Input Tokens vs Query-To-Answer Latency",
-        y_label="Query to answer (ms)",
-    )
-    _write_accuracy_binned_plot(
-        pd.DataFrame(accuracy_bins, columns=ACCURACY_BIN_COLUMNS),
-        plt,
-        plots_dir / "tokens_vs_accuracy_binned.png",
-        missing_x_count=_judged_missing_x_count(rows),
-    )
+    write_token_plots(plots_dir, rows, accuracy_bins)
 
 
 def write_sample_setup_report(run_dir: str | Path, rows: Iterable[dict[str, Any]]) -> None:
@@ -162,256 +106,105 @@ def read_sample_setup_report(run_dir: str | Path) -> list[dict[str, Any]]:
     path = Path(run_dir) / "sample_setup_metrics.csv"
     if not path.exists():
         return []
-
-    rows: list[dict[str, Any]] = []
-    with path.open(newline="", encoding="utf-8") as fh:
-        for row in csv.DictReader(fh):
-            rows.append(
-                {
-                    key: _csv_read_number(value) if key in SAMPLE_SETUP_NUMERIC_COLUMNS else value
-                    for key, value in row.items()
-                }
-            )
-    return rows
+    with path.open(newline="", encoding="utf-8") as handle:
+        return [_setup_row_from_csv(row) for row in csv.DictReader(handle)]
 
 
 def query_metric_rows(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    rows = []
-    for record in records:
-        metrics = record.get("metrics")
-        if not isinstance(metrics, dict):
-            metrics = {}
-        memory_tokens = _number(metrics.get("kv_memory_tokens"))
-        query_tokens = _number(metrics.get("kv_query_tokens"))
-        total_prompt_tokens = None
-        if memory_tokens is not None and query_tokens is not None:
-            total_prompt_tokens = memory_tokens + query_tokens
-
-        judge = record.get("judge")
-        judge_correct = None
-        if isinstance(judge, dict):
-            correct = judge.get("correct")
-            if correct is True:
-                judge_correct = 1
-            elif correct is False:
-                judge_correct = 0
-
-        retrieved = record.get("retrieved_memories")
-        retrieved_fact_ids = _list(metrics.get("memory_retrieved_fact_ids"))
-        retrieved_fact_text_hashes = _list(metrics.get("memory_retrieved_fact_text_hashes"))
-        injected_fact_ids = _list(metrics.get("memory_injected_fact_ids"))
-        context_turn_ids = _list(metrics.get("memory_context_turn_ids"))
-        context_window = metrics.get("memory_context_window")
-        if context_window is None:
-            context_window = metrics.get("kv_context_window")
-        rows.append(
-            {
-                "run_id": record.get("run_id"),
-                "mode": record.get("mode"),
-                "sample_id": record.get("sample_id"),
-                "question_id": record.get("question_id"),
-                "category": record.get("category"),
-                "resolved_vector_backend": metrics.get("resolved_vector_backend"),
-                "jasper_effective_beam_width": _number(metrics.get("jasper_effective_beam_width")),
-                "memory_tokens": memory_tokens,
-                "query_tokens": query_tokens,
-                "total_prompt_tokens": total_prompt_tokens,
-                "memory_context_window": _number(context_window),
-                "memory_retrieved_fact_ids": retrieved_fact_ids,
-                "memory_retrieved_fact_text_hashes": retrieved_fact_text_hashes,
-                "memory_injected_fact_ids": injected_fact_ids,
-                "memory_context_turn_ids": context_turn_ids,
-                "memory_context_turn_count": _number(metrics.get("memory_context_turn_count")),
-                "memory_context_encoding_tokens_total": _number(
-                    metrics.get("memory_context_encoding_tokens_total")
-                ),
-                "memory_context_encoding_tokens_max": _number(
-                    metrics.get("memory_context_encoding_tokens_max")
-                ),
-                "memory_context_encoding_truncated_tokens": _number(
-                    metrics.get("memory_context_encoding_truncated_tokens")
-                ),
-                "memory_context_text_tokens": _number(metrics.get("memory_context_text_tokens")),
-                "memory_token_budget": _number(metrics.get("memory_token_budget")),
-                "kv_block_size": _number(metrics.get("kv_block_size")),
-                "kv_loaded_memory_tokens": _number(metrics.get("kv_loaded_memory_tokens")),
-                "kv_recomputed_memory_tail_tokens": _number(
-                    metrics.get("kv_recomputed_memory_tail_tokens")
-                ),
-                "kv_fact_tokens_end": _number(metrics.get("kv_fact_tokens_end")),
-                "kv_verify_time_ms": _number(metrics.get("kv_verify_time_ms")),
-                "time_to_first_token_ms": _number(metrics.get("time_to_first_token_ms")),
-                "query_to_first_token_ms": _number(metrics.get("query_to_first_token_ms")),
-                "query_to_answer_ms": _number(metrics.get("query_to_answer_ms")),
-                "judge_correct": judge_correct,
-                "retrieved_count": len(retrieved) if isinstance(retrieved, list) else None,
-            }
-        )
-    return rows
+    return [_query_metric_row(record) for record in records]
 
 
-def accuracy_bin_rows(rows: Iterable[dict[str, Any]], *, max_bins: int = 10) -> list[dict[str, Any]]:
+def accuracy_bin_rows(
+    rows: Iterable[dict[str, Any]], *, max_bins: int = 10
+) -> list[dict[str, Any]]:
+    """Judged rows bucketed by prompt tokens into up to ``max_bins`` equal-count bins."""
     judged = [
         row
         for row in rows
-        if _token_axis_value(row) is not None and row.get("judge_correct") in {0, 1}
+        if as_number(row.get("total_prompt_tokens")) is not None
+        and row.get("judge_correct") in {0, 1}
     ]
-    judged.sort(key=lambda row: float(_token_axis_value(row)))
+    judged.sort(key=lambda row: float(row["total_prompt_tokens"]))
     if not judged:
         return []
-
     bin_count = min(max_bins, max(1, round(math.sqrt(len(judged)))))
     chunk_size = max(1, math.ceil(len(judged) / bin_count))
-    bins = []
-    for start in range(0, len(judged), chunk_size):
-        group = judged[start : start + chunk_size]
-        tokens = [float(_token_axis_value(row)) for row in group]
-        correct_count = sum(int(row["judge_correct"]) for row in group)
-        count = len(group)
-        accuracy = correct_count / count
-        ci_lower, ci_upper = _wilson_interval(correct_count, count)
-        bins.append(
-            {
-                "token_bin_start": min(tokens),
-                "token_bin_end": max(tokens),
-                "token_bin_midpoint": (min(tokens) + max(tokens)) / 2,
-                "judged_count": count,
-                "correct_count": correct_count,
-                "accuracy": accuracy,
-                "ci_lower": ci_lower,
-                "ci_upper": ci_upper,
-            }
-        )
-    return bins
+    return [
+        _accuracy_bin(judged[start : start + chunk_size])
+        for start in range(0, len(judged), chunk_size)
+    ]
 
 
-def _load_plotting() -> tuple[Any, Any]:
-    import pandas as pd
-
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    return pd, plt
-
-
-def _write_latency_scatter(
-    df: Any,
-    plt: Any,
-    *,
-    output_path: Path,
-    y_column: str,
-    title: str,
-    y_label: str,
-) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig, ax = plt.subplots(figsize=(8, 5))
-    plot_rows, missing_x_count = _latency_plot_rows(df.to_dict("records"), y_column)
-    data = df.__class__(plot_rows, columns=["total_prompt_tokens", y_column])
-    if data.empty:
-        _draw_empty_plot(ax, f"No rows with input tokens and {y_column}")
-    else:
-        ax.scatter(data["total_prompt_tokens"], data[y_column], alpha=0.7, s=28)
-    if missing_x_count:
-        ax.text(
-            0.02,
-            0.96,
-            f"x missing: {missing_x_count} row(s)",
-            ha="left",
-            va="top",
-            transform=ax.transAxes,
-            fontsize=9,
-        )
-    ax.set_title(title)
-    ax.set_xlabel("Input prompt tokens")
-    ax.set_ylabel(y_label)
-    ax.grid(True, alpha=0.25)
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=160)
-    plt.close(fig)
-
-
-def _write_accuracy_binned_plot(
-    bin_df: Any,
-    plt: Any,
-    output_path: Path,
-    *,
-    missing_x_count: int = 0,
-) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig, ax = plt.subplots(figsize=(8, 5))
-    if bin_df.empty:
-        _draw_empty_plot(ax, "No judged rows available")
-    else:
-        yerr_lower = bin_df["accuracy"] - bin_df["ci_lower"]
-        yerr_upper = bin_df["ci_upper"] - bin_df["accuracy"]
-        ax.errorbar(
-            bin_df["token_bin_midpoint"],
-            bin_df["accuracy"],
-            yerr=[yerr_lower, yerr_upper],
-            fmt="o-",
-            capsize=4,
-        )
-        for _, row in bin_df.iterrows():
-            ax.annotate(
-                f"n={int(row['judged_count'])}",
-                (row["token_bin_midpoint"], row["accuracy"]),
-                textcoords="offset points",
-                xytext=(0, 8),
-                ha="center",
-                fontsize=8,
-            )
-    if missing_x_count:
-        ax.text(
-            0.02,
-            0.96,
-            f"x missing: {missing_x_count} judged row(s)",
-            ha="left",
-            va="top",
-            transform=ax.transAxes,
-            fontsize=9,
-        )
-    ax.set_title("Input Tokens vs Binned Accuracy")
-    ax.set_xlabel("Input prompt tokens")
-    ax.set_ylabel("Judged accuracy")
-    ax.set_ylim(-0.05, 1.05)
-    ax.grid(True, alpha=0.25)
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=160)
-    plt.close(fig)
-
-
-def _draw_empty_plot(ax: Any, message: str) -> None:
-    ax.text(0.5, 0.5, message, ha="center", va="center", transform=ax.transAxes)
-
-
-def _latency_plot_rows(rows: Iterable[dict[str, Any]], y_column: str) -> tuple[list[dict[str, float]], int]:
-    plotted = []
-    missing_x_count = 0
-    for row in rows:
-        y_value = _number(row.get(y_column))
-        if y_value is None:
-            continue
-        x_value = _number(row.get("total_prompt_tokens"))
-        if x_value is None:
-            missing_x_count += 1
-            continue
-        plotted.append({"total_prompt_tokens": x_value, y_column: y_value})
-
-    return plotted, missing_x_count
-
-
-def _token_axis_value(row: dict[str, Any]) -> Any:
-    return _number(row.get("total_prompt_tokens"))
-
-
-def _judged_missing_x_count(rows: Iterable[dict[str, Any]]) -> int:
+def judged_rows_missing_tokens(rows: Iterable[dict[str, Any]]) -> int:
     return sum(
         1
         for row in rows
-        if row.get("judge_correct") in {0, 1} and _token_axis_value(row) is None
+        if row.get("judge_correct") in {0, 1} and as_number(row.get("total_prompt_tokens")) is None
     )
+
+
+def _query_metric_row(record: dict[str, Any]) -> dict[str, Any]:
+    metrics = record.get("metrics")
+    if not isinstance(metrics, dict):
+        metrics = {}
+    memory_tokens = as_number(metrics.get("kv_memory_tokens"))
+    query_tokens = as_number(metrics.get("kv_query_tokens"))
+    context_window = metrics.get("memory_context_window")
+    if context_window is None:
+        context_window = metrics.get("kv_context_window")
+    retrieved = record.get("retrieved_memories")
+    values: dict[str, Any] = {column: record.get(column) for column in RECORD_COLUMNS}
+    values["resolved_vector_backend"] = metrics.get("resolved_vector_backend")
+    values["memory_tokens"] = memory_tokens
+    values["query_tokens"] = query_tokens
+    values["total_prompt_tokens"] = (
+        memory_tokens + query_tokens
+        if memory_tokens is not None and query_tokens is not None
+        else None
+    )
+    values["memory_context_window"] = as_number(context_window)
+    for column in NUMERIC_METRIC_COLUMNS:
+        values[column] = as_number(metrics.get(column))
+    for column in LIST_METRIC_COLUMNS:
+        value = metrics.get(column)
+        values[column] = value if isinstance(value, list) else None
+    values["judge_correct"] = _judge_correct(record.get("judge"))
+    values["retrieved_count"] = len(retrieved) if isinstance(retrieved, list) else None
+    return {column: values[column] for column in QUERY_METRICS_COLUMNS}
+
+
+def _judge_correct(judge: Any) -> int | None:
+    if not isinstance(judge, dict):
+        return None
+    correct = judge.get("correct")
+    if correct is True:
+        return 1
+    if correct is False:
+        return 0
+    return None
+
+
+def _setup_row_from_csv(row: dict[str, str]) -> dict[str, Any]:
+    return {
+        key: (as_number(value) if value != "" else None) if key in SETUP_NUMERIC_COLUMNS else value
+        for key, value in row.items()
+    }
+
+
+def _accuracy_bin(group: list[dict[str, Any]]) -> dict[str, Any]:
+    tokens = [float(row["total_prompt_tokens"]) for row in group]
+    correct_count = sum(int(row["judge_correct"]) for row in group)
+    ci_lower, ci_upper = _wilson_interval(correct_count, len(group))
+    return {
+        "token_bin_start": min(tokens),
+        "token_bin_end": max(tokens),
+        "token_bin_midpoint": (min(tokens) + max(tokens)) / 2,
+        "judged_count": len(group),
+        "correct_count": correct_count,
+        "accuracy": correct_count / len(group),
+        "ci_lower": ci_lower,
+        "ci_upper": ci_upper,
+    }
 
 
 def _wilson_interval(correct: int, total: int, *, z: float = 1.96) -> tuple[float, float]:
@@ -422,25 +215,3 @@ def _wilson_interval(correct: int, total: int, *, z: float = 1.96) -> tuple[floa
     center = (p + z**2 / (2 * total)) / denominator
     margin = z * math.sqrt((p * (1 - p) + z**2 / (4 * total)) / total) / denominator
     return max(0.0, center - margin), min(1.0, center + margin)
-
-
-def _number(value: Any) -> float | None:
-    if value is None or isinstance(value, bool):
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _csv_read_number(value: Any) -> Any:
-    if value == "":
-        return None
-    number = _number(value)
-    return number
-
-
-def _list(value: Any) -> list[Any] | None:
-    if isinstance(value, list):
-        return value
-    return None

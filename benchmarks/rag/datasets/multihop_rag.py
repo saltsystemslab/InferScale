@@ -13,6 +13,7 @@ from pathlib import Path
 
 from benchmarks.rag.data_types import (
     EvidenceRef,
+    RagDatasetSpec,
     RagDocument,
     RagPromptProfile,
     RagQuery,
@@ -38,7 +39,7 @@ QUERIES_FILENAME = "MultiHopRAG.json"
 CORPUS_URL = "https://huggingface.co/datasets/yixuantt/MultiHopRAG/resolve/main/corpus.json"
 QUERIES_URL = "https://huggingface.co/datasets/yixuantt/MultiHopRAG/resolve/main/MultiHopRAG.json"
 
-QUESTION_TYPES = frozenset(
+MULTIHOP_QUESTION_TYPES = frozenset(
     {"inference_query", "comparison_query", "temporal_query", "null_query"}
 )
 
@@ -107,10 +108,10 @@ def _load_queries(path: Path, docs: list[RagDocument]) -> list[RagQuery]:
                     f"{path}: query record {index} is missing required field {field!r}."
                 )
         question_type = str(record["question_type"]).strip()
-        if question_type not in QUESTION_TYPES:
+        if question_type not in MULTIHOP_QUESTION_TYPES:
             raise ValueError(
                 f"{path}: query record {index} has unknown question_type "
-                f"{question_type!r}; expected one of {sorted(QUESTION_TYPES)}."
+                f"{question_type!r}; expected one of {sorted(MULTIHOP_QUESTION_TYPES)}."
             )
         raw_evidence = record["evidence_list"]
         if not isinstance(raw_evidence, list):
@@ -121,13 +122,9 @@ def _load_queries(path: Path, docs: list[RagDocument]) -> list[RagQuery]:
         )
         is_null = question_type == "null_query"
         if is_null and evidence:
-            raise ValueError(
-                f"{path}: query record {index} is a null_query but has evidence."
-            )
+            raise ValueError(f"{path}: query record {index} is a null_query but has evidence.")
         if not is_null and not evidence:
-            raise ValueError(
-                f"{path}: query record {index} ({question_type}) has no evidence."
-            )
+            raise ValueError(f"{path}: query record {index} ({question_type}) has no evidence.")
         queries.append(
             RagQuery(
                 query_id=f"q{index:04d}",
@@ -155,9 +152,7 @@ def _resolve_evidence(
     title = str(item.get("title") or "").strip()
     fact = str(item.get("fact") or "").strip()
     if not fact:
-        raise ValueError(
-            f"{path}: query record {query_index} evidence item has no fact text."
-        )
+        raise ValueError(f"{path}: query record {query_index} evidence item has no fact text.")
     doc = docs_by_url.get(url) if url else None
     if doc is None and title:
         doc = docs_by_title.get(title)
@@ -172,7 +167,7 @@ def _resolve_evidence(
 def _load_json_list(path: Path, *, url: str) -> list[object]:
     if not path.exists():
         raise FileNotFoundError(
-            f"{path} does not exist. Download it with the rag setup-data stage "
+            f"{path} does not exist. Run bash scripts/rag/setup_data.sh to download it "
             f"(source: {url})."
         )
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -181,18 +176,11 @@ def _load_json_list(path: Path, *, url: str) -> list[object]:
     return data
 
 
-def _spec():
-    from benchmarks.rag.datasets import RagDatasetSpec
-
-    return RagDatasetSpec(
-        name="multihoprag",
-        corpus_filename=CORPUS_FILENAME,
-        queries_filename=QUERIES_FILENAME,
-        download_urls={CORPUS_FILENAME: CORPUS_URL, QUERIES_FILENAME: QUERIES_URL},
-        chunking="token-window",
-        prompt_profile=MULTIHOP_PROMPT_PROFILE,
-        load=load_multihop_rag,
-    )
-
-
-MULTIHOP_RAG_SPEC = _spec()
+MULTIHOP_RAG_SPEC = RagDatasetSpec(
+    name="multihoprag",
+    corpus_filename=CORPUS_FILENAME,
+    queries_filename=QUERIES_FILENAME,
+    download_urls={CORPUS_FILENAME: CORPUS_URL, QUERIES_FILENAME: QUERIES_URL},
+    prompt_profile=MULTIHOP_PROMPT_PROFILE,
+    load=load_multihop_rag,
+)

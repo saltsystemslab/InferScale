@@ -1,7 +1,15 @@
+"""The records of the RAG benchmark: documents, queries, chunks, prompts, and dataset specs."""
+
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
+
+# Question types whose gold behavior is abstention: MultiHop-RAG null queries
+# and QASPER questions whose first reference is unanswerable.
+ABSTENTION_QUESTION_TYPES = frozenset({"null_query", "unanswerable"})
 
 
 def doc_id_for_url(url: str) -> str:
@@ -62,10 +70,6 @@ class RagQuery:
         """The primary (first) reference answer."""
         return self.gold_answers[0]
 
-    @property
-    def is_null(self) -> bool:
-        return self.question_type == "null_query"
-
 
 @dataclass(slots=True, frozen=True)
 class RagPromptProfile:
@@ -103,3 +107,15 @@ class RagChunk:
 
 def chunk_id_for(doc_id: str, chunk_index: int) -> str:
     return f"{doc_id}:{chunk_index}"
+
+
+@dataclass(slots=True, frozen=True)
+class RagDatasetSpec:
+    """One evaluable dataset: where its files come from, how to load them, how to prompt."""
+
+    name: str
+    corpus_filename: str
+    queries_filename: str
+    download_urls: dict[str, str]
+    prompt_profile: RagPromptProfile
+    load: Callable[[Path], tuple[list[RagDocument], list[RagQuery]]]

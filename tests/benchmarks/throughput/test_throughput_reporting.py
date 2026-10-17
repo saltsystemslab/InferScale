@@ -4,6 +4,9 @@ import csv
 import json
 from pathlib import Path
 
+import pytest
+from throughput_config import make_throughput_config
+
 from benchmarks.memory.throughput.config import ThroughputConfig
 from benchmarks.memory.throughput.reporting import (
     RESULT_COLUMNS,
@@ -16,10 +19,8 @@ from benchmarks.memory.throughput.reporting import (
 
 
 def _config(tmp_path: Path) -> ThroughputConfig:
-    return ThroughputConfig(
-        model="test/model",
-        model_label="test",
-        results_dir=tmp_path,
+    return make_throughput_config(
+        tmp_path,
         run_id="report-test",
         conditions=("mem0_jasper", "kv_injection"),
         user_counts=(10,),
@@ -115,25 +116,27 @@ def test_write_reports_creates_csv_json_and_markdown(tmp_path: Path) -> None:
     assert "QPS for every condition times only the synchronous vLLM generation call" in report
 
 
-def test_coerce_row_tolerates_pre_change_csv_rows() -> None:
-    legacy = _row("kv_injection", 10.0)
-    for column in (
-        "kv_prefix_caching",
-        "kv_store_backend",
-        "kv_store_host_mb",
-        "kv_store_write_time_s",
-        "kv_h2d_bytes",
-        "kv_h2d_avg_ms",
-        "kv_h2d_p95_ms",
-        "kv_h2d_overlap_ratio",
-        "kv_staging_stall_ms",
-    ):
-        legacy.pop(column)
+def test_coerce_row_parses_csv_strings_into_schema_types() -> None:
+    def as_csv(row: dict[str, object]) -> dict[str, str]:
+        return {column: "" if value is None else str(value) for column, value in row.items()}
 
-    coerced = _coerce_row(legacy)
-    assert coerced["kv_h2d_bytes"] == 0
-    assert coerced["kv_prefix_caching"] == 0
-    assert coerced["kv_store_backend"] == "gpu"
+    kv = _coerce_row(as_csv(_row("kv_injection", 10.0)))
+    assert kv["num_users"] == 10 and isinstance(kv["num_users"], int)
+    assert kv["throughput_qps"] == 10.0 and isinstance(kv["throughput_qps"], float)
+    assert kv["jasper_effective_beam_width"] == 64
+    assert kv["kv_store_backend"] == "cpu"
+
+    qdrant = _coerce_row(as_csv(_row("mem0_qdrant", 5.0)))
+    assert qdrant["vector_backend"] is None
+    assert qdrant["jasper_effective_beam_width"] is None
+
+
+def test_coerce_row_rejects_missing_columns() -> None:
+    row = _row("kv_injection", 10.0)
+    row.pop("kv_h2d_bytes")
+
+    with pytest.raises(ValueError, match="missing columns"):
+        _coerce_row(row)
 
 
 def test_result_rows_round_trip_through_condition_csvs(tmp_path: Path) -> None:

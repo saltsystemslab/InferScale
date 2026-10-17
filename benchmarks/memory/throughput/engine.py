@@ -4,18 +4,36 @@ from __future__ import annotations
 
 import random
 import time
-from typing import Any, Iterable
+from collections.abc import Iterable
+from dataclasses import dataclass
+from typing import Any
 
-from inferscale.v1.kv.connector_utils import MEMORY_USER_ID_EXTRA_ARG
 from benchmarks.memory.throughput.config import ThroughputConfig
+from inferscale.v1.kv.connector_utils import MEMORY_USER_ID_EXTRA_ARG
+
+WARMUP_PROMPT_LIMIT = 10
+KV_WARMUP_TAIL_TOKENS = 8
+
+
+@dataclass(frozen=True, slots=True)
+class StartedEngine:
+    llm: Any
+    sampling_params: Any
+    startup_time_s: float
+
+
+@dataclass(frozen=True, slots=True)
+class KVWarmup:
+    """One warmup prompt whose prefix is a registered memory, with its routed sampling params."""
+
+    prompt: dict[str, list[int]]
+    sampling_params: Any
 
 
 def start_llm(
-    config: ThroughputConfig,
-    *,
-    kv_transfer_config: dict[str, Any] | None = None,
-) -> tuple[Any, Any, float]:
-    from inferscale.v1.serving.vllm import vllm_engine_kwargs, force_vllm_inprocess_mode
+    config: ThroughputConfig, *, kv_transfer_config: dict[str, Any] | None = None
+) -> StartedEngine:
+    from inferscale.v1.serving.vllm import force_vllm_inprocess_mode, vllm_engine_kwargs
 
     # Every condition measures the same in-process V1 engine; otherwise QPS
     # differences would be confounded by engine architecture.
@@ -36,7 +54,22 @@ def start_llm(
         max_tokens=config.max_output_tokens,
         min_tokens=config.max_output_tokens,
     )
-    return llm, sampling_params, startup_time_s
+    return StartedEngine(llm, sampling_params, startup_time_s)
+
+
+def prepare_batch(
+    config: ThroughputConfig,
+    llm: Any,
+    prompts: list[dict[str, list[int]]],
+    sampling_params: Any,
+    *,
+    kv_warmup: KVWarmup | None = None,
+) -> None:
+    """Check the batch fits the engine and warm the engine up for it."""
+    validate_prompt_lengths(config, prompts)
+    warm_up(
+        llm, prompts, sampling_params, config.warmup_batches, seed=config.seed, kv_warmup=kv_warmup
+    )
 
 
 def warm_up(
@@ -46,7 +79,7 @@ def warm_up(
     batches: int,
     *,
     seed: int,
-    kv_warmup: tuple[dict[str, list[int]], Any] | None = None,
+    kv_warmup: KVWarmup | None = None,
 ) -> None:
     """Warm up with random tokens so no real prompt lands in the prefix cache.
 
@@ -54,17 +87,19 @@ def warm_up(
     let the measured batch hit the cache (inflated QPS) and, worse, let the
     native cache satisfy memory prefixes so the connector never injects KV.
     Warmup only needs to exercise kernels, allocator, and scheduler; token
-    identity is irrelevant. kv_warmup is one (prompt, sampling_params) pair
-    carrying explicit memory routing so the injection path warms too.
+    identity is irrelevant. ``kv_warmup`` carries explicit memory routing so
+    the injection path warms too.
     """
     if batches > 0 and prompts:
         vocab_size = tokenizer_vocab_size(llm.get_tokenizer())
         warmup_prompts = build_warmup_prompts(prompts, vocab_size=vocab_size, seed=seed)
         warmup_sampling: Any = sampling_params
         if kv_warmup is not None:
-            kv_prompt, kv_sampling = kv_warmup
-            warmup_sampling = [*([sampling_params] * len(warmup_prompts)), kv_sampling]
-            warmup_prompts = [*warmup_prompts, kv_prompt]
+            warmup_sampling = [
+                *([sampling_params] * len(warmup_prompts)),
+                kv_warmup.sampling_params,
+            ]
+            warmup_prompts = [*warmup_prompts, kv_warmup.prompt]
         for _ in range(batches):
             llm.generate(warmup_prompts, warmup_sampling, use_tqdm=False)
     # Reset even with warmup disabled: conditions that measure several user
@@ -74,23 +109,22 @@ def warm_up(
 
 
 def tokenizer_vocab_size(tokenizer: Any) -> int:
+    # Hugging Face tokenizers expose vocab_size; other tokenizers only their length.
     return int(getattr(tokenizer, "vocab_size", 0) or 0) or len(tokenizer)
 
 
 def sampling_params_with_memory_user_ids(
-    sampling_params: Any,
-    memory_user_ids: list[str],
+    sampling_params: Any, memory_user_ids: list[str]
 ) -> list[Any]:
     """Clone the base params once per request, routing each to its memory."""
+    # SamplingParams is vLLM's type; the benchmark only relies on its clone().
     clone = getattr(sampling_params, "clone", None)
     if not callable(clone):
-        raise RuntimeError(
-            "Pinned vLLM SamplingParams must provide clone() for request routing."
-        )
+        raise RuntimeError("vLLM SamplingParams must provide clone() for request routing.")
     routed: list[Any] = []
     for memory_user_id in memory_user_ids:
         request_params = clone()
-        extra_args = dict(getattr(request_params, "extra_args", None) or {})
+        extra_args = dict(request_params.extra_args or {})
         extra_args[MEMORY_USER_ID_EXTRA_ARG] = memory_user_id
         request_params.extra_args = extra_args
         routed.append(request_params)
@@ -98,38 +132,32 @@ def sampling_params_with_memory_user_ids(
 
 
 def build_kv_warmup_prompt(
-    memory_token_ids: list[int],
-    *,
-    vocab_size: int,
-    seed: int,
+    memory_token_ids: list[int], *, vocab_size: int, seed: int
 ) -> dict[str, list[int]]:
-    """One warmup prompt whose prefix IS a registered memory.
+    """One warmup prompt whose prefix is a registered memory.
 
     Random warmup prompts match no memory, so without this the connector's
-    match/inject path (scatter kernels, staging) first runs inside the
-    measured batch. The prompt must be strictly longer than the memory for
-    the match to fire; the tail is seeded-random so it shares nothing with
-    real queries.
+    match and inject path (scatter kernels, staging) would first run inside
+    the measured batch. The prompt must be strictly longer than the memory
+    for the match to fire; the tail is seeded-random so it shares nothing
+    with real queries.
     """
     if vocab_size < 1:
         raise ValueError("vocab_size must be >= 1 to build the KV warmup prompt.")
     rng = random.Random(seed)
-    tail = [rng.randrange(vocab_size) for _ in range(8)]
+    tail = [rng.randrange(vocab_size) for _ in range(KV_WARMUP_TAIL_TOKENS)]
     return {"prompt_token_ids": [*memory_token_ids, *tail]}
 
 
 def build_warmup_prompts(
-    prompts: list[dict[str, list[int]]],
-    *,
-    vocab_size: int,
-    seed: int,
+    prompts: list[dict[str, list[int]]], *, vocab_size: int, seed: int
 ) -> list[dict[str, list[int]]]:
     if vocab_size < 1:
         raise ValueError("vocab_size must be >= 1 to build warmup prompts.")
     rng = random.Random(seed)
     return [
         {"prompt_token_ids": [rng.randrange(vocab_size) for _ in prompt["prompt_token_ids"]]}
-        for prompt in prompts[: min(10, len(prompts))]
+        for prompt in prompts[:WARMUP_PROMPT_LIMIT]
     ]
 
 
@@ -151,37 +179,29 @@ def reset_prefix_cache(llm: Any) -> None:
 
 
 def measure_batch(
-    llm: Any,
-    prompts: list[dict[str, list[int]]],
-    sampling_params: Any,
+    llm: Any, prompts: list[dict[str, list[int]]], sampling_params: Any
 ) -> dict[str, int | float]:
     started = time.perf_counter()
     outputs = llm.generate(prompts, sampling_params, use_tqdm=False)
     generation_time_s = time.perf_counter() - started
-    total_input_tokens = sum(len(output.prompt_token_ids) for output in outputs)
-    total_output_tokens = sum(
-        len(output.outputs[0].token_ids)
-        for output in outputs
-        if getattr(output, "outputs", None)
-    )
     if len(outputs) != len(prompts):
         raise RuntimeError(f"vLLM returned {len(outputs)} outputs for {len(prompts)} prompts.")
     return {
         "generation_time_s": generation_time_s,
-        "total_input_tokens": total_input_tokens,
-        "total_output_tokens": total_output_tokens,
+        "total_input_tokens": sum(len(output.prompt_token_ids) for output in outputs),
+        "total_output_tokens": sum(len(output.outputs[0].token_ids) for output in outputs),
     }
 
 
 def validate_prompt_lengths(
-    config: ThroughputConfig,
-    prompts: Iterable[dict[str, list[int]]],
+    config: ThroughputConfig, prompts: Iterable[dict[str, list[int]]]
 ) -> None:
     longest = max((len(prompt["prompt_token_ids"]) for prompt in prompts), default=0)
     required = longest + config.max_output_tokens
     if required > config.kv_max_model_len:
         raise RuntimeError(
-            f"Longest prompt plus output is {required} tokens, exceeding max_model_len={config.kv_max_model_len}."
+            f"Longest prompt plus output is {required} tokens, "
+            f"exceeding max_model_len={config.kv_max_model_len}."
         )
 
 

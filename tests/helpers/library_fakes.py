@@ -85,10 +85,12 @@ class FakeTensor:
     def nbytes(self) -> int:
         return int(self.array.nbytes)
 
-    def to(self, device: Any = None, **kwargs: Any) -> "FakeTensor":
-        return FakeTensor(self.array, str(device if device is not None else kwargs.get("device", self.device)))
+    def to(self, device: Any = None, **kwargs: Any) -> FakeTensor:
+        return FakeTensor(
+            self.array, str(device if device is not None else kwargs.get("device", self.device))
+        )
 
-    def contiguous(self) -> "FakeTensor":
+    def contiguous(self) -> FakeTensor:
         return self
 
 
@@ -108,7 +110,9 @@ class FakeEncoder:
         self.composed: list[list[str]] = []
 
     def encode(self, chunk_id: str, token_ids: list[int]) -> KVChunk:
-        return KVChunk(chunk_id=chunk_id, token_ids=list(token_ids), kv_by_layer=self._kv(token_ids))
+        return KVChunk(
+            chunk_id=chunk_id, token_ids=list(token_ids), kv_by_layer=self._kv(token_ids)
+        )
 
     def encode_plan(self, plan: EncodingPlan) -> KVChunk:
         return KVChunk(
@@ -124,7 +128,9 @@ class FakeEncoder:
     def compose(self, chunks: list[KVChunk]) -> dict[str, Any]:
         self.composed.append([chunk.chunk_id for chunk in chunks])
         return {
-            layer: FakeTensor(np.concatenate([chunk.kv_by_layer[layer].array for chunk in chunks], axis=1))
+            layer: FakeTensor(
+                np.concatenate([chunk.kv_by_layer[layer].array for chunk in chunks], axis=1)
+            )
             for layer in self.layers
         }
 
@@ -182,7 +188,9 @@ class FakeIndex:
     def add_many(self, vectors: Any, payloads: Any, ids: Any = None) -> list[str]:
         vector_list = [np.asarray(vector, dtype=np.float32) for vector in vectors]
         payload_list = list(payloads)
-        id_list = list(ids) if ids is not None else [str(index) for index in range(len(vector_list))]
+        id_list = (
+            list(ids) if ids is not None else [str(index) for index in range(len(vector_list))]
+        )
         self.ids.extend(id_list)
         self.vectors.extend(vector_list)
         self.payloads.extend(dict(payload) for payload in payload_list)
@@ -192,12 +200,20 @@ class FakeIndex:
     def finalize(self) -> None:
         self.finalized = True
 
-    def search(self, query_vector: Any, top_k: int, filters: Any = None) -> tuple[list[SearchHit], SearchMetrics]:
+    def search(
+        self, query_vector: Any, top_k: int, filters: Any = None
+    ) -> tuple[list[SearchHit], SearchMetrics]:
         query = np.asarray(query_vector, dtype=np.float32)
         scores = [float(vector @ query) for vector in self.vectors]
         order = sorted(range(len(scores)), key=lambda index: -scores[index])[:top_k]
         hits = [
-            SearchHit(id=self.ids[index], payload=dict(self.payloads[index]), score=scores[index], distance=-scores[index], rank=rank)
+            SearchHit(
+                id=self.ids[index],
+                payload=dict(self.payloads[index]),
+                score=scores[index],
+                distance=-scores[index],
+                rank=rank,
+            )
             for rank, index in enumerate(order, start=1)
         ]
         return hits, SearchMetrics(search_time_ms=0.5, vector_backend="fake")
@@ -206,16 +222,12 @@ class FakeIndex:
         if item_id not in self.ids:
             return None
         index = self.ids.index(item_id)
-        return SearchHit(id=item_id, payload=dict(self.payloads[index]), score=1.0, distance=0.0, rank=1)
+        return SearchHit(
+            id=item_id, payload=dict(self.payloads[index]), score=1.0, distance=0.0, rank=1
+        )
 
     def close(self) -> None:
         self.closed = True
-
-
-class FakeRequestOutput:
-    def __init__(self, text: str) -> None:
-        self.outputs = [type("Completion", (), {"text": text})()]
-        self.metrics = type("Metrics", (), {"first_token_latency": 0.012})()
 
 
 class FakeEngine:
@@ -237,7 +249,9 @@ class FakeEngine:
         self.started_with = dict(kv_transfer_config) if kv_transfer_config is not None else None
         return 0.0
 
-    def generate(self, prompt_token_ids: Any, *, max_tokens: int, temperature: float, top_p: float) -> GenerationOutput:
+    def generate(
+        self, prompt_token_ids: Any, *, max_tokens: int, temperature: float, top_p: float
+    ) -> GenerationOutput:
         prompt = list(prompt_token_ids)
         self.prompts.append(prompt)
         return GenerationOutput(
@@ -245,7 +259,6 @@ class FakeEngine:
             ttft_ms=12.0,
             started_at=100.0,
             finished_at=100.25,
-            raw=FakeRequestOutput("answer"),
         )
 
     def close(self) -> None:

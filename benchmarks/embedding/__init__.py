@@ -1,1 +1,1 @@
-"""Local embedding latency and throughput benchmarks on Mem0 facts."""
+"""Latency and throughput of a local embedding model on the memory benchmark's facts."""

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from library_fakes import FakeChunkStore
+from library_fakes import FakeChunkStore, FakeTensor
 
 from inferscale.v1.kv.chunk_store import build_chunk_store, chunk_nbytes, register_chunks
 from inferscale.v1.kv.compose import memory_parts, reverse_ranked_ids
@@ -21,7 +21,11 @@ from inferscale.v1.types import KVChunk, ScaffoldChunks, SearchHit
 
 def _chunk(chunk_id: str, tokens: list[int]) -> KVChunk:
     kv = np.asarray(tokens, dtype=np.float32).reshape(1, -1, 1, 1)
-    return KVChunk(chunk_id=chunk_id, token_ids=list(tokens), kv_by_layer={"l0": np.repeat(kv, 2, axis=0)})
+    return KVChunk(
+        chunk_id=chunk_id,
+        token_ids=list(tokens),
+        kv_by_layer={"l0": FakeTensor(np.repeat(kv, 2, axis=0))},
+    )
 
 
 def test_reverse_ranked_ids_dedups_and_puts_the_best_hit_last() -> None:
@@ -35,7 +39,9 @@ def test_reverse_ranked_ids_dedups_and_puts_the_best_hit_last() -> None:
 
 
 def test_memory_parts_uses_the_empty_chunk_when_nothing_is_selected() -> None:
-    scaffold = ScaffoldChunks(header=_chunk("h", [1]), empty=_chunk("e", [2]), footer=_chunk("f", [3]))
+    scaffold = ScaffoldChunks(
+        header=_chunk("h", [1]), empty=_chunk("e", [2]), footer=_chunk("f", [3])
+    )
     assert [part.chunk_id for part in memory_parts(scaffold, [])] == ["h", "e", "f"]
     assert [part.chunk_id for part in memory_parts(scaffold, [_chunk("x", [4])])] == ["h", "x", "f"]
 
@@ -118,7 +124,9 @@ def test_chunk_payload_round_trip_keeps_the_frozen_keys(tmp_path) -> None:
     assert restored.context_prefix_tokens == 3
     assert restored.raw_context_prefix_tokens == 5
     assert restored.context_prefix_truncated_tokens == 2
-    assert torch.equal(restored.kv_by_layer["model.layers.0.self_attn.attn"], torch.ones(2, 2, 1, 4))
+    assert torch.equal(
+        restored.kv_by_layer["model.layers.0.self_attn.attn"], torch.ones(2, 2, 1, 4)
+    )
     assert load_torch_payload(tmp_path / "missing.pt") is None
 
 
@@ -133,8 +141,12 @@ def test_compose_concatenates_values_and_rotates_keys_at_new_positions() -> None
     emb = torch.cat([freqs, freqs], dim=-1)
     cos_table, sin_table = emb.cos(), emb.sin()
     encoder = ChunkedRopeEncoder.from_tables(
-        model="m", device="cpu", max_position=max_position, tokenizer=None,
-        cos_table=cos_table, sin_table=sin_table,
+        model="m",
+        device="cpu",
+        max_position=max_position,
+        tokenizer=None,
+        cos_table=cos_table,
+        sin_table=sin_table,
     )
     layer = "model.layers.0.self_attn.attn"
     first = KVChunk("a", [1, 2, 3], {layer: torch.randn(2, 3, heads, head_dim)})
@@ -145,7 +157,9 @@ def test_compose_concatenates_values_and_rotates_keys_at_new_positions() -> None
     values = torch.cat([first.kv_by_layer[layer][1], second.kv_by_layer[layer][1]], dim=0)
     assert torch.equal(composed[1], values)
     k_pre = torch.cat([first.kv_by_layer[layer][0], second.kv_by_layer[layer][0]], dim=0)
-    expected = rotate_pre_rope_k(k_pre.transpose(0, 1).contiguous(), cos_table[:5], sin_table[:5]).transpose(0, 1)
+    expected = rotate_pre_rope_k(
+        k_pre.transpose(0, 1).contiguous(), cos_table[:5], sin_table[:5]
+    ).transpose(0, 1)
     assert torch.allclose(composed[0], expected)
 
     with pytest.raises(RuntimeError, match="exceeding max_position"):

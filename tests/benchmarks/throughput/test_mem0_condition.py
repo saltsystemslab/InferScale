@@ -4,9 +4,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from throughput_config import make_throughput_config
 
-from benchmarks.memory.throughput import mem0_condition
-from benchmarks.memory.throughput.config import ThroughputConfig
+from benchmarks.memory.throughput import engine, mem0_condition, stores, workload
+from benchmarks.memory.throughput.engine import StartedEngine
+from benchmarks.memory.throughput.stores import StoreSearch
 from benchmarks.memory.throughput.workload import LocomoRequest
 
 
@@ -14,22 +16,16 @@ from benchmarks.memory.throughput.workload import LocomoRequest
 def test_run_mem0_attributes_each_request_to_every_applicable_batch(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, backend: str
 ) -> None:
-    config = ThroughputConfig(
-        model="test/model",
-        model_label="test",
-        results_dir=tmp_path,
+    config = make_throughput_config(
+        tmp_path,
         run_id="batch-attribution-test",
         user_counts=(1, 2, 3),
         requests_per_user=2,
         embedding_api_key="test-key",
-        embedding_cache_dir=tmp_path / "embeddings",
-        memory_llm_cache_dir=tmp_path / "llm",
-        local_store_dir=tmp_path / "stores",
     )
     samples = [SimpleNamespace(sample_id=f"sample-{index}") for index in range(2)]
     requests = [
         LocomoRequest(
-            user_id=f"user-{index}",
             user_index=index,
             sample_id=samples[index % 2].sample_id,
             question_id=f"question-{index}-{request_index}",
@@ -38,7 +34,7 @@ def test_run_mem0_attributes_each_request_to_every_applicable_batch(
         for index in range(3)
         for request_index in range(2)
     ]
-    stores: dict[str, SimpleNamespace] = {}
+    built: dict[str, SimpleNamespace] = {}
     closed = []
     searched = []
     measured_sizes = []
@@ -46,13 +42,13 @@ def test_run_mem0_attributes_each_request_to_every_applicable_batch(
 
     def build_store(config, *, backend, store_root, facts):
         store = SimpleNamespace()
-        stores[store_root.name] = store
+        built[store_root.name] = store
         return store
 
     def search(memory, query, *, top_k):
         assert top_k == config.top_k
         searched.append((memory, query))
-        return [], 0.02, 0.003
+        return StoreSearch([], 0.02, 0.003)
 
     def measure(llm, prompts, sampling_params):
         measured_sizes.append(len(prompts))
@@ -67,24 +63,28 @@ def test_run_mem0_attributes_each_request_to_every_applicable_batch(
         mem0_condition, "fact_catalog_store", lambda config: SimpleNamespace(load=lambda sample: ())
     )
     monkeypatch.setattr(mem0_condition, "build_locomo_requests", lambda *args, **kwargs: requests)
-    monkeypatch.setattr(mem0_condition, "build_user_store", build_store)
+    monkeypatch.setattr(stores, "build_user_store", build_store)
+    monkeypatch.setattr(stores, "close_memory", closed.append)
     monkeypatch.setattr(mem0_condition, "search_store", search)
-    monkeypatch.setattr(mem0_condition, "start_llm", lambda config: (llm, object(), 0.1))
+    monkeypatch.setattr(
+        mem0_condition, "start_llm", lambda config: StartedEngine(llm, object(), 0.1)
+    )
     monkeypatch.setattr(mem0_condition, "release_llm", lambda llm: None)
-    monkeypatch.setattr(mem0_condition, "close_mem0", closed.append)
-    monkeypatch.setattr(mem0_condition, "extract_memory_scaffold_token_ids", lambda *args, **kwargs: ())
+    monkeypatch.setattr(
+        mem0_condition, "extract_memory_scaffold_token_ids", lambda *args, **kwargs: ()
+    )
     monkeypatch.setattr(
         mem0_condition,
         "build_memory_prompt_token_ids",
         lambda *args, **kwargs: SimpleNamespace(token_ids=[1, 2]),
     )
     monkeypatch.setattr(
-        mem0_condition,
+        workload,
         "build_kv_equivalence_prompt_token_ids",
         lambda *args, **kwargs: SimpleNamespace(prompt_token_ids=[1, 2, 3]),
     )
-    monkeypatch.setattr(mem0_condition, "validate_prompt_lengths", lambda *args: None)
-    monkeypatch.setattr(mem0_condition, "warm_up", lambda *args, **kwargs: None)
+    monkeypatch.setattr(engine, "validate_prompt_lengths", lambda *args: None)
+    monkeypatch.setattr(engine, "warm_up", lambda *args, **kwargs: None)
     monkeypatch.setattr(mem0_condition, "measure_batch", measure)
 
     rows = mem0_condition.run_mem0(
@@ -92,8 +92,10 @@ def test_run_mem0_attributes_each_request_to_every_applicable_batch(
     )
 
     assert [query for memory, query in searched] == [request.query for request in requests]
-    assert all(memory is stores[request.sample_id] for (memory, _), request in zip(searched, requests))
-    assert len(closed) == len(stores) == 2
+    assert all(
+        memory is built[request.sample_id] for (memory, _), request in zip(searched, requests)
+    )
+    assert len(closed) == len(built) == 2
     assert measured_sizes == [2, 4, 6]
     for count, row in enumerate(rows, start=1):
         assert row["vector_backend"] == backend

@@ -7,8 +7,11 @@ Answer the same LoCoMo questions with Mem0 and with InferScale, then replay one 
 
 ## Run
 
-Run from the repository root on the GPU host after sections 1 to 4 of the [benchmark README](../README.md).
+Run from the repository root on the GPU host after the installation in the [top-level README](../../README.md).
 
 ```bash
 bash benchmarks/ttft_race/run.sh
 ```
+
+The script measures each side in its own process and writes the GIF under `${BENCHMARK_RESULTS_ROOT}/ttft-race/`.
+Run `python -m benchmarks.ttft_race.run --help` to time more questions, use another memory benchmark JSON, or replay a different question.

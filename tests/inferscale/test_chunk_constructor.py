@@ -25,10 +25,13 @@ def test_chunk_accepts_positional_tokens_and_keyword_payload() -> None:
     assert chunk.payload == payload
 
 
-@pytest.mark.parametrize("kwargs", [
-    {"context_token_ids": [1, 2]},
-    {"context_ids": ("previous",)},
-])
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"context_token_ids": [1, 2]},
+        {"context_ids": ("previous",)},
+    ],
+)
 def test_chunk_rejects_removed_context_keywords(kwargs: dict) -> None:
     with pytest.raises(TypeError, match=next(iter(kwargs))):
         Chunk("first", "First chunk.", **kwargs)

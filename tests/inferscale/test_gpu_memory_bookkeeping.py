@@ -20,7 +20,7 @@ class FakeTensor:
         self.nbytes = nbytes
         self.device = device
 
-    def contiguous(self) -> "FakeTensor":
+    def contiguous(self) -> FakeTensor:
         return self
 
 
@@ -99,7 +99,9 @@ def test_extract_user_id_prefers_request_then_sampling_then_metadata() -> None:
 
 
 def test_extra_config_uses_getter_then_extra_dict() -> None:
-    with_getter = SimpleNamespace(get_from_extra_config=lambda key, default: {"ns": "a"}.get(key, default))
+    with_getter = SimpleNamespace(
+        get_from_extra_config=lambda key, default: {"ns": "a"}.get(key, default)
+    )
     assert extra_config(with_getter, "ns") == "a"
     assert extra_config(with_getter, "missing", "d") == "d"
 

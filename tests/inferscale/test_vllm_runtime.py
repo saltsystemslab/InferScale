@@ -1,19 +1,19 @@
+import os
+
 from inferscale.v1.config import EngineConfig
 from inferscale.v1.serving.vllm import build_kv_transfer_config, vllm_engine_kwargs
 
 
-def test_kv_transfer_config_can_enable_prefix_scan_without_default_user() -> None:
+def test_kv_transfer_config_can_omit_the_default_user() -> None:
     config = build_kv_transfer_config(
         connector_module="example.connector",
         namespace="throughput",
         default_user_id=None,
-        allow_prefix_scan=True,
         log_memory_hits=False,
     )
 
     extra = config["kv_connector_extra_config"]
     assert extra["memory_namespace"] == "throughput"
-    assert extra["allow_prefix_scan"] is True
     assert extra["log_memory_hits"] is False
     assert "default_user_id" not in extra
 
@@ -58,3 +58,16 @@ def test_engine_kwargs_honors_prefix_caching_opt_out() -> None:
         model="test/model", dtype="bfloat16", engine=EngineConfig(enable_prefix_caching=False)
     )
     assert kwargs["enable_prefix_caching"] is False
+
+
+def test_inprocess_mode_clears_cli_shell_variables(monkeypatch) -> None:
+    from inferscale.v1.serving.vllm import VLLM_CLI_ENV_VARIABLES, force_vllm_inprocess_mode
+
+    for name in VLLM_CLI_ENV_VARIABLES:
+        monkeypatch.setenv(name, "set-by-shell")
+    monkeypatch.setenv("VLLM_ENABLE_V1_MULTIPROCESSING", "1")
+
+    force_vllm_inprocess_mode()
+
+    assert not any(name in os.environ for name in VLLM_CLI_ENV_VARIABLES)
+    assert os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] == "0"

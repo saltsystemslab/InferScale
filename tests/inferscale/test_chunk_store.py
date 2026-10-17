@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 from unittest.mock import Mock
-import threading
 
 import pytest
 
+from inferscale.v1.kv.chunk_lookup import ChunkLookup
 from inferscale.v1.kv.chunk_store import (
     build_chunk_store,
     close_chunk_store,
@@ -16,16 +17,30 @@ from inferscale.v1.kv.chunk_store import (
     release_chunks,
 )
 from inferscale.v1.kv.memory_store import GPUMemoryStore
-from inferscale.v1.kv.pinned_memory_store import CpuPinnedMemoryStore, _HostUserMemory
 from inferscale.v1.kv.packed_memory_store import PackedGPUMemoryStore
+from inferscale.v1.kv.pinned_memory_store import CpuPinnedMemoryStore, HostUserMemory
 from inferscale.v1.types import KVChunk
+
+
+class _FakeTensor:
+    """Stand-in with the device surface the stores touch and a byte count."""
+
+    def __init__(self, nbytes: int, device: str = "cuda:0") -> None:
+        self.nbytes = nbytes
+        self.device = device
+
+    def to(self, *, device: str) -> _FakeTensor:
+        return _FakeTensor(self.nbytes, device)
+
+    def contiguous(self) -> _FakeTensor:
+        return self
 
 
 def _chunk(chunk_id: str, seed: int) -> KVChunk:
     return KVChunk(
         chunk_id=chunk_id,
         token_ids=[seed, seed + 1],
-        kv_by_layer={"layer": SimpleNamespace(nbytes=8 * seed)},
+        kv_by_layer={"layer": _FakeTensor(8 * seed)},
         context_ids=(f"turn-{seed}",),
         context_prefix_tokens=seed,
     )
@@ -132,11 +147,19 @@ class _FakeStagingStore:
     def remove_user_memory(self, user_id):
         return self.memories.pop(user_id, None) is not None
 
+    def close_chunk_lookup(self):
+        return None
+
 
 def test_fetch_release_protocol_on_staging_store() -> None:
     store = _FakeStagingStore()
     meta = register_chunks(
-        store, {"fact-a": _chunk("fact-a", 1), "fact-b": _chunk("fact-b", 2), "fact-c": _chunk("fact-c", 3)}
+        store,
+        {
+            "fact-a": _chunk("fact-a", 1),
+            "fact-b": _chunk("fact-b", 2),
+            "fact-c": _chunk("fact-c", 3),
+        },
     )
 
     fetch_chunks(store, meta, ["fact-c", "fact-a"])
@@ -171,7 +194,7 @@ def test_gpu_corpus_uses_lookup_rows_and_invalidates_after_mutation(monkeypatch)
     lookup = Mock(device="cuda:0", nbytes=48)
     lookup.lookup.return_value = _lookup_result([1, 0])
     constructor = Mock(return_value=lookup)
-    monkeypatch.setattr("inferscale.v1.kv.memory_store.GPUChunkMap", constructor)
+    monkeypatch.setattr("inferscale.v1.kv.chunk_lookup.GPUChunkMap", constructor)
     store = GPUMemoryStore(device="cuda:0")
     meta = register_chunks(store, {"fact-a": _chunk("fact-a", 1), "fact-b": _chunk("fact-b", 2)})
     finalize_chunk_store(store)
@@ -187,12 +210,11 @@ def test_gpu_corpus_uses_lookup_rows_and_invalidates_after_mutation(monkeypatch)
     store.add_user_memory("fact-c", {}, 0, [])
     lookup.close.assert_called_once()
     assert store._chunk_lookup is None
-    assert store._chunk_memories == ()
 
 
 def test_old_stable_binding_is_rejected_after_corpus_mutation(monkeypatch) -> None:
     lookup = Mock(device="cuda:0", nbytes=48)
-    monkeypatch.setattr("inferscale.v1.kv.memory_store.GPUChunkMap", Mock(return_value=lookup))
+    monkeypatch.setattr("inferscale.v1.kv.chunk_lookup.GPUChunkMap", Mock(return_value=lookup))
     store = GPUMemoryStore(device="cuda:0")
     store.add_user_memory("fact-a", {}, 0, [])
     old_map = store.build_device_row_map([(0, "fact-a")])
@@ -202,22 +224,26 @@ def test_old_stable_binding_is_rejected_after_corpus_mutation(monkeypatch) -> No
         store.get_device_chunk_memories(Mock(), old_map)
 
 
-def test_pinned_corpus_passes_resolved_row_payload_to_staging() -> None:
+def test_pinned_corpus_passes_resolved_row_payload_to_staging(monkeypatch) -> None:
     # Isolate the GPU map/staging protocol; real CUDA copies are tested below.
+    lookup = Mock(device="cuda:0", nbytes=48)
+    lookup.lookup.return_value = _lookup_result([1, 0])
+    monkeypatch.setattr("inferscale.v1.kv.chunk_lookup.GPUChunkMap", Mock(return_value=lookup))
     store = CpuPinnedMemoryStore.__new__(CpuPinnedMemoryStore)
-    first = _HostUserMemory({}, 1, [11], 4)
-    second = _HostUserMemory({}, 1, [22], 4)
+    first = HostUserMemory({}, 1, [11], 4)
+    second = HostUserMemory({}, 1, [22], 4)
     store._host = _NoTextPayloadLookup({"a": first, "b": second})
-    store._chunk_host = (("a", first), ("b", second))
-    store._chunk_lookup = Mock()
-    store._chunk_lookup.lookup.return_value = _lookup_result([1, 0])
+    store._chunk_lookup = ChunkLookup((("a", first), ("b", second)), device="cuda:0")
     store._lock = threading.Lock()
     store._staged_memory = Mock(side_effect=lambda chunk_id, memory: memory)
 
     memories = store.get_chunk_memories(["b", "a"])
 
     assert memories == [("b", second), ("a", first)]
-    assert [call.args for call in store._staged_memory.call_args_list] == [("b", second), ("a", first)]
+    assert [call.args for call in store._staged_memory.call_args_list] == [
+        ("b", second),
+        ("a", first),
+    ]
 
 
 def test_device_fetch_attaches_metadata_without_second_id_lookup() -> None:
@@ -245,7 +271,9 @@ def test_cuda_lookup_selects_payloads_without_host_id_lookup(backend) -> None:
         pytest.skip("requires CUDA")
     store = build_chunk_store(backend, device="cuda:0", top_k=2)
     chunks = {
-        chunk_id: KVChunk(chunk_id, [token], {"layer": torch.full((2, 1, 1, 1), token, device="cuda:0")})
+        chunk_id: KVChunk(
+            chunk_id, [token], {"layer": torch.full((2, 1, 1, 1), token, device="cuda:0")}
+        )
         for chunk_id, token in (("a", 11), ("b", 22))
     }
     meta = register_chunks(store, chunks)
@@ -264,7 +292,10 @@ def test_cuda_lookup_selects_payloads_without_host_id_lookup(backend) -> None:
         release_chunks(store, ["a", "b"])
 
     fetched = fetch_device_chunks(
-        store, meta, torch.tensor([0, 1], device="cuda:0"), row_map,
+        store,
+        meta,
+        torch.tensor([0, 1], device="cuda:0"),
+        row_map,
     )
     assert [chunk.token_ids for chunk in fetched] == [[11], [22]]
     release_chunks(store, ["a", "b"])

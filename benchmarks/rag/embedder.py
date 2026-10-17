@@ -1,16 +1,17 @@
+"""The cached OpenAI embedder every RAG stage shares."""
+
 from __future__ import annotations
 
 from typing import Literal
 
-from inferscale.v1.embedding.openai import OpenAIEmbedder
-
 from benchmarks.common.embedding_cache import CachedEmbedder
+from inferscale.v1.embedding.openai import OpenAIEmbedder
 
 from .config import RagBenchConfig
 
-# Cache-key purposes follow the shared convention (mem0 uses "add" for stored
-# texts and "search" for queries), so RAG and LoCoMo runs share one
-# content-addressed embedding cache without collisions.
+# Cache-key purposes follow the Mem0 convention ("add" for stored texts and
+# "search" for queries), so RAG and memory runs share one content-addressed
+# embedding cache without collisions.
 CHUNK_EMBED_PURPOSE = CachedEmbedder.DOCUMENT_PURPOSE
 QUERY_EMBED_PURPOSE = CachedEmbedder.QUERY_PURPOSE
 
@@ -19,10 +20,11 @@ def build_cached_embedder(
     config: RagBenchConfig,
     mode: Literal["read", "write"],
 ) -> CachedEmbedder:
-    if not config.embedding_cache_enabled:
+    if not config.embedding_cache_enabled or config.embedding_cache_dir is None:
         raise RuntimeError(
             "The RAG benchmark always runs through the embedding cache (read mode keeps "
-            "answer runs offline and deterministic); keep the embedding cache enabled."
+            "answer runs offline and deterministic); keep the embedding cache enabled and "
+            "configured."
         )
     return CachedEmbedder(
         OpenAIEmbedder(

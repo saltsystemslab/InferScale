@@ -1,3 +1,1 @@
-"""Standalone RAG benchmark harness for InferScale (no Mem0 extraction)."""
-
-__version__ = "0.1.0"
+"""The RAG benchmark: retrieval over a chunked corpus with KV injection or prompt injection."""

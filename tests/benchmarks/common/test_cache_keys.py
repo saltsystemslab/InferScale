@@ -3,16 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from benchmarks.common import cache_identity
-from benchmarks.common.cache_identity import atomic_write_json, safe_path_part
-from benchmarks.common import embedding_cache
-from benchmarks.memory.mem0 import fact_catalog, llm_cache
-
-
-def test_all_stores_share_the_same_path_sanitizer() -> None:
-    assert embedding_cache.safe_path_part is cache_identity.safe_path_part
-    assert fact_catalog.safe_path_part is cache_identity.safe_path_part
-    assert llm_cache.safe_path_part is cache_identity.safe_path_part
+from benchmarks.common.atomic_files import atomic_write_json
+from benchmarks.common.cache_keys import endpoint_cache_key, normalize_endpoint, safe_path_part
 
 
 def test_safe_path_part_behavior() -> None:
@@ -22,11 +14,21 @@ def test_safe_path_part_behavior() -> None:
     assert safe_path_part("  ") == "default"
 
 
+def test_endpoint_keys_ignore_case_and_trailing_slashes() -> None:
+    assert normalize_endpoint("HTTPS://Example.com/v1/") == "https://example.com/v1"
+    assert normalize_endpoint(None) == "<provider-default>"
+    assert endpoint_cache_key("https://example.com/v1") == endpoint_cache_key(
+        "HTTPS://EXAMPLE.COM/v1/"
+    )
+    assert endpoint_cache_key("https://example.com/v1") != endpoint_cache_key(
+        "https://other.example/v1"
+    )
+
+
 def test_atomic_write_json_compact_and_indented(tmp_path: Path) -> None:
     compact = tmp_path / "compact.json"
     atomic_write_json(compact, {"b": 1, "a": 2})
-    compact_text = compact.read_text(encoding="utf-8")
-    assert compact_text == '{"a":2,"b":1}\n'
+    assert compact.read_text(encoding="utf-8") == '{"a":2,"b":1}\n'
 
     indented = tmp_path / "nested" / "indented.json"
     atomic_write_json(indented, {"b": 1, "a": 2}, indent=2)

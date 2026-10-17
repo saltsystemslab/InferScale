@@ -1,19 +1,21 @@
 from __future__ import annotations
 
-import sys
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from throughput_config import make_throughput_config
 
 from benchmarks.common.config import ConfigError
+from benchmarks.common.system import parse_mem_available_bytes
 from benchmarks.memory.throughput.config import ThroughputConfig
-from benchmarks.memory.throughput.engine import build_warmup_prompts
+from benchmarks.memory.throughput.engine import KVWarmup, build_warmup_prompts
 from benchmarks.memory.throughput.projection import (
+    CorpusFootprint,
     check_kv_gpu_projection,
     check_pinned_host_projection,
-    parse_mem_available_bytes,
 )
 from benchmarks.memory.throughput.reporting import (
     RESULT_COLUMNS,
@@ -24,12 +26,7 @@ from benchmarks.memory.throughput.worker import main, run_condition
 
 
 def _config(tmp_path: Path) -> ThroughputConfig:
-    return ThroughputConfig(
-        model="test/model",
-        model_label="test",
-        results_dir=tmp_path,
-        run_id="worker-test",
-    )
+    return make_throughput_config(tmp_path, run_id="worker-test")
 
 
 def test_mem_available_parser_reads_meminfo_kilobytes() -> None:
@@ -82,14 +79,6 @@ def test_pinned_host_projection_skips_without_a_memory_signal(
     )
 
 
-class _FakeChunk:
-    """Duck-typed EncodedChunk: kv_by_layer values only need .nbytes."""
-
-    def __init__(self, nbytes: int, num_tokens: int) -> None:
-        self.kv_by_layer = {"layer": SimpleNamespace(nbytes=nbytes)}
-        self.token_ids = list(range(num_tokens))
-
-
 def _install_fake_cuda_device(monkeypatch: pytest.MonkeyPatch, total_memory: int) -> None:
     fake_torch = SimpleNamespace(
         cuda=SimpleNamespace(
@@ -110,8 +99,12 @@ def _projection_kwargs(
         "num_users": total_requests // 2,
         "total_requests": total_requests,
         "unique_sample_count": unique_sample_count,
-        "scaffold_chunks": (_FakeChunk(0, 0), _FakeChunk(0, 0)),
-        "first_sample_chunks": {"fact-a": _FakeChunk(sample_bytes, sample_tokens)},
+        "footprint": CorpusFootprint(
+            fact_count=1,
+            token_count=sample_tokens,
+            kv_bytes=sample_bytes,
+            scaffold_token_count=0,
+        ),
     }
 
 
@@ -255,15 +248,18 @@ def test_run_condition_requires_single_count_kv_worker(tmp_path: Path) -> None:
         run_condition(_config(tmp_path), "kv_injection", (2, 3))
 
 
-@pytest.mark.parametrize("values,match", [
-    ({"user_counts": "50,100"}, "integers"),
-    ({"user_counts": [True]}, "integers"),
-    ({"user_counts": []}, "integers"),
-    ({"user_counts": [50, 50]}, "duplicates"),
-    ({"user_counts": [3]}, "not in the configured list"),
-    ({"condition": "unknown"}, "not in the configured list"),
-    ({"extra": True}, "unknown keys"),
-])
+@pytest.mark.parametrize(
+    "values,match",
+    [
+        ({"user_counts": "50,100"}, "integers"),
+        ({"user_counts": [True]}, "integers"),
+        ({"user_counts": []}, "integers"),
+        ({"user_counts": [50, 50]}, "duplicates"),
+        ({"user_counts": [3]}, "not in the configured list"),
+        ({"condition": "unknown"}, "not in the configured list"),
+        ({"extra": True}, "unknown keys"),
+    ],
+)
 def test_worker_rejects_invalid_json_jobs(tmp_path: Path, values: dict, match: str) -> None:
     config_path = tmp_path / "snapshot.json"
     config_path.write_text(json.dumps(_config(tmp_path).to_jsonable()), encoding="utf-8")
@@ -290,9 +286,7 @@ def test_warmup_prompts_match_lengths_and_stay_in_vocab() -> None:
     warmup = build_warmup_prompts(prompts, vocab_size=100, seed=42)
 
     assert [len(p["prompt_token_ids"]) for p in warmup] == [5, 12, 1]
-    assert all(
-        0 <= token < 100 for p in warmup for token in p["prompt_token_ids"]
-    )
+    assert all(0 <= token < 100 for p in warmup for token in p["prompt_token_ids"])
 
 
 def test_warmup_prompts_are_deterministic_but_not_the_real_prompts() -> None:
@@ -302,8 +296,7 @@ def test_warmup_prompts_are_deterministic_but_not_the_real_prompts() -> None:
 
     assert first == second
     assert all(
-        warm["prompt_token_ids"] != real["prompt_token_ids"]
-        for warm, real in zip(first, prompts)
+        warm["prompt_token_ids"] != real["prompt_token_ids"] for warm, real in zip(first, prompts)
     )
 
 
@@ -327,7 +320,7 @@ def test_kv_warmup_prompt_extends_memory_with_random_tail() -> None:
     tokens = prompt["prompt_token_ids"]
     assert tokens[: len(memory)] == memory
     assert len(tokens) > len(memory)
-    assert all(0 <= token < 100 for token in tokens[len(memory):])
+    assert all(0 <= token < 100 for token in tokens[len(memory) :])
     assert prompt == build_kv_warmup_prompt(memory, vocab_size=100, seed=42)
 
 
@@ -380,15 +373,13 @@ class _FakeSamplingParams:
     def __init__(self, extra_args: dict | None = None) -> None:
         self.extra_args = extra_args
 
-    def clone(self) -> "_FakeSamplingParams":
-        return _FakeSamplingParams(
-            dict(self.extra_args) if self.extra_args is not None else None
-        )
+    def clone(self) -> _FakeSamplingParams:
+        return _FakeSamplingParams(dict(self.extra_args) if self.extra_args is not None else None)
 
 
 def test_routed_sampling_params_carry_memory_user_ids() -> None:
-    from inferscale.v1.kv.connector_utils import MEMORY_USER_ID_EXTRA_ARG
     from benchmarks.memory.throughput.engine import sampling_params_with_memory_user_ids
+    from inferscale.v1.kv.connector_utils import MEMORY_USER_ID_EXTRA_ARG
 
     base = _FakeSamplingParams(extra_args={"existing": 1})
     routed = sampling_params_with_memory_user_ids(base, ["request-00000", "request-00001"])
@@ -456,7 +447,7 @@ def test_warmup_routes_the_kv_warmup_prompt(monkeypatch: pytest.MonkeyPatch) -> 
         base,
         batches=1,
         seed=7,
-        kv_warmup=({"prompt_token_ids": [1, 2, 3]}, routed),
+        kv_warmup=KVWarmup(prompt={"prompt_token_ids": [1, 2, 3]}, sampling_params=routed),
     )
 
     (params_list,) = llm.seen_params

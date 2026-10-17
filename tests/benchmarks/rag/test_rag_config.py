@@ -51,7 +51,7 @@ def test_defaults(custom_runtime) -> None:
     assert config.max_answer_tokens == 64
     assert config.kv_dtype == "bfloat16"
     assert config.kv_block_size == 16
-    assert config.kv_store_backend == "cpu"
+    assert config.to_jsonable()["kv_store_backend"] == "cpu"
     assert config.skip_judge is True and config.judge_provider == "none"
 
 
@@ -64,7 +64,11 @@ def test_nested_json_populates_downstream_settings(custom_runtime) -> None:
         "inferscale": {
             "engine": {"max_model_len": 65536, "gpu_memory_utilization": 0.5},
             "kv": {"max_position": 65536, "device": "cuda:2"},
-            "embedding": {"model": "custom/embedding", "base_url": "http://embedding/v1", "batch_size": 20},
+            "embedding": {
+                "model": "custom/embedding",
+                "base_url": "http://embedding/v1",
+                "batch_size": 20,
+            },
             "index": {"beam_width": 32, "n_neighbors": 48},
             "generation": {"max_tokens": 90, "temperature": 0.3, "top_p": 0.9},
         },
@@ -151,7 +155,10 @@ def test_memory_budget_validation_rejects_oversized_grids(custom_runtime) -> Non
     with pytest.raises(ConfigError, match="memory budget"):
         RagBenchConfig.from_dict({"top_k": 50}, runtime=custom_runtime)
     config = RagBenchConfig.from_dict(
-        {"top_k": 50, "inferscale": {"kv": {"max_position": 65536}, "engine": {"max_model_len": 65536}}},
+        {
+            "top_k": 50,
+            "inferscale": {"kv": {"max_position": 65536}, "engine": {"max_model_len": 65536}},
+        },
         runtime=custom_runtime,
     )
     assert config.top_k == 50
@@ -160,7 +167,10 @@ def test_memory_budget_validation_rejects_oversized_grids(custom_runtime) -> Non
 def test_prompt_injection_requires_prefix_caching(custom_runtime) -> None:
     with pytest.raises(ConfigError, match="requires.*enable_prefix_caching"):
         RagBenchConfig.from_dict(
-            {"answer_backend": "prompt-injection", "inferscale": {"engine": {"enable_prefix_caching": False}}},
+            {
+                "answer_backend": "prompt-injection",
+                "inferscale": {"engine": {"enable_prefix_caching": False}},
+            },
             runtime=custom_runtime,
         )
 
@@ -190,9 +200,18 @@ def test_judge_requires_enabled_provider_and_explicit_run(tmp_path, custom_runti
         load_rag_config(path, runtime=custom_runtime)
 
 
-def test_explicit_runtime_file_controls_aliases_and_storage(tmp_path, custom_runtime, monkeypatch) -> None:
+def test_explicit_runtime_file_controls_aliases_and_storage(
+    tmp_path, custom_runtime, monkeypatch
+) -> None:
     other = tmp_path / "other-runtime.json"
-    other.write_text(json.dumps({"models": {"llama": "explicit/model"}, "storage": {"runtime_root": str(tmp_path / "other")}}))
+    other.write_text(
+        json.dumps(
+            {
+                "models": {"llama": "explicit/model"},
+                "storage": {"runtime_root": str(tmp_path / "other")},
+            }
+        )
+    )
     monkeypatch.setenv("INFERSCALE_RUNTIME_CONFIG", "/nonexistent/runtime.json")
     path = write_config(tmp_path, {})
     config = load_rag_config(path, runtime=RuntimeConfig.from_json(other))
@@ -200,7 +219,9 @@ def test_explicit_runtime_file_controls_aliases_and_storage(tmp_path, custom_run
     assert config.results_dir == tmp_path / "other/results"
 
 
-def test_json_settings_ignore_environment_but_credentials_remain(custom_runtime, monkeypatch) -> None:
+def test_json_settings_ignore_environment_but_credentials_remain(
+    custom_runtime, monkeypatch
+) -> None:
     for name, value in {
         "JUDGE_LLM_BASE_URL": "http://environment/v1",
         "JUDGE_MODEL": "environment/judge",
@@ -231,17 +252,31 @@ def test_authored_rag_configs_load() -> None:
     for path in Path("configs/rag").glob("*.json"):
         config = RagBenchConfig.from_json_file(path)
         assert config.dataset_name in {"qasper", "multihoprag"}
-        assert config.kv_store_backend == "cpu"
+        assert config.to_jsonable()["kv_store_backend"] == "cpu"
 
 
 def test_chunk_cache_uses_explicit_config_runtime_layout(custom_runtime) -> None:
-    from benchmarks.rag.kv_cache import rag_chunk_cache_dir
+    from benchmarks.rag.kv_cache import RagChunkCache
 
     config = RagBenchConfig.from_dict({}, runtime=custom_runtime)
     assert config.kv_chunk_cache_root == custom_runtime.layout.rag_kv_chunk_cache_root
-    cache_dir = rag_chunk_cache_dir(
-        model="custom/answer-model", dtype="bfloat16", chunk_size=1024,
-        context_window=5, max_position=32768, corpus_fingerprint="abc123",
-        cache_root=config.kv_chunk_cache_root,
-    )
-    assert cache_dir.is_relative_to(custom_runtime.layout.rag_kv_chunk_cache_root)
+    cache = RagChunkCache.for_config(config, docs=[])
+    assert cache.directory.is_relative_to(custom_runtime.layout.rag_kv_chunk_cache_root)
+    assert cache.key.model == "custom/answer-model"
+
+
+def test_bare_config_performs_no_runtime_io(monkeypatch) -> None:
+    monkeypatch.setenv("INFERSCALE_RUNTIME_CONFIG", "/missing/runtime.json")
+
+    config = RagBenchConfig(dataset_name="qasper", kv_device="cuda:1")
+
+    assert config.model == "llama"
+    assert config.kv_chunk_cache_root is None
+    assert config.kv_device == "cuda:1"
+
+
+def test_chunk_cache_requires_a_configured_root() -> None:
+    from benchmarks.rag.kv_cache import RagChunkCache
+
+    with pytest.raises(RuntimeError, match="kv_chunk_cache_root"):
+        RagChunkCache.for_config(RagBenchConfig(), docs=[])

@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from inferscale.v1.serving.vllm import request_timing_from_output, require_engine_ttft_ms
+from inferscale.v1.serving.vllm import request_ttft_ms, require_engine_ttft_ms
 
 
 def _output(metrics: Any) -> Any:
@@ -17,11 +17,9 @@ def test_engine_first_token_latency_is_used() -> None:
 
 
 def test_arrival_and_first_token_times_yield_engine_ttft() -> None:
-    timing = request_timing_from_output(
-        _output(SimpleNamespace(arrival_time=10.0, first_token_time=10.5))
-    )
+    ttft_ms = request_ttft_ms(_output(SimpleNamespace(arrival_time=10.0, first_token_time=10.5)))
 
-    assert timing.time_to_first_token_ms == 500.0
+    assert ttft_ms == 500.0
 
 
 def test_missing_engine_metrics_fail_the_run() -> None:

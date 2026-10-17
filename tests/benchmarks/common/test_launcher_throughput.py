@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from copy import deepcopy
 import json
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
 
 from benchmarks.common.config import ConfigError, RuntimeConfig
-from benchmarks.common.launcher import expand_runs
+from benchmarks.common.launcher.plans import expand_runs
 from benchmarks.memory.throughput.config import ThroughputConfig
 
 

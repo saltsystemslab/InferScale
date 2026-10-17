@@ -14,7 +14,7 @@ from .index.jasper import MAX_JASPER_BEAM_WIDTH, JasperIndex, JasperIndexConfig
 from .index.matmul import MatmulIndex
 from .kv.corpus import KVCorpus
 from .kv.encoder import ChunkedRopeEncoder, load_encoder_tokenizer
-from .protocols import ChunkStore, Embedder, VectorIndex
+from .protocols import ChunkStore, Embedder, MemoryStore, VectorIndex
 from .retrieval import Retriever
 from .serving.vllm import VLLMEngine
 from .types import (
@@ -56,6 +56,7 @@ __all__ = [
     "KVConfig",
     "KVCorpus",
     "MatmulIndex",
+    "MemoryStore",
     "OpenAIEmbedder",
     "PrecomputeStats",
     "PromptConfig",

@@ -87,9 +87,7 @@ def test_target_larger_than_limit_raises() -> None:
     chunks = _doc_chunks()
 
     with pytest.raises(RuntimeError, match="without context"):
-        build_chunk_context_encoding_plan(
-            chunks[0], chunks, context_window=2, max_input_tokens=3
-        )
+        build_chunk_context_encoding_plan(chunks[0], chunks, context_window=2, max_input_tokens=3)
 
 
 def test_foreign_document_chunk_raises() -> None:
@@ -97,9 +95,7 @@ def test_foreign_document_chunk_raises() -> None:
     chunks[1] = _chunk("dB", 1, [99])
 
     with pytest.raises(RuntimeError, match="different document"):
-        build_chunk_context_encoding_plan(
-            chunks[3], chunks, context_window=2, max_input_tokens=100
-        )
+        build_chunk_context_encoding_plan(chunks[3], chunks, context_window=2, max_input_tokens=100)
 
 
 def test_target_missing_from_doc_chunks_raises() -> None:
@@ -118,6 +114,4 @@ def test_invalid_arguments_raise() -> None:
             chunks[0], chunks, context_window=-1, max_input_tokens=100
         )
     with pytest.raises(ValueError, match="max_input_tokens"):
-        build_chunk_context_encoding_plan(
-            chunks[0], chunks, context_window=0, max_input_tokens=0
-        )
+        build_chunk_context_encoding_plan(chunks[0], chunks, context_window=0, max_input_tokens=0)

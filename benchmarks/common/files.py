@@ -1,15 +1,21 @@
-"""JSON, JSONL, and CSV result files."""
+"""JSON, JSONL, and CSV result files written by the benchmark runners."""
 
 from __future__ import annotations
 
 import csv
+import io
 import json
+from collections.abc import Iterable
 from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
+
+from benchmarks.common.atomic_files import atomic_write_text
 
 
 class JsonlWriter(AbstractContextManager["JsonlWriter"]):
+    """Append one JSON object per line, flushing after every row so a crash keeps earlier rows."""
+
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -28,9 +34,7 @@ class JsonlWriter(AbstractContextManager["JsonlWriter"]):
 
 
 def write_json(path: str | Path, data: dict[str, Any]) -> None:
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    atomic_write_text(Path(path), json.dumps(data, indent=2, ensure_ascii=False) + "\n")
 
 
 def read_json_or_default(path: Path, default: dict[str, Any]) -> dict[str, Any]:
@@ -55,25 +59,21 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 
 def replace_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
-    tmp_path = path.with_name(path.name + ".tmp")
-    with JsonlWriter(tmp_path) as writer:
-        for row in rows:
-            writer.write(row)
-    tmp_path.replace(path)
+    atomic_write_text(path, "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows))
 
 
 def write_csv(path: str | Path, rows: Iterable[dict[str, Any]], columns: list[str]) -> None:
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with target.open("w", encoding="utf-8", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=columns)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({column: csv_value(row.get(column)) for column in columns})
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=columns)
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({column: csv_value(row.get(column)) for column in columns})
+    atomic_write_text(Path(path), buffer.getvalue())
 
 
 def csv_value(value: Any) -> Any:
-    if isinstance(value, (list, dict)):
+    """Lists and objects become compact JSON; booleans become 0 or 1."""
+    if isinstance(value, list | dict):
         return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     if isinstance(value, bool):
         return int(value)

@@ -5,10 +5,8 @@ import pytest
 torch = pytest.importorskip("torch")
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 
-from inferscale.v1.kv.packed_memory_store import (  # noqa: E402
-    DeviceChunkSelectionError,
-    PackedGPUMemoryStore,
-)
+from inferscale.v1.kv.chunk_lookup import DeviceChunkSelectionError  # noqa: E402
+from inferscale.v1.kv.packed_memory_store import PackedGPUMemoryStore  # noqa: E402
 
 
 def _kv(seed: int, length: int) -> dict[str, object]:

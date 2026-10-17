@@ -5,11 +5,21 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from benchmarks.common.config import RuntimeConfig, jsonable_value, load_json_object
+from benchmarks.common.config import RuntimeConfig, load_json_object
 from benchmarks.memory.config import MemoryRunConfig
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def jsonable_value(value: Any) -> Any:
+    """Paths become strings and tuples become lists, so test overrides read like JSON."""
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, tuple | list):
+        return [jsonable_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): jsonable_value(item) for key, item in value.items()}
+    return value
 
 
 def memory_config_data(**values: Any) -> dict[str, Any]:

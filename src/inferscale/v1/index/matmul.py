@@ -12,6 +12,7 @@ import numpy as np
 
 from ..types import DeviceSearchResult, SearchHit, SearchMetrics
 from .filters import payload_matches
+from .vectors import as_float32_vector
 
 
 class MatmulIndex:
@@ -45,16 +46,20 @@ class MatmulIndex:
         payloads: Iterable[dict[str, Any]],
         ids: Iterable[str] | None = None,
     ) -> list[str]:
-        vector_list = [_as_vector(vector) for vector in vectors]
+        vector_list = [as_float32_vector(vector) for vector in vectors]
         payload_list = [dict(payload) for payload in payloads]
-        id_list = [str(item_id) for item_id in ids] if ids is not None else [
-            str(uuid.uuid4()) for _ in vector_list
-        ]
+        id_list = (
+            [str(item_id) for item_id in ids]
+            if ids is not None
+            else [str(uuid.uuid4()) for _ in vector_list]
+        )
         if len(vector_list) != len(payload_list):
             raise ValueError("vectors and payloads must have the same length")
         if len(id_list) != len(vector_list):
             raise ValueError("ids and vectors must have the same length")
-        if len(set(id_list)) != len(id_list) or any(item_id in self._ordinals for item_id in id_list):
+        if len(set(id_list)) != len(id_list) or any(
+            item_id in self._ordinals for item_id in id_list
+        ):
             raise ValueError("MatmulIndex vector IDs must be unique.")
         if not vector_list:
             return []
@@ -66,10 +71,13 @@ class MatmulIndex:
         if self._vectors is not None:
             matrix = np.concatenate((self._vectors, matrix), axis=0)
         first_ordinal = self.vector_count
+        # The resident GPU copy was built for the previous matrix; finalize rebuilds it.
         self.close()
         self._vectors = matrix
         self._rows.extend(zip(id_list, payload_list))
-        self._ordinals.update((item_id, first_ordinal + offset) for offset, item_id in enumerate(id_list))
+        self._ordinals.update(
+            (item_id, first_ordinal + offset) for offset, item_id in enumerate(id_list)
+        )
         return id_list
 
     def finalize(self) -> None:
@@ -77,7 +85,9 @@ class MatmulIndex:
             return
         if self._vectors is not None:
             torch = _require_cuda()
-            self._vectors_gpu = torch.from_numpy(self._vectors).to(device=self.device, dtype=torch.float32)
+            self._vectors_gpu = torch.from_numpy(self._vectors).to(
+                device=self.device, dtype=torch.float32
+            )
         self._finalized = True
 
     def search(
@@ -99,15 +109,19 @@ class MatmulIndex:
     ) -> DeviceSearchResult | None:
         if self._vectors is None:
             return None
-        query = _as_vector(query_vector, name="query_vector")
+        query = as_float32_vector(query_vector, name="query_vector")
         if query.shape[0] != self.dim:
             raise ValueError(f"query dim {query.shape[0]} does not match store dim {self.dim}")
-        if isinstance(top_k, bool) or not isinstance(top_k, (int, np.integer)):
+        if isinstance(top_k, bool) or not isinstance(top_k, int | np.integer):
             raise ValueError("top_k must be an integer.")
         k = max(1, min(int(top_k), self.vector_count))
         eligible = None
         if filters:
-            eligible = [ordinal for ordinal, (_, payload) in enumerate(self._rows) if payload_matches(payload, filters)]
+            eligible = [
+                ordinal
+                for ordinal, (_, payload) in enumerate(self._rows)
+                if payload_matches(payload, filters)
+            ]
             k = min(k, len(eligible))
 
         self.finalize()
@@ -120,7 +134,11 @@ class MatmulIndex:
                 metrics=SearchMetrics(0.0, vector_backend="exact"),
             )
         query_tensor = torch.from_numpy(query).to(device=matrix.device, dtype=torch.float32)
-        eligible_tensor = None if eligible is None else torch.tensor(eligible, dtype=torch.int64, device=matrix.device)
+        eligible_tensor = (
+            None
+            if eligible is None
+            else torch.tensor(eligible, dtype=torch.int64, device=matrix.device)
+        )
         torch.cuda.synchronize(matrix.device)
         started = time.perf_counter()
         with torch.no_grad(), torch.autocast(device_type="cuda", enabled=False):
@@ -168,17 +186,6 @@ class MatmulIndex:
     def close(self) -> None:
         self._vectors_gpu = None
         self._finalized = False
-
-
-def _as_vector(vector: np.ndarray | list[float], *, name: str = "vector") -> np.ndarray:
-    array = np.asarray(vector, dtype=np.float32)
-    if array.ndim == 2 and array.shape[0] == 1:
-        array = array[0]
-    if array.ndim != 1 or array.size == 0:
-        raise ValueError(f"{name} must be a nonempty one-dimensional vector.")
-    if not np.isfinite(array).all():
-        raise ValueError(f"{name} must contain only finite values.")
-    return np.ascontiguousarray(array)
 
 
 def _require_cuda() -> Any:

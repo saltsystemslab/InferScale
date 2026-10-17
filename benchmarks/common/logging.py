@@ -1,4 +1,9 @@
-"""Logging setup for the benchmark CLIs."""
+"""Logging setup for the benchmark entry points.
+
+The benchmarks log through loguru while the ``inferscale`` library and its
+dependencies use the standard library, so both are routed to stderr at the
+same level and in the same format.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +14,6 @@ from loguru import logger
 
 
 def configure_logging(level: str = "INFO") -> None:
-    """Route loguru (harness) and stdlib logging (library) to stderr at one level."""
     resolved = level.upper()
     logger.remove()
     logger.add(

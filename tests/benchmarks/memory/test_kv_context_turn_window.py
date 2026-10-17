@@ -3,36 +3,39 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-
 from library_fakes import FakeChunkStore
-from benchmarks.memory.data import ConversationSample, QuestionAnswer, Turn
-from benchmarks.common.config import ConfigError
 from memory_config import make_memory_config
+
+from benchmarks.common.config import ConfigError
+from benchmarks.common.vector_types import SearchHit
 from benchmarks.memory.composer import SampleComposer
-from inferscale.v1.kv.prompt import require_identical_token_ids
+from benchmarks.memory.composer_stats import precompute_stats
 from benchmarks.memory.context import (
     build_fact_context_encoding_plan,
-    build_memory_fact_plan,
-    reverse_ranked_memory_facts,
     format_memory_turn,
     memory_context_metrics,
-    memory_fact_from_hit,
+    plan_kv_memory,
+    plan_prompt_memory,
     previous_turn_context_turns,
+)
+from benchmarks.memory.data import ConversationSample, QuestionAnswer, Turn
+from benchmarks.memory.facts import (
+    memory_fact_from_hit,
+    reverse_ranked_memory_facts,
     unique_memory_facts,
 )
 from benchmarks.memory.prompting import (
     EMPTY_MEMORY_TEXT,
     MEMORY_SYSTEM_PROMPT,
-    build_kv_query_tokens_for_memory,
     build_memory_prompt_token_ids,
+    build_query_tokens_for_memory,
     extract_memory_scaffold_token_ids,
     format_memory_fact,
 )
-from inferscale.v1.kv.prompt import build_prompt_tokens
+from inferscale.v1.kv.prompt import build_prompt_tokens, require_identical_token_ids
 from inferscale.v1.kv.tokenization import encode_text_no_special
-from inferscale.v1.types import KVChunk, EncodingPlan
 from inferscale.v1.serving.vllm import vllm_engine_kwargs
-from benchmarks.common.vector_types import SearchHit
+from inferscale.v1.types import EncodingPlan, KVChunk
 
 
 def _turn(session_index: int, turn_index: int) -> Turn:
@@ -137,9 +140,7 @@ def test_reverse_ranked_facts_ignore_source_turn_order() -> None:
 
 def test_conflicting_duplicate_fact_ids_are_rejected() -> None:
     with pytest.raises(RuntimeError, match="Conflicting Mem0 fact payloads"):
-        unique_memory_facts(
-            [_hit("same", "first", 1), _hit("same", "different", 1)]
-        )
+        unique_memory_facts([_hit("same", "first", 1), _hit("same", "different", 1)])
 
 
 def test_window_selects_immediately_preceding_turns_across_sessions() -> None:
@@ -358,7 +359,7 @@ def test_composer_reports_gpu_map_separately_from_host_metadata(
         lambda: {"chunk_map_bytes": 24, "chunk_map_device": "cuda:0"},
     )
 
-    stats = composer.cache_stats()
+    stats = precompute_stats(composer)
 
     assert stats["llama_kv_chunk_map_gpu_bytes"] == 24
     assert stats["llama_kv_chunk_map_gpu_mb"] == 24 / (1024 * 1024)
@@ -400,10 +401,9 @@ def test_w0_prompt_injection_and_kv_use_identical_header_fact_footer_question_to
         memory_token_budget=10_000,
         memory_scaffold=scaffold,
     )
-    query_tokens = build_kv_query_tokens_for_memory(
+    query_tokens = build_query_tokens_for_memory(
         encoder.tokenizer,
         scaffold.header_token_ids,
-        sample,
         qa,
     )
     kv_prompt = build_prompt_tokens(
@@ -415,8 +415,8 @@ def test_w0_prompt_injection_and_kv_use_identical_header_fact_footer_question_to
         query_tokens,
     )
 
-    assert composed.selected_fact_ids == ["earlier", "later"]
-    assert prompted.selected_fact_ids == ["earlier", "later"]
+    assert list(composed.fact_plan.injected_fact_ids) == ["earlier", "later"]
+    assert list(prompted.fact_plan.injected_fact_ids) == ["earlier", "later"]
     assert composed.fact_plan.retrieved_fact_ids == ("later", "earlier")
     assert prompted.fact_plan.retrieved_fact_ids == ("later", "earlier")
     assert composed.fact_plan.injected_fact_ids == ("earlier", "later")
@@ -470,8 +470,8 @@ def test_empty_results_render_upstream_marker_and_compose_scaffold_only(
         memory_scaffold=scaffold,
     )
 
-    assert composed.selected_fact_ids == []
-    assert prompted.selected_fact_ids == []
+    assert composed.fact_plan.injected_fact_ids == ()
+    assert prompted.fact_plan.injected_fact_ids == ()
     assert composed.token_ids == prompted.token_ids
     assert encode_text_no_special(encoder.tokenizer, EMPTY_MEMORY_TEXT) == (
         scaffold.empty_token_ids
@@ -502,7 +502,7 @@ def test_fact_metrics_report_selected_context_encoding() -> None:
         raw_context_prefix_tokens=8,
         context_prefix_truncated_tokens=3,
     )
-    plan = build_memory_fact_plan(
+    plan = plan_kv_memory(
         selected,
         context_window=2,
         memory_token_budget=10,
@@ -530,7 +530,7 @@ def test_visible_memory_budget_never_drops_retrieved_facts() -> None:
     selected = reverse_ranked_memory_facts([_hit("target", "Target.", 1)])
 
     with pytest.raises(RuntimeError, match="retrieved Mem0 facts cannot fit"):
-        build_memory_fact_plan(
+        plan_prompt_memory(
             selected,
             context_window=0,
             memory_token_budget=2,
@@ -540,20 +540,30 @@ def test_visible_memory_budget_never_drops_retrieved_facts() -> None:
 
 
 def test_kv_block_size_is_configured_for_both_vllm_backends() -> None:
-    config = make_memory_config(inferscale={'engine': {'block_size': 32}})
+    config = make_memory_config(inferscale={"engine": {"block_size": 32}})
 
     assert config.kv_block_size == 32
-    assert vllm_engine_kwargs(model=config.model, dtype=config.kv_dtype, engine=config.engine_config())["block_size"] == 32
+    assert (
+        vllm_engine_kwargs(
+            model=config.model, dtype=config.kv_dtype, engine=config.engine_config()
+        )["block_size"]
+        == 32
+    )
     prompt_injection_config = make_memory_config(answer_backend="prompt-injection")
-    assert vllm_engine_kwargs(
-        model=prompt_injection_config.model, dtype=prompt_injection_config.kv_dtype, engine=prompt_injection_config.engine_config()
-    )["block_size"] == 16
+    assert (
+        vllm_engine_kwargs(
+            model=prompt_injection_config.model,
+            dtype=prompt_injection_config.kv_dtype,
+            engine=prompt_injection_config.engine_config(),
+        )["block_size"]
+        == 16
+    )
 
 
 @pytest.mark.parametrize("block_size", [-1, 0])
 def test_negative_or_zero_kv_block_size_is_rejected(block_size: int) -> None:
     with pytest.raises(ConfigError, match="engine.block_size must be >= 1"):
-        make_memory_config(inferscale={'engine': {'block_size': block_size}})
+        make_memory_config(inferscale={"engine": {"block_size": block_size}})
 
 
 def test_live_vllm_memory_tokens_must_match_precomputed_hf_tokens() -> None:
@@ -601,11 +611,7 @@ def test_prompt_injection_renders_deduplicated_context_turns_before_their_facts(
         + turn_tokens[sample.turns[2].id]
         + fact_tokens["late"]
     )
-    expected = (
-        list(scaffold.header_token_ids)
-        + expected_stream
-        + list(scaffold.footer_token_ids)
-    )
+    expected = list(scaffold.header_token_ids) + expected_stream + list(scaffold.footer_token_ids)
 
     assert prompted.token_ids == expected
     assert prompted.fact_plan.context_turn_ids == (
@@ -663,21 +669,17 @@ def test_prompt_injection_without_context_rendering_matches_kv_fact_only_tokens(
 
 
 def test_scaffold_footer_covers_kv_tail_despite_newline_merging() -> None:
-    sample = _sample()
     block_size = 16
 
-    scaffold = extract_memory_scaffold_token_ids(_NewlineMergingTokenizer(), block_size=block_size
-    )
+    scaffold = extract_memory_scaffold_token_ids(_NewlineMergingTokenizer(), block_size=block_size)
 
     assert len(scaffold.footer_token_ids) >= block_size - 1
 
 
 def test_scaffold_footer_covers_kv_tail_for_char_level_tokenizer() -> None:
-    sample = _sample()
     block_size = 16
 
-    scaffold = extract_memory_scaffold_token_ids(_DeterministicTokenizer(), block_size=block_size
-    )
+    scaffold = extract_memory_scaffold_token_ids(_DeterministicTokenizer(), block_size=block_size)
 
     assert len(scaffold.footer_token_ids) >= block_size - 1
 
@@ -692,7 +694,8 @@ def test_scaffold_footer_pad_survives_content_trimming_template() -> None:
             return f"<|header|>{content}<|eot|>"
 
     block_size = 16
-    scaffold = extract_memory_scaffold_token_ids(_TrimmingTemplateTokenizer(), block_size=block_size
+    scaffold = extract_memory_scaffold_token_ids(
+        _TrimmingTemplateTokenizer(), block_size=block_size
     )
 
     assert len(scaffold.footer_token_ids) >= block_size - 1

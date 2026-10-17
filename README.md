@@ -54,9 +54,7 @@ static constexpr index_t vectors_per_segment = 1u << 12;
 
 ## 4. Install
 
-For the quickstart, set `extract_facts` to `false` in `configs/setup.json`.
-
-In `configs/runtime.json`, set `storage.runtime_root` to a writable directory; the default is `/workspace`, and `null` uses project-local storage.
+In `configs/runtime.json`, set `storage.runtime_root` to a writable directory; the default is `/workspace`.
 
 ```bash
 bash scripts/setup_remote.sh
@@ -80,8 +78,6 @@ python examples/quickstart.py
 ```
 
 The example precomputes four short chunks, retrieves the two most relevant chunks, and answers “What is the name of Alice's cat?”
-
-The core API follows three steps: `precompute()`, `start()`, and `query()`:
 
 ```python
 from inferscale.v1 import Chunk, InferScale, InferScaleConfig

@@ -61,18 +61,11 @@ def test_prepared_retriever_rejects_more_results_than_top_k() -> None:
 
 
 @pytest.mark.parametrize("metrics_type", [SearchMetrics, SimpleNamespace])
-@pytest.mark.parametrize("copy_ms,copy_calls", [(None, None), (0.0, 0), (1.25, 2)])
-def test_prepared_retriever_preserves_optional_deepcopy_diagnostics_and_existing_timings(
+def test_prepared_retriever_reports_store_search_time_and_wall_time(
     monkeypatch: pytest.MonkeyPatch, metrics_type: type,
-    copy_ms: float | None, copy_calls: int | None,
 ) -> None:
     fact = _fact("fact-1")
-    store_metrics = metrics_type(
-        search_time_ms=7.0,
-        vector_backend="qdrant",
-        qdrant_deepcopy_time_ms=copy_ms,
-        qdrant_deepcopy_calls=copy_calls,
-    )
+    store_metrics = metrics_type(search_time_ms=7.0, vector_backend="qdrant")
     memory = SimpleNamespace(
         embedding_model=None,
         vector_store=SimpleNamespace(last_search_metrics=store_metrics),
@@ -91,8 +84,7 @@ def test_prepared_retriever_preserves_optional_deepcopy_diagnostics_and_existing
     hits, metrics = retriever.search("question", top_k=1)
 
     assert [hit.id for hit in hits] == [fact.id]
-    assert metrics.qdrant_deepcopy_time_ms == copy_ms
-    assert metrics.qdrant_deepcopy_calls == copy_calls
+    assert metrics.vector_backend == "qdrant"
     assert metrics.search_time_ms == 7.0
     assert metrics.total_time_ms == pytest.approx(9.0)
     assert metrics.embedding_time_ms == 0.0

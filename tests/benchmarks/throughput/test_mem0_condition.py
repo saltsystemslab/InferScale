@@ -10,18 +10,15 @@ from benchmarks.memory.throughput.config import ThroughputConfig
 from benchmarks.memory.throughput.workload import LocomoRequest
 
 
-def _run_with_search_metrics(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    metrics: list[object],
-    *,
-    backend: str = "qdrant",
-) -> list[dict]:
+@pytest.mark.parametrize("backend", ["qdrant", "jasper"])
+def test_run_mem0_attributes_each_request_to_every_applicable_batch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, backend: str
+) -> None:
     config = ThroughputConfig(
         model="test/model",
         model_label="test",
         results_dir=tmp_path,
-        run_id="diagnostics-test",
+        run_id="batch-attribution-test",
         user_counts=(1, 2, 3),
         requests_per_user=2,
         embedding_api_key="test-key",
@@ -48,13 +45,12 @@ def _run_with_search_metrics(
     llm = SimpleNamespace(get_tokenizer=lambda: object())
 
     def build_store(config, *, backend, store_root, facts):
-        store = SimpleNamespace(vector_store=SimpleNamespace())
+        store = SimpleNamespace()
         stores[store_root.name] = store
         return store
 
     def search(memory, query, *, top_k):
         assert top_k == config.top_k
-        memory.vector_store.last_search_metrics = metrics[len(searched)]
         searched.append((memory, query))
         return [], 0.02, 0.003
 
@@ -100,50 +96,8 @@ def _run_with_search_metrics(
     assert len(closed) == len(stores) == 2
     assert measured_sizes == [2, 4, 6]
     for count, row in enumerate(rows, start=1):
+        assert row["vector_backend"] == backend
         assert row["retrieval_time_s"] == pytest.approx(count * 0.04)
         assert row["vector_search_time_s"] == pytest.approx(count * 0.006)
         assert row["generation_time_s"] == 2.0
         assert row["throughput_qps"] == float(count)
-    return rows
-
-
-def test_deepcopy_diagnostics_accumulate_for_each_applicable_batch(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    def diagnostics(time_ms, calls):
-        return SimpleNamespace(qdrant_deepcopy_time_ms=time_ms, qdrant_deepcopy_calls=calls)
-
-    rows = _run_with_search_metrics(
-        monkeypatch,
-        tmp_path,
-        [
-            None,
-            diagnostics(0.0, 0),
-            diagnostics(1.25, 2),
-            diagnostics(None, None),
-            diagnostics(4.5, 3),
-            SimpleNamespace(search_time_ms=3.0),
-        ],
-    )
-
-    assert [row["qdrant_deepcopy_time_ms"] for row in rows] == [0.0, 1.25, 5.75]
-    assert [row["qdrant_deepcopy_calls"] for row in rows] == [0, 2, 5]
-
-
-@pytest.mark.parametrize("backend", ["qdrant", "jasper"])
-def test_unavailable_deepcopy_diagnostics_remain_none(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, backend: str
-) -> None:
-    rows = _run_with_search_metrics(
-        monkeypatch,
-        tmp_path,
-        [
-            None,
-            SimpleNamespace(search_time_ms=3.0),
-            SimpleNamespace(qdrant_deepcopy_time_ms=None, qdrant_deepcopy_calls=None),
-        ] * 2,
-        backend=backend,
-    )
-
-    assert all(row["qdrant_deepcopy_time_ms"] is None for row in rows)
-    assert all(row["qdrant_deepcopy_calls"] is None for row in rows)

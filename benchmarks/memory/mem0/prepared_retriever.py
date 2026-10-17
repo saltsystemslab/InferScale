@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import math
 import time
-from contextlib import nullcontext
 from typing import Any
 
 from benchmarks.common.vector_types import RetrievalMetrics, SearchHit, SearchMetrics
@@ -43,27 +42,21 @@ class PreparedMem0Retriever:
         if not callable(search):
             raise RuntimeError("Prepared Mem0 memory has no callable search method.")
 
-        # The memory builder initializes this store before replaying facts.
-        # Bind to the concrete store: its shared last_search_metrics loses workers.
-        entity_store = getattr(getattr(self.memory, "_entity_store", None), "store", None)
-        collect_entity_copies = getattr(entity_store, "collect_deepcopy_timings", None)
-        entity_scope = collect_entity_copies() if callable(collect_entity_copies) else nullcontext()
-        with entity_scope as entity_timing:
-            original_embedder = getattr(self.memory, "embedding_model", None)
-            timed_embedder = _TimedEmbedder(original_embedder) if original_embedder is not None else None
+        original_embedder = getattr(self.memory, "embedding_model", None)
+        timed_embedder = _TimedEmbedder(original_embedder) if original_embedder is not None else None
+        if timed_embedder is not None:
+            self.memory.embedding_model = timed_embedder
+        started = time.perf_counter()
+        try:
+            result = search(
+                query,
+                top_k=top_k,
+                filters={"user_id": self.sample_id},
+            )
+        finally:
+            total_time_ms = (time.perf_counter() - started) * 1000
             if timed_embedder is not None:
-                self.memory.embedding_model = timed_embedder
-            started = time.perf_counter()
-            try:
-                result = search(
-                    query,
-                    top_k=top_k,
-                    filters={"user_id": self.sample_id},
-                )
-            finally:
-                total_time_ms = (time.perf_counter() - started) * 1000
-                if timed_embedder is not None:
-                    self.memory.embedding_model = original_embedder
+                self.memory.embedding_model = original_embedder
 
         rows = result.get("results") if isinstance(result, dict) else None
         if not isinstance(rows, list):
@@ -85,11 +78,6 @@ class PreparedMem0Retriever:
             total_time_ms=total_time_ms,
             vector_backend=store_metrics.vector_backend,
             jasper_effective_beam_width=store_metrics.jasper_effective_beam_width,
-            qdrant_deepcopy_time_ms=store_metrics.qdrant_deepcopy_time_ms,
-            qdrant_deepcopy_calls=store_metrics.qdrant_deepcopy_calls,
-            qdrant_entity_deepcopy_time_ms=entity_timing.time_ms if entity_timing is not None else None,
-            qdrant_entity_deepcopy_wall_time_ms=entity_timing.wall_time_ms if entity_timing is not None else None,
-            qdrant_entity_deepcopy_calls=entity_timing.calls if entity_timing is not None else None,
         )
 
     def close(self) -> None:
@@ -175,6 +163,4 @@ def _last_store_metrics(memory: Any, backend: str) -> SearchMetrics:
         search_time_ms=float(getattr(metrics, "search_time_ms", 0.0) or 0.0),
         vector_backend=getattr(metrics, "vector_backend", None) or backend,
         jasper_effective_beam_width=getattr(metrics, "jasper_effective_beam_width", None),
-        qdrant_deepcopy_time_ms=getattr(metrics, "qdrant_deepcopy_time_ms", None),
-        qdrant_deepcopy_calls=getattr(metrics, "qdrant_deepcopy_calls", None),
     )

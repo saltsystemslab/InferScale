@@ -4,14 +4,11 @@ import csv
 import json
 from pathlib import Path
 
-import pytest
-
 from benchmarks.memory.throughput.config import ThroughputConfig
 from benchmarks.memory.throughput.reporting import (
     RESULT_COLUMNS,
     _coerce_row,
     build_result_row,
-    condition_csv_path,
     merge_result_rows,
     read_existing_results,
     write_reports,
@@ -48,8 +45,6 @@ def _row(condition: str, qps: float, *, num_users: int = 10) -> dict[str, object
         "generation_time_s": num_users * 2 / qps,
         "retrieval_time_s": 0.2 if uses_jasper else 0.0,
         "vector_search_time_s": 0.05 if uses_jasper else 0.0,
-        "qdrant_deepcopy_time_ms": None,
-        "qdrant_deepcopy_calls": None,
         "prompt_build_time_s": 0.1,
         "kv_compose_time_s": 0.3 if is_kv else 0.0,
         "kv_verify_time_s": 0.05 if is_kv else 0.0,
@@ -132,8 +127,6 @@ def test_coerce_row_tolerates_pre_change_csv_rows() -> None:
         "kv_h2d_p95_ms",
         "kv_h2d_overlap_ratio",
         "kv_staging_stall_ms",
-        "qdrant_deepcopy_time_ms",
-        "qdrant_deepcopy_calls",
     ):
         legacy.pop(column)
 
@@ -141,34 +134,9 @@ def test_coerce_row_tolerates_pre_change_csv_rows() -> None:
     assert coerced["kv_h2d_bytes"] == 0
     assert coerced["kv_prefix_caching"] == 0
     assert coerced["kv_store_backend"] == "gpu"
-    assert coerced["qdrant_deepcopy_time_ms"] is None
-    assert coerced["qdrant_deepcopy_calls"] is None
 
 
-@pytest.mark.parametrize(
-    "time_ms,calls,expected_time_ms,expected_calls",
-    [(None, None, None, None), ("", "", None, None), ("0", "0", 0.0, 0), ("2.75", "4", 2.75, 4)],
-)
-def test_coerce_qdrant_deepcopy_diagnostics(
-    time_ms: object,
-    calls: object,
-    expected_time_ms: float | None,
-    expected_calls: int | None,
-) -> None:
-    row = _row("mem0_qdrant", 10.0)
-    row.update(qdrant_deepcopy_time_ms=time_ms, qdrant_deepcopy_calls=calls)
-
-    coerced = _coerce_row(row)
-
-    assert coerced["qdrant_deepcopy_time_ms"] == expected_time_ms
-    assert coerced["qdrant_deepcopy_calls"] == expected_calls
-    if expected_time_ms is not None:
-        assert isinstance(coerced["qdrant_deepcopy_time_ms"], float)
-    if expected_calls is not None:
-        assert isinstance(coerced["qdrant_deepcopy_calls"], int)
-
-
-def test_qdrant_deepcopy_diagnostics_round_trip_without_changing_timing(tmp_path: Path) -> None:
+def test_result_rows_round_trip_through_condition_csvs(tmp_path: Path) -> None:
     config = _config(tmp_path)
     qdrant = build_result_row(
         config,
@@ -178,19 +146,10 @@ def test_qdrant_deepcopy_diagnostics_round_trip_without_changing_timing(tmp_path
         generation_time_s=2.0,
         retrieval_time_s=0.5,
         vector_search_time_s=0.3,
-        qdrant_deepcopy_time_ms=125.5,
-        qdrant_deepcopy_calls=12,
         total_input_tokens=100,
         total_output_tokens=40,
     )
     write_reports(config, [qdrant, _row("mem0_jasper", 12.0)], system_metadata={})
-
-    with (config.run_dir / "throughput_merged.csv").open(newline="", encoding="utf-8") as handle:
-        saved = list(csv.DictReader(handle))
-    assert saved[0]["qdrant_deepcopy_time_ms"] == "125.5"
-    assert saved[0]["qdrant_deepcopy_calls"] == "12"
-    assert saved[1]["qdrant_deepcopy_time_ms"] == ""
-    assert saved[1]["qdrant_deepcopy_calls"] == ""
 
     restored, jasper = read_existing_results(config.run_dir)
     assert restored == qdrant
@@ -198,24 +157,5 @@ def test_qdrant_deepcopy_diagnostics_round_trip_without_changing_timing(tmp_path
     assert restored["avg_latency_ms"] == 100.0
     assert restored["retrieval_time_s"] == 0.5
     assert restored["vector_search_time_s"] == 0.3
-    assert jasper["qdrant_deepcopy_time_ms"] is None
-    assert jasper["qdrant_deepcopy_calls"] is None
-
-
-def test_legacy_csv_without_deepcopy_diagnostics_can_resume_and_merge(tmp_path: Path) -> None:
-    config = _config(tmp_path)
-    legacy = _row("mem0_qdrant", 10.0)
-    del legacy["qdrant_deepcopy_time_ms"]
-    del legacy["qdrant_deepcopy_calls"]
-    path = condition_csv_path(config.run_dir, "mem0_qdrant")
-    path.parent.mkdir(parents=True)
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(legacy))
-        writer.writeheader()
-        writer.writerow(legacy)
-
-    merged = merge_result_rows(read_existing_results(config.run_dir), [_row("mem0_jasper", 12.0)])
-
-    assert len(merged) == 2
-    assert merged[0]["qdrant_deepcopy_time_ms"] is None
-    assert merged[0]["qdrant_deepcopy_calls"] is None
+    assert jasper["throughput_qps"] == 12.0
+    assert jasper["jasper_effective_beam_width"] == 64

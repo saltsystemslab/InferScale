@@ -1,20 +1,13 @@
 from __future__ import annotations
 
-import threading
 import time
 import uuid
-from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Iterable
 
 import numpy as np
 
 from benchmarks.common.vector_types import SearchHit, SearchMetrics, VectorStoreConfig
-from benchmarks.memory.qdrant_profiling import (
-    DeepcopyTotals,
-    deepcopy_profiling_enabled,
-    measure_qdrant_deepcopy,
-)
 from inferscale.v1.index.filters import payload_matches
 
 
@@ -27,9 +20,6 @@ class QdrantVectorStore:
     def __init__(self, root: str | Path, config: VectorStoreConfig) -> None:
         self.root = Path(root)
         self.config = config
-        self._profile_deepcopy = deepcopy_profiling_enabled()
-        self._deepcopy_collector: DeepcopyTotals | None = None
-        self._deepcopy_scope_lock = threading.Lock()
         self.root.mkdir(parents=True, exist_ok=True)
         self._collection_name = "memories"
         self._client = self._create_client()
@@ -110,24 +100,6 @@ class QdrantVectorStore:
     def finalize(self) -> None:
         self._load_rows()
 
-    @contextmanager
-    def collect_deepcopy_timings(self) -> Iterator[DeepcopyTotals | None]:
-        """Collect this store's worker queries within one retrieval request."""
-        if not self._profile_deepcopy:
-            yield None
-            return
-        collector = DeepcopyTotals()
-        with self._deepcopy_scope_lock:
-            if self._deepcopy_collector is not None:
-                raise RuntimeError("Concurrent deepcopy collection scopes cannot share a Qdrant store.")
-            self._deepcopy_collector = collector
-        try:
-            # Mem0 joins every entity-search worker before returning.
-            yield collector
-        finally:
-            with self._deepcopy_scope_lock:
-                self._deepcopy_collector = None
-
     def search(
         self,
         query_vector: np.ndarray | list[float],
@@ -136,12 +108,7 @@ class QdrantVectorStore:
     ) -> tuple[list[SearchHit], SearchMetrics]:
         vector_count = self.vector_count
         if vector_count == 0:
-            return [], SearchMetrics(
-                0.0,
-                vector_backend="qdrant",
-                qdrant_deepcopy_time_ms=0.0 if self._profile_deepcopy else None,
-                qdrant_deepcopy_calls=0 if self._profile_deepcopy else None,
-            )
+            return [], SearchMetrics(0.0, vector_backend="qdrant")
         query = np.asarray(query_vector, dtype=np.float32)
         if query.ndim != 1:
             raise ValueError("query_vector must be one-dimensional")
@@ -160,18 +127,7 @@ class QdrantVectorStore:
         }
         if query_filter is not None:
             query_kwargs["query_filter"] = query_filter
-        copy_timing = None
-        if self._profile_deepcopy:
-            collector = self._deepcopy_collector
-            with measure_qdrant_deepcopy(record_intervals=collector is not None) as copy_timing:
-                try:
-                    result = self._client.query_points(**query_kwargs)
-                finally:
-                    # Mem0 can catch failed entity searches; retain their copies too.
-                    if collector is not None:
-                        collector.add(copy_timing)
-        else:
-            result = self._client.query_points(**query_kwargs)
+        result = self._client.query_points(**query_kwargs)
         elapsed_ms = (time.perf_counter() - started) * 1000
         points = getattr(result, "points", result)
         hits = [
@@ -181,12 +137,7 @@ class QdrantVectorStore:
         ][:top_k]
         for rank, hit in enumerate(hits, start=1):
             hit.rank = rank
-        return hits, SearchMetrics(
-            elapsed_ms,
-            vector_backend="qdrant",
-            qdrant_deepcopy_time_ms=copy_timing.time_ms if copy_timing is not None else None,
-            qdrant_deepcopy_calls=copy_timing.calls if copy_timing is not None else None,
-        )
+        return hits, SearchMetrics(elapsed_ms, vector_backend="qdrant")
 
     def rows(self, filters: dict[str, Any] | None = None) -> list[tuple[str, dict[str, Any]]]:
         return [

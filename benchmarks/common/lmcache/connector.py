@@ -1,12 +1,14 @@
 """vLLM's LMCache connector, adapted for in-process CacheBlend measurements.
 
 ``BlendConnector`` is loaded by module path (``kv_connector_module_path``), so
-it carries a name vLLM has not registered. It changes three things about the
+it carries a name vLLM has not registered. It changes four things about the
 connector it subclasses: the blender is created on first use instead of at
 construction, because vLLM builds the connector before the model is loaded
 (LMCache issue 4131); CUDA graphs always run piecewise, because blending is
-layerwise; and each request's matched token count and load time are recorded
-for the benchmark (see ``load_stats``).
+layerwise; LMCache sees each request's token ids as a plain list, because its
+blending lookup sends them to the lookup server with msgpack, which cannot
+encode vLLM's read-only ``ConstantList``; and each request's matched token
+count and load time are recorded for the benchmark (see ``load_stats``).
 """
 
 from __future__ import annotations
@@ -68,6 +70,20 @@ class DeferredBlender:
         return self._blender
 
 
+class _ListTokenRequest:
+    """A vLLM request whose ``all_token_ids`` is a plain list; the rest is the request's."""
+
+    def __init__(self, request: Any) -> None:
+        self._request = request
+
+    @property
+    def all_token_ids(self) -> list[int]:
+        return list(self._request.all_token_ids)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._request, name)
+
+
 def seed_deferred_blender() -> None:
     """Make ``LMCBlenderBuilder.get_or_create`` return a deferred blender for this engine."""
     if ENGINE_NAME not in LMCBlenderBuilder._blenders:
@@ -84,7 +100,8 @@ class BlendConnector(LMCacheConnectorV1):
         return True
 
     def get_num_new_matched_tokens(self, request: Any, num_computed_tokens: int) -> Any:
-        result = super().get_num_new_matched_tokens(request, num_computed_tokens)
+        # LMCache 0.4.4 passes all_token_ids unchanged to the blending lookup.
+        result = super().get_num_new_matched_tokens(_ListTokenRequest(request), num_computed_tokens)
         matched = result[0] if isinstance(result, tuple) else result
         if matched is not None:
             load_stats.record_match(str(request.request_id), int(matched))

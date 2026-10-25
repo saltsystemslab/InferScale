@@ -5,3 +5,7 @@ vllm==0.19.1
 transformers==4.56.0
 accelerate==1.14.0
 lmcache==0.4.4
+# LMCache depends on nixl. Later releases ship nixl_ep, which vLLM 0.19.1 imports
+# at every engine start whenever it is installed, and its builds skip torch 2.10.
+nixl==1.0.0
+nixl-cu12==1.0.0

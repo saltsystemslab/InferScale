@@ -39,6 +39,9 @@ remote = [
     "transformers==4.56.0",
     "accelerate==1.14.0",
     "lmcache==0.4.4",
+    # Pinned like constraints-cu128.txt explains; LMCache needs nixl only below Python 3.13.
+    "nixl==1.0.0; python_version < '3.13'",
+    "nixl-cu12==1.0.0; python_version < '3.13'",
 ]
 
 [tool.setuptools]

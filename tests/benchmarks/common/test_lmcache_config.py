@@ -77,6 +77,7 @@ def test_extra_config_carries_every_lmcache_setting() -> None:
         "lmcache.max_local_cpu_size": 16.0,
         "lmcache.use_layerwise": True,
         "lmcache.enable_blending": True,
+        "lmcache.save_unfull_chunk": True,
         "lmcache.blend_recompute_ratios": [0.1],
         "lmcache.blend_check_layers": [1, 3],
         "lmcache.blend_special_str": " # #",

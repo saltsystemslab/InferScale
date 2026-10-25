@@ -100,6 +100,14 @@ python -m pip install -c "${CONSTRAINTS_FILE}" torch torchvision torchaudio --in
 python -m pip install -c "${CONSTRAINTS_FILE}" -e ".[dev,jasper]"
 python -m pip install -c "${CONSTRAINTS_FILE}" vllm accelerate hf_transfer lmcache --extra-index-url "${PYTORCH_INDEX}"
 
+# LMCache's wheels carry kernels only for datacenter GPUs up to B200 (sm_100),
+# so its CUDA ops are rebuilt from the source release for this machine's GPU,
+# against the installed torch and with the build tools LMCache's release names.
+LMCACHE_CUDA_ARCH="$(python -c 'import torch; print("%d.%d" % torch.cuda.get_device_capability())')"
+python -m pip install ninja "packaging>=24.2" "setuptools>=77.0.3,<81" "setuptools_scm>=8" wheel
+TORCH_CUDA_ARCH_LIST="${LMCACHE_CUDA_ARCH}" python -m pip install -c "${CONSTRAINTS_FILE}" \
+  --no-binary lmcache --no-build-isolation --no-deps --force-reinstall lmcache
+
 # Jasper's graph segment size is a compile-time constant; set it from the setup JSON.
 python3 - "${JASPER_VECTORS_PER_SEGMENT_LOG2}" <<'PY'
 import re

@@ -114,6 +114,10 @@ def connector_extra_config(config: LMCacheConfig) -> dict[str, Any]:
     Keys with the ``lmcache.`` prefix become LMCache engine settings. The bare
     ``use_layerwise`` is read by vLLM itself to run CUDA graphs piecewise, and
     ``use_native`` selects the adapter copy that ships inside vLLM.
+
+    ``save_unfull_chunk`` is set because LMCache turns it on for blending only
+    when blending comes from its own config, not from these keys. Without it
+    every save is cut to whole chunks, which drops each fact and the header.
     """
     extra: dict[str, Any] = {
         "lmcache.chunk_size": config.chunk_size,
@@ -121,6 +125,7 @@ def connector_extra_config(config: LMCacheConfig) -> dict[str, Any]:
         "lmcache.max_local_cpu_size": float(config.max_local_cpu_size_gb),
         "lmcache.use_layerwise": True,
         "lmcache.enable_blending": True,
+        "lmcache.save_unfull_chunk": True,
         "lmcache.blend_recompute_ratios": [config.blend_recompute_ratio],
         "lmcache.blend_check_layers": list(config.blend_check_layers),
         "lmcache.blend_special_str": config.blend_special_str,

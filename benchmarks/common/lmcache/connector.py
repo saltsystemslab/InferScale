@@ -9,11 +9,21 @@ layerwise; LMCache sees each request's token ids as a plain list, because its
 blending lookup sends them to the lookup server with msgpack, which cannot
 encode vLLM's read-only ``ConstantList``; and each request's matched token
 count and load time are recorded for the benchmark (see ``load_stats``).
+
+The blender needs three more adjustments for LMCache 0.4.4 on vLLM 0.19:
+``vllm.attention.Attention``, which vLLM moved, is aliased for LMCache's
+attention backends; vLLM's Mistral model runs on LMCache's Llama model, since it
+subclasses vLLM's Llama; and cached keys move to their new positions with the
+model's own RoPE, because LMCache rebuilds RoPE without scaling and would move
+Llama 3.1's keys with the wrong frequencies.
 """
 
 from __future__ import annotations
 
+import importlib
+import sys
 import time
+import types
 from typing import Any
 
 from lmcache.integration.vllm.utils import ENGINE_NAME
@@ -61,13 +71,72 @@ class DeferredBlender:
                     "benchmarks.common.lmcache.runtime.register_model(llm) after the engine "
                     "starts and before the first blended request."
                 ) from exc
-            self._blender = LMCBlender(
+            _alias_vllm_attention()
+            _blend_mistral_as_llama()
+            blender = LMCBlender(
                 cache_engine=engine,
                 gpu_connector=engine.gpu_connector,
                 vllm_model=model,
                 config=engine.config,
             )
+            _move_keys_with_model_rope(blender.layerwise_model, model)
+            self._blender = blender
         return self._blender
+
+
+def _alias_vllm_attention() -> None:
+    """Make ``vllm.attention.Attention`` importable for LMCache's attention backends.
+
+    vLLM 0.19 moved the class to ``vllm.model_executor.layers.attention``;
+    LMCache 0.4.7 falls back to that path the same way.
+    """
+    try:
+        importlib.import_module("vllm.attention")
+    except ModuleNotFoundError:
+        from vllm.model_executor.layers.attention.attention import Attention
+
+        module = types.ModuleType("vllm.attention")
+        module.Attention = Attention
+        sys.modules["vllm.attention"] = module
+
+
+def _blend_mistral_as_llama() -> None:
+    """Let LMCache blend Mistral, which vLLM serves with a subclass of its Llama model.
+
+    LMCache 0.4.4 picks its layerwise model by exact class name and knows only
+    Llama, Qwen2 and Qwen3. vLLM's ``MistralForCausalLM`` subclasses
+    ``LlamaForCausalLM`` and keeps its layer attributes, so LMCache's Llama
+    model runs it.
+    """
+    from lmcache.v1.compute.blend import blender as blender_module
+    from lmcache.v1.compute.models.llama import LMCLlamaModel
+
+    infer = blender_module.infer_model_from_vllm
+    if getattr(infer, "handles_mistral", False):
+        return
+
+    def infer_model_from_vllm(vllm_model: Any, blender: Any, enable_sparse: bool = False) -> Any:
+        if type(vllm_model).__name__ == "MistralForCausalLM":
+            return LMCLlamaModel(vllm_model, blender, enable_sparse)
+        return infer(vllm_model, blender, enable_sparse)
+
+    infer_model_from_vllm.handles_mistral = True
+    blender_module.infer_model_from_vllm = infer_model_from_vllm
+
+
+def _move_keys_with_model_rope(layerwise_model: Any, vllm_model: Any) -> None:
+    """Move cached keys to their positions in the prompt with the model's own RoPE.
+
+    LMCache 0.4.4 rebuilds the RoPE for this from the base frequency alone, so it
+    would move Llama 3.1's keys, which its scaled RoPE encoded, with the wrong
+    frequencies. The model's rotary embedding holds the table that encoded them.
+    """
+    from lmcache.v1.compute.positional_encoding import FusedRope
+
+    rotary_emb = vllm_model.model.layers[0].self_attn.rotary_emb
+    if rotary_emb.rotary_dim != rotary_emb.head_size:
+        raise RuntimeError("LMCache blending supports only RoPE over the whole attention head.")
+    layerwise_model.fused_rotary_emb = FusedRope(rotary_emb, rotary_emb.is_neox_style)
 
 
 class _ListTokenRequest:

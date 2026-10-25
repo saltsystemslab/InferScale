@@ -10,12 +10,14 @@ blending lookup sends them to the lookup server with msgpack, which cannot
 encode vLLM's read-only ``ConstantList``; and each request's matched token
 count and load time are recorded for the benchmark (see ``load_stats``).
 
-The blender needs three more adjustments for LMCache 0.4.4 on vLLM 0.19:
-``vllm.attention.Attention``, which vLLM moved, is aliased for LMCache's
-attention backends; vLLM's Mistral model runs on LMCache's Llama model, since it
-subclasses vLLM's Llama; and cached keys move to their new positions with the
-model's own RoPE, because LMCache rebuilds RoPE without scaling and would move
-Llama 3.1's keys with the wrong frequencies.
+The blender needs five more adjustments for LMCache 0.4.4 on vLLM 0.19. Three
+backport LMCache 0.4.7: ``vllm.attention.Attention``, which vLLM moved, is
+aliased; the sparse FlashInfer backend, which needs functions this FlashInfer
+lacks and is never used here, is stubbed; and the model regains
+``get_input_embeddings``, which vLLM renamed. vLLM's Mistral model runs on
+LMCache's Llama model, since it subclasses vLLM's Llama. Cached keys move to
+their new positions with the model's own RoPE, because LMCache rebuilds RoPE
+without scaling and would move Llama 3.1's keys with the wrong frequencies.
 """
 
 from __future__ import annotations
@@ -72,6 +74,8 @@ class DeferredBlender:
                     "starts and before the first blended request."
                 ) from exc
             _alias_vllm_attention()
+            _stub_sparse_flashinfer_backend()
+            _alias_input_embeddings(model)
             _blend_mistral_as_llama()
             blender = LMCBlender(
                 cache_engine=engine,
@@ -98,6 +102,37 @@ def _alias_vllm_attention() -> None:
         module = types.ModuleType("vllm.attention")
         module.Attention = Attention
         sys.modules["vllm.attention"] = module
+
+
+class _UnavailableSparseBackend:
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("LMCache's sparse FlashInfer backend does not run on this FlashInfer.")
+
+
+def _stub_sparse_flashinfer_backend() -> None:
+    """Keep LMCache's sparse FlashInfer backend from breaking its FlashAttention one.
+
+    LMCache 0.4.4 imports both backends together, and the sparse one needs
+    FlashInfer functions that vLLM 0.19's FlashInfer lacks. Blending here runs on
+    FlashAttention and never enables sparse attention; LMCache 0.4.7 imports each
+    backend only when it is used.
+    """
+    name = "lmcache.v1.compute.attention.flash_infer_sparse"
+    try:
+        importlib.import_module(name)
+    except ImportError:
+        module = types.ModuleType(name)
+        module.LMCFlashInferSparseBackend = _UnavailableSparseBackend
+        sys.modules[name] = module
+
+
+def _alias_input_embeddings(vllm_model: Any) -> None:
+    """Give the model the ``get_input_embeddings`` LMCache 0.4.4 embeds tokens with.
+
+    vLLM 0.18 renamed it to ``embed_input_ids``; LMCache 0.4.7 tries both names.
+    """
+    if not hasattr(vllm_model, "get_input_embeddings"):
+        vllm_model.get_input_embeddings = vllm_model.embed_input_ids
 
 
 def _blend_mistral_as_llama() -> None:

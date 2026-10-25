@@ -18,6 +18,11 @@ lacks and is never used here, is stubbed; and the model regains
 LMCache's Llama model, since it subclasses vLLM's Llama. Cached keys move to
 their new positions with the model's own RoPE, because LMCache rebuilds RoPE
 without scaling and would move Llama 3.1's keys with the wrong frequencies.
+
+Finally, unpinning a cached object that is already unpinned does nothing.
+LMCache 0.4.4's layerwise retrieval unpins every object it loads, and the
+lookup that pinned them unpins them again, which LMCache answers with a warning
+per object and layer inside the timed prefill.
 """
 
 from __future__ import annotations
@@ -199,9 +204,32 @@ def seed_deferred_blender(vllm_config: Any) -> None:
         LMCBlenderBuilder._blenders[ENGINE_NAME] = DeferredBlender(vllm_config)
 
 
+def _skip_repeated_unpin() -> None:
+    """Make unpinning a cached object that is already unpinned a no-op.
+
+    LMCache 0.4.4 would take the pin count below zero, log a warning, and reset
+    it to zero; it would also free the object a second time if nothing else
+    held it. Skipping the call keeps the count and the memory as they were.
+    """
+    from lmcache.v1.memory_management import TensorMemoryObj
+
+    unpin = TensorMemoryObj.unpin
+    if getattr(unpin, "skips_repeats", False):
+        return
+
+    def unpin_once(self: Any) -> bool:
+        if self.meta.pin_count <= 0:
+            return True
+        return unpin(self)
+
+    unpin_once.skips_repeats = True
+    TensorMemoryObj.unpin = unpin_once
+
+
 class BlendConnector(LMCacheConnectorV1):
     def __init__(self, vllm_config: Any, role: Any, kv_cache_config: Any = None) -> None:
         seed_deferred_blender(vllm_config)
+        _skip_repeated_unpin()
         super().__init__(vllm_config, role, kv_cache_config)
 
     @classmethod

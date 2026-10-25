@@ -136,7 +136,7 @@ class _Runtime:
         self.separator = separator_token_ids(FakeTokenizer(), SEPARATOR)
         monkeypatch.setattr(answer_lmcache, "VLLMEngine", lambda *_a, **_k: FakeEngine())
         monkeypatch.setattr(answer_lmcache, "register_model", self._record("register_model"))
-        monkeypatch.setattr(answer_lmcache, "require_separator_parity", self._parity)
+        monkeypatch.setattr(answer_lmcache, "lmcache_separator", self._separator)
         monkeypatch.setattr(answer_lmcache, "kv_bytes_per_token", lambda: 1000)
         monkeypatch.setattr(answer_lmcache, "clear_cache", self._record("clear_cache", 0))
         monkeypatch.setattr(answer_lmcache, "require_cache_capacity", self._capacity)
@@ -153,9 +153,9 @@ class _Runtime:
 
         return call
 
-    def _parity(self, tokenizer: Any, special_str: str) -> list[int]:
-        self.events.append(("parity", special_str))
-        return separator_token_ids(tokenizer, special_str)
+    def _separator(self) -> list[int]:
+        self.events.append(("separator", ()))
+        return self.separator
 
     def _capacity(self, **kwargs: Any) -> int:
         self.events.append(("capacity", kwargs))
@@ -225,7 +225,7 @@ def test_start_registers_the_model_and_turns_prefix_caching_off(monkeypatch: Any
     assert engine.started_with["kv_connector"] == "BlendConnector"
     assert engine.started_with["kv_connector_extra_config"]["lmcache.enable_blending"] is True
     assert client.config.engine_config().enable_prefix_caching is True
-    assert [name for name, _ in fakes.events] == ["register_model", "parity"]
+    assert [name for name, _ in fakes.events] == ["register_model", "separator"]
     assert fakes.events[0][1] == (engine.llm_instance,)
 
 

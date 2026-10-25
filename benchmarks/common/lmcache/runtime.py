@@ -14,8 +14,6 @@ from typing import Any
 
 from inferscale.v1.units import bytes_to_mb
 
-from .segments import separator_token_ids
-
 # Each request also stores its unique footer-plus-question tail segment; this
 # many tokens per request are budgeted when the exact tails are not known.
 TAIL_ALLOWANCE_TOKENS = 128
@@ -55,19 +53,21 @@ def lmcache_engine() -> Any:
     return engine
 
 
-def require_separator_parity(tokenizer: Any, special_str: str) -> list[int]:
-    """The separator the prompts use must be the one LMCache splits prompts on."""
-    ours = separator_token_ids(tokenizer, special_str)
+def lmcache_separator() -> list[int]:
+    """The separator token ids LMCache splits prompts on, which the prompts must use.
+
+    LMCache encodes ``blend_special_str`` with its own Hugging Face tokenizer, and
+    for Mistral that encoding differs from vLLM's tokenizer, so the ids are read
+    from LMCache rather than derived again.
+    """
     database = getattr(lmcache_engine(), "token_database", None)
-    theirs = getattr(database, "sep_tokens", None)
-    if theirs is None:
+    separator = getattr(database, "sep_tokens", None)
+    if separator is None:
         raise RuntimeError("LMCache is not splitting prompts into segments; blending is off.")
-    theirs_list = [int(token) for token in theirs.tolist()]
-    if theirs_list != ours:
-        raise RuntimeError(
-            f"Blend separator mismatch: prompts use {ours}, LMCache splits on {theirs_list}."
-        )
-    return ours
+    token_ids = [int(token) for token in separator.tolist()]
+    if not token_ids:
+        raise RuntimeError("LMCache's blend separator encodes to no tokens.")
+    return token_ids
 
 
 def clear_cache() -> int:

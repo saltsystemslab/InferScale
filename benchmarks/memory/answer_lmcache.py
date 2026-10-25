@@ -23,9 +23,9 @@ from benchmarks.common.lmcache.runtime import (
     TAIL_ALLOWANCE_TOKENS,
     clear_cache,
     kv_bytes_per_token,
+    lmcache_separator,
     register_model,
     require_cache_capacity,
-    require_separator_parity,
     shutdown,
     warm_prompts,
     warmup_metrics,
@@ -72,9 +72,7 @@ class LMCacheBlendAnswerClient:
             # The blender needs the model, which vLLM loads after building the connector.
             register_model(self._engine.llm)
             self._tokenizer = self._engine.tokenizer
-            self._separator = require_separator_parity(
-                self._tokenizer, self._lmcache.blend_special_str
-            )
+            self._separator = lmcache_separator()
             self._bytes_per_token = kv_bytes_per_token()
         except Exception:
             self.close()

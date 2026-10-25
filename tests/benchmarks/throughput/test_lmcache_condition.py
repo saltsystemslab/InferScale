@@ -138,8 +138,8 @@ class _Harness:
             "start_llm": start_llm,
             "release_llm": lambda llm: self.events.append(("release_llm",)),
             "register_model": lambda llm: self.events.append(("register_model", llm)),
-            "require_separator_parity": lambda tokenizer, text: self.events.append(("parity", text))
-            or separator_token_ids(tokenizer, text),
+            "lmcache_separator": lambda: self.events.append(("separator",))
+            or separator_token_ids(FakeTokenizer(), SEPARATOR_STR),
             "kv_bytes_per_token": lambda: BYTES_PER_TOKEN,
             "clear_cache": lambda: self.events.append(("clear_cache",)) or 0,
             "cpu_cache_usage_bytes": lambda: self.events.append(("cpu_cache_usage_bytes",))
@@ -173,7 +173,7 @@ def test_run_lmcache_blend_orders_phases_and_maps_the_result_row(
     )
     assert started["engine"].enable_prefix_caching is False
     kinds = [event[0] for event in harness.events]
-    assert kinds[:3] == ["start_llm", "register_model", "parity"]
+    assert kinds[:3] == ["start_llm", "register_model", "separator"]
     per_count = [
         "generate",  # the random-token warm-up
         "reset_prefix_cache",

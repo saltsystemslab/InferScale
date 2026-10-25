@@ -27,11 +27,12 @@ class BlendMemoryLayout:
 
 
 def separator_token_ids(tokenizer: Any, special_str: str) -> list[int]:
-    """The separator exactly as LMCache derives it: the encoding minus its first token.
+    """The separator as LMCache derives it from a tokenizer: the encoding minus its first token.
 
     LMCache drops the first token to remove a BOS token; a tokenizer without
-    BOS loses a real token instead. Either way the prompts must use the same
-    ids LMCache splits on, which ``runtime.require_separator_parity`` checks.
+    BOS loses a real token instead. LMCache applies this to its own Hugging Face
+    tokenizer, which can encode differently from vLLM's, so the benchmark reads
+    the ids LMCache splits on (``runtime.lmcache_separator``).
     """
     token_ids = list(tokenizer.encode(special_str))[1:]
     if not token_ids:

@@ -36,8 +36,8 @@ def test_blend_prompt_matches_the_warmed_facts_and_answers_from_them() -> None:
     from benchmarks.common.lmcache.runtime import (
         clear_cache,
         kv_bytes_per_token,
+        lmcache_separator,
         register_model,
-        require_separator_parity,
         shutdown,
         warm_prompts,
     )
@@ -62,7 +62,7 @@ def test_blend_prompt_matches_the_warmed_facts_and_answers_from_them() -> None:
         engine.start(kv_transfer_config=lmcache_kv_transfer_config(settings))
         register_model(engine.llm)
         tokenizer = engine.tokenizer
-        separator = require_separator_parity(tokenizer, settings.blend_special_str)
+        separator = lmcache_separator()
         assert kv_bytes_per_token() > 0
 
         scaffold = extract_memory_scaffold_token_ids(tokenizer)

@@ -33,6 +33,7 @@ from lmcache.v1.cache_engine import LMCacheEngineBuilder
 from lmcache.v1.compute.blend.blender import LMCBlender
 from lmcache.v1.compute.blend.utils import LMCBlenderBuilder
 from lmcache.v1.compute.models.utils import VLLMModelTracker
+from vllm.config import set_current_vllm_config
 from vllm.distributed.kv_transfer.kv_connector.v1.lmcache_connector import LMCacheConnectorV1
 
 from .load_stats import load_stats, reset_load_stats, snapshot_load_stats
@@ -49,7 +50,8 @@ __all__ = [
 class DeferredBlender:
     """Stands in for ``LMCBlender`` until the model exists, then forwards to it."""
 
-    def __init__(self) -> None:
+    def __init__(self, vllm_config: Any) -> None:
+        self._vllm_config = vllm_config
         self._blender: Any | None = None
 
     def blend(self, *args: Any, **kwargs: Any) -> Any:
@@ -77,12 +79,15 @@ class DeferredBlender:
             _stub_sparse_flashinfer_backend()
             _alias_input_embeddings(model)
             _blend_mistral_as_llama()
-            blender = LMCBlender(
-                cache_engine=engine,
-                gpu_connector=engine.gpu_connector,
-                vllm_model=model,
-                config=engine.config,
-            )
+            # LMCache builds a vLLM rotary embedding for the blender, and vLLM
+            # constructs its custom ops only while its config is current.
+            with set_current_vllm_config(self._vllm_config):
+                blender = LMCBlender(
+                    cache_engine=engine,
+                    gpu_connector=engine.gpu_connector,
+                    vllm_model=model,
+                    config=engine.config,
+                )
             _move_keys_with_model_rope(blender.layerwise_model, model)
             self._blender = blender
         return self._blender
@@ -188,15 +193,15 @@ class _ListTokenRequest:
         return getattr(self._request, name)
 
 
-def seed_deferred_blender() -> None:
+def seed_deferred_blender(vllm_config: Any) -> None:
     """Make ``LMCBlenderBuilder.get_or_create`` return a deferred blender for this engine."""
     if ENGINE_NAME not in LMCBlenderBuilder._blenders:
-        LMCBlenderBuilder._blenders[ENGINE_NAME] = DeferredBlender()
+        LMCBlenderBuilder._blenders[ENGINE_NAME] = DeferredBlender(vllm_config)
 
 
 class BlendConnector(LMCacheConnectorV1):
     def __init__(self, vllm_config: Any, role: Any, kv_cache_config: Any = None) -> None:
-        seed_deferred_blender()
+        seed_deferred_blender(vllm_config)
         super().__init__(vllm_config, role, kv_cache_config)
 
     @classmethod

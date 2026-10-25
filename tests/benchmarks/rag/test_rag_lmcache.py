@@ -130,8 +130,8 @@ def _client(monkeypatch, *, bytes_per_token: int = 2, **config_overrides):
     )
     monkeypatch.setattr(
         answer_lmcache,
-        "require_separator_parity",
-        lambda tokenizer, special_str: separator_token_ids(tokenizer, special_str),
+        "lmcache_separator",
+        lambda: separator_token_ids(FakeTokenizer(), SEPARATOR),
     )
     monkeypatch.setattr(answer_lmcache, "kv_bytes_per_token", lambda: bytes_per_token)
     monkeypatch.setattr(runtime, "cpu_cache_usage_bytes", lambda: 4096)

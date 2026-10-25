@@ -23,9 +23,9 @@ from benchmarks.common.lmcache.runtime import (
     GB,
     TAIL_ALLOWANCE_TOKENS,
     kv_bytes_per_token,
+    lmcache_separator,
     register_model,
     require_cache_capacity,
-    require_separator_parity,
     shutdown,
     warm_prompts,
     warmup_metrics,
@@ -137,7 +137,7 @@ class RagLMCacheBlendAnswerClient(RagEngineClient):
         """Register the model, check the separator, then store every chunk's KV once."""
         settings = self.config.lmcache_settings()
         register_model(self._engine.llm)
-        separator = require_separator_parity(self._engine.tokenizer, settings.blend_special_str)
+        separator = lmcache_separator()
         scaffold = self._started_scaffold()
         prompts = warm_up_prompts(
             scaffold.header_token_ids, (chunk.token_ids for chunk in self._chunks), separator

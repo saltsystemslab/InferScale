@@ -39,9 +39,9 @@ from benchmarks.common.lmcache.runtime import (
     clear_cache,
     cpu_cache_usage_bytes,
     kv_bytes_per_token,
+    lmcache_separator,
     register_model,
     require_cache_capacity,
-    require_separator_parity,
     shutdown,
     warm_prompts,
 )
@@ -141,7 +141,7 @@ def run_lmcache_blend(
         )
         register_model(engine.llm)
         tokenizer = engine.llm.get_tokenizer()
-        separator = require_separator_parity(tokenizer, lmcache.blend_special_str)
+        separator = lmcache_separator()
         scaffold = extract_memory_scaffold_token_ids(tokenizer, block_size=config.kv_block_size)
         warm_prompt_ids = catalog_warm_up_prompts(
             tokenizer, scaffold, facts_by_sample.values(), separator

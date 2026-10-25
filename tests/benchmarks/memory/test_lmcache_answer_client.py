@@ -100,7 +100,9 @@ def test_sweep_cell_names_the_arm_and_precompute_ignores_it() -> None:
     )
 
     assert cell.run_id("llama", 10, "STAMP") == "llama-lmcache-blend-mem0-qdrant10-k5-s0-STAMP"
-    assert [cell.variant for cell in config.sweep_cells("lmcache")] == ["lmcache-blend"] * 4
+    assert [(cell.variant, cell.top_k) for cell in config.sweep_cells("lmcache")] == [
+        ("lmcache-blend", 50)
+    ]
     assert kv_context_windows(config.sweeps.values(), 0) == (0, 5, 20, 50)
 
 

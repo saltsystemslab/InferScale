@@ -85,7 +85,7 @@
       ]
     },
     "lmcache": {
-      "top_k": [5, 10, 20, 50],
+      "top_k": [50],
       "variants": [
         {"name": "lmcache-blend", "answer_backend": "lmcache-blend", "vector_backend": "qdrant", "context_window": [0]}
       ]

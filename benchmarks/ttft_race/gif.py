@@ -1,7 +1,8 @@
-"""Replay one question of two timelines as a GIF: both answers on one shared clock.
+"""Replay one question of several timelines as a GIF: every answer on one shared clock.
 
 The clock starts when the engine receives the request. Each panel shows its
-side's first-token time and then its answer, word by word.
+side's first-token time and then its answer, word by word. The InferScale
+timeline comes first; every other timeline is a baseline it is compared with.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ import json
 import math
 import re
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -23,7 +25,8 @@ FRAMES_PER_SECOND = 20
 MAX_FRAMES = 240
 FINAL_HOLD_MS = 3000
 BODY_LINES = 11
-BANNER = "InferScale vs Mem0"
+PANEL_COLUMN_WIDTH = 480
+FAST_MODE = "inferscale"
 
 GROUND: Color = (11, 18, 32)
 CARD: Color = (19, 28, 46)
@@ -33,13 +36,21 @@ BRIGHT: Color = (248, 250, 252)
 DIM: Color = (124, 138, 165)
 BLUE: Color = (56, 189, 248)
 ROSE: Color = (248, 113, 113)
+AMBER: Color = (251, 191, 36)
+
+# The label and accent color of each side a timeline can come from.
+STYLES: dict[str, tuple[str, Color]] = {
+    FAST_MODE: ("InferScale", BLUE),
+    "mem0": ("Mem0", ROSE),
+    "lmcache": ("LMCache CacheBlend", AMBER),
+}
 
 
 @dataclass(frozen=True)
 class Layout:
-    """Pixel geometry of the frame: two panels under a title row, above a footer."""
+    """Pixel geometry of the frame: one panel per column under a title row, above a footer."""
 
-    width: int = 960
+    columns: int = 2
     height: int = 480
     margin: int = 28
     gap: int = 16
@@ -47,8 +58,12 @@ class Layout:
     bottom: int = 56
 
     @property
+    def width(self) -> int:
+        return PANEL_COLUMN_WIDTH * self.columns
+
+    @property
     def panel_width(self) -> int:
-        return (self.width - 2 * self.margin - self.gap) // 2
+        return (self.width - 2 * self.margin - self.gap * (self.columns - 1)) // self.columns
 
     @property
     def floor(self) -> int:
@@ -93,7 +108,8 @@ class Panel:
 class Race:
     """Everything a frame needs that does not change between frames."""
 
-    panels: tuple[Panel, Panel]
+    panels: tuple[Panel, ...]
+    banner: str
     asked: str
     verdict: str
     footer_note: str
@@ -103,18 +119,27 @@ class Race:
     fonts: Fonts
 
     @property
-    def both_started_ms(self) -> float:
+    def all_started_ms(self) -> float:
         return max(panel.row["ttft_ms"] for panel in self.panels)
 
 
-def load_pair(inferscale_path: Path, mem0_path: Path) -> tuple[Timeline, Timeline]:
-    fast = json.loads(inferscale_path.read_text())
-    base = json.loads(mem0_path.read_text())
-    if (fast["mode"], base["mode"]) != ("inferscale", "mem0"):
-        sys.exit("Pass the InferScale timeline first and the Mem0 timeline second.")
-    if [row["question"] for row in fast["rows"]] != [row["question"] for row in base["rows"]]:
-        sys.exit("The two sides answered different questions; use the same config and --questions.")
-    return fast, base
+def load_timelines(paths: Sequence[Path]) -> list[Timeline]:
+    """The InferScale timeline followed by its baselines, all over the same questions."""
+    if len(paths) < 2:
+        sys.exit("Pass the InferScale timeline and at least one baseline timeline.")
+    timelines = [json.loads(Path(path).read_text()) for path in paths]
+    modes = [timeline["mode"] for timeline in timelines]
+    if modes[0] != FAST_MODE or FAST_MODE in modes[1:]:
+        sys.exit("Pass the InferScale timeline first and the baseline timelines after it.")
+    unknown = [mode for mode in modes if mode not in STYLES]
+    if unknown:
+        sys.exit(f"Unknown timeline mode {unknown[0]!r}; expected one of {', '.join(STYLES)}.")
+    if len(set(modes)) != len(modes):
+        sys.exit("Each baseline timeline must come from a different side.")
+    questions = [[row["question"] for row in timeline["rows"]] for timeline in timelines]
+    if any(other != questions[0] for other in questions[1:]):
+        sys.exit("The sides answered different questions; use the same config and --questions.")
+    return timelines
 
 
 def stream(row: Row) -> list[Event]:
@@ -129,23 +154,29 @@ def stream(row: Row) -> list[Event]:
 
 
 def render_gif(
-    fast: Timeline,
-    base: Timeline,
+    timelines: Sequence[Timeline],
     *,
     out: Path,
     question: int | None = None,
     slowdown: float = 20.0,
 ) -> int:
-    """Write the GIF for one question (default: the median speedup) and return its index."""
+    """Write the GIF for one question and return its index.
+
+    The default question is the median speedup over the first baseline, so the
+    replay is representative rather than the best case.
+    """
     try:
         from PIL import Image
     except ImportError:
         sys.exit("Rendering the GIF needs Pillow: pip install pillow")
-    pairs = list(zip(fast["rows"], base["rows"]))
-    speedups = [slow["ttft_ms"] / quick["ttft_ms"] for quick, slow in pairs]
-    chosen = _choose_question(speedups, question)
-    _print_speedups(pairs, speedups, chosen)
-    race = _build_race(fast, base, pairs[chosen], speedups[chosen], slowdown)
+    fast, baselines = timelines[0], timelines[1:]
+    speedups = [
+        [slow["ttft_ms"] / quick["ttft_ms"] for quick, slow in zip(fast["rows"], base["rows"])]
+        for base in baselines
+    ]
+    chosen = _choose_question(speedups[0], question)
+    _print_speedups(timelines, speedups, chosen)
+    race = _build_race(timelines, chosen, [column[chosen] for column in speedups], slowdown)
 
     # Twenty frames per second of playback, fewer when that would exceed MAX_FRAMES.
     step_ms = max(1000 / FRAMES_PER_SECOND, race.end_ms * slowdown / MAX_FRAMES)
@@ -158,12 +189,16 @@ def render_gif(
         duration=[round(step_ms)] * count + [FINAL_HOLD_MS],
         loop=0,
     )
-    quick, slow = pairs[chosen]
-    print(
-        f"wrote {out}: question {chosen}, first token {quick['ttft_ms']:.0f} ms (InferScale) "
-        f"vs {slow['ttft_ms']:.0f} ms (Mem0)"
+    readings = " vs ".join(
+        f"{timeline['rows'][chosen]['ttft_ms']:.0f} ms ({label(timeline)})"
+        for timeline in timelines
     )
+    print(f"wrote {out}: question {chosen}, first token {readings}")
     return chosen
+
+
+def label(timeline: Timeline) -> str:
+    return STYLES[timeline["mode"]][0]
 
 
 def load_font(size: int, bold: bool = False, mono: bool = True) -> Any:
@@ -211,51 +246,73 @@ def _choose_question(speedups: list[float], requested: int | None) -> int:
     return requested
 
 
-def _print_speedups(pairs: list[tuple[Row, Row]], speedups: list[float], chosen: int) -> None:
-    print(f"     {'InferScale':>11}  {'Mem0':>11}  {'speedup':>7}  question")
-    for index, (quick, slow) in enumerate(pairs):
+def _print_speedups(
+    timelines: Sequence[Timeline], speedups: list[list[float]], chosen: int
+) -> None:
+    """One first-token column per side and one speedup column per baseline."""
+    widths = [max(11, len(label(timeline))) for timeline in timelines]
+    header = "  ".join(f"{label(timeline):>{width}}" for timeline, width in zip(timelines, widths))
+    columns = "  ".join(f"{'speedup':>7}" for _ in speedups)
+    print(f"     {header}  {columns}  question")
+    for index, question in enumerate(row["question"] for row in timelines[0]["rows"]):
         marker = "*" if index == chosen else " "
-        print(
-            f"{marker}{index:>2}  {quick['ttft_ms']:>8.1f} ms  {slow['ttft_ms']:>8.1f} ms  "
-            f"{speedups[index]:>6.2f}x  {quick['question']}"
+        readings = "  ".join(
+            f"{timeline['rows'][index]['ttft_ms']:>{width - 3}.1f} ms"
+            for timeline, width in zip(timelines, widths)
         )
+        ratios = "  ".join(f"{column[index]:>6.2f}x" for column in speedups)
+        print(f"{marker}{index:>2}  {readings}  {ratios}  {question}")
 
 
 def _build_race(
-    fast: Timeline, base: Timeline, pair: tuple[Row, Row], speedup: float, slowdown: float
+    timelines: Sequence[Timeline], chosen: int, speedups: Sequence[float], slowdown: float
 ) -> Race:
-    quick, slow = pair
-    layout = Layout()
+    rows = [timeline["rows"][chosen] for timeline in timelines]
+    layout = Layout(columns=len(timelines))
     fonts = Fonts.load()
-    panels = (
-        Panel(
-            f"InferScale (k={fast['top_k']}, w={fast['context_window']})",
-            BLUE,
-            quick,
-            stream(quick),
-        ),
-        Panel(f"Mem0 (k={base['top_k']})", ROSE, slow, stream(slow)),
+    panels = tuple(
+        Panel(_panel_name(timeline), STYLES[timeline["mode"]][1], row, stream(row))
+        for timeline, row in zip(timelines, rows)
     )
-    verdict = "InferScale: first token " + (
-        f"{speedup:.1f}x sooner" if speedup >= 1 else f"{1 / speedup:.1f}x later"
-    )
+    labels = [label(timeline) for timeline in timelines]
+    banner = " vs ".join(labels)
     footer_note = f"   playback slowed {slowdown:g}x" if slowdown != 1 else ""
     return Race(
         panels=panels,
-        asked=_shortened_question(quick["question"], layout, fonts),
-        verdict=verdict,
+        banner=banner,
+        asked=_shortened_question(rows[0]["question"], layout, fonts, banner),
+        verdict=_verdict(list(zip(labels[1:], speedups))),
         footer_note=footer_note,
-        end_ms=max(quick["total_ms"], slow["total_ms"]),
+        end_ms=max(row["total_ms"] for row in rows),
         slowdown=slowdown,
         layout=layout,
         fonts=fonts,
     )
 
 
-def _shortened_question(question: str, layout: Layout, fonts: Fonts) -> str:
+def _panel_name(timeline: Timeline) -> str:
+    if timeline["mode"] == FAST_MODE:
+        return f"{label(timeline)} (k={timeline['top_k']}, w={timeline['context_window']})"
+    return f"{label(timeline)} (k={timeline['top_k']})"
+
+
+def _verdict(baselines: Sequence[tuple[str, float]]) -> str:
+    """How much sooner InferScale's first token came than each baseline's."""
+    if len(baselines) == 1:
+        return "InferScale: first token " + _sooner_or_later(baselines[0][1])
+    return "InferScale: first token " + ", ".join(
+        f"{_sooner_or_later(speedup)} than {name}" for name, speedup in baselines
+    )
+
+
+def _sooner_or_later(speedup: float) -> str:
+    return f"{speedup:.1f}x sooner" if speedup >= 1 else f"{1 / speedup:.1f}x later"
+
+
+def _shortened_question(question: str, layout: Layout, fonts: Fonts, banner: str) -> str:
     """The question shares the title row, so it is cut to stay clear of the banner."""
     asked = "LoCoMo question: " + question
-    room = layout.width - 2 * layout.margin - 32 - fonts.title.getlength(BANNER)
+    room = layout.width - 2 * layout.margin - 32 - fonts.title.getlength(banner)
     while fonts.note.getlength(asked) > room:
         asked = asked[:-4].rstrip() + "..."
     return asked
@@ -267,7 +324,7 @@ def _draw_frame(image_module: Any, race: Race, now: float) -> Any:
     layout, fonts = race.layout, race.fonts
     image = image_module.new("RGB", (layout.width, layout.height), GROUND)
     draw = ImageDraw.Draw(image)
-    draw.text((layout.margin, 22), BANNER, font=fonts.title, fill=BRIGHT)
+    draw.text((layout.margin, 22), race.banner, font=fonts.title, fill=BRIGHT)
     draw.text(
         (layout.width - layout.margin, 32), race.asked, font=fonts.note, fill=DIM, anchor="ra"
     )
@@ -277,7 +334,7 @@ def _draw_frame(image_module: Any, race: Race, now: float) -> Any:
     draw.text(
         (layout.margin, foot + 2), f"t = {now:,.0f} ms{race.footer_note}", font=fonts.note, fill=DIM
     )
-    if now >= race.both_started_ms:
+    if now >= race.all_started_ms:
         draw.text(
             (layout.width - layout.margin, foot),
             race.verdict,
@@ -298,7 +355,7 @@ def _draw_panel(draw: Any, race: Race, column: int, panel: Panel, now: float) ->
     draw.text((left + 22, top + 22), panel.name, font=fonts.heading, fill=TEXT)
     draw.line((left + 22, top + 70, right - 18, top + 70), fill=EDGE)
     if now < panel.row["ttft_ms"]:
-        # Both sides start together; the dots keep the slower one visibly working.
+        # Every side starts together; the dots keep the slower ones visibly working.
         dots = "." * (1 + int(now * race.slowdown / 400) % 3)
         start = right - 18 - draw.textlength("prefilling...", font=fonts.strong)
         draw.text((start, top + 24), "prefilling" + dots, font=fonts.strong, fill=DIM)

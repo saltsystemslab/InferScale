@@ -11,6 +11,7 @@ from benchmarks.memory.modes import result_mode
     [
         ("kv-injection", "mem0-kv"),
         ("prompt-injection", "mem0-prompt-injection"),
+        ("lmcache-blend", "mem0-lmcache-blend"),
     ],
 )
 def test_result_mode_names_mem0_memory_unit(answer_backend: str, expected: str) -> None:

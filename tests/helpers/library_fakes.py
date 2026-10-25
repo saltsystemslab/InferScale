@@ -230,9 +230,27 @@ class FakeIndex:
         self.closed = True
 
 
+class FakeLLM:
+    """Records the calls a client makes on the raw vLLM engine beside ``generate``."""
+
+    def __init__(self) -> None:
+        self.applied: list[Any] = []
+        self.batches: list[tuple[list[list[int]], Any]] = []
+
+    def apply_model(self, func: Any) -> list[Any]:
+        self.applied.append(func)
+        return [None]
+
+    def generate(self, prompts: Any, sampling_params: Any = None, use_tqdm: bool = False) -> list:
+        prompt_ids = [list(prompt["prompt_token_ids"]) for prompt in prompts]
+        self.batches.append((prompt_ids, sampling_params))
+        return []
+
+
 class FakeEngine:
     def __init__(self) -> None:
         self.tokenizer_instance = FakeTokenizer()
+        self.llm_instance = FakeLLM()
         self.started_with: dict[str, Any] | None = None
         self.started = False
         self.closed = False
@@ -243,6 +261,12 @@ class FakeEngine:
         if not self.started:
             raise RuntimeError("engine not started")
         return self.tokenizer_instance
+
+    @property
+    def llm(self) -> Any:
+        if not self.started:
+            raise RuntimeError("engine not started")
+        return self.llm_instance
 
     def start(self, *, kv_transfer_config: Any = None) -> float:
         self.started = True

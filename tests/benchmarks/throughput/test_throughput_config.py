@@ -8,15 +8,20 @@ import pytest
 from throughput_config import make_throughput_config
 
 from benchmarks.common.config import ConfigError, RuntimeConfig, load_json_object
+from benchmarks.common.lmcache.config import LMCacheConfig, parse_lmcache_config
 from benchmarks.common.paths import project_root
 from benchmarks.memory.config import MemoryRunConfig
 from benchmarks.memory.throughput.config import (
     ALL_CONDITIONS,
+    DEFAULT_CONDITIONS,
     DEFAULT_USER_COUNTS,
     ThroughputConfig,
     condition_vector_backend,
+    lmcache_config,
     load_throughput_config,
 )
+
+LMCACHE_SECTION = {"max_local_cpu_size_gb": 16, "blend_check_layers": [0, 2]}
 
 
 @pytest.fixture
@@ -114,7 +119,9 @@ def test_worker_snapshot_requires_every_storage_path(tmp_path: Path) -> None:
 def test_default_conditions_and_values(tmp_path: Path, runtime: RuntimeConfig) -> None:
     config = _config(tmp_path, runtime)
 
-    assert config.conditions == ALL_CONDITIONS == ("mem0_qdrant", "mem0_jasper", "kv_injection")
+    assert config.conditions == DEFAULT_CONDITIONS == ("mem0_qdrant", "mem0_jasper", "kv_injection")
+    assert ALL_CONDITIONS == ("mem0_qdrant", "mem0_jasper", "lmcache_blend", "kv_injection")
+    assert config.lmcache_max_local_cpu_size_gb is None
     assert config.user_counts == DEFAULT_USER_COUNTS
     assert config.memory_llm_provider == "vllm"
     assert config.memory_llm_model == config.model
@@ -218,6 +225,53 @@ def test_condition_vector_backends_pair_kv_with_jasper() -> None:
     assert condition_vector_backend("mem0_qdrant") == "qdrant"
     assert condition_vector_backend("mem0_jasper") == "jasper"
     assert condition_vector_backend("kv_injection") == "jasper"
+    assert condition_vector_backend("lmcache_blend") == "qdrant"
+
+
+def test_lmcache_section_flattens_and_round_trips_through_the_worker_snapshot(
+    tmp_path: Path, runtime: RuntimeConfig
+) -> None:
+    config = _config(tmp_path, runtime, conditions=["lmcache_blend"], lmcache=LMCACHE_SECTION)
+
+    assert config.lmcache_max_local_cpu_size_gb == 16.0
+    assert config.lmcache_blend_check_layers == (0, 2)
+    assert config.lmcache_chunk_size == 256
+    assert lmcache_config(config) == parse_lmcache_config(LMCACHE_SECTION, "x")
+    payload = config.to_jsonable()
+    assert payload["lmcache_blend_check_layers"] == [0, 2]
+    restored = ThroughputConfig.from_json_file(_write(tmp_path, payload, "snapshot.json"))
+    assert restored.lmcache_blend_check_layers == (0, 2)
+    assert restored.to_jsonable() == payload
+    assert lmcache_config(restored) == lmcache_config(config)
+
+
+def test_lmcache_fields_default_to_the_shared_settings(tmp_path: Path) -> None:
+    config = make_throughput_config(tmp_path)
+    shared = LMCacheConfig(max_local_cpu_size_gb=1.0)
+
+    assert config.lmcache_chunk_size == shared.chunk_size
+    assert config.lmcache_blend_recompute_ratio == shared.blend_recompute_ratio
+    assert config.lmcache_blend_check_layers == shared.blend_check_layers
+    assert config.lmcache_blend_special_str == shared.blend_special_str
+    assert config.lmcache_adapter == shared.adapter
+    with pytest.raises(ConfigError, match="max_local_cpu_size_gb is required"):
+        lmcache_config(config)
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"conditions": ["lmcache_blend"]},
+        {"sweeps": {"lmcache": {"conditions": ["lmcache_blend"]}}},
+    ],
+)
+def test_lmcache_blend_requires_the_lmcache_section(
+    tmp_path: Path, runtime: RuntimeConfig, values: dict[str, Any]
+) -> None:
+    with pytest.raises(ConfigError, match="lmcache is required"):
+        _config(tmp_path, runtime, **values)
+    config = _config(tmp_path, runtime, lmcache=LMCACHE_SECTION, **values)
+    assert lmcache_config(config).max_local_cpu_size_gb == 16.0
 
 
 def test_worker_config_restores_redacted_api_key_from_environment(
@@ -302,6 +356,12 @@ def test_cpu_payload_store_context_and_prefix_cache_round_trip(
         ({"kv_device": "cuda:0"}, "unknown keys"),
         ({"vector_distance": "ip"}, "unknown keys"),
         ({"jasper_device_kv_selection": False}, "unknown keys"),
+        ({"lmcache": {"max_local_cpu_size_gb": 0}}, "max_local_cpu_size_gb"),
+        (
+            {"lmcache": {"max_local_cpu_size_gb": 1, "blend_check_layers": [True]}},
+            "blend_check_layers",
+        ),
+        ({"lmcache": {"max_local_cpu_size_gb": 1, "unknown": 1}}, "unknown keys"),
     ],
 )
 def test_authored_json_rejects_invalid_settings(
@@ -318,6 +378,12 @@ def test_authored_json_rejects_invalid_settings(
         ({"requests_per_user": "2"}, "requests_per_user"),
         ({"vector_distance": "ip"}, "unknown keys"),
         ({"kv_enable_prefix_caching": "false"}, "enable_prefix_caching"),
+        ({"lmcache_chunk_size": 0}, "lmcache_chunk_size"),
+        ({"lmcache_blend_check_layers": "1"}, "lmcache_blend_check_layers"),
+        ({"lmcache_blend_check_layers": [1, 1]}, "lmcache_blend_check_layers"),
+        ({"lmcache_blend_recompute_ratio": 2}, "lmcache_blend_recompute_ratio"),
+        ({"lmcache_max_local_cpu_size_gb": True}, "lmcache_max_local_cpu_size_gb"),
+        ({"lmcache_adapter": "mp"}, "lmcache_adapter"),
     ],
 )
 def test_worker_snapshots_reject_invalid_settings(
@@ -334,3 +400,6 @@ def test_committed_throughput_presets_load(runtime: RuntimeConfig) -> None:
         config = load_throughput_config(path, runtime)
         assert config.model
         assert config.user_counts
+        assert "lmcache_blend" not in config.conditions
+        assert load_json_object(path)["sweeps"]["lmcache"]["conditions"] == ["lmcache_blend"]
+        assert lmcache_config(config).max_local_cpu_size_gb > 0

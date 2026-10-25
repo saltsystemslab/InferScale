@@ -11,7 +11,7 @@ from typing import Any
 
 from benchmarks.common.paths import project_root
 
-PACKAGES = ("torch", "vllm", "mem0ai", "openai", "jasper", "qdrant-client")
+PACKAGES = ("torch", "vllm", "lmcache", "mem0ai", "openai", "jasper", "qdrant-client")
 # Without a MemAvailable figure, this share of the physical RAM is treated as
 # available; the kernel, page cache, and resident processes own an unknown share.
 ASSUMED_AVAILABLE_FRACTION = 0.8

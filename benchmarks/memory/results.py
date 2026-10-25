@@ -45,6 +45,11 @@ KV_QUERY_METRIC_KEYS = (
     "kv_staging_stall_ms",
     "jasper_effective_beam_width",
     "prompt_injection_engine_time_to_first_token_ms",
+    "lmcache_engine_time_to_first_token_ms",
+    "lmcache_expected_matched_tokens",
+    "lmcache_matched_tokens",
+    "lmcache_load_time_ms",
+    "lmcache_separator_tokens",
 )
 
 

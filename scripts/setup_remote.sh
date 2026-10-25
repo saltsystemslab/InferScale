@@ -98,7 +98,7 @@ fi
 
 python -m pip install -c "${CONSTRAINTS_FILE}" torch torchvision torchaudio --index-url "${PYTORCH_INDEX}"
 python -m pip install -c "${CONSTRAINTS_FILE}" -e ".[dev,jasper]"
-python -m pip install -c "${CONSTRAINTS_FILE}" vllm accelerate hf_transfer --extra-index-url "${PYTORCH_INDEX}"
+python -m pip install -c "${CONSTRAINTS_FILE}" vllm accelerate hf_transfer lmcache --extra-index-url "${PYTORCH_INDEX}"
 
 # Jasper's graph segment size is a compile-time constant; set it from the setup JSON.
 python3 - "${JASPER_VECTORS_PER_SEGMENT_LOG2}" <<'PY'
@@ -128,8 +128,11 @@ cmake --install jasperpy/build
 python -m pip install -e jasperpy/python
 
 python - <<'PY'
+from importlib.metadata import version
+
 import inferscale
 import accelerate
+import lmcache.c_ops  # LMCache's compiled ops must load against the pinned torch.
 import torch
 import transformers
 import vllm
@@ -140,6 +143,7 @@ print("torch:", torch.__version__)
 print("torch cuda:", torch.version.cuda)
 print("transformers:", transformers.__version__)
 print("vllm:", vllm.__version__)
+print("lmcache:", version("lmcache"))
 PY
 
 # Timed runs consume immutable Mem0 fact catalogs, so extraction is part of

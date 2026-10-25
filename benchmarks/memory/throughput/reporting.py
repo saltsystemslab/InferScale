@@ -105,10 +105,15 @@ def build_result_row(
     kv_h2d_overlap_ratio: float = 0.0,
     kv_staging_stall_ms: float = 0.0,
     kv_requests_loaded: int = 0,
+    prefix_caching: bool | None = None,
     total_input_tokens: int,
     total_output_tokens: int,
 ) -> dict[str, Any]:
-    """One measured user count as a result row; QPS counts only the generation time."""
+    """One measured user count as a result row; QPS counts only the generation time.
+
+    ``prefix_caching`` records the engine's prefix cache setting when a
+    condition runs with something other than the run's own setting.
+    """
     total_requests = num_users * config.requests_per_user
     if generation_time_s <= 0:
         raise RuntimeError("Measured benchmark time must be greater than zero.")
@@ -134,7 +139,9 @@ def build_result_row(
         memory_setup_time_s=memory_setup_time_s,
         kv_precompute_time_s=kv_precompute_time_s,
         engine_startup_time_s=engine_startup_time_s,
-        kv_prefix_caching=int(config.kv_enable_prefix_caching),
+        kv_prefix_caching=int(
+            config.kv_enable_prefix_caching if prefix_caching is None else prefix_caching
+        ),
         kv_store_gpu_mb=kv_store_gpu_mb,
         kv_store_backend=kv_store_backend,
         kv_store_host_mb=kv_store_host_mb,
@@ -257,7 +264,14 @@ def render_markdown_report(config: ThroughputConfig, rows: Iterable[dict[str, An
         "",
         "Query embedding, vector retrieval, prompt construction, chunked-RoPE KV composition and "
         "registration, token-equivalence verification, memory setup, per-fact KV precomputation, "
-        "and model startup are reported separately in the timing table and excluded from QPS.",
+        "LMCache's fact warm-up, and model startup are reported separately in the timing table "
+        "and excluded from QPS.",
+        "",
+        "For `lmcache_blend`, `kv_store_backend` is `lmcache-cpu`, `kv_store_host_mb` is the "
+        "LMCache CPU cache after the fact warm-up, `kv_precompute_time_s` is that warm-up, "
+        "`kv_h2d_bytes` is the KV LMCache matched, `kv_h2d_avg_ms` is its load-plus-blend time "
+        "per request, `kv_requests_loaded` counts requests whose header and retrieved facts were "
+        "served from the cache, and `kv_prefix_caching` is 0.",
         "",
         *_qps_table(config, values),
         "",
@@ -277,6 +291,7 @@ def _qps_table(config: ThroughputConfig, rows: list[dict[str, Any]]) -> list[str
         group = by_count.get(count, {})
         kv_qps = _qps(group.get("kv_injection"))
         mem0_jasper_qps = _qps(group.get("mem0_jasper"))
+        lmcache_qps = _qps(group.get("lmcache_blend"))
         fact_counts = [row["fact_count"] for row in group.values() if row["fact_count"] > 0]
         table_rows.append(
             (
@@ -284,8 +299,10 @@ def _qps_table(config: ThroughputConfig, rows: list[dict[str, Any]]) -> list[str
                 f"{fact_counts[0]:.0f}" if fact_counts else "-",
                 _format_qps(_qps(group.get("mem0_qdrant"))),
                 _format_qps(mem0_jasper_qps),
+                _format_qps(lmcache_qps),
                 _format_qps(kv_qps),
                 _format_ratio(kv_qps, mem0_jasper_qps),
+                _format_ratio(kv_qps, lmcache_qps),
             )
         )
     headers = (
@@ -293,8 +310,10 @@ def _qps_table(config: ThroughputConfig, rows: list[dict[str, Any]]) -> list[str
         "Facts/user",
         "Mem0 Qdrant QPS",
         "Mem0 Jasper QPS",
+        "LMCache QPS",
         "KV QPS",
         "KV / Mem0 Jasper",
+        "KV / LMCache",
     )
     return _markdown_table(headers, table_rows, align=("---:",) * len(headers))
 

@@ -27,11 +27,12 @@ from benchmarks.common.json_fields import (
     section_of,
 )
 from benchmarks.common.judge_config import JudgeConfig, judge_config
+from benchmarks.common.lmcache.config import LMCacheConfig, parse_lmcache_config
 from inferscale.v1.config import EngineConfig, InferScaleConfig
 from inferscale.v1.index.jasper import MAX_JASPER_BEAM_WIDTH
 
 from .extraction_config import ExtractionConfig, extraction_dict, parse_extraction_config
-from .protocol import ANSWER_BACKENDS, PROTOCOL_STAMP, VECTOR_BACKENDS
+from .protocol import ANSWER_BACKENDS, LMCACHE_BACKEND, PROTOCOL_STAMP, VECTOR_BACKENDS
 from .sweeps import (
     MemoryCell,
     MemorySweep,
@@ -39,6 +40,7 @@ from .sweeps import (
     parse_sweeps,
     sweep_cells,
     sweep_dict,
+    sweeps_use_backend,
 )
 
 BENCHMARK_NAME = "memory-accuracy-latency"
@@ -68,6 +70,7 @@ RUN_KEYS = (
     "mem0",
     "extraction",
     "judge",
+    "lmcache",
     "sweeps",
 )
 
@@ -102,6 +105,8 @@ class MemoryRunConfig:
     embedding_api_key: str | None = None
     extraction: ExtractionConfig = field(default_factory=ExtractionConfig)
     sweeps: dict[str, MemorySweep] = field(default_factory=dict)
+    # Present whenever this run or one of its sweeps uses the LMCache arm.
+    lmcache: LMCacheConfig | None = None
 
     # Views over the library configuration.
     @property
@@ -231,6 +236,13 @@ class MemoryRunConfig:
     def engine_config(self) -> EngineConfig:
         return self.inferscale.engine
 
+    def lmcache_settings(self) -> LMCacheConfig:
+        if self.lmcache is None:
+            raise RuntimeError(
+                f"This run has no lmcache section; it is not an {LMCACHE_BACKEND} run."
+            )
+        return self.lmcache
+
     def local_store_scratch_dir(self, run_id: str | None = None) -> Path:
         return self.local_store_dir / "inferscale-bench-stores" / (run_id or self.run_id)
 
@@ -279,6 +291,7 @@ class MemoryRunConfig:
             "with_evidence": self.with_evidence,
             "jasper_effective_beam_width": self.jasper_effective_beam_width,
             "extraction": extraction_dict(self.extraction),
+            "lmcache": None if self.lmcache is None else self.lmcache.to_jsonable(),
             "sweeps": {name: sweep_dict(sweep) for name, sweep in self.sweeps.items()},
             **PROTOCOL_STAMP,
         }
@@ -306,7 +319,12 @@ class MemoryRunConfig:
             context_window=limits.context_window,
             where=where,
         )
-        _check_library_settings(inferscale, answer_backend, vector_backend, limits.top_k, where)
+        _check_library_settings(
+            inferscale, answer_backend, vector_backend, limits.top_k, limits.context_window, where
+        )
+        sweeps = parse_sweeps(
+            section_of(merged, "sweeps", where, required=False), f"{where}.sweeps"
+        )
         judge = judge_config(
             section_of(merged, "judge", where, required=False), runtime, where=f"{where}.judge"
         )
@@ -345,9 +363,8 @@ class MemoryRunConfig:
             memory_llm_api_key=extraction_llm_api_key(),
             embedding_api_key=embedding_api_key(),
             extraction=extraction,
-            sweeps=parse_sweeps(
-                section_of(merged, "sweeps", where, required=False), f"{where}.sweeps"
-            ),
+            sweeps=sweeps,
+            lmcache=_lmcache_settings(merged, answer_backend, sweeps, where),
         )
 
 
@@ -419,6 +436,7 @@ def _check_library_settings(
     answer_backend: str,
     vector_backend: str,
     top_k: int,
+    context_window: int,
     where: str,
 ) -> None:
     beam_width = inferscale.index.beam_width
@@ -432,6 +450,25 @@ def _check_library_settings(
             f"{where}: answer_backend prompt-injection requires "
             "inferscale.engine.enable_prefix_caching."
         )
+    if answer_backend == LMCACHE_BACKEND and context_window != 0:
+        raise ConfigError(
+            f"{where}: answer_backend {LMCACHE_BACKEND} stores each fact alone, so "
+            "context_window must be 0."
+        )
+
+
+def _lmcache_settings(
+    data: Mapping[str, Any], answer_backend: str, sweeps: Mapping[str, MemorySweep], where: str
+) -> LMCacheConfig | None:
+    """The lmcache section, required as soon as this run or a sweep variant uses the arm."""
+    if data.get("lmcache") is not None:
+        return parse_lmcache_config(section_of(data, "lmcache", where), f"{where}.lmcache")
+    if answer_backend == LMCACHE_BACKEND or sweeps_use_backend(sweeps.values(), LMCACHE_BACKEND):
+        raise ConfigError(
+            f"{where}.lmcache is required when answer_backend or a sweep variant is "
+            f"{LMCACHE_BACKEND!r}."
+        )
+    return None
 
 
 def _extraction_endpoint(data: Mapping[str, Any], extraction: ExtractionConfig, where: str) -> str:

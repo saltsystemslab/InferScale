@@ -83,6 +83,23 @@ def test_rag_sweep_uses_prompt_injection_run_marker(tmp_path, runtime):
     assert all(run["answer_backend"] == "prompt-injection" for run in runs)
 
 
+def test_rag_sweep_uses_lmcache_blend_run_marker(tmp_path, runtime):
+    data = {
+        "benchmark": "rag",
+        "model": "llama",
+        "lmcache": {"max_local_cpu_size_gb": 8},
+        "sweeps": {"lmcache": {"top_k": [15], "answer_backends": ["lmcache-blend"]}},
+    }
+    runs = plans.expand_runs(plan_for(tmp_path, data, sweep="lmcache"), runtime, "run", "stamp")
+
+    assert [run["run_id"] for run in runs] == ["multihoprag-llama-lmcache-blend-k15-s5-stamp"]
+    assert runs[0]["answer_backend"] == "lmcache-blend"
+    assert runs[0]["lmcache"] == {"max_local_cpu_size_gb": 8}
+    del data["lmcache"]
+    with pytest.raises(ConfigError, match="rag.lmcache is required"):
+        plans.expand_runs(plan_for(tmp_path, data, sweep="lmcache"), runtime, "run", "stamp")
+
+
 def test_empty_rag_sweep_uses_authored_run_defaults(tmp_path, runtime):
     data = {"benchmark": "rag", "top_k": 3, "sweeps": {"single": {}}}
     runs = plans.expand_runs(plan_for(tmp_path, data, sweep="single"), runtime, "run", "stamp")

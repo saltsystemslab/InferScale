@@ -35,6 +35,16 @@ from benchmarks.common.json_fields import (
     section_of,
     str_list,
 )
+from benchmarks.common.lmcache.config import (
+    ADAPTERS,
+    DEFAULT_ADAPTER,
+    DEFAULT_BLEND_CHECK_LAYERS,
+    DEFAULT_BLEND_RECOMPUTE_RATIO,
+    DEFAULT_BLEND_SPECIAL_STR,
+    DEFAULT_CHUNK_SIZE,
+    LMCacheConfig,
+    parse_lmcache_config,
+)
 from inferscale.v1.config import KV_DTYPES, EngineConfig
 from inferscale.v1.index.jasper import MAX_JASPER_BEAM_WIDTH
 from inferscale.v1.kv.connector_utils import (
@@ -44,13 +54,19 @@ from inferscale.v1.kv.connector_utils import (
 )
 
 BENCHMARK_NAME = "memory-throughput"
-ALL_CONDITIONS = ("mem0_qdrant", "mem0_jasper", "kv_injection")
+LMCACHE_CONDITION = "lmcache_blend"
+ALL_CONDITIONS = ("mem0_qdrant", "mem0_jasper", LMCACHE_CONDITION, "kv_injection")
+# The conditions a run measures unless it lists its own; the LMCache arm is
+# opted into because it needs an lmcache section.
+DEFAULT_CONDITIONS = ("mem0_qdrant", "mem0_jasper", "kv_injection")
 # Which vector backend a condition retrieves with. kv_injection performs the
 # same Jasper top-k search as mem0_jasper and injects the retrieved chunks'
-# KV instead of their text.
+# KV instead of their text; lmcache_blend retrieves like mem0_qdrant and serves
+# the facts' KV through LMCache CacheBlend.
 CONDITION_VECTOR_BACKENDS = {
     "mem0_qdrant": "qdrant",
     "mem0_jasper": "jasper",
+    LMCACHE_CONDITION: "qdrant",
     "kv_injection": "jasper",
 }
 DEFAULT_USER_COUNTS = (50, 100, 150, 200)
@@ -94,6 +110,7 @@ RUN_KEYS = (
     "kv_chunk_cache_enabled",
     "inferscale",
     "mem0",
+    "lmcache",
     "sweeps",
 )
 SWEEP_KEYS = ("run_prefix", "conditions", "kv_store_backend", "kv_staging_slots")
@@ -110,7 +127,7 @@ class ThroughputConfig:
     memory_llm_cache_dir: Path
     local_store_dir: Path
     dataset_path: Path = Path(DEFAULT_DATASET_PATH)
-    conditions: tuple[str, ...] = ALL_CONDITIONS
+    conditions: tuple[str, ...] = DEFAULT_CONDITIONS
     user_counts: tuple[int, ...] = DEFAULT_USER_COUNTS
     requests_per_user: int = DEFAULT_REQUESTS_PER_USER
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
@@ -142,6 +159,13 @@ class ThroughputConfig:
     jasper_alpha: float = 1.0
     jasper_workspace_budget: str = "10GB"
     jasper_beam_width: int = 64
+    # The lmcache section, flattened; the size stays None until a run names the LMCache arm.
+    lmcache_max_local_cpu_size_gb: float | None = None
+    lmcache_chunk_size: int = DEFAULT_CHUNK_SIZE
+    lmcache_blend_recompute_ratio: float = DEFAULT_BLEND_RECOMPUTE_RATIO
+    lmcache_blend_check_layers: tuple[int, ...] = DEFAULT_BLEND_CHECK_LAYERS
+    lmcache_blend_special_str: str = DEFAULT_BLEND_SPECIAL_STR
+    lmcache_adapter: str = DEFAULT_ADAPTER
 
     def __post_init__(self) -> None:
         if self.memory_llm_model is None:
@@ -177,6 +201,7 @@ class ThroughputConfig:
             data[name] = str(data[name])
         data["conditions"] = list(self.conditions)
         data["user_counts"] = list(self.user_counts)
+        data["lmcache_blend_check_layers"] = list(self.lmcache_blend_check_layers)
         if data["embedding_api_key"]:
             data["embedding_api_key"] = REDACTED_API_KEY
         return data
@@ -193,6 +218,7 @@ class ThroughputConfig:
             data[name] = Path(require(data, name, str, where))
         data["conditions"] = str_list(data, "conditions", where)
         data["user_counts"] = int_list(data, "user_counts", where)
+        data["lmcache_blend_check_layers"] = int_list(data, "lmcache_blend_check_layers", where)
         if data.get("embedding_api_key") == REDACTED_API_KEY:
             data["embedding_api_key"] = (
                 os.environ.get(WORKER_API_KEY_VARIABLE) or embedding_api_key()
@@ -212,7 +238,9 @@ class ThroughputConfig:
             raise ConfigError(f"{where}.model must be non-empty.")
         run = _run_settings(data, where)
         library = _library_config(data, runtime, model_name, run, where)
-        _validate_sweeps(section_of(data, "sweeps", where, required=False))
+        sweeps = section_of(data, "sweeps", where, required=False)
+        _validate_sweeps(sweeps)
+        lmcache = _lmcache_settings(data, run["conditions"], sweeps, where)
         label = runtime.model_label(model_name)
         layout = runtime.layout
         results_dir = optional(data, "results_dir", str, str(layout.results_root), where)
@@ -231,6 +259,7 @@ class ThroughputConfig:
             memory_llm_base_url=_extraction_endpoint(data, where),
             **run,
             **_library_fields(library),
+            **_lmcache_fields(lmcache),
         )
 
 
@@ -239,6 +268,23 @@ FIELD_NAMES = tuple(item.name for item in fields(ThroughputConfig))
 
 def condition_vector_backend(condition: str) -> str:
     return CONDITION_VECTOR_BACKENDS[condition]
+
+
+def lmcache_config(config: ThroughputConfig) -> LMCacheConfig:
+    """The run's LMCache settings; the arm never runs without an explicit cache size."""
+    if config.lmcache_max_local_cpu_size_gb is None:
+        raise ConfigError(
+            f"{BENCHMARK_NAME}.lmcache.max_local_cpu_size_gb is required for the "
+            f"{LMCACHE_CONDITION} condition."
+        )
+    return LMCacheConfig(
+        max_local_cpu_size_gb=config.lmcache_max_local_cpu_size_gb,
+        chunk_size=config.lmcache_chunk_size,
+        blend_recompute_ratio=config.lmcache_blend_recompute_ratio,
+        blend_check_layers=tuple(config.lmcache_blend_check_layers),
+        blend_special_str=config.lmcache_blend_special_str,
+        adapter=config.lmcache_adapter,
+    )
 
 
 def jasper_effective_beam_width(config: ThroughputConfig) -> int:
@@ -262,7 +308,7 @@ def load_throughput_config(path: str | Path, runtime: RuntimeConfig) -> Throughp
 def _run_settings(data: Mapping[str, Any], where: str) -> dict[str, Any]:
     """The workload and cache switches authored at the top level of the run JSON."""
     return {
-        "conditions": str_list(data, "conditions", where, default=ALL_CONDITIONS),
+        "conditions": str_list(data, "conditions", where, default=DEFAULT_CONDITIONS),
         "user_counts": int_list(data, "user_counts", where, default=DEFAULT_USER_COUNTS),
         "requests_per_user": optional(
             data, "requests_per_user", int, DEFAULT_REQUESTS_PER_USER, where
@@ -337,6 +383,34 @@ def _library_fields(library: Any) -> dict[str, Any]:
     }
 
 
+def _lmcache_settings(
+    data: Mapping[str, Any], conditions: tuple[str, ...], sweeps: Mapping[str, Any], where: str
+) -> LMCacheConfig | None:
+    """The lmcache section, required as soon as a condition list names the LMCache arm."""
+    if data.get("lmcache") is not None:
+        return parse_lmcache_config(section_of(data, "lmcache", where), f"{where}.lmcache")
+    sweep_conditions = [
+        condition for sweep in sweeps.values() for condition in sweep.get("conditions", ())
+    ]
+    if LMCACHE_CONDITION in conditions or LMCACHE_CONDITION in sweep_conditions:
+        raise ConfigError(f"{where}.lmcache is required when {LMCACHE_CONDITION} is a condition.")
+    return None
+
+
+def _lmcache_fields(lmcache: LMCacheConfig | None) -> dict[str, Any]:
+    """The flattened lmcache settings, or nothing so the fields keep their defaults."""
+    if lmcache is None:
+        return {}
+    return {
+        "lmcache_max_local_cpu_size_gb": lmcache.max_local_cpu_size_gb,
+        "lmcache_chunk_size": lmcache.chunk_size,
+        "lmcache_blend_recompute_ratio": lmcache.blend_recompute_ratio,
+        "lmcache_blend_check_layers": tuple(lmcache.blend_check_layers),
+        "lmcache_blend_special_str": lmcache.blend_special_str,
+        "lmcache_adapter": lmcache.adapter,
+    }
+
+
 def _extraction_endpoint(data: Mapping[str, Any], where: str) -> str | None:
     mem0 = section_of(data, "mem0", where, required=False)
     mem0_where = f"{where}.mem0"
@@ -351,7 +425,9 @@ def _validate_sweeps(sweeps: Mapping[str, Any]) -> None:
         reject_unknown_keys(sweep, SWEEP_KEYS, where)
         if not optional(sweep, "run_prefix", str, "throughput", where).strip():
             raise ConfigError(f"{where}.run_prefix must be non-empty.")
-        _validate_conditions(str_list(sweep, "conditions", where, default=ALL_CONDITIONS), where)
+        _validate_conditions(
+            str_list(sweep, "conditions", where, default=DEFAULT_CONDITIONS), where
+        )
         backend = optional(sweep, "kv_store_backend", str, DEFAULT_KV_STORE_BACKEND, where)
         if backend not in KNOWN_KV_STORE_BACKENDS:
             raise ConfigError(f"{where}.kv_store_backend must be one of {KNOWN_KV_STORE_BACKENDS}.")
@@ -378,6 +454,7 @@ _POSITIVE_INT_FIELDS = (
     "kv_staging_slots",
     "jasper_n_neighbors",
     "jasper_beam_width",
+    "lmcache_chunk_size",
 )
 _NON_NEGATIVE_INT_FIELDS = ("warmup_batches", "context_window", "seed")
 _BOOL_FIELDS = ("kv_enable_prefix_caching", "kv_chunk_cache_enabled", "embedding_cache_enabled")
@@ -394,6 +471,8 @@ _TEXT_FIELDS = (
     "memory_llm_provider",
     "memory_llm_model",
     "jasper_workspace_budget",
+    "lmcache_blend_special_str",
+    "lmcache_adapter",
 )
 _OPTIONAL_TEXT_FIELDS = ("embedding_api_key", "embedding_base_url", "memory_llm_base_url")
 _POSITIVE_NUMBER_FIELDS = ("kv_gpu_memory_utilization", "jasper_alpha")
@@ -415,6 +494,7 @@ def _validate_config(config: ThroughputConfig) -> None:
         raise ConfigError(f"{where}.log_level must be one of {', '.join(LOG_LEVELS)}.")
     _validate_conditions(config.conditions, where)
     _validate_user_counts(config.user_counts, where)
+    _validate_lmcache_fields(config, where)
     uses_jasper = any(
         condition_vector_backend(condition) == "jasper" for condition in config.conditions
     )
@@ -441,6 +521,38 @@ def _validate_field_types(data: Mapping[str, Any], where: str) -> None:
         value = require(data, name, (int, float), where)
         if not math.isfinite(value) or value <= 0:
             raise ConfigError(f"{where}.{name} must be a finite positive number.")
+
+
+def _validate_lmcache_fields(config: ThroughputConfig, where: str) -> None:
+    size = config.lmcache_max_local_cpu_size_gb
+    if size is not None and not (_is_number(size) and math.isfinite(size) and size > 0):
+        raise ConfigError(
+            f"{where}.lmcache_max_local_cpu_size_gb must be a finite positive number."
+        )
+    ratio = config.lmcache_blend_recompute_ratio
+    if not (_is_number(ratio) and math.isfinite(ratio) and 0 <= ratio <= 1):
+        raise ConfigError(f"{where}.lmcache_blend_recompute_ratio must be between 0 and 1.")
+    layers = config.lmcache_blend_check_layers
+    distinct_layers = (
+        isinstance(layers, tuple)
+        and bool(layers)
+        and all(_is_index(layer) for layer in layers)
+        and len(set(layers)) == len(layers)
+    )
+    if not distinct_layers:
+        raise ConfigError(
+            f"{where}.lmcache_blend_check_layers must be distinct non-negative integers."
+        )
+    if config.lmcache_adapter not in ADAPTERS:
+        raise ConfigError(f"{where}.lmcache_adapter must be one of {ADAPTERS}.")
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool)
+
+
+def _is_index(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
 def _validate_user_counts(user_counts: tuple[int, ...], where: str) -> None:

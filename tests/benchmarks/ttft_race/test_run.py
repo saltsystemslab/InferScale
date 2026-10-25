@@ -26,7 +26,11 @@ ROOT = Path(__file__).resolve().parents[3]
 
 @pytest.mark.parametrize(
     "mode, answer_backend, vector_backend, context_window",
-    [("mem0", "prompt-injection", "qdrant", 0), ("inferscale", "kv-injection", "jasper", 50)],
+    [
+        ("mem0", "prompt-injection", "qdrant", 0),
+        ("lmcache", "lmcache-blend", "qdrant", 0),
+        ("inferscale", "kv-injection", "jasper", 50),
+    ],
 )
 def test_measure_runs_one_benchmark_cell_and_keeps_the_questions_after_warmup(
     monkeypatch: Any,
@@ -150,6 +154,10 @@ def test_measure_runs_one_benchmark_cell_and_keeps_the_questions_after_warmup(
     }
 
 
+def test_every_side_has_a_panel_style() -> None:
+    assert set(gif.STYLES) == set(measure.SIDES)
+
+
 def test_stream_spaces_words_evenly_between_the_first_token_and_the_end() -> None:
     row = {"answer": "one two three", "ttft_ms": 10.0, "total_ms": 30.0}
     assert gif.stream(row) == [(10.0, "one "), (20.0, "two "), (30.0, "three")]
@@ -157,7 +165,13 @@ def test_stream_spaces_words_evenly_between_the_first_token_and_the_end() -> Non
 
 
 def _timelines(tmp_path: Path, **mem0_changes: Any) -> tuple[Path, Path]:
-    """Three questions whose speedups are 2x, 8x, and 4x."""
+    """Three questions whose speedups over Mem0 are 2x, 8x, and 4x."""
+    fast, base, _ = _three_timelines(tmp_path, **mem0_changes)
+    return fast, base
+
+
+def _three_timelines(tmp_path: Path, **mem0_changes: Any) -> tuple[Path, Path, Path]:
+    """The Mem0 race plus an LMCache side whose speedups are 1.5x, 2x, and 2x."""
     questions = ["First?", "Second?", "Third?"]
 
     def side(mode: str, window: int, timings: list[tuple[float, float]]) -> dict[str, Any]:
@@ -180,8 +194,9 @@ def _timelines(tmp_path: Path, **mem0_changes: Any) -> tuple[Path, Path]:
 
     fast = side("inferscale", 50, [(20.0, 120.0), (20.0, 100.0), (20.0, 60.0)])
     base = {**side("mem0", 0, [(40.0, 200.0), (160.0, 260.0), (80.0, 100.0)]), **mem0_changes}
-    paths = tmp_path / "inferscale.json", tmp_path / "mem0.json"
-    for path, timeline in zip(paths, (fast, base)):
+    blend = side("lmcache", 0, [(30.0, 150.0), (40.0, 120.0), (40.0, 80.0)])
+    paths = tmp_path / "inferscale.json", tmp_path / "mem0.json", tmp_path / "lmcache.json"
+    for path, timeline in zip(paths, (fast, base, blend)):
         path.write_text(json.dumps(timeline))
     return paths
 
@@ -212,6 +227,74 @@ def test_gif_replays_the_median_speedup_question_in_the_harness_layout(
         ((489, 240), (248, 113, 113)),
     ):
         assert max(abs(got - want) for got, want in zip(first.getpixel(point), color)) <= 8
+
+
+def test_gif_with_a_third_timeline_widens_the_frame_and_names_each_baseline(
+    monkeypatch: Any, tmp_path: Path, capsys: Any
+) -> None:
+    fast, base, blend = _three_timelines(tmp_path)
+    out = tmp_path / "race.gif"
+    monkeypatch.setattr(
+        sys, "argv", ["run", "gif", str(fast), str(base), str(blend), "--out", str(out)]
+    )
+
+    race.main()
+
+    printed = capsys.readouterr().out
+    # The replayed question is still the median speedup over Mem0, the first baseline.
+    assert (
+        "question 2, first token 20 ms (InferScale) vs 80 ms (Mem0) vs 40 ms (LMCache CacheBlend)"
+        in printed
+    )
+    header = printed.splitlines()[0]
+    assert header.count("speedup") == 2
+    assert header.index("LMCache CacheBlend") < header.index("speedup")
+    image = Image.open(out)
+    assert image.size == (1440, 480)
+    image.seek(0)
+    first = image.convert("RGB")
+    layout = gif.Layout(columns=3)
+    for point, color in (
+        ((5, 5), gif.GROUND),
+        ((layout.panel_left(0) + 1, 240), gif.BLUE),
+        ((layout.panel_left(1) + 1, 240), gif.ROSE),
+        ((layout.panel_left(2) + 1, 240), gif.AMBER),
+    ):
+        assert max(abs(got - want) for got, want in zip(first.getpixel(point), color)) <= 8
+
+
+def test_two_panel_layout_keeps_its_geometry() -> None:
+    layout = gif.Layout(columns=2)
+
+    assert (layout.width, layout.panel_width) == (960, 444)
+    assert [layout.panel_left(column) for column in range(2)] == [28, 488]
+
+
+def test_verdict_names_each_baseline_once_there_are_several() -> None:
+    assert gif._verdict([("Mem0", 4.0)]) == "InferScale: first token 4.0x sooner"
+    assert gif._verdict([("Mem0", 0.5)]) == "InferScale: first token 2.0x later"
+    assert gif._verdict([("Mem0", 4.0), ("LMCache CacheBlend", 2.0)]) == (
+        "InferScale: first token 4.0x sooner than Mem0, 2.0x sooner than LMCache CacheBlend"
+    )
+
+
+def test_load_timelines_rejects_incomplete_or_inconsistent_sets(tmp_path: Path) -> None:
+    fast, base, blend = _three_timelines(tmp_path)
+    unknown = tmp_path / "unknown.json"
+    unknown.write_text(json.dumps({**json.loads(base.read_text()), "mode": "other"}))
+    for paths, message in (
+        ([fast], "at least one baseline"),
+        ([base, fast], "InferScale timeline first"),
+        ([fast, base, unknown], "Unknown timeline mode"),
+        ([fast, base, base], "different side"),
+    ):
+        with pytest.raises(SystemExit, match=message):
+            gif.load_timelines(paths)
+    assert [timeline["mode"] for timeline in gif.load_timelines([fast, blend, base])] == [
+        "inferscale",
+        "lmcache",
+        "mem0",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -286,12 +369,14 @@ def test_launcher_measures_each_side_in_its_own_process_then_draws_the_gif(repo:
     module = ["-m", "benchmarks.ttft_race.run"]
     assert [json.loads(line) for line in process.stdout.splitlines()] == [
         [*module, "measure", "--mode", "mem0", "--out", str(out / "mem0.json")],
+        [*module, "measure", "--mode", "lmcache", "--out", str(out / "lmcache.json")],
         [*module, "measure", "--mode", "inferscale", "--out", str(out / "inferscale.json")],
         [
             *module,
             "gif",
             str(out / "inferscale.json"),
             str(out / "mem0.json"),
+            str(out / "lmcache.json"),
             "--out",
             str(out / "ttft_race.gif"),
         ],

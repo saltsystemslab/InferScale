@@ -11,12 +11,46 @@ from benchmarks.common.launcher.plans import expand_runs
 from benchmarks.memory.throughput.config import ThroughputConfig
 
 
-def _expand(tmp_path: Path, data: dict) -> tuple[list[dict], RuntimeConfig, Path]:
+def _expand(
+    tmp_path: Path, data: dict, sweep: str = "cpu-store"
+) -> tuple[list[dict], RuntimeConfig, Path]:
     runtime = RuntimeConfig.from_dict({}, root=tmp_path)
     path = tmp_path / "throughput.json"
     path.write_text(json.dumps(data), encoding="utf-8")
-    plan = {"family": "throughput", "configs": [str(path)], "sweep": "cpu-store"}
+    plan = {"family": "throughput", "configs": [str(path)], "sweep": sweep}
     return expand_runs(plan, runtime, "run", "test-stamp"), runtime, path
+
+
+def test_throughput_lmcache_sweep_selects_only_the_blend_condition(tmp_path: Path) -> None:
+    data = {
+        "benchmark": "memory-throughput",
+        "model": "test/model",
+        "inferscale": {"engine": {"enable_prefix_caching": True}},
+        "lmcache": {"max_local_cpu_size_gb": 16},
+        "sweeps": {
+            "lmcache": {"run_prefix": "throughput-lmcache", "conditions": ["lmcache_blend"]}
+        },
+    }
+    runs, runtime, _ = _expand(tmp_path, data, sweep="lmcache")
+
+    assert len(runs) == 1
+    assert runs[0]["conditions"] == ["lmcache_blend"]
+    assert runs[0]["inferscale"]["engine"]["enable_prefix_caching"] is True
+    config = ThroughputConfig.from_dict(runs[0], runtime=runtime)
+    assert config.conditions == ("lmcache_blend",)
+    assert config.run_id == "throughput-lmcache-test-stamp-model"
+    assert config.lmcache_max_local_cpu_size_gb == 16.0
+
+
+def test_throughput_lmcache_sweep_requires_the_lmcache_section(tmp_path: Path) -> None:
+    data = {
+        "benchmark": "memory-throughput",
+        "model": "test/model",
+        "inferscale": {},
+        "sweeps": {"lmcache": {"conditions": ["lmcache_blend"]}},
+    }
+    with pytest.raises(ConfigError, match="lmcache is required"):
+        _expand(tmp_path, data, sweep="lmcache")
 
 
 def test_throughput_cpu_sweep_materializes_missing_kv_section(tmp_path: Path) -> None:

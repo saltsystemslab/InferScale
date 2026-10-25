@@ -21,7 +21,7 @@ def main() -> None:
         model="meta-llama/Llama-3.1-8B-Instruct",
         top_k=2,
         context_window=2,
-        vector_backend="exact",
+        vector_backend="jasper",
     )
     with InferScale(config) as engine:
         stats = engine.precompute(Chunk(id=chunk_id, text=text) for chunk_id, text in CONTEXT)

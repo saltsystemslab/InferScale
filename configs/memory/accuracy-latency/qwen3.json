@@ -49,6 +49,14 @@
   "mem0": {
     "llm_base_url": "http://localhost:8000/v1"
   },
+  "lmcache": {
+    "max_local_cpu_size_gb": 20,
+    "chunk_size": 256,
+    "blend_recompute_ratio": 0.15,
+    "blend_check_layers": [1],
+    "blend_special_str": " # # ",
+    "adapter": "package"
+  },
   "extraction": {
     "port": 8000,
     "workers": 4,
@@ -74,6 +82,12 @@
       "top_k": [5, 10, 20, 50],
       "variants": [
         {"name": "kvcpu", "answer_backend": "kv-injection", "vector_backend": "jasper", "kv_store_backend": "cpu", "kv_staging_slots": 4, "context_window": [0, 5, 20, 50]}
+      ]
+    },
+    "lmcache": {
+      "top_k": [5, 10, 20, 50],
+      "variants": [
+        {"name": "lmcache-blend", "answer_backend": "lmcache-blend", "vector_backend": "qdrant", "context_window": [0]}
       ]
     }
   }

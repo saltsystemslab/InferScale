@@ -53,6 +53,10 @@ SAMPLE_SETUP_COLUMNS = [
     "llama_kv_prefix_tensor_gpu_mb",
     "llama_kv_total_tensor_gpu_bytes",
     "llama_kv_total_tensor_gpu_mb",
+    "lmcache_warm_time_ms",
+    "lmcache_warm_prompts",
+    "lmcache_warm_tokens",
+    "lmcache_cpu_cache_mb",
     "answer_prepare_sample_time_ms",
     "sample_setup_time_ms",
 ]
@@ -70,6 +74,10 @@ KV_PRECOMPUTE_SETUP_KEYS = tuple(
     column
     for column in SAMPLE_SETUP_COLUMNS
     if column.startswith(("kv_precomputed_", "kv_chunk_cache_", "llama_kv_"))
+)
+# Copied from an LMCache warm-up's metrics into the setup row.
+LMCACHE_WARMUP_SETUP_KEYS = tuple(
+    column for column in SAMPLE_SETUP_COLUMNS if column.startswith("lmcache_")
 )
 
 
@@ -93,6 +101,11 @@ def record_kv_precompute(row: dict[str, Any], kv_metrics: dict[str, Any]) -> Non
     row["kv_precompute_time_ms"] = as_number(kv_metrics.get("kv_precompute_time_ms"))
     for key in KV_PRECOMPUTE_SETUP_KEYS:
         row[key] = as_number(kv_metrics.get(key))
+
+
+def record_memory_warmup(row: dict[str, Any], metrics: dict[str, Any]) -> None:
+    for key in LMCACHE_WARMUP_SETUP_KEYS:
+        row[key] = as_number(metrics.get(key))
 
 
 def setup_total_ms(row: dict[str, Any]) -> float:

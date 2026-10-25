@@ -1,0 +1,46 @@
+import { Definition, Definitions } from '../components/Definitions'
+import { RepoFile } from '../components/RepoFile'
+
+## Installation
+
+### Requirements
+
+- Linux with one NVIDIA GPU and CUDA 12.8 or newer.
+- Python 3.10 to 3.13.
+- CMake and the CUDA toolkit, which build the `jasperpy` submodule.
+
+The reference environment is a Runpod container with a persistent `/workspace` volume.
+The default parameters are tuned for an RTX Pro 6000 with 96 GB of VRAM.
+
+### Credentials and configuration
+
+Credentials live in `.env`:
+
+```bash
+cp .env.example .env
+```
+
+<Definitions>
+  <Definition term="OPENAI_API_KEY">Creates the `text-embedding-3-small` embeddings.</Definition>
+  <Definition term="HF_TOKEN">Downloads gated models such as Llama-3.1-8B-Instruct.</Definition>
+  <Definition term="JUDGE_LLM_API_KEY, EXTRACTION_LLM_API_KEY">Optional keys for the judge and fact-extraction endpoints.</Definition>
+</Definitions>
+
+Every other setting comes from the JSON files under <RepoFile path="configs/" />.
+Review <RepoFile path="configs/runtime.json" /> before installing: it sets the storage roots, build options, model ids, and the judge server.
+
+### Install
+
+```bash
+bash scripts/setup_remote.sh
+```
+
+<RepoFile path="scripts/setup_remote.sh" /> creates the virtual environment and installs InferScale with its GPU and benchmark dependencies.
+It then builds Jasper and its Python bindings from the `jasperpy` submodule, downloads the LoCoMo dataset, and extracts the Mem0 facts.
+
+Load the credentials and runtime paths into your shell, then activate the environment:
+
+```bash
+source scripts/load_env.sh
+source "${VENV_DIR}/bin/activate"
+```

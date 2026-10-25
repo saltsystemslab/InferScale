@@ -15,7 +15,7 @@ from benchmarks.common.json_fields import (
     require,
 )
 
-from .protocol import ANSWER_BACKENDS, KV_STORE_BACKENDS, VECTOR_BACKENDS
+from .protocol import ANSWER_BACKENDS, KV_STORE_BACKENDS, LMCACHE_BACKEND, VECTOR_BACKENDS
 
 SWEEP_KEYS = ("top_k", "variants")
 VARIANT_KEYS = (
@@ -43,6 +43,12 @@ class MemorySweep:
     name: str
     top_k: tuple[int, ...]
     variants: tuple[SweepVariant, ...]
+
+
+def sweeps_use_backend(sweeps: Iterable[MemorySweep], answer_backend: str) -> bool:
+    return any(
+        variant.answer_backend == answer_backend for sweep in sweeps for variant in sweep.variants
+    )
 
 
 @dataclass(slots=True, frozen=True)
@@ -169,6 +175,10 @@ def _parse_variant(item: Any, where: str) -> SweepVariant:
     windows = int_list(item, "context_window", where, default=(0,))
     if any(window < 0 for window in windows):
         raise ConfigError(f"{where}.context_window entries must be >= 0.")
+    if answer_backend == LMCACHE_BACKEND and windows != (0,):
+        raise ConfigError(
+            f"{where}: {LMCACHE_BACKEND} stores each fact alone, so context_window must be [0]."
+        )
     return SweepVariant(
         name=require(item, "name", str, where),
         answer_backend=answer_backend,

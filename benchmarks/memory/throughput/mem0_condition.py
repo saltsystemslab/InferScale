@@ -11,7 +11,8 @@ from __future__ import annotations
 import shutil
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 from loguru import logger
@@ -21,6 +22,11 @@ from benchmarks.memory.mem0.fact_catalog import MemoryFact
 from benchmarks.memory.prompting import (
     build_memory_prompt_token_ids,
     extract_memory_scaffold_token_ids,
+)
+from benchmarks.memory.throughput.batches import (
+    PreparedRequest,
+    UserCountAccumulator,
+    prepare_user_batches,
 )
 from benchmarks.memory.throughput.config import ThroughputConfig, jasper_effective_beam_width
 from benchmarks.memory.throughput.engine import (
@@ -43,44 +49,10 @@ from benchmarks.memory.throughput.workload import (
     LocomoRequest,
     build_locomo_requests,
     group_requests_by_user,
-    is_progress_step,
     request_prompt_token_ids,
-    sample_for_user,
     samples_for_users,
 )
 from inferscale.v1.kv.prompt import ScaffoldTokens
-
-
-@dataclass(frozen=True, slots=True)
-class PreparedRequest:
-    """One request's prompt and the time its retrieval and prompt construction took."""
-
-    prompt_token_ids: list[int]
-    retrieval_s: float
-    search_s: float
-    prompt_build_s: float
-
-
-@dataclass(slots=True)
-class UserCountAccumulator:
-    """The batch and the setup costs charged to one user count."""
-
-    num_users: int
-    memory_setup_time_s: float
-    prompts: list[dict[str, list[int]]] = field(default_factory=list)
-    retrieval_time_s: float = 0.0
-    vector_search_time_s: float = 0.0
-    prompt_build_time_s: float = 0.0
-    fact_count_total: int = 0
-
-    def includes(self, user_index: int) -> bool:
-        return user_index < self.num_users
-
-    def add(self, prepared: PreparedRequest) -> None:
-        self.prompts.append({"prompt_token_ids": prepared.prompt_token_ids})
-        self.retrieval_time_s += prepared.retrieval_s
-        self.vector_search_time_s += prepared.search_s
-        self.prompt_build_time_s += prepared.prompt_build_s
 
 
 @dataclass(slots=True)
@@ -132,8 +104,14 @@ def run_mem0(
             stores=stores,
             facts_by_sample=facts_by_sample,
         )
-        batches = _prepare_batches(
-            context, user_counts, group_requests_by_user(requests, max_users)
+        batches = prepare_user_batches(
+            condition=condition,
+            samples=samples,
+            stores=stores,
+            facts_by_sample=facts_by_sample,
+            user_counts=user_counts,
+            requests_by_user=group_requests_by_user(requests, max_users),
+            prepare_request=partial(_prepare_request, context),
         )
         return [_measure(context, backend, engine, batch) for batch in batches]
     finally:
@@ -141,31 +119,6 @@ def run_mem0(
             stores.close()
         shutil.rmtree(store_root, ignore_errors=True)
         release_llm(engine.llm if engine is not None else None)
-
-
-def _prepare_batches(
-    context: _ConditionContext,
-    user_counts: tuple[int, ...],
-    requests_by_user: Mapping[int, Sequence[LocomoRequest]],
-) -> list[UserCountAccumulator]:
-    """Search every user's requests once, charging each user count that includes the user."""
-    batches = [
-        UserCountAccumulator(count, context.stores.setup_time_for_users(context.samples, count))
-        for count in user_counts
-    ]
-    max_users = len(requests_by_user)
-    for user_index in range(max_users):
-        sample = sample_for_user(context.samples, user_index)
-        charged = [batch for batch in batches if batch.includes(user_index)]
-        for batch in charged:
-            batch.fact_count_total += len(context.facts_by_sample[sample.sample_id])
-        for request in requests_by_user[user_index]:
-            prepared = _prepare_request(context, sample, request)
-            for batch in charged:
-                batch.add(prepared)
-        if is_progress_step(user_index + 1, max_users):
-            logger.info("{}: prepared {}/{} users", context.condition, user_index + 1, max_users)
-    return batches
 
 
 def _prepare_request(

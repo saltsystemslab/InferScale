@@ -22,8 +22,9 @@ def _config(tmp_path: Path) -> ThroughputConfig:
     return make_throughput_config(
         tmp_path,
         run_id="report-test",
-        conditions=("mem0_jasper", "kv_injection"),
+        conditions=("mem0_jasper", "lmcache_blend", "kv_injection"),
         user_counts=(10,),
+        lmcache_max_local_cpu_size_gb=4.0,
     )
 
 
@@ -114,6 +115,50 @@ def test_write_reports_creates_csv_json_and_markdown(tmp_path: Path) -> None:
     assert "2.00x" in report
     assert "KV verify (s)" in report
     assert "QPS for every condition times only the synchronous vLLM generation call" in report
+
+
+def test_report_qps_table_includes_lmcache_and_its_ratio(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    write_reports(
+        config,
+        [_row("mem0_jasper", 10.0), _row("lmcache_blend", 5.0), _row("kv_injection", 20.0)],
+        system_metadata={},
+    )
+
+    report = (config.run_dir / "throughput_report.md").read_text(encoding="utf-8")
+    assert "| LMCache QPS |" in report
+    assert "| KV / LMCache |" in report
+    assert "| 4.00x |" in report
+    assert "`lmcache-cpu`" in report
+    assert "LMCache's fact warm-up" in report
+
+
+def test_lmcache_rows_round_trip_through_their_condition_csv(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    row = build_result_row(
+        config,
+        10,
+        condition="lmcache_blend",
+        vector_backend="qdrant",
+        generation_time_s=4.0,
+        kv_precompute_time_s=1.5,
+        kv_store_backend="lmcache-cpu",
+        kv_store_host_mb=640.0,
+        kv_h2d_bytes=2048,
+        kv_h2d_avg_ms=3.5,
+        kv_requests_loaded=20,
+        prefix_caching=False,
+        total_input_tokens=100,
+        total_output_tokens=40,
+    )
+    write_reports(config, [row], system_metadata={})
+
+    (restored,) = read_existing_results(config.run_dir)
+    assert (config.run_dir / "throughput_lmcache_blend.csv").is_file()
+    assert restored == row
+    assert restored["kv_store_backend"] == "lmcache-cpu"
+    assert restored["kv_prefix_caching"] == 0
+    assert restored["kv_requests_loaded"] == 20
 
 
 def test_coerce_row_parses_csv_strings_into_schema_types() -> None:

@@ -1,0 +1,57 @@
+import latencyFigure from '../../../figures/paper/serving-latency.png'
+import throughputFigure from '../../../figures/paper/serving-throughput.png'
+import { AccuracyTable } from '../components/AccuracyTable'
+import { Figure } from '../components/Figure'
+
+## Results
+
+Results on the LoCoMo memory benchmark with Llama-3.1-8B, Mistral-7B, and Qwen2.5-7B.
+The [benchmarks](#benchmarks) section shows how to reproduce them.
+
+### Serving latency
+
+<Figure
+  plate
+  size="wide"
+  src={latencyFigure}
+  width={1657}
+  height={515}
+  alt="Latency versus top-k for Llama-3.1-8B, Mistral-7B, and Qwen2.5-7B on a log scale. InferScale's time-to-first-token stays below 20 ms at every k, while Mem0's grows with k; query-to-first-token latency shows the same gap."
+  caption={<>Engine time-to-first-token (solid) and end-to-end query-to-first-token latency, which adds retrieval (dashed), on a log scale. InferScale's curves for every window <i>w</i> overlap within 1 ms, so <i>w</i> = 5 is shown.</>}
+/>
+
+InferScale keeps TTFT nearly flat as more memory is retrieved, while Mem0's prefill latency grows with *k*.
+
+### Memory QA accuracy
+
+Judged LoCoMo accuracy (%), micro-averaged over the 1,540 answerable questions:
+
+<AccuracyTable />
+
+Encoding each fact in isolation (*w* = 0) trails Mem0 and degrades as more facts are retrieved: from 62.2% to 53.8% on Llama and, most steeply, from 54.0% to 37.2% on Mistral as *k* grows from 5 to 50.
+A context window reverses this.
+With *w* of 20 or more, accuracy is flat-to-rising in *k* and comes within a few points of Mem0 (on Llama, 60.3% vs. 63.3% at *k* = 50), while often exceeding it at small *k*.
+
+### Serving throughput
+
+<Figure
+  plate
+  size="wide"
+  src={throughputFigure}
+  width={1659}
+  height={507}
+  alt="Throughput versus concurrent users, from 10 to 100, for Llama-3.1-8B, Mistral-7B, and Qwen2.5-7B. InferScale, with GPU or CPU-offloaded KV, climbs to about 100 queries per second or more at 100 users, while Mem0 stays below 40."
+  caption="Queries per second as concurrent users grow, with InferScale's KV on the GPU and offloaded to CPU memory."
+/>
+
+InferScale's throughput scales near-linearly with the number of concurrent users, while Mem0 saturates early.
+
+### Memory footprint
+
+Average storage per conversation, in megabytes:
+
+| Model | Jasper index (GPU) | Fact-ID map (CPU) | Fact KV (GPU) |
+| --- | ---: | ---: | ---: |
+| Llama-3.1-8B | 13.50 | 7.97 | 4,796.67 |
+| Mistral-7B v0.3 | 13.50 | 3.02 | 2,257.44 |
+| Qwen2.5-7B | 13.50 | 6.48 | 1,780.10 |

@@ -7,7 +7,13 @@ from typing import Any
 
 from benchmarks.common.config import RuntimeConfig
 from benchmarks.common.json_fields import ConfigError, optional
-from benchmarks.rag.config import RagBenchConfig, validate_rag_stage
+from benchmarks.rag.config import LMCACHE_BACKEND, RagBenchConfig, validate_rag_stage
+
+RUN_ID_MARKERS = {
+    "kv-injection": "kv",
+    "prompt-injection": "prompt-injection",
+    LMCACHE_BACKEND: "lmcache-blend",
+}
 
 
 def expand(
@@ -68,7 +74,7 @@ def _sweep(data: dict[str, Any], sweep_name: str | None, where: str) -> dict[str
 def _run_id(
     config: RagBenchConfig, runtime: RuntimeConfig, model: str, top_k: int, backend: str, stamp: str
 ) -> str:
-    marker = "kv" if backend == "kv-injection" else "prompt-injection"
+    marker = RUN_ID_MARKERS.get(backend, backend)
     return (
         f"{config.dataset_name}-{runtime.model_label(model)}-{marker}"
         f"-k{top_k}-s{config.context_window}-{stamp}"

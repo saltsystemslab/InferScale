@@ -25,8 +25,10 @@ from benchmarks.common.json_fields import ConfigError
 from benchmarks.common.paths import project_root
 from benchmarks.common.system import collect_system_metadata
 from benchmarks.memory.throughput.config import (
+    LMCACHE_CONDITION,
     WORKER_API_KEY_VARIABLE,
     ThroughputConfig,
+    lmcache_config,
     user_counts_text,
 )
 from benchmarks.memory.throughput.reporting import (
@@ -48,6 +50,7 @@ CONDITION_MODULES = {
     "kv_injection": ("torch", "transformers", "jasper"),
     "mem0_qdrant": ("qdrant_client",),
     "mem0_jasper": ("jasper",),
+    LMCACHE_CONDITION: ("lmcache", "qdrant_client"),
 }
 
 
@@ -149,6 +152,8 @@ def _load_worker_results(spec: WorkerSpec) -> list[dict[str, Any]]:
 
 
 def _validate_runtime_requirements(config: ThroughputConfig) -> None:
+    if LMCACHE_CONDITION in config.conditions:
+        lmcache_config(config)
     required = set(REQUIRED_MODULES)
     for condition in config.conditions:
         required.update(CONDITION_MODULES[condition])

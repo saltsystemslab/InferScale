@@ -15,6 +15,7 @@ from benchmarks.rag.prompting import (
     extract_rag_scaffold_token_ids,
     require_memory_within_budget,
 )
+from inferscale.v1.config import EngineConfig
 from inferscale.v1.kv.prompt import PromptTokens, QueryTokens, ScaffoldTokens, memory_token_budget
 from inferscale.v1.serving.vllm import GenerationOutput, VLLMEngine, force_vllm_inprocess_mode
 from inferscale.v1.types import SearchHit
@@ -53,7 +54,7 @@ class RagEngineClient:
         self.config = config
         self._chunks_by_id = chunks_by_id
         self._prompt_profile = prompt_profile
-        self._engine = VLLMEngine(config.model, config.kv_dtype, config.engine_config())
+        self._engine = VLLMEngine(config.model, config.kv_dtype, self._engine_config())
         self._scaffold: ScaffoldTokens | None = None
 
     def start_llm(self) -> None:
@@ -68,6 +69,7 @@ class RagEngineClient:
                 system_prompt=self._prompt_profile.system_prompt,
                 block_size=self.config.kv_block_size,
             )
+            self._after_start()
         except Exception:
             self.close()
             raise
@@ -82,6 +84,12 @@ class RagEngineClient:
 
     def _prepare(self) -> None:
         """Load what the client needs beside the engine; runs once before the engine starts."""
+
+    def _after_start(self) -> None:
+        """Runs once the engine and the scaffold exist, before the first answer."""
+
+    def _engine_config(self) -> EngineConfig:
+        return self.config.engine_config()
 
     def _kv_transfer_config(self) -> Mapping[str, Any] | None:
         return None

@@ -40,7 +40,7 @@ bash scripts/setup_remote.sh
 
 The script:
 - Creates the virtual environment
-- Installs InferScale and the GPU dependencies
+- Installs InferScale, the GPU and benchmark dependencies
 - Initializes the `jasperpy` submodule and builds Jasper
 - Installs the Python bindings
 - Downloads the LoCoMo dataset
@@ -70,7 +70,7 @@ config = InferScaleConfig(
     model="meta-llama/Llama-3.1-8B-Instruct",
     top_k=2,
     context_window=2,
-    vector_backend="exact",
+    vector_backend="jasper",
 )
 chunks = [
     Chunk(id="c1", text="Alice moved to Berlin in March 2021."),

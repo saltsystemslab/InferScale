@@ -1,11 +1,12 @@
 """Time one side of the race: the memory benchmark on the first questions of a conversation.
 
-Both sides retrieve TOP_K facts from the same Mem0 fact catalog. Mem0 reads
-them as prompt text; InferScale injects the KV it precomputed for each fact,
-with CONTEXT_WINDOW preceding turns as the encoding prefix. The first WARMUP
-questions absorb the engine's one-off startup costs and are left out; they
-differ from the timed ones, so no timed prompt is already in vLLM's prefix
-cache.
+Every side retrieves TOP_K facts from the same Mem0 fact catalog. Mem0 reads
+them as prompt text; LMCache CacheBlend reuses each fact's cached KV at its
+prompt position and recomputes a fraction of the tokens; InferScale injects
+the KV it precomputed for each fact, with CONTEXT_WINDOW preceding turns as
+the encoding prefix. The first WARMUP questions absorb the engine's one-off
+startup costs and are left out; they differ from the timed ones, so no timed
+prompt is already in vLLM's prefix cache.
 """
 
 from __future__ import annotations
@@ -24,11 +25,18 @@ DEFAULT_CONFIG = Path("configs/memory/accuracy-latency/llama.json")
 TOP_K = 100  # facts retrieved per question, on both sides
 CONTEXT_WINDOW = 50  # preceding turns in each fact's InferScale encoding prefix
 WARMUP = 3  # leading questions answered before the timed ones
-# The sweep cell each side runs: the memory benchmark's Mem0 baseline and its InferScale cell.
+# The sweep cell each side runs: the memory benchmark's two baselines and its InferScale cell.
 SIDES = {
     "mem0": MemoryCell(
         variant="prompt-injection",
         answer_backend="prompt-injection",
+        vector_backend="qdrant",
+        top_k=TOP_K,
+        context_window=0,
+    ),
+    "lmcache": MemoryCell(
+        variant="lmcache-blend",
+        answer_backend="lmcache-blend",
         vector_backend="qdrant",
         top_k=TOP_K,
         context_window=0,

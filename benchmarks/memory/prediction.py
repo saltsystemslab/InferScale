@@ -3,7 +3,8 @@
 Samples are prepared in two passes because the HF encoder and vLLM cannot
 share the GPU: every sample's fact catalog is loaded and (for KV injection)
 encoded first, then vLLM starts and each sample's live retriever answers its
-questions.
+questions. A backend that warms a cache from the catalog does so once vLLM
+runs, as part of the sample's preparation time.
 """
 
 from __future__ import annotations
@@ -23,10 +24,15 @@ from benchmarks.memory.evaluation import answer_question
 from benchmarks.memory.mem0.fact_catalog import fact_catalog_hits
 from benchmarks.memory.mem0.memory_builder import SampleMemoryBuilder
 from benchmarks.memory.protocol import SCORED_CATEGORIES
-from benchmarks.memory.runtime_clients import KVPrecomputeClient, RuntimeClients
+from benchmarks.memory.runtime_clients import (
+    KVPrecomputeClient,
+    MemoryWarmupClient,
+    RuntimeClients,
+)
 from benchmarks.memory.setup_metrics import (
     empty_setup_row,
     record_kv_precompute,
+    record_memory_warmup,
     setup_total_ms,
 )
 
@@ -159,6 +165,9 @@ def _answer_prepared_sample(
     try:
         prepare_started = time.perf_counter()
         clients.answer_client.prepare_sample(sample)
+        if isinstance(clients.answer_client, MemoryWarmupClient):
+            warmup = clients.answer_client.warm_sample_memory(sample, prepared.fact_catalog)
+            record_memory_warmup(setup_row, warmup or {})
         setup_row["answer_prepare_sample_time_ms"] = (time.perf_counter() - prepare_started) * 1000
         setup_row["sample_setup_time_ms"] = setup_total_ms(setup_row)
         for qa in prepared.questions:

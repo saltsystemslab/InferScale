@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from benchmarks.memory.throughput.config import ThroughputConfig
+from inferscale.v1.config import EngineConfig
 from inferscale.v1.kv.connector_utils import MEMORY_USER_ID_EXTRA_ARG
 
 WARMUP_PROMPT_LIMIT = 10
@@ -31,8 +32,12 @@ class KVWarmup:
 
 
 def start_llm(
-    config: ThroughputConfig, *, kv_transfer_config: dict[str, Any] | None = None
+    config: ThroughputConfig,
+    *,
+    kv_transfer_config: dict[str, Any] | None = None,
+    engine: EngineConfig | None = None,
 ) -> StartedEngine:
+    """Start the engine; ``engine`` lets a condition adjust the run's engine settings."""
     from inferscale.v1.serving.vllm import force_vllm_inprocess_mode, vllm_engine_kwargs
 
     # Every condition measures the same in-process V1 engine; otherwise QPS
@@ -41,7 +46,7 @@ def start_llm(
     from vllm import LLM, SamplingParams
 
     kwargs = vllm_engine_kwargs(
-        model=config.model, dtype=config.kv_dtype, engine=config.engine_config()
+        model=config.model, dtype=config.kv_dtype, engine=engine or config.engine_config()
     )
     if kv_transfer_config is not None:
         kwargs["kv_transfer_config"] = kv_transfer_config
@@ -81,11 +86,12 @@ def warm_up(
     seed: int,
     kv_warmup: KVWarmup | None = None,
 ) -> None:
-    """Warm up with random tokens so no real prompt lands in the prefix cache.
+    """Warm up with random tokens so no real prompt lands in a cache.
 
-    Prefix caching is enabled, so warming up with the measured prompts would
-    let the measured batch hit the cache (inflated QPS) and, worse, let the
-    native cache satisfy memory prefixes so the connector never injects KV.
+    With vLLM's prefix cache or an external KV cache in place, warming up with
+    the measured prompts would let the measured batch hit a cache (inflated
+    QPS) and, worse, let a cache satisfy memory prefixes so the connector
+    never injects KV.
     Warmup only needs to exercise kernels, allocator, and scheduler; token
     identity is irrelevant. ``kv_warmup`` carries explicit memory routing so
     the injection path warms too.
@@ -117,18 +123,22 @@ def sampling_params_with_memory_user_ids(
     sampling_params: Any, memory_user_ids: list[str]
 ) -> list[Any]:
     """Clone the base params once per request, routing each to its memory."""
-    # SamplingParams is vLLM's type; the benchmark only relies on its clone().
-    clone = getattr(sampling_params, "clone", None)
-    if not callable(clone):
-        raise RuntimeError("vLLM SamplingParams must provide clone() for request routing.")
     routed: list[Any] = []
     for memory_user_id in memory_user_ids:
-        request_params = clone()
+        request_params = _clone_sampling_params(sampling_params)
         extra_args = dict(request_params.extra_args or {})
         extra_args[MEMORY_USER_ID_EXTRA_ARG] = memory_user_id
         request_params.extra_args = extra_args
         routed.append(request_params)
     return routed
+
+
+def _clone_sampling_params(sampling_params: Any) -> Any:
+    # SamplingParams is vLLM's type; the benchmark only relies on its clone().
+    clone = getattr(sampling_params, "clone", None)
+    if not callable(clone):
+        raise RuntimeError("vLLM SamplingParams must provide clone() for request routing.")
+    return clone()
 
 
 def build_kv_warmup_prompt(

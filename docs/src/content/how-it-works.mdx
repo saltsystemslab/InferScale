@@ -1,0 +1,68 @@
+import architectureFigure from '../assets/paper/architecture.svg'
+import overviewFigure from '../assets/paper/overview.svg'
+import ropeEncodingFigure from '../assets/paper/rope-encoding.svg'
+import { Figure } from '../components/Figure'
+
+## How it works
+
+Memory systems such as *Mem0* retrieve relevant facts and pastes them into the prompt, so the serving engine prefills the same **text** again on every request.
+**Time-to-first-token (TTFT)** then grows with the retrieval budget *k*, even though the memory is reused across requests.
+
+InferScale replaces that repeated prefill with reusable KV state.
+It precomputes each fact's KV once, keeps it on the GPU next to the fact's embedding, and at serving time injects the KV of the retrieved facts directly into vLLM's paged cache.
+It plugs into vLLM through the KV-connector interface, so it needs neither engine modifications nor model fine-tuning.
+
+<Figure
+  plate
+  size="wide"
+  src={overviewFigure}
+  width={858}
+  height={500}
+  alt="Diagram comparing Mem0 with InferScale. Mem0 keeps its memory store on the CPU, sends retrieved text over PCIe, and prefills memory plus query on the GPU. InferScale encodes the conversation history offline into a GPU KV store next to the Jasper index; at request time only the query crosses PCIe, and the GPU retrieves KV, applies chunked RoPE, injects the KV, and prefills only the query."
+  caption="Mem0 delivers retrieved memory as prompt text and prefills all of it on every request, so TTFT grows with the amount retrieved. InferScale keeps the Jasper index and the pre-RoPE KV store on the GPU, so only the query tokens cross PCIe and only they are prefilled."
+/>
+
+### Architecture
+
+<Figure
+  plate
+  size="wide"
+  src={architectureFigure}
+  width={901}
+  height={571}
+  alt="Architecture diagram. Offline, Mem0 extracts facts from a LoCoMo conversation; each fact gets a retrieval embedding in the Jasper GPU vector store and a context-window encoding stored as pre-RoPE K and raw V in the HBM KV fact store, joined by a fact-ID map. At serving time, seven numbered steps embed the query, search Jasper, map the hits to fact ids, fetch their KV, apply chunked RoPE, scatter-copy the KV into vLLM's paged cache, and run paged attention to decode the response."
+  caption={<>InferScale architecture. Offline, each extracted fact is encoded twice under a shared fact id: a retrieval embedding in the GPU vector store, and a pre-RoPE key/value tensor from the answer model, computed with a window of <i>w</i> preceding turns. At serving time, the top-<i>k</i> retrieved facts are resolved to their KV, positioned by chunked RoPE, and scatter-copied into the paged cache ahead of the query.</>}
+/>
+
+For a given query:
+
+1. The query is embedded with the retrieval embedding model.
+2. GPU accelerated vector search via Jasper returns the top-*k* facts.
+3. Each hit's fact id is mapped to its entry in the KV store.
+4. The facts' pre-RoPE keys and raw values are fetched from GPU memory, or streamed from host memory when the KV store is offloaded.
+5. Chunked RoPE lays the facts out after a chat-template header and rotates their keys.
+6. The KV connector scatter-copies the rotated KV into the request's paged cache blocks, so vLLM skips their prefill.
+7. vLLM prefills only the query, whose tokens attend to all of the injected KV, and decodes the answer.
+
+### Chunked RoPE
+
+Rotary position embedding (RoPE) is a method used in modern Large Language Models (LLMs) to tell the transformer
+ the order of words in a sequence. However, RoPE rotates each key by its position, so a key cached at one position is wrong at any other.
+InferScale stores every fact's keys **before** rotation.
+When a request arrives, it concatenates the retrieved facts and applies RoPE once at their final positions, so the same precomputed KV is valid wherever retrieval places it.
+
+### Context-window encoding
+
+Encoding facts individually loses the cross-fact context that a joint prefill would provide.
+InferScale encodes each fact together with up to *w* preceding chunks, such as earlier conversation turns, and caches only the target fact's KV.
+The window is used only while precomputing, so it does not add to inference latency.
+
+<Figure
+  plate
+  size="narrow"
+  src={ropeEncodingFigure}
+  width={333}
+  height={402}
+  alt="Worked example. Top: context-window encoding prefills the prior turn 'Adopted Rex' together with turn t, 'He walks', and keeps only turn t's pre-RoPE K and raw V in the HBM KV store. Bottom: chunked RoPE takes the retrieved chunks 'He walks' and 'Vet Fri', gives them contiguous positions 0 to 3 with the query at 4, rotates each key by its position, and writes them into vLLM's paged KV cache."
+  caption={<>The two techniques on an example, where memory turn <i>t</i> is “He walks” and the prior turn is “Adopted Rex.” Top: context-window encoding prefills <i>t</i> behind its preceding turns but keeps only <i>t</i>'s pre-RoPE <i>K</i> and raw <i>V</i>, so the stored KV can condition “He” on “Rex” without adding the context to each request. Bottom: chunked RoPE stores retrieved chunks without positions, then gives them contiguous positions at injection and rotates their keys on the fly.</>}
+/>

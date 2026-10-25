@@ -38,6 +38,7 @@ remote = [
     "vllm==0.19.1",
     "transformers==4.56.0",
     "accelerate==1.14.0",
+    "lmcache==0.4.4",
 ]
 
 [tool.setuptools]

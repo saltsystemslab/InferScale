@@ -10,7 +10,8 @@ from __future__ import annotations
 from typing import Any
 
 # Benchmark axes.
-ANSWER_BACKENDS = ("kv-injection", "prompt-injection")
+LMCACHE_BACKEND = "lmcache-blend"
+ANSWER_BACKENDS = ("kv-injection", "prompt-injection", LMCACHE_BACKEND)
 VECTOR_BACKENDS = ("jasper", "qdrant")
 KV_STORE_BACKENDS = ("gpu", "cpu")
 

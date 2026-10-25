@@ -1,0 +1,103 @@
+import { Definition, Definitions } from '../components/Definitions'
+import { RepoFile } from '../components/RepoFile'
+
+## Benchmarks
+
+The benchmarks reproduce the paper's experiments on Llama-3.1-8B-Instruct, Mistral-7B-Instruct-v0.3, Qwen2.5-7B-Instruct, and Qwen3-14B.
+Each memory benchmark provides the model its retrieved Mem0 facts in one of three ways:
+
+<Definitions>
+  <Definition term="kv-injection">InferScale: each fact's KV is precomputed with Chunked RoPE and injected into the KV cache.</Definition>
+  <Definition term="prompt-injection">The facts are pasted into the prompt as text.</Definition>
+  <Definition term="lmcache-blend">LMCache CacheBlend: each fact's cached KV is reused at its position in the prompt, and a fraction of the tokens is recomputed.</Definition>
+</Definitions>
+
+Run every script from the repository root after the [installation](#installation).
+Each one takes no arguments and runs a fixed launch file under <RepoFile path="configs/launch/" />, so edit that JSON to change what runs.
+
+### Memory QA and throughput
+
+Answer the LoCoMo questions with InferScale and the Mem0 baseline on every model, sweeping *k* over 5, 10, 20, and 50 and InferScale's window *w* over 0, 5, 20, and 50:
+
+```bash
+bash scripts/full_run.sh
+```
+
+Measure multi-user serving throughput:
+
+```bash
+bash scripts/full_throughput.sh
+```
+
+Repeat both with the chunk KV offloaded to pinned CPU memory:
+
+```bash
+bash scripts/full_run_cpu_store.sh
+bash scripts/full_throughput_cpu_store.sh
+```
+
+### Judging
+
+A local Gemma judge, `google/gemma-2-9b-it`, grades the answers.
+vLLM serves it on the same GPU, so start it after the answer runs finish:
+
+```bash
+bash scripts/serve_vllm.sh
+bash scripts/judge.sh
+```
+
+### Run outputs
+
+Each run writes to `${BENCHMARK_RESULTS_ROOT}/<run-id>/`, where the run id encodes the swept axes:
+
+<Definitions>
+  <Definition term="kv-injection">`<model>-kv-mem0-jasper10-k<topk>-s<window>-<stamp>`</Definition>
+  <Definition term="prompt-injection">`<model>-prompt-injection-mem0-<vector>10-k<topk>-s0-<stamp>`</Definition>
+  <Definition term="lmcache-blend">`<model>-lmcache-blend-mem0-qdrant10-k<topk>-s0-<stamp>`</Definition>
+</Definitions>
+
+```bash
+ls "${BENCHMARK_RESULTS_ROOT}"
+cat "${BENCHMARK_RESULTS_ROOT}/<run-id>/summary.json"
+```
+
+### RAG
+
+The RAG benchmark runs on MultiHop-RAG and QASPER.
+Run these steps in order:
+
+```bash
+bash scripts/rag/setup_data.sh
+bash scripts/rag/estimate.sh
+bash scripts/rag/preembed.sh
+bash scripts/rag/precompute_kv.sh
+bash scripts/rag/full_run.sh
+```
+
+Then judge the answers:
+
+```bash
+bash scripts/serve_vllm.sh
+bash scripts/rag/judge.sh
+```
+
+The <RepoFile path="benchmarks/embedding/README.md">fact embedding benchmark</RepoFile> measures local Qwen3-Embedding-0.6B latency and throughput on the memory benchmark's cached facts.
+
+### LMCache CacheBlend baseline
+
+The `lmcache-blend` arm has its own sweeps for the memory, throughput, and RAG benchmarks:
+
+```bash
+bash scripts/full_run_lmcache.sh
+bash scripts/full_throughput_lmcache.sh
+bash scripts/rag/full_run_lmcache.sh
+```
+
+LMCache keeps each fact's or chunk's KV in a pinned-CPU cache and recomputes a fraction of the tokens at prefill to repair cross-attention.
+The benchmarks pin `lmcache==0.4.4`, the release contemporary with the pinned `vllm==0.19.1`.
+
+- vLLM prefix caching is off for this arm, because LMCache's blending replaces it.
+- The `lmcache` section of a run's JSON sets `max_local_cpu_size_gb`, `chunk_size`, `blend_recompute_ratio`, `blend_check_layers`, `blend_special_str`, and `adapter`.
+- Before timing, the arm clears LMCache and warms it with the prompt header and every unit; the warm-up time and cache size are reported as setup metrics, never as latency.
+
+The <RepoFile path="benchmarks/README.md">benchmarks README</RepoFile> documents the prompt layout and the per-query LMCache metrics.

@@ -183,6 +183,13 @@ class VLLMEngine:
             raise RuntimeError("VLLMEngine.start() must be called before using the tokenizer.")
         return self._tokenizer
 
+    @property
+    def llm(self) -> Any:
+        """The vLLM ``LLM`` itself, for clients that warm a cache or reach the model."""
+        if self._llm is None:
+            raise RuntimeError("VLLMEngine.start() must be called before using the engine.")
+        return self._llm
+
     def start(self, *, kv_transfer_config: Mapping[str, Any] | None = None) -> float:
         """Construct the engine; returns the startup time in seconds."""
         if self._llm is not None:

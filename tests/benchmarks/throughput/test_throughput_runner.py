@@ -8,7 +8,11 @@ import pytest
 from throughput_config import make_throughput_config
 
 from benchmarks.common.json_fields import ConfigError
-from benchmarks.memory.throughput.config import DEFAULT_USER_COUNTS, ThroughputConfig
+from benchmarks.memory.throughput.config import (
+    ALL_CONDITIONS,
+    DEFAULT_USER_COUNTS,
+    ThroughputConfig,
+)
 from benchmarks.memory.throughput.runner import (
     _validate_existing_config,
     build_worker_job,
@@ -21,8 +25,9 @@ def _config(tmp_path: Path) -> ThroughputConfig:
     return make_throughput_config(
         tmp_path,
         run_id="dry-run-test",
-        conditions=("mem0_qdrant", "kv_injection"),
+        conditions=("mem0_qdrant", "lmcache_blend", "kv_injection"),
         user_counts=(2, 3),
+        lmcache_max_local_cpu_size_gb=4.0,
     )
 
 
@@ -30,10 +35,16 @@ def test_worker_specs_isolate_each_kv_user_count(tmp_path: Path) -> None:
     config = _config(tmp_path)
     specs = worker_specs(config)
 
-    assert [spec.condition for spec in specs] == ["mem0_qdrant", "kv_injection", "kv_injection"]
+    assert [spec.condition for spec in specs] == [
+        "mem0_qdrant",
+        "lmcache_blend",
+        "kv_injection",
+        "kv_injection",
+    ]
     assert specs[0].user_counts == (2, 3)
-    assert specs[1].user_counts == (2,)
-    assert specs[2].user_counts == (3,)
+    assert specs[1].user_counts == (2, 3)
+    assert specs[2].user_counts == (2,)
+    assert specs[3].user_counts == (3,)
     assert build_worker_job(config, specs[0]) == {
         "config_path": str(config.run_dir / "config.json"),
         "condition": "mem0_qdrant",
@@ -56,6 +67,20 @@ def test_default_plan_isolates_kv_workers_per_user_count(tmp_path: Path) -> None
     assert single_worker_conditions == ["mem0_qdrant", "mem0_jasper"]
 
 
+def test_every_condition_gives_the_lmcache_arm_one_worker_for_all_counts(tmp_path: Path) -> None:
+    config = make_throughput_config(tmp_path, run_id="all-conditions", conditions=ALL_CONDITIONS)
+
+    specs = worker_specs(config)
+
+    assert len(specs) == 3 + len(DEFAULT_USER_COUNTS)
+    assert [spec.condition for spec in specs if spec.condition != "kv_injection"] == [
+        "mem0_qdrant",
+        "mem0_jasper",
+        "lmcache_blend",
+    ]
+    assert specs[2].user_counts == DEFAULT_USER_COUNTS
+
+
 def test_dry_run_prints_jobs_without_creating_run_directory(tmp_path: Path, capsys) -> None:
     config = _config(tmp_path)
 
@@ -63,8 +88,13 @@ def test_dry_run_prints_jobs_without_creating_run_directory(tmp_path: Path, caps
     output = capsys.readouterr().out
 
     jobs = [json.loads(line) for line in output.splitlines() if line.startswith("{")]
-    assert [job["condition"] for job in jobs] == ["mem0_qdrant", "kv_injection", "kv_injection"]
-    assert [job["user_counts"] for job in jobs] == [[2, 3], [2], [3]]
+    assert [job["condition"] for job in jobs] == [
+        "mem0_qdrant",
+        "lmcache_blend",
+        "kv_injection",
+        "kv_injection",
+    ]
+    assert [job["user_counts"] for job in jobs] == [[2, 3], [2, 3], [2], [3]]
     assert not config.run_dir.exists()
 
 
@@ -106,8 +136,8 @@ def test_runner_sends_json_to_isolated_workers_and_collects_results(
 
     summary = run_throughput(config)
 
-    assert summary["row_count"] == 4
-    assert [job["user_counts"] for job in jobs] == [[2, 3], [2], [3]]
+    assert summary["row_count"] == 6
+    assert [job["user_counts"] for job in jobs] == [[2, 3], [2, 3], [2], [3]]
     assert all(Path(job["output_path"]).is_file() for job in jobs)
     assert (config.run_dir / "throughput_merged.csv").is_file()
 
@@ -129,6 +159,11 @@ def test_resumed_run_must_match_its_recorded_settings(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="kv_enable_prefix_caching"):
         _validate_existing_config(changed)
 
+    resized = _config(tmp_path)
+    resized.lmcache_max_local_cpu_size_gb = 16.0
+    with pytest.raises(ConfigError, match="lmcache_max_local_cpu_size_gb"):
+        _validate_existing_config(resized)
+
 
 def test_resumed_run_rejects_a_snapshot_missing_a_setting(tmp_path: Path) -> None:
     config = _config(tmp_path)
@@ -138,4 +173,11 @@ def test_resumed_run_rejects_a_snapshot_missing_a_setting(tmp_path: Path) -> Non
     (config.run_dir / "config.json").write_text(json.dumps(saved), encoding="utf-8")
 
     with pytest.raises(ConfigError, match="new run_id"):
+        _validate_existing_config(config)
+
+    saved = config.to_jsonable()
+    saved.pop("lmcache_chunk_size")
+    (config.run_dir / "config.json").write_text(json.dumps(saved), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="lmcache_chunk_size"):
         _validate_existing_config(config)

@@ -12,7 +12,7 @@ from benchmarks.common.clients import ChatClient
 from benchmarks.common.files import JsonlWriter, write_json
 from benchmarks.common.judge import format_accuracy, skipped_judge_payload
 from benchmarks.common.system import collect_system_metadata
-from benchmarks.rag.config import RagBenchConfig
+from benchmarks.rag.config import LMCACHE_BACKEND, RagBenchConfig
 from benchmarks.rag.corpus import RagCorpus, load_rag_corpus
 from benchmarks.rag.data_types import RagQuery
 from benchmarks.rag.embedder import build_cached_embedder
@@ -33,7 +33,7 @@ from benchmarks.rag.run_outputs import (
 def run_answer(config: RagBenchConfig) -> dict[str, Any]:
     started = time.perf_counter()
     corpus = load_rag_corpus(config)
-    queries = corpus.queries[: config.max_queries] if config.max_queries else corpus.queries
+    queries = answered_queries(config, corpus)
     logger.info(
         "Starting RAG run_id={} dataset={} mode={} model={} docs={} chunks={} queries={}",
         config.run_id,
@@ -106,11 +106,26 @@ def build_answer_client(config: RagBenchConfig, corpus: RagCorpus) -> RagAnswerC
         return RagKvAnswerClient(
             config, chunks=corpus.chunks, cache=cache, prompt_profile=corpus.spec.prompt_profile
         )
-    from benchmarks.rag.answer_prompt_injection import RagPromptInjectionAnswerClient
+    if config.answer_backend == "prompt-injection":
+        from benchmarks.rag.answer_prompt_injection import RagPromptInjectionAnswerClient
 
-    return RagPromptInjectionAnswerClient(
-        config, chunks_by_id=corpus.chunks_by_id, prompt_profile=corpus.spec.prompt_profile
-    )
+        return RagPromptInjectionAnswerClient(
+            config, chunks_by_id=corpus.chunks_by_id, prompt_profile=corpus.spec.prompt_profile
+        )
+    if config.answer_backend == LMCACHE_BACKEND:
+        from benchmarks.rag.answer_lmcache import RagLMCacheBlendAnswerClient
+
+        return RagLMCacheBlendAnswerClient(
+            config,
+            chunks=corpus.chunks,
+            prompt_profile=corpus.spec.prompt_profile,
+            query_count=len(answered_queries(config, corpus)),
+        )
+    raise ValueError(f"Unsupported answer backend: {config.answer_backend!r}.")
+
+
+def answered_queries(config: RagBenchConfig, corpus: RagCorpus) -> list[RagQuery]:
+    return corpus.queries[: config.max_queries] if config.max_queries else corpus.queries
 
 
 def _judge_client(config: RagBenchConfig) -> ChatClient | None:

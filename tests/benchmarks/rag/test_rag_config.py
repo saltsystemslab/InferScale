@@ -144,6 +144,10 @@ def test_to_jsonable_redacts_secrets_and_stringifies_paths(custom_runtime, monke
         ({"inferscale": {"engine": {"enable_prefix_caching": "false"}}}, "boolean"),
         ({"inferscale": {"index": {"beam_width": True}}}, "integer"),
         ({"sweeps": {"standard": {"top_k": [0]}}}, "top_k"),
+        ({"sweeps": {"standard": {"answer_backends": ["other"]}}}, "answer_backends"),
+        ({"lmcache": {"max_local_cpu_size_gb": 1, "typo": 1}}, "unknown keys"),
+        ({"lmcache": {"max_local_cpu_size_gb": 1, "blend_recompute_ratio": 2}}, "ratio"),
+        ({"answer_backend": "lmcache-blend"}, "rag.lmcache is required"),
     ],
 )
 def test_invalid_json_settings_rejected(custom_runtime, data, match) -> None:

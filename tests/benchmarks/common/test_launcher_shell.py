@@ -145,8 +145,11 @@ def test_judge_plan_runtime_overrides_saved_runtime(repo: Path) -> None:
     "script",
     [
         "full_run.sh",
+        "full_run_lmcache.sh",
+        "full_throughput_lmcache.sh",
         "judge.sh",
         "rag/full_run.sh",
+        "rag/full_run_lmcache.sh",
         "serve_vllm.sh",
         "setup_remote.sh",
         "load_env.sh",

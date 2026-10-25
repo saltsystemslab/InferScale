@@ -12,6 +12,7 @@ from benchmarks.common.judge import build_judge_client
 from benchmarks.common.vector_types import SearchHit
 from benchmarks.memory.config import MemoryRunConfig
 from benchmarks.memory.data import ConversationSample, QuestionAnswer
+from benchmarks.memory.protocol import LMCACHE_BACKEND
 
 
 class AnswerClient(Protocol):
@@ -48,6 +49,15 @@ class KVPrecomputeClient(Protocol):
     ) -> dict[str, Any]: ...
 
 
+@runtime_checkable
+class MemoryWarmupClient(Protocol):
+    """An answer backend that fills a cache from a sample's facts once vLLM is running."""
+
+    def warm_sample_memory(
+        self, sample: ConversationSample, facts: list[SearchHit]
+    ) -> dict[str, Any]: ...
+
+
 @dataclass(slots=True)
 class RuntimeClients:
     answer_client: AnswerClient
@@ -66,10 +76,16 @@ def build_clients(config: MemoryRunConfig) -> RuntimeClients:
         from benchmarks.memory.answer_kv import KVAnswerClient
 
         answer_client = KVAnswerClient(config)
-    else:
+    elif config.answer_backend == "prompt-injection":
         from benchmarks.memory.answer_prompt_injection import PromptInjectionAnswerClient
 
         answer_client = PromptInjectionAnswerClient(config)
+    elif config.answer_backend == LMCACHE_BACKEND:
+        from benchmarks.memory.answer_lmcache import LMCacheBlendAnswerClient
+
+        answer_client = LMCacheBlendAnswerClient(config)
+    else:
+        raise ValueError(f"Unsupported answer backend: {config.answer_backend!r}.")
     return RuntimeClients(answer_client=answer_client, judge_client=judge_client_for(config))
 
 

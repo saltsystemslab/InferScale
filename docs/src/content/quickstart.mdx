@@ -1,0 +1,34 @@
+import { RepoFile } from '../components/RepoFile'
+
+## Quickstart
+
+<RepoFile path="examples/quickstart.py" /> precomputes four short chunks, retrieves the two most relevant to a question, and answers with their KV injected:
+
+```bash
+python examples/quickstart.py
+```
+
+```python
+from inferscale.v1 import Chunk, InferScale, InferScaleConfig
+
+config = InferScaleConfig(
+    model="meta-llama/Llama-3.1-8B-Instruct",
+    top_k=2,
+    context_window=2,
+    vector_backend="jasper",
+)
+chunks = [
+    Chunk(id="c1", text="Alice moved to Berlin in March 2021."),
+    Chunk(id="c2", text="Alice adopted a grey cat named Miso in 2023."),
+]
+
+with InferScale(config) as engine:
+    engine.precompute(chunks)
+    engine.start()
+    result = engine.query("What is the name of Alice's cat?")
+    print(result.text)
+    print([hit.id for hit in result.hits])
+```
+
+`context_window=2` encodes each chunk with up to two preceding chunks as context.
+`vector_backend="jasper"` retrieves with the Jasper graph index on the GPU instead of the default exact inner-product search.

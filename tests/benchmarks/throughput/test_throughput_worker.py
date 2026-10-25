@@ -248,6 +248,34 @@ def test_run_condition_requires_single_count_kv_worker(tmp_path: Path) -> None:
         run_condition(_config(tmp_path), "kv_injection", (2, 3))
 
 
+def test_run_condition_sends_every_user_count_to_one_lmcache_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from benchmarks.memory.throughput import worker
+
+    calls = []
+    monkeypatch.setattr(
+        worker, "run_lmcache_blend", lambda config, counts: calls.append(counts) or []
+    )
+
+    assert run_condition(_config(tmp_path), "lmcache_blend", (2, 3)) == []
+    assert calls == [(2, 3)]
+
+
+def test_result_row_prefix_caching_override(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    assert config.kv_enable_prefix_caching is True
+    kwargs = {"generation_time_s": 1.0, "total_input_tokens": 1, "total_output_tokens": 1}
+
+    assert build_result_row(config, 2, condition="mem0_qdrant", **kwargs)["kv_prefix_caching"] == 1
+    assert (
+        build_result_row(config, 2, condition="lmcache_blend", prefix_caching=False, **kwargs)[
+            "kv_prefix_caching"
+        ]
+        == 0
+    )
+
+
 @pytest.mark.parametrize(
     "values,match",
     [

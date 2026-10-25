@@ -1,0 +1,4 @@
+dist
+package-lock.json
+# Prettier's MDX support predates MDX 2 and reflows paragraphs that start with JSX.
+*.mdx

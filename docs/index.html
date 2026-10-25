@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>InferScale: GPU-native KV injection for personalized LLM serving</title>
+    <meta
+      name="description"
+      content="Documentation for InferScale, a GPU-native LLM memory system that injects precomputed KV into vLLM's paged cache: installation, Python API, benchmarks, and results."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="InferScale" />
+    <meta
+      property="og:description"
+      content="GPU-native KV injection for personalized LLM serving."
+    />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#030712" media="(prefers-color-scheme: dark)" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <script>
+      // Apply the stored or system theme before the first paint.
+      // The storage key is shared with src/theme.ts.
+      ;(() => {
+        let stored = null
+        try {
+          stored = localStorage.getItem('inferscale-docs-theme')
+        } catch {
+          // Storage is unavailable; fall back to the system theme.
+        }
+        const dark = stored ? stored === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches
+        document.documentElement.classList.toggle('dark', dark)
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

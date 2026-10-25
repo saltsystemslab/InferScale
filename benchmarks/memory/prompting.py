@@ -8,6 +8,7 @@ and the question as the final chat turn.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,7 +26,7 @@ from inferscale.v1.types import SearchHit
 
 from .context import context_turn_token_ids, plan_prompt_memory, previous_turn_context_turns
 from .data import ConversationSample, QuestionAnswer
-from .facts import reverse_ranked_memory_facts, unique_memory_facts
+from .facts import unique_memory_facts
 from .types import MemoryFactPlan, RetrievedFact
 
 MEMORY_TEMPLATE_PLACEHOLDER = "<<<LOCOMO_JASPER_MEMORY_GOES_HERE>>>"
@@ -55,6 +56,19 @@ class MemoryQuery:
 
 
 @dataclass(slots=True, frozen=True)
+class SelectedMemoryFacts:
+    """The retrieved facts of one answer: unique in hit order, laid out best fact last."""
+
+    retrieved: list[RetrievedFact]
+    selected: list[RetrievedFact]
+    token_ids: dict[str, list[int]]
+
+    def ordered_token_ids(self) -> list[list[int]]:
+        """Each selected fact's token ids in layout order."""
+        return [self.token_ids[fact.memory_id] for fact in self.selected]
+
+
+@dataclass(slots=True, frozen=True)
 class _MemoryStream:
     token_ids: list[int]
     context_turn_ids: tuple[str, ...]
@@ -63,6 +77,17 @@ class _MemoryStream:
 
 def format_memory_fact(fact: RetrievedFact) -> str:
     return fact.text.strip() + "\n"
+
+
+def select_memory_facts(tokenizer: Any, hits: Sequence[SearchHit]) -> SelectedMemoryFacts:
+    """Deduplicate the hits, order them best fact last, and tokenize each fact once."""
+    retrieved = unique_memory_facts(hits)
+    selected = list(reversed(retrieved))
+    token_ids = {
+        fact.memory_id: encode_text_no_special(tokenizer, format_memory_fact(fact))
+        for fact in selected
+    }
+    return SelectedMemoryFacts(retrieved=retrieved, selected=selected, token_ids=token_ids)
 
 
 def extract_memory_scaffold_token_ids(tokenizer: Any, *, block_size: int = 16) -> ScaffoldTokens:
@@ -86,17 +111,15 @@ def build_memory_prompt_token_ids(
     render_context_turns: bool = False,
 ) -> MemoryPromptTokens:
     """The memory as prompt text; ``None`` for the budget means the memory is not bounded."""
-    retrieved_facts = unique_memory_facts(hits)
-    selected_facts = reverse_ranked_memory_facts(hits)
+    facts = select_memory_facts(tokenizer, hits)
+    retrieved_facts = facts.retrieved
+    selected_facts = facts.selected
+    fact_token_ids = facts.token_ids
     scaffold = memory_scaffold or extract_memory_scaffold_token_ids(tokenizer)
     heading_token_ids = [] if selected_facts else scaffold.empty_token_ids
     scaffold_token_count = (
         len(scaffold.header_token_ids) + len(heading_token_ids) + len(scaffold.footer_token_ids)
     )
-    fact_token_ids = {
-        fact.memory_id: encode_text_no_special(tokenizer, format_memory_fact(fact))
-        for fact in selected_facts
-    }
     if render_context_turns and context_window > 0:
         stream = _facts_with_context_stream(
             tokenizer, sample, selected_facts, fact_token_ids, context_window

@@ -31,12 +31,19 @@ from benchmarks.common.judge_config import (
     JudgeConfig,
     judge_config,
 )
+from benchmarks.common.lmcache.config import LMCacheConfig, parse_lmcache_config
 from benchmarks.rag.datasets import get_dataset
 from inferscale.v1.config import EmbeddingConfig, EngineConfig
 from inferscale.v1.index.jasper import MAX_JASPER_BEAM_WIDTH
 
 WHERE = "rag"
-ANSWER_BACKENDS = ("kv-injection", "prompt-injection")
+LMCACHE_BACKEND = "lmcache-blend"
+ANSWER_BACKENDS = ("kv-injection", "prompt-injection", LMCACHE_BACKEND)
+RESULT_MODES = {
+    "kv-injection": "rag-kv",
+    "prompt-injection": "rag-prompt-injection",
+    LMCACHE_BACKEND: "rag-lmcache-blend",
+}
 # The corpus chunk KV is host-RAM resident at answer time, loaded once from
 # the precompute cache; there is no GPU-resident corpus backend.
 KV_STORE_BACKEND = "cpu"
@@ -65,6 +72,7 @@ RUN_KEYS = (
     "rejudge",
     "inferscale",
     "judge",
+    "lmcache",
     "sweeps",
 )
 LIBRARY_SECTIONS = ("engine", "kv", "index", "embedding", "generation")
@@ -138,13 +146,25 @@ class RagBenchConfig:
     log_level: str = "INFO"
     skip_judge: bool = False
     rejudge: bool = False
+    # Present whenever this run or one of its sweeps uses the LMCache arm.
+    lmcache: LMCacheConfig | None = None
 
     def __post_init__(self) -> None:
         if self.data_dir is None:
             self.data_dir = Path("data") / self.dataset_name
 
     def result_mode(self) -> str:
-        return "rag-kv" if self.answer_backend == "kv-injection" else "rag-prompt-injection"
+        try:
+            return RESULT_MODES[self.answer_backend]
+        except KeyError:
+            raise ValueError(f"Unsupported answer backend: {self.answer_backend!r}.") from None
+
+    def lmcache_settings(self) -> LMCacheConfig:
+        if self.lmcache is None:
+            raise RuntimeError(
+                f"This run has no lmcache section; it is not an {LMCACHE_BACKEND} run."
+            )
+        return self.lmcache
 
     @property
     def jasper_effective_beam_width(self) -> int:
@@ -177,6 +197,7 @@ class RagBenchConfig:
         data["mode"] = self.result_mode()
         data["jasper_effective_beam_width"] = self.jasper_effective_beam_width
         data["kv_store_backend"] = KV_STORE_BACKEND
+        data["lmcache"] = None if self.lmcache is None else self.lmcache.to_jsonable()
         for key in PATH_KEYS:
             if data[key] is not None:
                 data[key] = str(data[key])
@@ -207,13 +228,16 @@ class RagBenchConfig:
         judge = _judge(data, runtime)
         skip_judge = optional(data, "skip_judge", bool, False, WHERE) or judge.provider == "none"
         paths = _RunPaths.parse(data, runtime, dataset_name)
+        answer_backend = optional(data, "answer_backend", str, "kv-injection", WHERE)
+        sweeps = section_of(data, "sweeps", WHERE, required=False)
+        _validate_sweeps(sweeps)
         config = cls(
             dataset_name=dataset_name,
             data_dir=paths.data_dir,
             results_dir=paths.results_dir,
             run_id=optional(data, "run_id", str, stamp_now(), WHERE),
             model=model,
-            answer_backend=optional(data, "answer_backend", str, "kv-injection", WHERE),
+            answer_backend=answer_backend,
             chunk_size=optional(data, "chunk_size", int, DEFAULT_CHUNK_SIZE, WHERE),
             context_window=library.context_window,
             top_k=top_k,
@@ -251,9 +275,9 @@ class RagBenchConfig:
             log_level=optional(data, "log_level", str, "INFO", WHERE).upper(),
             skip_judge=skip_judge,
             rejudge=optional(data, "rejudge", bool, False, WHERE),
+            lmcache=_lmcache(data, answer_backend, sweeps),
         )
         validate_rag_config(config)
-        _validate_sweeps(section_of(data, "sweeps", WHERE, required=False))
         return config
 
 
@@ -329,6 +353,27 @@ def _library(data: Mapping[str, Any], *, model: str, top_k: int, context_window:
     return library
 
 
+def _lmcache(
+    data: Mapping[str, Any], answer_backend: str, sweeps: Mapping[str, Any]
+) -> LMCacheConfig | None:
+    """The lmcache section, required as soon as this run or a sweep uses the LMCache arm."""
+    if data.get("lmcache") is not None:
+        return parse_lmcache_config(section_of(data, "lmcache", WHERE), "rag.lmcache")
+    if answer_backend == LMCACHE_BACKEND or _sweeps_use_backend(sweeps, LMCACHE_BACKEND):
+        raise ConfigError(
+            f"rag.lmcache is required when answer_backend or a sweep uses {LMCACHE_BACKEND!r}."
+        )
+    return None
+
+
+def _sweeps_use_backend(sweeps: Mapping[str, Any], backend: str) -> bool:
+    return any(
+        backend in (sweep.get("answer_backends") or [])
+        for sweep in sweeps.values()
+        if isinstance(sweep, Mapping)
+    )
+
+
 def _judge(data: Mapping[str, Any], runtime: RuntimeConfig) -> JudgeConfig:
     judge = judge_config(
         section_of(data, "judge", WHERE, required=False), runtime, where="rag.judge"
@@ -347,7 +392,7 @@ def validate_rag_config(config: RagBenchConfig) -> None:
 
 def _validate_choices(config: RagBenchConfig) -> None:
     if config.answer_backend not in ANSWER_BACKENDS:
-        raise ConfigError("rag.answer_backend must be kv-injection or prompt-injection.")
+        raise ConfigError(f"rag.answer_backend must be one of {ANSWER_BACKENDS}.")
     if config.log_level not in LOG_LEVELS:
         raise ConfigError("rag.log_level is not a supported logging level.")
     if config.answer_backend == "prompt-injection" and not config.kv_enable_prefix_caching:
@@ -398,9 +443,7 @@ def _validate_sweeps(sweeps: Mapping[str, Any]) -> None:
             raise ConfigError(f"{where}.top_k must be between 1 and {MAX_JASPER_BEAM_WIDTH}.")
         backends = str_list(sweep, "answer_backends", where, default=list(ANSWER_BACKENDS))
         if any(backend not in ANSWER_BACKENDS for backend in backends):
-            raise ConfigError(
-                f"{where}.answer_backends must contain only kv-injection or prompt-injection."
-            )
+            raise ConfigError(f"{where}.answer_backends entries must be one of {ANSWER_BACKENDS}.")
 
 
 def load_rag_config(

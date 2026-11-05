@@ -9,15 +9,15 @@ import inferscale.v1.api as api_module
 from inferscale.v1 import Chunk, InferScale, InferScaleConfig, JasperIndex, MatmulIndex
 
 
-def test_facade_defaults_to_exact_without_loading_native_stacks(monkeypatch) -> None:
+def test_facade_defaults_to_jasper_without_loading_native_stacks(monkeypatch) -> None:
     for module in ("torch", "jasper", "tvm_ffi", "vllm"):
         monkeypatch.setitem(sys.modules, module, None)
     config = InferScaleConfig(model="m")
-    assert config.vector_backend == "exact"
+    assert config.vector_backend == "jasper"
     with InferScale(
         config, embedder=FakeEmbedder(), chunk_store=FakeChunkStore(), engine=FakeEngine()
     ) as facade:
-        assert isinstance(facade._index, MatmulIndex)
+        assert isinstance(facade._index, JasperIndex)
 
 
 @pytest.mark.parametrize("backend, index_class", [("jasper", JasperIndex), ("exact", MatmulIndex)])

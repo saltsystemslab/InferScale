@@ -28,7 +28,7 @@ def test_defaults_match_the_serving_contract() -> None:
     assert config.index.beam_width == 64
     assert config.embedding.model == "text-embedding-3-small"
     assert config.context_window == 0
-    assert config.vector_backend == "exact"
+    assert config.vector_backend == "jasper"
     assert config.to_dict()["context_window"] == 0
     assert InferScaleConfig.from_dict({"model": config.model}).context_window == 0
 
@@ -68,6 +68,7 @@ def test_from_dict_builds_nested_sections_and_round_trips(tmp_path) -> None:
         ({"model": "m", "engine": {"gpu_memory_utilization": 1.0}}, "gpu_memory_utilization"),
         ({"model": "m", "vector_backend": "jasper", "top_k": 960}, "beam width"),
         ({"model": "m", "vector_backend": "jasper", "index": {"beam_width": 1000}}, "beam width"),
+        ({"model": "m", "top_k": 960}, "beam width"),
         ({"model": " "}, "model must be"),
     ],
 )
@@ -102,12 +103,11 @@ def test_vector_backend_rejects_invalid_values(tmp_path, vector_backend, source)
             InferScaleConfig.from_json(path)
 
 
-@pytest.mark.parametrize("selector", [{}, {"vector_backend": "exact"}])
-def test_exact_has_no_jasper_beam_width_limit(selector) -> None:
+def test_exact_has_no_jasper_beam_width_limit() -> None:
     config = InferScaleConfig.from_dict(
         {
             "model": "m",
-            **selector,
+            "vector_backend": "exact",
             "top_k": 2000,
             "index": {"beam_width": 1000},
         }

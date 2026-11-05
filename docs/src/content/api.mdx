@@ -1,0 +1,103 @@
+import { Definition, Definitions } from '../components/Definitions'
+
+## Python API
+
+The `InferScale` engine has two phases: precompute all of the context, then call `start()` and answer queries.
+
+### Engine lifecycle
+
+<Definitions>
+  <Definition term="precompute(chunks)">Encodes and indexes chunks in order before `start()`, continuing the context window across calls, and returns `PrecomputeStats`.</Definition>
+  <Definition term="start()">Releases the encoder weights, finalizes the index, and starts vLLM with the KV connector.</Definition>
+  <Definition term="query(question, *, top_k=None)">Retrieves the top-*k* chunks and answers with their KV injected, returning a `QueryResult`.</Definition>
+  <Definition term="retrieve(question, *, top_k=None)">Runs retrieval and returns the hits with their `RetrievalMetrics`.</Definition>
+  <Definition term="answer(question, hits)">Injects the KV of the given hits and generates; `question` may also be a list of chat messages.</Definition>
+  <Definition term="chunk_ids(), get_chunk(chunk_id)">List the precomputed chunk ids, or return one chunk's metadata as `ChunkInfo`, in either phase.</Definition>
+  <Definition term="close()">Shuts down vLLM and frees the GPU state; leaving a `with` block calls it.</Definition>
+</Definitions>
+
+### Chunks
+
+`Chunk(id, text, token_ids=None, *, payload=None)` is one unit of context (i.e. a memory fact).
+
+- `id` must be non-empty and unique across every `precompute` call.
+- `token_ids`, when given, are encoded as they are; otherwise `text` plus `prompt.chunk_separator` is tokenized.
+- `payload` is stored in the vector index next to the embedding and defaults to `{"text": text}`.
+
+### Query results
+
+`query` and `answer` return a `QueryResult`:
+
+<Definitions>
+  <Definition term="text">The generated answer.</Definition>
+  <Definition term="ttft_ms">vLLM's time to first token, in milliseconds.</Definition>
+  <Definition term="hits">The retrieved `SearchHit`s, each with an `id`, `payload`, `score`, `distance`, and `rank`.</Definition>
+  <Definition term="retrieval">Embedding and search timings as `RetrievalMetrics`.</Definition>
+  <Definition term="metrics">Token counts and timings, such as `kv_memory_tokens` and `query_to_first_token_ms`.</Definition>
+</Definitions>
+
+### Configuration
+
+#### Top level
+
+<Definitions>
+  <Definition term="model" required>Hugging Face model id or local path.</Definition>
+  <Definition term="top_k" default="10">Chunks retrieved per query.</Definition>
+  <Definition term="context_window" default="0">Preceding chunks used as encoding-only context for each chunk.</Definition>
+  <Definition term="vector_backend" default='"exact"'>`"exact"` for exact search, or `"jasper"` for the Jasper graph index.</Definition>
+</Definitions>
+
+#### `engine`
+
+<Definitions>
+  <Definition term="gpu_memory_utilization" default="0.4">Fraction of GPU memory that vLLM may use.</Definition>
+  <Definition term="max_model_len" default="32768">vLLM's maximum sequence length.</Definition>
+  <Definition term="block_size" default="16">vLLM's KV cache block size, in tokens.</Definition>
+  <Definition term="enable_prefix_caching" default="true">vLLM prefix caching.</Definition>
+  <Definition term="connector_module" default='"inferscale.v1.kv.connector"'>Module path of the KV connector that vLLM loads.</Definition>
+</Definitions>
+
+#### `kv`
+
+<Definitions>
+  <Definition term="dtype" default='"bfloat16"'>KV dtype: `bfloat16`, `float16`, or `float32`.</Definition>
+  <Definition term="device" default='"cuda:0"'>Device for encoding, the chunk store, and exact search.</Definition>
+  <Definition term="max_position" default="32768">Largest position a chunk encoding or composed memory may reach.</Definition>
+  <Definition term="store_backend" default='"gpu"'>Keeps chunk KV on the GPU, or offloads it to pinned host memory with `"cpu"`.</Definition>
+  <Definition term="staging_slots" default="4">Minimum GPU staging buffers for the CPU store, raised to cover `top_k`.</Definition>
+</Definitions>
+
+#### `index`
+
+These settings apply when `vector_backend` is `"jasper"`.
+
+<Definitions>
+  <Definition term="n_neighbors" default="64">Edges per vector in the Jasper graph.</Definition>
+  <Definition term="alpha" default="1.0">Pruning parameter for building the graph.</Definition>
+  <Definition term="workspace_budget" default='"10GB"'>GPU workspace budget for building the graph.</Definition>
+  <Definition term="beam_width" default="64">Search beam width; the effective width is `max(beam_width, top_k)`, at most 959.</Definition>
+</Definitions>
+
+#### `embedding`
+
+<Definitions>
+  <Definition term="model" default='"text-embedding-3-small"'>Embedding model; the API key comes from `OPENAI_API_KEY`.</Definition>
+  <Definition term="base_url" default="null">Optional OpenAI-compatible endpoint.</Definition>
+  <Definition term="batch_size" default="128">Texts per embedding request.</Definition>
+</Definitions>
+
+#### `prompt`
+
+<Definitions>
+  <Definition term="system_prompt" default='"You are a helpful assistant. Answer using the retrieved context below.\n\n"'>System message placed before the retrieved context.</Definition>
+  <Definition term="empty_context_text" default='"(No relevant context found)\n"'>Context used when nothing is retrieved.</Definition>
+  <Definition term="chunk_separator" default='"\n"'>Appended to each chunk's text before tokenizing.</Definition>
+</Definitions>
+
+#### `generation`
+
+<Definitions>
+  <Definition term="max_tokens" default="256">Maximum answer length, in tokens.</Definition>
+  <Definition term="temperature" default="0.0">Sampling temperature.</Definition>
+  <Definition term="top_p" default="1.0">Nucleus sampling threshold.</Definition>
+</Definitions>

@@ -1,0 +1,87 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans:
+    'Inter Variable', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
+    'Segoe UI Symbol';
+}
+
+/* Semantic colors, set once per theme. */
+:root {
+  --canvas: var(--color-white);
+  --surface: var(--color-gray-50);
+  --surface-strong: var(--color-gray-100);
+  --line: var(--color-gray-200);
+  --ink: var(--color-gray-950);
+  --ink-body: var(--color-gray-700);
+  --ink-muted: var(--color-gray-500);
+  --accent: var(--color-blue-600);
+  /* Buttons and selected controls; outlined buttons use the ink color. */
+  --primary: var(--color-blue-900);
+  --primary-hover: var(--color-blue-800);
+  --primary-ink: var(--color-blue-900);
+  color-scheme: light;
+}
+
+.dark {
+  --canvas: var(--color-gray-950);
+  --surface: var(--color-gray-900);
+  --surface-strong: var(--color-gray-800);
+  --line: var(--color-gray-800);
+  --ink: var(--color-white);
+  --ink-body: var(--color-gray-300);
+  --ink-muted: var(--color-gray-400);
+  --accent: var(--color-blue-400);
+  --primary-ink: var(--color-blue-200);
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-surface-strong: var(--surface-strong);
+  --color-line: var(--line);
+  --color-ink: var(--ink);
+  --color-ink-body: var(--ink-body);
+  --color-ink-muted: var(--ink-muted);
+  --color-accent: var(--accent);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-ink: var(--primary-ink);
+}
+
+@layer base {
+  html {
+    /* Anchor targets land below the sticky header. */
+    scroll-padding-top: 5rem;
+
+    @media (prefers-reduced-motion: no-preference) {
+      scroll-behavior: smooth;
+    }
+
+    &:has(dialog:modal) {
+      overflow: hidden;
+    }
+  }
+
+  body {
+    @apply bg-canvas text-ink-body antialiased;
+  }
+
+  ::selection {
+    background-color: color-mix(in oklab, var(--accent) 25%, transparent);
+  }
+}
+
+/* Shiki token colors for both themes; code blocks set their own background. */
+.shiki,
+.shiki span {
+  color: var(--shiki-light);
+}
+
+.dark .shiki,
+.dark .shiki span {
+  color: var(--shiki-dark);
+}

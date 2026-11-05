@@ -1,5 +1,6 @@
 import type { MDXComponents } from 'mdx/types'
 import { cx } from '../cx'
+import { newTab } from '../site'
 import { Code, Pre } from './CodeBlock'
 import { Heading } from './Heading'
 import { link, table, tableCell, tableFrame, tableHeadCell } from './styles'
@@ -26,8 +27,8 @@ export const mdxComponents: MDXComponents = {
     </h4>
   ),
   p: (props) => <p className="mt-4 leading-7" {...props} />,
-  a: ({ children, ...props }) => (
-    <a className={link} {...props}>
+  a: ({ href, children, ...props }) => (
+    <a href={href} {...(href?.startsWith('#') ? {} : newTab)} className={link} {...props}>
       {children}
     </a>
   ),

@@ -76,8 +76,8 @@ class InferScaleConfig:
     top_k: int = 10
     # Preceding chunks used only while encoding each target chunk's KV.
     context_window: int = field(default=0, kw_only=True)
-    # Retrieval implementation; Jasper tuning lives in the index section.
-    vector_backend: str = field(default="exact", kw_only=True)
+    # Retrieval implementation: "jasper" (tuned in the index section) or "exact".
+    vector_backend: str = field(default="jasper", kw_only=True)
     engine: EngineConfig = field(default_factory=EngineConfig)
     kv: KVConfig = field(default_factory=KVConfig)
     index: JasperIndexConfig = field(default_factory=JasperIndexConfig)

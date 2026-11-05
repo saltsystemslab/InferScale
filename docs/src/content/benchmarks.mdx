@@ -11,8 +11,7 @@ Each memory benchmark provides the model its retrieved Mem0 facts in one of two 
   <Definition term="prompt-injection">The facts are pasted into the prompt as text.</Definition>
 </Definitions>
 
-Run every script from the repository root after the [installation](#installation).
-Each one takes no arguments and runs a fixed launch file under <RepoFile path="configs/launch/" />, so edit that JSON to change what runs.
+Run these scripts from the repository root after the [installation](#installation).
 
 ### Memory QA and throughput
 
@@ -38,7 +37,6 @@ bash scripts/full_throughput_cpu_store.sh
 ### Judging
 
 A local Gemma judge, `google/gemma-2-9b-it`, grades the answers.
-vLLM serves it on the same GPU, so start it after the answer runs finish:
 
 ```bash
 bash scripts/serve_vllm.sh
@@ -47,7 +45,7 @@ bash scripts/judge.sh
 
 ### Run outputs
 
-Each run writes to `${BENCHMARK_RESULTS_ROOT}/<run-id>/`, where the run id encodes the swept axes:
+Each run writes to `${BENCHMARK_RESULTS_ROOT}/<run-id>/`:
 
 <Definitions>
   <Definition term="kv-injection">`<model>-kv-mem0-jasper10-k<topk>-s<window>-<stamp>`</Definition>

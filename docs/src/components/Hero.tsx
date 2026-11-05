@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import raceGif from '../../../figures/ttft_race.gif'
 import { cx } from '../cx'
-import { paperUrl, repoUrl } from '../site'
+import { newTab, paperUrl, repoUrl } from '../site'
 import { Figure } from './Figure'
 import { ArrowRightIcon, GitHubIcon, PaperIcon } from './Icons'
 
@@ -56,11 +56,11 @@ export function Hero() {
           Get started
           <ArrowRightIcon className="size-4" />
         </a>
-        <a href={paperUrl} className={secondaryButton}>
+        <a href={paperUrl} {...newTab} className={secondaryButton}>
           <PaperIcon className="size-4" />
           Paper
         </a>
-        <a href={repoUrl} className={secondaryButton}>
+        <a href={repoUrl} {...newTab} className={secondaryButton}>
           <GitHubIcon className="size-4" />
           GitHub
         </a>

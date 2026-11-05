@@ -66,6 +66,12 @@
     }
   }
 
+  /* Tailwind v4 leaves buttons with the default cursor. */
+  button:not(:disabled),
+  [role='button']:not(:disabled) {
+    cursor: pointer;
+  }
+
   body {
     @apply bg-canvas text-ink-body antialiased;
   }

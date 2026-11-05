@@ -3,12 +3,11 @@ import { accuracy, topK } from '../content/accuracy'
 import { cx } from '../cx'
 import { table, tableCell, tableFrame, tableHeadCell } from './styles'
 
-/** LoCoMo accuracy for one model at a time; the best score for each k is bold. */
+/** LoCoMo accuracy for one model at a time. */
 export function AccuracyTable() {
   const name = useId()
   const [model, setModel] = useState(accuracy[0]!.model)
   const rows = accuracy.find((entry) => entry.model === model)!.rows
-  const best = topK.map((_, column) => Math.max(...rows.map((row) => row.scores[column]!)))
 
   return (
     <div className="mt-6">
@@ -58,14 +57,7 @@ export function AccuracyTable() {
                   )}
                 </th>
                 {row.scores.map((score, column) => (
-                  <td
-                    key={topK[column]}
-                    className={cx(
-                      tableCell,
-                      'text-right',
-                      score === best[column] && 'font-semibold text-ink',
-                    )}
-                  >
+                  <td key={topK[column]} className={cx(tableCell, 'text-right')}>
                     {score.toFixed(2)}
                   </td>
                 ))}

@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import { cx } from '../cx'
+import { newTab } from '../site'
 
 type FigureProps = {
   src: string
@@ -16,7 +17,7 @@ type FigureProps = {
   size?: 'narrow' | 'wide'
 }
 
-/** An image that opens at full resolution when clicked. */
+/** An image that opens at full resolution in a new tab when clicked. */
 export function Figure({ src, alt, width, height, caption, plate = false, size }: FigureProps) {
   return (
     <figure
@@ -28,6 +29,7 @@ export function Figure({ src, alt, width, height, caption, plate = false, size }
     >
       <a
         href={src}
+        {...newTab}
         className={cx(
           'block cursor-zoom-in overflow-hidden rounded-xl border border-line',
           plate && 'bg-white p-3 sm:p-5 dark:brightness-90',

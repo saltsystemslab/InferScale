@@ -19,6 +19,16 @@ describe('App', () => {
     expect(targets.filter((id) => !document.getElementById(id))).toEqual([])
   })
 
+  it('opens every link that leaves the page in a new tab', () => {
+    const { container } = render(<App />)
+    const links = Array.from(container.querySelectorAll('a[href]:not([href^="#"])'))
+    expect(links.length).toBeGreaterThan(0)
+    for (const link of links) {
+      expect(link.getAttribute('target')).toBe('_blank')
+      expect(link.getAttribute('rel')).toContain('noopener')
+    }
+  })
+
   it('lists every section and subsection in the navigation', () => {
     const { container } = render(<App />)
     const [nav] = screen.getAllByRole('navigation', { name: 'On this page' })

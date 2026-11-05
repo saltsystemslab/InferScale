@@ -6,3 +6,6 @@ export function repoPathUrl(path: string): string {
   const kind = path.endsWith('/') ? 'tree' : 'blob'
   return `${repoUrl}/${kind}/main/${path.replace(/\/$/, '')}`
 }
+
+/** Props for a link that leaves the page: it opens in a new tab. */
+export const newTab = { target: '_blank', rel: 'noopener noreferrer' } as const

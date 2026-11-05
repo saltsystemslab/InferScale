@@ -29,6 +29,3 @@ with InferScale(config) as engine:
     print(result.text)
     print([hit.id for hit in result.hits])
 ```
-
-`context_window=2` encodes each chunk with up to two preceding chunks as context.
-`vector_backend="jasper"` retrieves with the Jasper graph index on the GPU instead of the default exact inner-product search.

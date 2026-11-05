@@ -1,5 +1,9 @@
 # InferScale: GPU-Native KV Injection for Personalized LLM Serving
 
+[![website](https://img.shields.io/badge/website-blue)](https://saltsystemslab.github.io/InferScale/)
+[![arXiv](https://img.shields.io/badge/System_Paper-2026-blue.svg)](https://arxiv.org/abs/2607.27090)
+[![GitHub Repo stars](https://img.shields.io/github/stars/saltsystemslab/inferscale?style=social)](https://github.com/saltsystemslab/inferscale)
+
 ### About
 InferScale is a super-fast inference framework for large language models. 
 

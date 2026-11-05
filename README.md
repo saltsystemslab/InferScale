@@ -7,8 +7,6 @@
 ### About
 InferScale is a super-fast inference framework for large language models. 
 
-Paper: [InferScale: GPU-Native KV Injection for Personalized LLM Serving](https://arxiv.org/abs/2607.27090) (arXiv:2607.27090)
-
 ![Demo: InferScale vs. Mem0 time-to-first-token race](figures/ttft_race.gif)
 
 ## 1. Requirements

@@ -15,7 +15,7 @@ Linux environment; the reference environment is a Runpod container with the pers
 
 - GPU: one NVIDIA GPU with CUDA >=12.8.
 - Python >=3.10,<3.14.
-- CMake and the CUDA toolkit, used to build the `jasperpy` submodule.
+- CMake (used to build the `jasperpy` submodule).
 
 We configure all default parameters to run on an RTX Pro 6000 GPU with 96 GB of VRAM.
 

@@ -7,23 +7,26 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 PROVIDER_DEFAULT_ENDPOINT = "<provider-default>"
+NO_FRAGMENT = ""
+ENDPOINT_DIGEST_LENGTH = 16
+UNSAFE_PATH_CHARACTERS = re.compile(r"[^A-Za-z0-9_.-]+")
 
 
 def normalize_endpoint(value: str | None) -> str:
-    text = str(value or "").strip()
-    if not text:
+    endpoint = str(value or "").strip()
+    if not endpoint:
         return PROVIDER_DEFAULT_ENDPOINT
-    parsed = urlsplit(text)
-    if not parsed.scheme or not parsed.netloc:
-        return text.rstrip("/")
+    url = urlsplit(endpoint)
+    if not url.scheme or not url.netloc:
+        return endpoint.rstrip("/")
     return urlunsplit(
-        (parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip("/"), parsed.query, "")
+        (url.scheme.lower(), url.netloc.lower(), url.path.rstrip("/"), url.query, NO_FRAGMENT)
     )
 
 
 def endpoint_cache_key(endpoint: str | None) -> str:
     normalized = normalize_endpoint(endpoint)
-    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:ENDPOINT_DIGEST_LENGTH]
     return f"endpoint-{digest}"
 
 
@@ -32,10 +35,10 @@ def payload_header_matches(payload: Any, *, version: int, expected_meta: Mapping
         return False
     meta = payload.get("meta")
     return isinstance(meta, dict) and all(
-        meta.get(key) == value for key, value in expected_meta.items()
+        meta.get(name) == expected for name, expected in expected_meta.items()
     )
 
 
 def safe_path_part(value: str) -> str:
-    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", value.strip())
+    safe = UNSAFE_PATH_CHARACTERS.sub("_", value.strip())
     return safe or "default"

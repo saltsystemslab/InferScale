@@ -33,29 +33,33 @@ def parse_extraction_config(section: Mapping[str, Any], where: str) -> Extractio
     defaults = ExtractionConfig()
     port = optional(section, "port", int, defaults.port, where)
     workers = optional(section, "workers", int, defaults.workers, where)
-    gpu = optional(
+    gpu_memory_utilization = optional(
         section, "gpu_memory_utilization", (int, float), defaults.gpu_memory_utilization, where
     )
-    timeout = optional(section, "health_timeout_s", int, defaults.health_timeout_s, where)
-    if port < 1 or workers < 1 or timeout < 1 or not 0 < gpu <= 1:
+    health_timeout_s = optional(section, "health_timeout_s", int, defaults.health_timeout_s, where)
+    if port < 1 or workers < 1 or health_timeout_s < 1 or not 0 < gpu_memory_utilization <= 1:
         raise ConfigError(
             f"{where}: port, workers, and health_timeout_s must be >= 1 "
             "and gpu_memory_utilization in (0, 1]."
         )
-    structured = section.get("structured_outputs", defaults.structured_outputs)
-    if structured is not None and not isinstance(structured, dict):
+    structured_outputs = section.get("structured_outputs", defaults.structured_outputs)
+    if structured_outputs is not None and not isinstance(structured_outputs, dict):
         raise ConfigError(f"{where}.structured_outputs must be an object or null.")
-    extra = section.get("extra_vllm_args", [])
-    if not isinstance(extra, list) or not all(isinstance(item, str) for item in extra):
+    extra_vllm_args = section.get("extra_vllm_args", [])
+    if not _is_list_of_strings(extra_vllm_args):
         raise ConfigError(f"{where}.extra_vllm_args must be a list of strings.")
     return ExtractionConfig(
         port=port,
         workers=workers,
-        gpu_memory_utilization=float(gpu),
-        health_timeout_s=timeout,
-        structured_outputs=dict(structured) if structured is not None else None,
-        extra_vllm_args=tuple(extra),
+        gpu_memory_utilization=float(gpu_memory_utilization),
+        health_timeout_s=health_timeout_s,
+        structured_outputs=dict(structured_outputs) if structured_outputs is not None else None,
+        extra_vllm_args=tuple(extra_vllm_args),
     )
+
+
+def _is_list_of_strings(candidate: Any) -> bool:
+    return isinstance(candidate, list) and all(isinstance(entry, str) for entry in candidate)
 
 
 def extraction_dict(extraction: ExtractionConfig) -> dict[str, Any]:

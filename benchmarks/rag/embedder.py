@@ -7,12 +7,6 @@ from inferscale.v1.embedding.openai import OpenAIEmbedder
 
 from .config import RagBenchConfig
 
-# Cache-key purposes follow the Mem0 convention ("add" for stored texts and
-# "search" for queries), so RAG and memory runs share one content-addressed
-# embedding cache without collisions.
-CHUNK_EMBED_PURPOSE = CachedEmbedder.DOCUMENT_PURPOSE
-QUERY_EMBED_PURPOSE = CachedEmbedder.QUERY_PURPOSE
-
 
 def build_cached_embedder(
     config: RagBenchConfig,

@@ -29,16 +29,15 @@ def build_encoding_plan(
     raw_context_tokens = len(context)
     overflow = raw_context_tokens + len(target) - max_input_tokens
     context_truncated_tokens = max(0, overflow)
-    if context_truncated_tokens:
-        context = context[context_truncated_tokens:]
+    newest_context = context[context_truncated_tokens:]
 
-    input_token_ids = context + target
+    input_token_ids = newest_context + target
     return EncodingPlan(
         chunk_id=chunk_id,
         target_token_ids=target,
-        context_token_ids=context,
+        context_token_ids=newest_context,
         input_token_ids=input_token_ids,
-        slice_start=len(context),
+        slice_start=len(newest_context),
         slice_end=len(input_token_ids),
         context_ids=tuple(context_ids),
         raw_context_tokens=raw_context_tokens,

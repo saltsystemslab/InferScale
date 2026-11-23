@@ -8,7 +8,7 @@ from benchmarks.common.embedding_cache import CachedEmbedder
 from benchmarks.common.files import write_json
 from benchmarks.rag.config import RagBenchConfig
 from benchmarks.rag.corpus import load_rag_corpus
-from benchmarks.rag.embedder import CHUNK_EMBED_PURPOSE, QUERY_EMBED_PURPOSE, build_cached_embedder
+from benchmarks.rag.embedder import build_cached_embedder
 
 PREEMBEDDING_FILE = "preembedding.json"
 
@@ -28,14 +28,14 @@ def preembed_rag_embeddings(config: RagBenchConfig) -> dict[str, Any]:
     _embed_in_batches(
         embedder,
         [chunk.text for chunk in corpus.chunks],
-        purpose=CHUNK_EMBED_PURPOSE,
+        purpose=CachedEmbedder.DOCUMENT_PURPOSE,
         batch_size=config.embed_batch_size,
         label="chunks",
     )
     _embed_in_batches(
         embedder,
         [query.question for query in corpus.queries],
-        purpose=QUERY_EMBED_PURPOSE,
+        purpose=CachedEmbedder.QUERY_PURPOSE,
         batch_size=config.embed_batch_size,
         label="queries",
     )
@@ -69,8 +69,8 @@ def _embed_in_batches(
     batch_size: int,
     label: str,
 ) -> None:
-    for start in range(0, len(texts), batch_size):
-        batch = texts[start : start + batch_size]
+    for batch_start in range(0, len(texts), batch_size):
+        batch = texts[batch_start : batch_start + batch_size]
         embedder.embed_batch(batch, memory_action=purpose)
-        done = min(start + batch_size, len(texts))
-        logger.info("Embedded {}/{} {} (purpose={})", done, len(texts), label, purpose)
+        embedded_count = min(batch_start + batch_size, len(texts))
+        logger.info("Embedded {}/{} {} (purpose={})", embedded_count, len(texts), label, purpose)

@@ -200,7 +200,7 @@ def _three_timelines(tmp_path: Path, **mem0_changes: Any) -> tuple[Path, Path, P
 
 
 def test_gif_replays_the_median_speedup_question_in_the_harness_layout(
-    monkeypatch: Any, tmp_path: Path, capsys: Any
+    monkeypatch: Any, tmp_path: Path, race_log: list[str]
 ) -> None:
     fast, base = _timelines(tmp_path)
     out = tmp_path / "race.gif"
@@ -208,7 +208,7 @@ def test_gif_replays_the_median_speedup_question_in_the_harness_layout(
 
     race.main()
 
-    assert "question 2, first token 20 ms (InferScale) vs 80 ms (Mem0)" in capsys.readouterr().out
+    assert "question 2, first token 20 ms (InferScale) vs 80 ms (Mem0)" in "\n".join(race_log)
     gif = Image.open(out)
     assert gif.size == (960, 480)
     durations = []
@@ -228,7 +228,7 @@ def test_gif_replays_the_median_speedup_question_in_the_harness_layout(
 
 
 def test_gif_with_a_third_timeline_widens_the_frame_and_names_each_baseline(
-    monkeypatch: Any, tmp_path: Path, capsys: Any
+    monkeypatch: Any, tmp_path: Path, race_log: list[str]
 ) -> None:
     fast, base, blend = _three_timelines(tmp_path)
     out = tmp_path / "race.gif"
@@ -238,7 +238,7 @@ def test_gif_with_a_third_timeline_widens_the_frame_and_names_each_baseline(
 
     race.main()
 
-    printed = capsys.readouterr().out
+    printed = "\n".join(race_log)
     # The replayed question is still the median speedup over Mem0, the first baseline.
     assert (
         "question 2, first token 20 ms (InferScale) vs 80 ms (Mem0) vs 40 ms (LMCache CacheBlend)"

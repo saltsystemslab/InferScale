@@ -28,7 +28,6 @@ def build_query_record(
         "dataset": config.dataset_name,
         "query_id": query.query_id,
         "question_type": query.question_type,
-        # category mirrors question_type: per-category reports are shared with the memory benchmark.
         "category": query.question_type,
         "question": query.question,
         "gold_answer": query.gold_answer,

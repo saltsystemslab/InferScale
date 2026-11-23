@@ -16,8 +16,6 @@ logger = init_logger(__name__)
 def inject_load(
     memory: UserMemory, load: MemoryLoadMeta, forward_context: Any, attn_metadata: Any
 ) -> None:
-    # Probe one layer for the device; the pinned-host view waits on a layer's
-    # copy event on first access, so touch exactly one.
     first_layer = next(iter(memory.kv_by_layer), None)
     first_tensor = memory.kv_by_layer[first_layer] if first_layer is not None else None
     if first_tensor is None:
@@ -26,7 +24,6 @@ def inject_load(
 
     injected_layers = 0
     for layer_name, layer in forward_context.no_compile_layers.items():
-        # no_compile_layers can hold layers without a paged KV cache.
         kv_cache = getattr(layer, "kv_cache", None)
         if kv_cache is None:
             continue

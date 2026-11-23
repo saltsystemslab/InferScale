@@ -38,11 +38,7 @@ def build_locomo_requests(
         sample = sample_for_user(samples, user_index)
         if not sample.qa:
             raise RuntimeError(f"LoCoMo sample {sample.sample_id} has no questions.")
-        rng = random.Random(f"{seed}:requests:{user_index}")
-        if requests_per_user <= len(sample.qa):
-            chosen = rng.sample(sample.qa, requests_per_user)
-        else:
-            chosen = rng.choices(sample.qa, k=requests_per_user)
+        user_rng = random.Random(f"{seed}:requests:{user_index}")
         requests.extend(
             LocomoRequest(
                 user_index=user_index,
@@ -50,9 +46,18 @@ def build_locomo_requests(
                 question_id=qa.question_id,
                 query=qa.question,
             )
-            for qa in chosen
+            for qa in _draw_questions(sample.qa, requests_per_user, user_rng)
         )
     return requests
+
+
+def _draw_questions(
+    questions: Sequence[QuestionAnswer], count: int, rng: random.Random
+) -> list[QuestionAnswer]:
+    has_enough_distinct_questions = count <= len(questions)
+    if has_enough_distinct_questions:
+        return rng.sample(questions, count)
+    return rng.choices(questions, k=count)
 
 
 def sample_for_user(samples: Sequence[ConversationSample], user_index: int) -> ConversationSample:
@@ -62,16 +67,21 @@ def sample_for_user(samples: Sequence[ConversationSample], user_index: int) -> C
 def samples_for_users(
     samples: Sequence[ConversationSample], num_users: int
 ) -> list[ConversationSample]:
-    return [sample_for_user(samples, index) for index in range(min(num_users, len(samples)))]
+    users_with_distinct_samples = min(num_users, len(samples))
+    return [
+        sample_for_user(samples, user_index) for user_index in range(users_with_distinct_samples)
+    ]
 
 
 def group_requests_by_user(
     requests: Sequence[LocomoRequest], num_users: int
 ) -> dict[int, list[LocomoRequest]]:
-    grouped: dict[int, list[LocomoRequest]] = {index: [] for index in range(num_users)}
+    requests_by_user: dict[int, list[LocomoRequest]] = {
+        user_index: [] for user_index in range(num_users)
+    }
     for request in requests:
-        grouped[request.user_index].append(request)
-    return grouped
+        requests_by_user[request.user_index].append(request)
+    return requests_by_user
 
 
 def request_question_answer(request: LocomoRequest) -> QuestionAnswer:

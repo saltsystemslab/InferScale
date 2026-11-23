@@ -6,10 +6,11 @@ import uuid
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, get_type_hints
 
 from benchmarks.common.atomic_files import atomic_write_json
 from benchmarks.common.cache_keys import endpoint_cache_key, normalize_endpoint, safe_path_part
+from benchmarks.common.json_fields import typed_value
 from benchmarks.common.vector_types import VECTOR_DISTANCE, SearchHit
 from benchmarks.memory.data import (
     ConversationSample,
@@ -19,6 +20,7 @@ from benchmarks.memory.data import (
     sample_fingerprint,
 )
 from benchmarks.memory.protocol import (
+    FACT_CATALOG_FORMAT_VERSION,
     MEMORY_EXTRACTION_MAX_FACTS,
     MEMORY_EXTRACTION_MAX_MODEL_LEN,
     MEMORY_EXTRACTION_MAX_TEXT_CHARS,
@@ -28,10 +30,7 @@ from benchmarks.memory.protocol import (
 )
 
 FACT_NAMESPACE = uuid.UUID("55bbc260-62d5-4a84-9724-6686fd41798e")
-# Bump when the payload or the fact fields change; readers reject every other version.
-CATALOG_VERSION = 5
-# Every key stored with a fact. The Mem0 adapter mirrors them between a
-# payload's top level and its ``metadata`` object.
+SOURCE_TURN_JOIN_ALIASES = ("session_id", "turn_index", "turn_id")
 FACT_METADATA_KEYS = (
     "fact_id",
     "user_id",
@@ -46,9 +45,7 @@ FACT_METADATA_KEYS = (
     "speaker",
     "source_role",
     "role",
-    "session_id",
-    "turn_index",
-    "turn_id",
+    *SOURCE_TURN_JOIN_ALIASES,
 )
 
 
@@ -92,6 +89,9 @@ class MemoryFact:
         )
 
 
+FACT_FIELD_TYPES = get_type_hints(MemoryFact)
+
+
 def source_fields(
     *,
     sample_id: str,
@@ -117,7 +117,6 @@ def source_fields(
         "speaker": speaker,
         "source_role": role,
         "role": role,
-        # Aliases read by the source-turn join in the KV and prompt injection paths.
         "session_id": session_id,
         "turn_index": turn_index,
         "turn_id": turn_id,
@@ -192,26 +191,26 @@ class FactCatalogStore:
         return self.catalog_dir / f"{safe_path_part(sample.sample_id)}-{fingerprint}.json"
 
     def write(self, sample: ConversationSample, facts: Iterable[MemoryFact]) -> Path:
-        path = self.path_for(sample)
-        payload = {**self._identity(sample), "facts": [asdict(fact) for fact in facts]}
-        atomic_write_json(path, payload, indent=2)
-        return path
+        catalog_path = self.path_for(sample)
+        catalog = {**self._identity(sample), "facts": [asdict(fact) for fact in facts]}
+        atomic_write_json(catalog_path, catalog, indent=2)
+        return catalog_path
 
     def load(self, sample: ConversationSample) -> tuple[MemoryFact, ...]:
-        path = self.path_for(sample)
-        payload = _read_payload(path)
+        catalog_path = self.path_for(sample)
+        catalog = _read_catalog(catalog_path)
         for key, expected in self._identity(sample).items():
-            if payload.get(key) != expected:
+            if catalog.get(key) != expected:
                 raise RuntimeError(
-                    f"Mem0 fact catalog identity mismatch for {key} at {path}: "
-                    f"expected={expected!r} actual={payload.get(key)!r}. "
+                    f"Mem0 fact catalog identity mismatch for {key} at {catalog_path}: "
+                    f"expected={expected!r} actual={catalog.get(key)!r}. "
                     "Rerun the preembed stage with the current JSON configuration."
                 )
-        return _facts_from_rows(payload.get("facts"), path)
+        return _facts_from_rows(catalog.get("facts"), catalog_path)
 
     def _identity(self, sample: ConversationSample) -> dict[str, Any]:
         return {
-            "version": CATALOG_VERSION,
+            "version": FACT_CATALOG_FORMAT_VERSION,
             "provider": self.provider,
             "model": self.model,
             "endpoint": self.endpoint,
@@ -231,36 +230,44 @@ class FactCatalogStore:
         }
 
 
-def _read_payload(path: Path) -> dict[str, Any]:
+def _read_catalog(catalog_path: Path) -> dict[str, Any]:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
         raise RuntimeError(
-            f"Missing Mem0 fact catalog at {path}. Rerun the extract-facts stage "
+            f"Missing Mem0 fact catalog at {catalog_path}. Rerun the extract-facts stage "
             "with the same dataset, memory LLM model, endpoint, and cache dir."
         ) from exc
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise RuntimeError(
-            f"Corrupt Mem0 fact catalog at {path}. Rerun the extract-facts stage to replace it."
+            f"Corrupt Mem0 fact catalog at {catalog_path}. "
+            "Rerun the extract-facts stage to replace it."
         ) from exc
-    if not isinstance(payload, dict):
-        raise RuntimeError(f"Corrupt Mem0 fact catalog at {path}: not a JSON object.")
-    return payload
+    if not isinstance(catalog, dict):
+        raise RuntimeError(f"Corrupt Mem0 fact catalog at {catalog_path}: not a JSON object.")
+    return catalog
 
 
-def _facts_from_rows(rows: Any, path: Path) -> tuple[MemoryFact, ...]:
+def _facts_from_rows(rows: Any, catalog_path: Path) -> tuple[MemoryFact, ...]:
     if not isinstance(rows, list):
-        raise RuntimeError(f"Mem0 fact catalog has no facts list: {path}")
+        raise RuntimeError(f"Mem0 fact catalog has no facts list: {catalog_path}")
     if any(not isinstance(row, dict) for row in rows):
-        raise RuntimeError(f"Mem0 fact catalog contains a non-object fact: {path}")
+        raise RuntimeError(f"Mem0 fact catalog contains a non-object fact: {catalog_path}")
     try:
-        facts = tuple(MemoryFact(**row) for row in rows)
+        facts = tuple(_fact_from_row(row) for row in rows)
     except (TypeError, ValueError) as exc:
-        raise RuntimeError(f"Mem0 fact catalog contains an invalid fact: {path}") from exc
-    ids = [fact.id for fact in facts]
-    if len(ids) != len(set(ids)):
-        raise RuntimeError(f"Mem0 fact catalog contains duplicate fact ids: {path}")
+        raise RuntimeError(f"Mem0 fact catalog contains an invalid fact: {catalog_path}") from exc
+    fact_ids = [fact.id for fact in facts]
+    if len(fact_ids) != len(set(fact_ids)):
+        raise RuntimeError(f"Mem0 fact catalog contains duplicate fact ids: {catalog_path}")
     return facts
+
+
+def _fact_from_row(row: dict[str, Any]) -> MemoryFact:
+    fact = MemoryFact(**row)
+    for name, expected in FACT_FIELD_TYPES.items():
+        typed_value(getattr(fact, name), name, expected, "fact")
+    return fact
 
 
 def make_memory_fact(text: str, sample: ConversationSample, turn: Turn) -> MemoryFact:

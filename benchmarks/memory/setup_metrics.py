@@ -63,17 +63,15 @@ SETUP_TEXT_COLUMNS = ("run_id", "mode", "sample_id", "vector_backend")
 SETUP_NUMERIC_COLUMNS = tuple(
     column for column in SAMPLE_SETUP_COLUMNS if column not in SETUP_TEXT_COLUMNS
 )
-# Summarized in summary.json; the counts describe the sample, not its setup.
+SAMPLE_SIZE_COLUMNS = ("question_count", "turn_count")
 SETUP_METRIC_COLUMNS = tuple(
-    column for column in SETUP_NUMERIC_COLUMNS if column not in ("question_count", "turn_count")
+    column for column in SETUP_NUMERIC_COLUMNS if column not in SAMPLE_SIZE_COLUMNS
 )
-# Copied from the KV precompute metrics into the setup row.
 KV_PRECOMPUTE_SETUP_KEYS = tuple(
     column
     for column in SAMPLE_SETUP_COLUMNS
     if column.startswith(("kv_precomputed_", "kv_chunk_cache_", "llama_kv_"))
 )
-# Copied from an LMCache warm-up's metrics into the setup row.
 LMCACHE_WARMUP_SETUP_KEYS = tuple(
     column for column in SAMPLE_SETUP_COLUMNS if column.startswith("lmcache_")
 )
@@ -106,9 +104,9 @@ def record_memory_warmup(row: dict[str, Any], metrics: dict[str, Any]) -> None:
 
 
 def setup_total_ms(row: dict[str, Any]) -> float:
-    parts = (
+    stage_times_ms = (
         as_number(row.get("memory_setup_time_ms")),
         as_number(row.get("kv_precompute_time_ms")),
         as_number(row.get("answer_prepare_sample_time_ms")),
     )
-    return sum(part for part in parts if part is not None)
+    return sum(time_ms for time_ms in stage_times_ms if time_ms is not None)

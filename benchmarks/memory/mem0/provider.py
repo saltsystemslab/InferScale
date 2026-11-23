@@ -77,19 +77,19 @@ def build_mem0_config(settings: Mem0Settings) -> dict[str, Any]:
     }
     if settings.memory_llm_api_key:
         memory_llm_config["api_key"] = settings.memory_llm_api_key
-    vector = settings.vector_config
+    vector_config = settings.vector_config
     return {
         "vector_store": {
             "provider": JASPER_PROVIDER,
             "config": {
                 "collection_name": "memories",
                 "path": str(settings.store_root),
-                "backend": vector.backend,
+                "backend": vector_config.backend,
                 "distance": VECTOR_DISTANCE,
-                "n_neighbors": vector.n_neighbors,
-                "alpha": vector.alpha,
-                "workspace_budget": vector.workspace_budget,
-                "beam_width": vector.beam_width,
+                "n_neighbors": vector_config.n_neighbors,
+                "alpha": vector_config.alpha,
+                "workspace_budget": vector_config.workspace_budget,
+                "beam_width": vector_config.beam_width,
             },
         },
         "embedder": {"provider": "openai", "config": embedder_config},
@@ -105,8 +105,6 @@ def register_mem0_jasper_provider() -> None:
     with _registration_lock:
         VectorStoreFactory.provider_to_class[JASPER_PROVIDER] = JASPER_ADAPTER_CLASS
         install_jasper_config_module()
-        # pydantic keeps a private attribute's default on the class and copies it
-        # into every new instance, so the provider table is extended there.
         provider_table = Mem0VectorStoreConfig.__private_attributes__["_provider_configs"]
         provider_table.default[JASPER_PROVIDER] = "JasperConfig"
 

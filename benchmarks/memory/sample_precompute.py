@@ -54,16 +54,18 @@ class SamplePrecompute:
     def precompute(
         self, sample: ConversationSample, facts: Sequence[SearchHit]
     ) -> tuple[SampleComposer, bool]:
-        kv_facts = unique_memory_facts(facts)
+        unique_facts = unique_memory_facts(facts)
         chunk_store = self._build_chunk_store()
-        key = None
-        composer = None
+        cache_key = None
+        cached_composer = None
         if self.config.kv_chunk_cache_enabled:
-            key = ChunkCacheKey.from_config(self.config, sample, kv_facts)
-            composer = self._load_cached_composer(key, sample, facts, kv_facts, chunk_store)
-        if composer is not None:
-            return composer, True
-        return self._encode_composer(sample, facts, chunk_store, key), False
+            cache_key = ChunkCacheKey.from_config(self.config, sample, unique_facts)
+            cached_composer = self._load_cached_composer(
+                cache_key, sample, facts, unique_facts, chunk_store
+            )
+        if cached_composer is not None:
+            return cached_composer, True
+        return self._encode_composer(sample, facts, chunk_store, cache_key), False
 
     def release_model(self) -> None:
         if self._encoder is not None:
@@ -76,19 +78,19 @@ class SamplePrecompute:
 
     def _load_cached_composer(
         self,
-        key: ChunkCacheKey,
+        cache_key: ChunkCacheKey,
         sample: ConversationSample,
         facts: Sequence[SearchHit],
-        kv_facts: list[RetrievedFact],
+        unique_facts: list[RetrievedFact],
         chunk_store: ChunkStore,
     ) -> SampleComposer | None:
-        path = key.path(self.config.cache_root)
+        cache_path = cache_key.path(self.config.cache_root)
         cached = load_sample_chunks(
-            path,
-            device=self._chunk_device(),
+            cache_path,
+            device=self._cached_chunk_device(),
             scaffold_device=self.config.kv_device,
-            expected_meta=key.meta(),
-            expected_fact_ids=[fact.memory_id for fact in kv_facts],
+            expected_meta=cache_key.meta(),
+            expected_fact_ids=[fact.memory_id for fact in unique_facts],
         )
         if cached is None:
             return None
@@ -101,7 +103,7 @@ class SamplePrecompute:
                 "KV chunk cache scaffold mismatch for sample_id={}; re-encoding", sample.sample_id
             )
             return None
-        encoder = ChunkedRopeEncoder.from_tables(
+        compose_only_encoder = ChunkedRopeEncoder.from_tables(
             model=self.config.model,
             device=self.config.kv_device,
             max_position=self.config.kv_max_position,
@@ -109,9 +111,9 @@ class SamplePrecompute:
             cos_table=cached.cos_table,
             sin_table=cached.sin_table,
         )
-        logger.info("KV chunk cache hit sample_id={} ({})", sample.sample_id, path.name)
+        logger.info("KV chunk cache hit sample_id={} ({})", sample.sample_id, cache_path.name)
         return SampleComposer.from_cached(
-            encoder=encoder,
+            encoder=compose_only_encoder,
             cached=cached,
             sample=sample,
             facts=facts,
@@ -125,7 +127,7 @@ class SamplePrecompute:
         sample: ConversationSample,
         facts: Sequence[SearchHit],
         chunk_store: ChunkStore,
-        key: ChunkCacheKey | None,
+        cache_key: ChunkCacheKey | None,
     ) -> SampleComposer:
         encoder = self._ensure_encoder()
         composer = SampleComposer(
@@ -142,30 +144,26 @@ class SamplePrecompute:
         except BaseException:
             composer.close()
             raise
-        if key is not None:
-            self._save_chunk_cache(key, composer, encoder)
-        # The disk save needs the real tensors; the store owns them from here
-        # (D2H into pinned buffers under the cpu backend).
+        if cache_key is not None:
+            self._save_chunk_cache(cache_key, composer, encoder)
         composer.move_chunks_to_store()
         return composer
 
     def _save_chunk_cache(
-        self, key: ChunkCacheKey, composer: SampleComposer, encoder: ChunkedRopeEncoder
+        self, cache_key: ChunkCacheKey, composer: SampleComposer, encoder: ChunkedRopeEncoder
     ) -> None:
-        path = key.path(self.config.cache_root)
+        cache_path = cache_key.path(self.config.cache_root)
         try:
             save_sample_chunks(
-                path,
-                meta=key.meta(),
+                cache_path,
+                meta=cache_key.meta(),
                 fact_chunks=composer.chunks,
                 scaffold_chunks=composer.scaffold_chunks(),
                 cos_table=encoder.cos_table,
                 sin_table=encoder.sin_table,
             )
-        except Exception as exc:
-            # The cache is an accelerator, never a correctness dependency; a
-            # full disk must not kill the run.
-            logger.warning("Failed to save KV chunk cache {}: {}", path, exc)
+        except Exception as tolerated_failure:
+            logger.warning("Failed to save KV chunk cache {}: {}", cache_path, tolerated_failure)
 
     def _build_chunk_store(self) -> ChunkStore:
         return build_chunk_store(
@@ -175,10 +173,9 @@ class SamplePrecompute:
             staging_slots=self.config.kv_staging_slots,
         )
 
-    def _chunk_device(self) -> str:
-        # Under the cpu backend the disk cache loads straight to host and the
-        # store pins it, so the payload never touches the GPU.
-        return "cpu" if self.config.kv_store_backend == "cpu" else self.config.kv_device
+    def _cached_chunk_device(self) -> str:
+        store_pins_host_memory = self.config.kv_store_backend == "cpu"
+        return "cpu" if store_pins_host_memory else self.config.kv_device
 
     def _ensure_encoder(self) -> ChunkedRopeEncoder:
         if self._encoder is None:

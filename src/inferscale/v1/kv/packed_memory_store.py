@@ -51,8 +51,6 @@ class PackedGPUMemoryStore(GPUMemoryStore):
             try:
                 index_tensors = _index_tensors(memories, offsets, lengths, self._device)
             finally:
-                # Whether or not the index tensors could be allocated, the
-                # stored payloads must keep pointing at the packed slabs.
                 _restore_views(memories, packed, layer_names, offsets, lengths)
             self._packed_kv_by_layer = packed
             self._packed_token_ids, self._packed_offsets, self._packed_lengths = index_tensors
@@ -83,8 +81,6 @@ class PackedGPUMemoryStore(GPUMemoryStore):
         source_indices = _gather_source_indices(rows, packed_offsets, packed_lengths, max_tokens)
         token_ids = packed_token_ids.index_select(0, source_indices).detach().cpu().tolist()
         return UserMemory(
-            # Like the pinned store's lazy view, composition gathers one layer
-            # at a time instead of copying every selected layer up front.
             kv_by_layer=_PackedSelectionLayerView(self, layer_names, source_indices),
             num_tokens=len(token_ids),
             token_ids=token_ids,

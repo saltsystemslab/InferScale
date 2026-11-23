@@ -19,8 +19,6 @@ LMCACHE_VERSION_PIN = "0.4.4"
 CONNECTOR_NAME = "BlendConnector"
 CONNECTOR_MODULE = "benchmarks.common.lmcache.connector"
 KV_ROLE = "kv_both"
-# "package" runs the vLLM adapter shipped in the lmcache package; "vendored"
-# runs the copy of that adapter inside vLLM.
 ADAPTERS = ("package", "vendored")
 PROMPT_LAYOUT = "header-sep-chunks-sep-footer-v1"
 CONFIG_FILE_VARIABLE = "LMCACHE_CONFIG_FILE"
@@ -67,34 +65,58 @@ class LMCacheConfig:
 
 def parse_lmcache_config(section: Mapping[str, Any], where: str) -> LMCacheConfig:
     reject_unknown_keys(section, LMCACHE_KEYS, where)
-    size = require(section, "max_local_cpu_size_gb", (int, float), where)
-    if not math.isfinite(size) or size <= 0:
+    return LMCacheConfig(
+        max_local_cpu_size_gb=_max_local_cpu_size_gb(section, where),
+        chunk_size=_chunk_size(section, where),
+        blend_recompute_ratio=_blend_recompute_ratio(section, where),
+        blend_check_layers=_blend_check_layers(section, where),
+        blend_special_str=_blend_special_str(section, where),
+        adapter=_adapter(section, where),
+    )
+
+
+def _max_local_cpu_size_gb(section: Mapping[str, Any], where: str) -> float:
+    size_gb = require(section, "max_local_cpu_size_gb", (int, float), where)
+    if not math.isfinite(size_gb) or size_gb <= 0:
         raise ConfigError(f"{where}.max_local_cpu_size_gb must be a finite positive number.")
+    return float(size_gb)
+
+
+def _chunk_size(section: Mapping[str, Any], where: str) -> int:
     chunk_size = optional(section, "chunk_size", int, DEFAULT_CHUNK_SIZE, where)
     if chunk_size < 1:
         raise ConfigError(f"{where}.chunk_size must be >= 1.")
+    return chunk_size
+
+
+def _blend_recompute_ratio(section: Mapping[str, Any], where: str) -> float:
     ratio = optional(
         section, "blend_recompute_ratio", (int, float), DEFAULT_BLEND_RECOMPUTE_RATIO, where
     )
     if not math.isfinite(ratio) or not 0 <= ratio <= 1:
         raise ConfigError(f"{where}.blend_recompute_ratio must be between 0 and 1.")
+    return float(ratio)
+
+
+def _blend_check_layers(section: Mapping[str, Any], where: str) -> tuple[int, ...]:
     layers = int_list(section, "blend_check_layers", where, default=DEFAULT_BLEND_CHECK_LAYERS)
     if any(layer < 0 for layer in layers):
         raise ConfigError(f"{where}.blend_check_layers entries must be >= 0.")
+    return layers
+
+
+def _blend_special_str(section: Mapping[str, Any], where: str) -> str:
     special_str = optional(section, "blend_special_str", str, DEFAULT_BLEND_SPECIAL_STR, where)
     if not special_str.strip():
         raise ConfigError(f"{where}.blend_special_str must contain a non-blank separator.")
+    return special_str
+
+
+def _adapter(section: Mapping[str, Any], where: str) -> str:
     adapter = optional(section, "adapter", str, DEFAULT_ADAPTER, where)
     if adapter not in ADAPTERS:
         raise ConfigError(f"{where}.adapter must be one of {ADAPTERS}.")
-    return LMCacheConfig(
-        max_local_cpu_size_gb=float(size),
-        chunk_size=chunk_size,
-        blend_recompute_ratio=float(ratio),
-        blend_check_layers=layers,
-        blend_special_str=special_str,
-        adapter=adapter,
-    )
+    return adapter
 
 
 def connector_extra_config(config: LMCacheConfig) -> dict[str, Any]:

@@ -69,8 +69,6 @@ CONDITION = "lmcache_blend"
 VECTOR_BACKEND = "qdrant"
 STORE_BACKEND_LABEL = "lmcache-cpu"
 WARM_BATCH_SIZE = 256
-# The cache usage reported after the warm-up must reach this share of the
-# facts' KV bytes, or the segments were not stored.
 MIN_RESIDENT_FRACTION = 0.5
 
 
@@ -82,8 +80,7 @@ class _BlendContext:
     scaffold: ScaffoldTokens
     separator: list[int]
     stores: SampleStores
-    # The scaffold header and every catalog fact of the used samples, each its own prompt.
-    warm_prompt_ids: list[list[int]]
+    header_and_fact_prompts: list[list[int]]
     bytes_per_token: int
 
 
@@ -121,7 +118,7 @@ def run_lmcache_blend(
         tokenizer = engine.llm.get_tokenizer()
         separator = lmcache_separator()
         scaffold = extract_memory_scaffold_token_ids(tokenizer, block_size=config.kv_block_size)
-        warm_prompt_ids = catalog_warm_up_prompts(
+        header_and_fact_prompts = catalog_warm_up_prompts(
             tokenizer, scaffold, facts_by_sample.values(), separator
         )
         logger.info(
@@ -129,7 +126,7 @@ def run_lmcache_blend(
             CONDITION,
             len(used_samples),
             max_users,
-            len(warm_prompt_ids),
+            len(header_and_fact_prompts),
         )
         stores = prepare_sample_stores(
             config,
@@ -145,7 +142,7 @@ def run_lmcache_blend(
             scaffold=scaffold,
             separator=separator,
             stores=stores,
-            warm_prompt_ids=warm_prompt_ids,
+            header_and_fact_prompts=header_and_fact_prompts,
             bytes_per_token=kv_bytes_per_token(),
         )
         batches = prepare_user_batches(
@@ -172,14 +169,14 @@ def catalog_warm_up_prompts(
     catalogs: Iterable[Sequence[MemoryFact]],
     separator: Sequence[int],
 ) -> list[list[int]]:
-    chunks = [
+    fact_token_ids = [
         token_ids
         for facts in catalogs
         for token_ids in select_memory_facts(
             tokenizer, fact_catalog_hits(facts)
         ).ordered_token_ids()
     ]
-    return warm_up_prompts(scaffold.header_token_ids, chunks, separator)
+    return warm_up_prompts(scaffold.header_token_ids, fact_token_ids, separator)
 
 
 def _prepare_request(
@@ -205,39 +202,35 @@ def _measure(
 ) -> dict[str, Any]:
     config = context.config
     logger.info("{}: users={}", CONDITION, batch.num_users)
-    # The random-token warm-up goes first: every request stores its segments,
-    # and junk stored after the facts would be the last to be evicted.
     prepare_batch(config, engine.llm, batch.prompts, engine.sampling_params)
-    tail_tokens = sum(
-        len(prompt["prompt_token_ids"]) - cached
-        for prompt, cached in zip(batch.prompts, batch.cached_prefix_tokens)
-    )
+    tail_tokens = _uncached_tail_tokens(batch)
     require_cache_capacity(
-        warm_tokens=prompt_token_count(context.warm_prompt_ids),
+        warm_tokens=prompt_token_count(context.header_and_fact_prompts),
         tail_tokens=tail_tokens,
         bytes_per_token=context.bytes_per_token,
         max_local_cpu_size_gb=context.lmcache.max_local_cpu_size_gb,
         what=f"{CONDITION} users={batch.num_users}",
     )
     warmup = prime_fact_cache(
-        engine.llm, context.warm_prompt_ids, bytes_per_token=context.bytes_per_token
+        engine.llm, context.header_and_fact_prompts, bytes_per_token=context.bytes_per_token
     )
     reset_load_stats()
     measured = measure_batch(engine.llm, batch.prompts, engine.sampling_params)
-    stats = snapshot_load_stats()
-    covered = count_covered_requests(stats["matched_tokens"], batch.cached_prefix_tokens)
+    load_stats = snapshot_load_stats()
+    covered = count_covered_requests(load_stats["matched_tokens"], batch.cached_prefix_tokens)
     require_full_coverage(
-        covered, len(batch.prompts), stats["matched_tokens"], batch.cached_prefix_tokens
+        covered, len(batch.prompts), load_stats["matched_tokens"], batch.cached_prefix_tokens
     )
+    cache_mb = bytes_to_mb(warmup.cpu_cache_bytes or 0)
     logger.info(
         "{}: users={} warm_prompts={} cache_mb={:.1f} matched_tokens={} load_ms={:.1f} "
         "covered={}/{}",
         CONDITION,
         batch.num_users,
-        len(context.warm_prompt_ids),
-        bytes_to_mb(warmup.cpu_cache_bytes or 0),
-        stats["tokens_matched"],
-        stats["load_time_ms"],
+        len(context.header_and_fact_prompts),
+        cache_mb,
+        load_stats["tokens_matched"],
+        load_stats["load_time_ms"],
         covered,
         len(batch.prompts),
     )
@@ -255,9 +248,9 @@ def _measure(
         kv_precompute_time_s=warmup.time_s,
         engine_startup_time_s=engine.startup_time_s,
         kv_store_backend=STORE_BACKEND_LABEL,
-        kv_store_host_mb=bytes_to_mb(warmup.cpu_cache_bytes or 0),
-        kv_h2d_bytes=int(stats["tokens_matched"]) * context.bytes_per_token,
-        kv_h2d_avg_ms=float(stats["load_time_ms"]) / len(batch.prompts),
+        kv_store_host_mb=cache_mb,
+        kv_h2d_bytes=int(load_stats["tokens_matched"]) * context.bytes_per_token,
+        kv_h2d_avg_ms=float(load_stats["load_time_ms"]) / len(batch.prompts),
         kv_requests_loaded=covered,
         prefix_caching=False,
         total_input_tokens=int(measured["total_input_tokens"]),
@@ -265,15 +258,24 @@ def _measure(
     )
 
 
+def _uncached_tail_tokens(batch: UserCountAccumulator) -> int:
+    return sum(
+        len(prompt["prompt_token_ids"]) - cached
+        for prompt, cached in zip(batch.prompts, batch.cached_prefix_tokens)
+    )
+
+
 def prime_fact_cache(
     llm: Any, prompts: Sequence[Sequence[int]], *, bytes_per_token: int
 ) -> FactCacheWarmup:
     clear_cache()
-    stats = warm_prompts(llm, prompts, batch_size=WARM_BATCH_SIZE)
-    usage = cpu_cache_usage_bytes()
-    require_fact_cache_resident(usage, expected_bytes=stats.token_count * bytes_per_token)
+    warmed = warm_prompts(llm, prompts, batch_size=WARM_BATCH_SIZE)
+    usage_bytes = cpu_cache_usage_bytes()
+    require_fact_cache_resident(usage_bytes, expected_bytes=warmed.token_count * bytes_per_token)
     return FactCacheWarmup(
-        time_s=stats.time_ms / 1000, stored_tokens=stats.token_count, cpu_cache_bytes=usage
+        time_s=warmed.time_ms / 1000,
+        stored_tokens=warmed.token_count,
+        cpu_cache_bytes=usage_bytes,
     )
 
 
@@ -294,8 +296,8 @@ def count_covered_requests(matched_by_request: Mapping[str, int], expected: Sequ
             f"LMCache recorded {len(matched_by_request)} requests for a batch of "
             f"{len(expected)} prompts."
         )
-    ordered = sorted(matched_by_request.items(), key=lambda item: _request_order(item[0]))
-    return sum(1 for (_, matched), needed in zip(ordered, expected) if matched >= needed)
+    matched_in_prompt_order = _matched_tokens_in_prompt_order(matched_by_request)
+    return sum(1 for matched, needed in zip(matched_in_prompt_order, expected) if matched >= needed)
 
 
 def require_full_coverage(
@@ -303,16 +305,25 @@ def require_full_coverage(
 ) -> None:
     if covered >= prompt_count:
         return
-    ordered = sorted(matched_by_request.items(), key=lambda item: _request_order(item[0]))
-    shortfall = min(
-        ((matched, needed) for (_, matched), needed in zip(ordered, expected) if matched < needed),
-        key=lambda pair: pair[0] - pair[1],
+    matched_in_prompt_order = _matched_tokens_in_prompt_order(matched_by_request)
+    worst_matched, worst_needed = min(
+        (
+            (matched, needed)
+            for matched, needed in zip(matched_in_prompt_order, expected)
+            if matched < needed
+        ),
+        key=lambda shortfall: shortfall[0] - shortfall[1],
     )
     raise RuntimeError(
         f"LMCache served the header and every retrieved fact for {covered} of {prompt_count} "
-        f"requests (worst request matched {shortfall[0]} of {shortfall[1]} tokens); the rest were "
+        f"requests (worst request matched {worst_matched} of {worst_needed} tokens); the rest were "
         "partly recomputed, so this batch does not measure CacheBlend."
     )
+
+
+def _matched_tokens_in_prompt_order(matched_by_request: Mapping[str, int]) -> list[int]:
+    request_ids_in_order = sorted(matched_by_request, key=_request_order)
+    return [matched_by_request[request_id] for request_id in request_ids_in_order]
 
 
 def _request_order(request_id: str) -> tuple[int, int | str]:

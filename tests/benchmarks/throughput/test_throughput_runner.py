@@ -81,13 +81,14 @@ def test_every_condition_gives_the_lmcache_arm_one_worker_for_all_counts(tmp_pat
     assert specs[2].user_counts == DEFAULT_USER_COUNTS
 
 
-def test_dry_run_prints_jobs_without_creating_run_directory(tmp_path: Path, capsys) -> None:
+def test_dry_run_prints_jobs_without_creating_run_directory(
+    tmp_path: Path, throughput_log: list[str]
+) -> None:
     config = _config(tmp_path)
 
     assert run_throughput(config, dry_run=True) is None
-    output = capsys.readouterr().out
 
-    jobs = [json.loads(line) for line in output.splitlines() if line.startswith("{")]
+    jobs = [json.loads(message) for message in throughput_log if message.startswith("{")]
     assert [job["condition"] for job in jobs] == [
         "mem0_qdrant",
         "lmcache_blend",

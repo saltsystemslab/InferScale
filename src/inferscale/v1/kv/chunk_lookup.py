@@ -38,7 +38,8 @@ class ChunkLookup(Generic[Entry]):
 
     def device_rows(self, stable_ids: Any, id_to_row: Any, *, reverse: bool) -> Any:
         binding = self._row_maps.get(id(id_to_row))
-        if binding is None or binding() is not id_to_row:
+        is_bound = binding is not None and binding() is id_to_row
+        if not is_bound:
             raise DeviceChunkSelectionError("The KV row map is not bound to the current corpus.")
         return device_chunk_rows(
             stable_ids,
@@ -74,13 +75,13 @@ def device_chunk_rows(
             raise DeviceChunkSelectionError(f"{name} must reside on the chunk map's CUDA device.")
         if tensor.dtype not in (torch.int32, torch.int64):
             raise DeviceChunkSelectionError(f"{name} must contain integer IDs or rows.")
-    stable_ids = stable_ids.to(dtype=torch.long)
-    valid_range = (stable_ids >= 0) & (stable_ids < id_to_row.numel())
-    safe_ids = torch.where(valid_range, stable_ids, torch.zeros_like(stable_ids))
+    long_ids = stable_ids.to(dtype=torch.long)
+    valid_range = (long_ids >= 0) & (long_ids < id_to_row.numel())
+    safe_ids = torch.where(valid_range, long_ids, torch.zeros_like(long_ids))
     rows = id_to_row.index_select(0, safe_ids).to(dtype=torch.long)
     valid = (valid_range & (rows >= 0) & (rows < num_rows)).all()
-    if stable_ids.numel() > 1:
-        sorted_ids = torch.sort(stable_ids).values
+    if long_ids.numel() > 1:
+        sorted_ids = torch.sort(long_ids).values
         valid = valid & (sorted_ids[1:] != sorted_ids[:-1]).all()
     if not bool(valid.item()):
         raise DeviceChunkSelectionError(

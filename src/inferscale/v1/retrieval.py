@@ -35,13 +35,13 @@ class Retriever:
             raise ValueError("payloads and ids must have the same length.")
         if not id_list:
             return 0.0
-        started = time.perf_counter()
+        embed_started = time.perf_counter()
         vectors: list[list[float]] = []
         for start in range(0, len(text_list), self._batch_size):
             vectors.extend(
                 self.embedder.embed_documents(text_list[start : start + self._batch_size])
             )
-        embed_ms = (time.perf_counter() - started) * 1000
+        embed_ms = (time.perf_counter() - embed_started) * 1000
         self.index.add_many(vectors, payload_list, ids=id_list)
         return embed_ms
 

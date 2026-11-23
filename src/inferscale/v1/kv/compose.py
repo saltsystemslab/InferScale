@@ -6,8 +6,8 @@ from ..types import KVChunk, ScaffoldChunks, SearchHit
 
 
 def reverse_ranked_ids(hits: Sequence[SearchHit]) -> list[str]:
-    unique_ids = list(dict.fromkeys(str(hit.id) for hit in hits))
-    return list(reversed(unique_ids))
+    best_first_ids = list(dict.fromkeys(str(hit.id) for hit in hits))
+    return list(reversed(best_first_ids))
 
 
 def memory_parts(scaffold: ScaffoldChunks, selected: Sequence[KVChunk]) -> list[KVChunk]:

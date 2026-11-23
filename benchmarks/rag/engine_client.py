@@ -53,14 +53,14 @@ class RagEngineClient:
             return
         force_vllm_inprocess_mode()
         try:
-            self._prepare()
+            self._before_engine_start()
             self._engine.start(kv_transfer_config=self._kv_transfer_config())
             self._scaffold = extract_rag_scaffold_token_ids(
                 self._engine.tokenizer,
                 system_prompt=self._prompt_profile.system_prompt,
                 block_size=self.config.kv_block_size,
             )
-            self._after_start()
+            self._after_engine_start()
         except Exception:
             self.close()
             raise
@@ -73,10 +73,10 @@ class RagEngineClient:
         self._engine.close()
         self._scaffold = None
 
-    def _prepare(self) -> None:
+    def _before_engine_start(self) -> None:
         pass
 
-    def _after_start(self) -> None:
+    def _after_engine_start(self) -> None:
         pass
 
     def _engine_config(self) -> EngineConfig:

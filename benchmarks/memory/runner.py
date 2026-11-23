@@ -7,6 +7,7 @@ from loguru import logger
 from benchmarks.common.deferred_judging import judge_pending_records
 from benchmarks.common.files import read_json_or_default, read_jsonl, replace_jsonl, write_json
 from benchmarks.common.judge import failed_judge_payload, format_accuracy
+from benchmarks.common.paths import RUN_CONFIG_FILE
 from benchmarks.common.system import collect_system_metadata
 from benchmarks.memory.config import MemoryRunConfig
 from benchmarks.memory.judging import judge_metadata, judge_record, record_label
@@ -20,7 +21,6 @@ from benchmarks.memory.reporting import (
 from benchmarks.memory.results import summarize_records
 from benchmarks.memory.runtime_clients import RuntimeClients, build_clients, judge_client_for
 
-CONFIG_FILE = "config.json"
 SYSTEM_FILE = "system.json"
 SUMMARY_FILE = "summary.json"
 
@@ -33,7 +33,7 @@ def run_benchmark(config: MemoryRunConfig, clients: RuntimeClients | None = None
         config.run_dir,
     )
     config.run_dir.mkdir(parents=True, exist_ok=True)
-    write_json(config.run_dir / CONFIG_FILE, config.to_jsonable())
+    write_json(config.run_dir / RUN_CONFIG_FILE, config.to_jsonable())
     owns_clients = clients is None
     runtime_clients = clients or build_clients(config)
     system_metadata = collect_system_metadata()
@@ -70,22 +70,22 @@ def judge_existing_run(config: MemoryRunConfig) -> dict[str, Any]:
         raise FileNotFoundError(f"predictions file not found: {predictions_path}")
     logger.info("Judging existing run_id={} predictions={}", config.run_id, predictions_path)
     records = read_jsonl(predictions_path)
-    saved_config = read_json_or_default(config.run_dir / CONFIG_FILE, config.to_jsonable())
-    saved_config = _reconcile_with_evidence(config, saved_config)
+    recorded_config = read_json_or_default(config.run_dir / RUN_CONFIG_FILE, config.to_jsonable())
+    saved_config = _reconcile_with_evidence(config, recorded_config)
     system_metadata = read_json_or_default(config.run_dir / SYSTEM_FILE, {})
     sample_setup_metrics = read_sample_setup_report(config.run_dir)
     judge_client = judge_client_for(config)
     if judge_client is None:
         raise RuntimeError("Deferred judging requires the vllm judge provider.")
 
-    def save(rows: list[dict[str, Any]], final: bool) -> dict[str, Any]:
+    def save_progress(judged_so_far: list[dict[str, Any]], is_final: bool) -> dict[str, Any]:
         return write_run_outputs(
             config,
-            rows,
+            judged_so_far,
             config_json=saved_config,
             system_metadata=system_metadata,
             sample_setup_metrics=sample_setup_metrics,
-            write_reports=final,
+            write_reports=is_final,
         )
 
     summary, judged_now = judge_pending_records(
@@ -94,7 +94,7 @@ def judge_existing_run(config: MemoryRunConfig) -> dict[str, Any]:
         rejudge=config.rejudge,
         judge=lambda record: judge_record(config, judge_client, record),
         failed_payload=lambda exc: failed_judge_payload(exc, judge_metadata(config)),
-        save=save,
+        save=save_progress,
         label=record_label,
     )
     logger.info(
@@ -137,17 +137,29 @@ def _reconcile_with_evidence(
 ) -> dict[str, Any]:
     saved_with_evidence = bool(saved_config.get("with_evidence", False))
     if config.rejudge:
-        if config.with_evidence != saved_with_evidence:
-            logger.warning(
-                "Rejudging run_id={} with with_evidence={} (run was recorded with {}); "
-                "updating the saved config.json.",
-                config.run_id,
-                config.with_evidence,
-                saved_with_evidence,
-            )
-            saved_config = {**saved_config, "with_evidence": config.with_evidence}
-            write_json(config.run_dir / CONFIG_FILE, saved_config)
+        return _overwrite_saved_evidence(config, saved_config, saved_with_evidence)
+    _adopt_saved_evidence(config, saved_with_evidence)
+    return saved_config
+
+
+def _overwrite_saved_evidence(
+    config: MemoryRunConfig, saved_config: dict[str, Any], saved_with_evidence: bool
+) -> dict[str, Any]:
+    if config.with_evidence == saved_with_evidence:
         return saved_config
+    logger.warning(
+        "Rejudging run_id={} with with_evidence={} (run was recorded with {}); "
+        "updating the saved config.json.",
+        config.run_id,
+        config.with_evidence,
+        saved_with_evidence,
+    )
+    updated_config = {**saved_config, "with_evidence": config.with_evidence}
+    write_json(config.run_dir / RUN_CONFIG_FILE, updated_config)
+    return updated_config
+
+
+def _adopt_saved_evidence(config: MemoryRunConfig, saved_with_evidence: bool) -> None:
     if config.with_evidence and not saved_with_evidence:
         raise RuntimeError(
             "judge.with_evidence=true conflicts with this run's saved configuration "
@@ -161,17 +173,16 @@ def _reconcile_with_evidence(
             config.run_id,
         )
         config.judge.with_evidence = True
-    return saved_config
 
 
 def _log_category_accuracy(summary: dict[str, Any]) -> None:
     by_category = summary.get("metrics", {}).get("accuracy_by_category") or {}
-    for category, stats in by_category.items():
+    for category, category_accuracy in by_category.items():
         logger.info(
             "Category {} ({}) accuracy={} ({}/{})",
             category,
-            stats.get("name"),
-            format_accuracy(stats.get("accuracy")),
-            stats.get("correct"),
-            stats.get("total"),
+            category_accuracy.get("name"),
+            format_accuracy(category_accuracy.get("accuracy")),
+            category_accuracy.get("correct"),
+            category_accuracy.get("total"),
         )

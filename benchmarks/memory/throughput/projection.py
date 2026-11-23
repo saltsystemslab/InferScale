@@ -6,18 +6,11 @@ from benchmarks.common.system import available_host_memory_bytes
 from benchmarks.memory.throughput.config import ThroughputConfig
 
 GIB = 2**30
-# The Jasper graph of one sample is one segment of 2**12 vector slots (the
-# vectors_per_segment that scripts/setup_remote.sh compiles into Jasper) at
-# the per-slot device footprint measured for the benchmark's graph settings.
 JASPER_SEGMENT_SLOTS = 1 << 12
-JASPER_BYTES_PER_SLOT = 3457
-JASPER_GRAPH_DEVICE_BYTES = JASPER_SEGMENT_SLOTS * JASPER_BYTES_PER_SLOT
-# Leave the CUDA context and allocator fragmentation some headroom below the
-# device total.
-DEVICE_MEMORY_FRACTION = 0.97
-# Pinned allocations cannot swap, and the vLLM engine allocates host memory
-# after this check runs.
-PINNED_HOST_FRACTION = 0.9
+MEASURED_BYTES_PER_SLOT = 3457
+JASPER_GRAPH_DEVICE_BYTES = JASPER_SEGMENT_SLOTS * MEASURED_BYTES_PER_SLOT
+USABLE_DEVICE_FRACTION = 0.97
+PINNABLE_HOST_FRACTION = 0.9
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,7 +52,7 @@ def check_kv_gpu_projection(
         "generate": vllm_pool + composed_bytes + graph_bytes,
     }
     for phase, projected_peak in phase_peaks.items():
-        if projected_peak > DEVICE_MEMORY_FRACTION * device_total:
+        if projected_peak > USABLE_DEVICE_FRACTION * device_total:
             raise RuntimeError(
                 f"Projected KV GPU footprint exceeds device memory in the {phase} phase: "
                 f"projected={_gib(projected_peak):.1f}GiB vllm_pool={_gib(vllm_pool):.1f}GiB "
@@ -78,24 +71,23 @@ def check_pinned_host_projection(
     config: ThroughputConfig, *, corpus_bytes: float, num_users: int, total_requests: int
 ) -> None:
     del config
-    available = available_host_memory_bytes()
-    if available is None:
+    available_bytes = available_host_memory_bytes()
+    if available_bytes is None:
         return
-    if corpus_bytes > PINNED_HOST_FRACTION * available:
+    if corpus_bytes > PINNABLE_HOST_FRACTION * available_bytes:
         raise RuntimeError(
             "Projected pinned-host KV corpus exceeds available RAM: "
-            f"corpus={_gib(corpus_bytes):.1f}GiB available={_gib(available):.1f}GiB "
+            f"corpus={_gib(corpus_bytes):.1f}GiB available={_gib(available_bytes):.1f}GiB "
             f"(users={num_users}, requests={total_requests}). "
             "Reduce the corpus or free host memory."
         )
 
 
 def _device_total_memory_bytes() -> int:
-    # Imported here so the projection stays importable on hosts without CUDA.
     import torch
 
     return int(torch.cuda.get_device_properties(0).total_memory)
 
 
-def _gib(value: float) -> float:
-    return value / GIB
+def _gib(byte_count: float) -> float:
+    return byte_count / GIB

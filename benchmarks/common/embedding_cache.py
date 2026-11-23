@@ -47,7 +47,6 @@ class CachedEmbedder:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def __getattr__(self, name: str) -> Any:
-        # Mem0 reads provider attributes such as ``config`` from its embedder.
         return getattr(self._wrapped, name)
 
     def embed_documents(self, texts: Any) -> list[list[float]]:
@@ -90,41 +89,41 @@ class CachedEmbedder:
         }
 
     def _embed_one(self, text: str, memory_action: str | None) -> np.ndarray:
-        path = self._cache_path(text, memory_action)
-        cached = self._load_cached(path)
+        cache_path = self._cache_path(text, memory_action)
+        cached = self._load_cached(cache_path)
         if cached is not None:
             self.hits += 1
             return cached
         self.misses += 1
         self._require_write_mode(memory_action)
-        array = np.asarray(self._calls.embed_one(text, memory_action), dtype=np.float32)
-        atomic_write_npy(path, array)
-        return array
+        vector = np.asarray(self._calls.embed_one(text, memory_action), dtype=np.float32)
+        atomic_write_npy(cache_path, vector)
+        return vector
 
     def _plan_batch(self, texts: list[str], memory_action: str) -> _BatchPlan:
         plan = _BatchPlan(vectors=[None] * len(texts))
-        loaded: dict[Path, np.ndarray] = {}
-        for index, text in enumerate(texts):
-            path = self._cache_path(text, memory_action)
-            if path in loaded:
+        loaded_by_path: dict[Path, np.ndarray] = {}
+        for position, text in enumerate(texts):
+            cache_path = self._cache_path(text, memory_action)
+            if cache_path in loaded_by_path:
                 self.hits += 1
-                plan.vectors[index] = loaded[path]
+                plan.vectors[position] = loaded_by_path[cache_path]
                 continue
-            if path in plan.positions_by_path:
+            if cache_path in plan.positions_by_path:
                 self.misses += 1
-                plan.positions_by_path[path].append(index)
+                plan.positions_by_path[cache_path].append(position)
                 continue
-            cached = self._load_cached(path)
+            cached = self._load_cached(cache_path)
             if cached is not None:
                 self.hits += 1
-                loaded[path] = cached
-                plan.vectors[index] = cached
+                loaded_by_path[cache_path] = cached
+                plan.vectors[position] = cached
                 continue
             self.misses += 1
             self._require_write_mode(memory_action)
             plan.missing_texts.append(text)
-            plan.missing_paths.append(path)
-            plan.positions_by_path[path] = [index]
+            plan.missing_paths.append(cache_path)
+            plan.positions_by_path[cache_path] = [position]
         return plan
 
     def _fetch_missing(self, plan: _BatchPlan, memory_action: str) -> None:
@@ -134,25 +133,25 @@ class CachedEmbedder:
                 f"Wrapped embed_batch() returned {len(raw_vectors)} embeddings for "
                 f"{len(plan.missing_texts)} inputs."
             )
-        for raw_vector, path in zip(raw_vectors, plan.missing_paths):
-            array = np.asarray(raw_vector, dtype=np.float32)
-            atomic_write_npy(path, array)
-            for index in plan.positions_by_path[path]:
-                plan.vectors[index] = array
+        for raw_vector, cache_path in zip(raw_vectors, plan.missing_paths):
+            vector = np.asarray(raw_vector, dtype=np.float32)
+            atomic_write_npy(cache_path, vector)
+            for position in plan.positions_by_path[cache_path]:
+                plan.vectors[position] = vector
 
-    def _load_cached(self, path: Path) -> np.ndarray | None:
-        if not path.exists():
+    def _load_cached(self, cache_path: Path) -> np.ndarray | None:
+        if not cache_path.exists():
             return None
         try:
-            return np.load(path).astype(np.float32, copy=False)
+            return np.load(cache_path).astype(np.float32, copy=False)
         except Exception as exc:
             if self.mode == "read":
                 raise CachedEmbeddingMissingError(
-                    f"Cached embedding at {path} could not be loaded. "
+                    f"Cached embedding at {cache_path} could not be loaded. "
                     "Delete the corrupt file and rerun the preembed stage with the same "
                     "dataset, embedding model, and embedding cache dir."
                 ) from exc
-            path.unlink(missing_ok=True)
+            cache_path.unlink(missing_ok=True)
             return None
 
     def _require_write_mode(self, memory_action: str | None) -> None:

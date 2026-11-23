@@ -16,15 +16,13 @@ class OpenAIEmbedder:
     ) -> None:
         from openai import OpenAI
 
-        kwargs: dict[str, Any] = {
+        client_options: dict[str, Any] = {
             "max_retries": 5,
-            # An omitted JSON endpoint selects the provider default, even if
-            # the SDK's ambient OPENAI_BASE_URL points at another server.
             "base_url": base_url or DEFAULT_OPENAI_BASE_URL,
         }
         if api_key:
-            kwargs["api_key"] = api_key
-        self._client = OpenAI(**kwargs)
+            client_options["api_key"] = api_key
+        self._client = OpenAI(**client_options)
         self._model = model
 
     @property
@@ -36,12 +34,13 @@ class OpenAIEmbedder:
         if not text_list:
             return []
         response = self._client.embeddings.create(model=self._model, input=text_list)
-        rows = sorted(response.data, key=lambda item: item.index)
-        if len(rows) != len(text_list):
+        rows_in_input_order = sorted(response.data, key=lambda row: row.index)
+        if len(rows_in_input_order) != len(text_list):
             raise RuntimeError(
-                f"Embedding API returned {len(rows)} vectors for {len(text_list)} inputs."
+                f"Embedding API returned {len(rows_in_input_order)} vectors "
+                f"for {len(text_list)} inputs."
             )
-        return [list(row.embedding) for row in rows]
+        return [list(row.embedding) for row in rows_in_input_order]
 
     def embed_query(self, text: str) -> list[float]:
         return self.embed_documents([text])[0]

@@ -57,15 +57,15 @@ class BuiltMemory:
         return None
 
     def log_cache_stats(self, sample_id: str) -> None:
-        stats = self.embedding_cache_stats()
-        if stats is not None:
+        embedding_stats = self.embedding_cache_stats()
+        if embedding_stats is not None:
             logger.info(
                 "Embedding cache sample_id={} mode={} hits={} misses={} dir={}",
                 sample_id,
-                stats["mode"],
-                stats["hits"],
-                stats["misses"],
-                stats["cache_dir"],
+                embedding_stats["mode"],
+                embedding_stats["hits"],
+                embedding_stats["misses"],
+                embedding_stats["cache_dir"],
             )
         llm_stats = self.llm_cache_stats()
         if llm_stats is not None:
@@ -123,11 +123,8 @@ def vector_store_memory_stats(memory: Any) -> dict[str, Any]:
 
 
 def added_memory_texts(result: Any) -> list[str]:
-    return [
-        text
-        for text in (str(row.get("memory") or "").strip() for row in _result_rows(result))
-        if text
-    ]
+    stripped_texts = (str(row.get("memory") or "").strip() for row in _result_rows(result))
+    return [text for text in stripped_texts if text]
 
 
 def added_memory_ids(result: Any) -> list[str]:

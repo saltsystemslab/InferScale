@@ -3,10 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from benchmarks.common.vector_types import VECTOR_DISTANCE, SearchHit
-
-# Jasper fills result slots it could not populate with distances of this
-# magnitude; such a hit is a sign of incomplete retrieval, not a neighbor.
-SENTINEL_MAGNITUDE = 1e30
+from inferscale.v1.index.jasper import PADDING_DISTANCE_MAGNITUDE
 
 
 def validate_search_hits(hits: list[SearchHit], *, expected_count: int, backend: str) -> None:
@@ -15,8 +12,8 @@ def validate_search_hits(hits: list[SearchHit], *, expected_count: int, backend:
             f"{backend} returned {len(hits)} hits, expected {expected_count}; "
             "refusing to use incomplete retrieval."
         )
-    ids = [hit.id for hit in hits]
-    if len(ids) != len(set(ids)):
+    hit_ids = [hit.id for hit in hits]
+    if len(hit_ids) != len(set(hit_ids)):
         raise RuntimeError(
             f"{backend} returned duplicate result ids; refusing to use corrupt retrieval."
         )
@@ -30,7 +27,10 @@ def validate_search_hits(hits: list[SearchHit], *, expected_count: int, backend:
             raise RuntimeError(
                 f"{backend} returned a non-finite score or distance for result {hit.id!r}."
             )
-        if abs(hit.distance) >= SENTINEL_MAGNITUDE or abs(hit.score) >= SENTINEL_MAGNITUDE:
+        if (
+            abs(hit.distance) >= PADDING_DISTANCE_MAGNITUDE
+            or abs(hit.score) >= PADDING_DISTANCE_MAGNITUDE
+        ):
             raise RuntimeError(
                 f"{backend} returned a sentinel-like score or distance for result {hit.id!r}."
             )
@@ -44,9 +44,9 @@ def require_inner_product(distance: str) -> None:
 
 
 def first_vector(vectors: np.ndarray | list[float] | list[list[float]]) -> np.ndarray:
-    array = np.asarray(vectors, dtype=np.float32)
-    if array.ndim == 1:
-        return array
-    if array.ndim == 2 and array.shape[0] > 0:
-        return array[0]
+    vector_or_batch = np.asarray(vectors, dtype=np.float32)
+    if vector_or_batch.ndim == 1:
+        return vector_or_batch
+    if vector_or_batch.ndim == 2 and vector_or_batch.shape[0] > 0:
+        return vector_or_batch[0]
     raise ValueError("vectors must be a one-dimensional vector or a non-empty list of vectors")

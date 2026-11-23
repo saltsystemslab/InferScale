@@ -80,10 +80,11 @@ class Mem0JasperVectorStore(VectorStoreBase):
         payloads: list[dict[str, Any]] | None = None,
         ids: list[str] | None = None,
     ) -> list[str]:
-        payload_list = [
+        normalized_payloads = [
             _normalize_memory_payload(payload) for payload in (payloads or [{} for _ in vectors])
         ]
-        return self.store.add_many(vectors, payload_list, _stable_ids(payload_list, ids))
+        stable_ids = _stable_ids(normalized_payloads, ids)
+        return self.store.add_many(vectors, normalized_payloads, stable_ids)
 
     def search(
         self,
@@ -176,10 +177,10 @@ class Mem0JasperVectorStore(VectorStoreBase):
         limit: int | None = None,
         **_: Any,
     ) -> list[SearchHit]:
-        requested = top_k if top_k is not None else limit
+        row_limit = top_k if top_k is not None else limit
         rows = self.store.rows(filters)
-        if requested is not None:
-            rows = rows[: max(0, int(requested))]
+        if row_limit is not None:
+            rows = rows[: max(0, int(row_limit))]
         return [
             SearchHit(id=item_id, payload=dict(payload), score=0.0, distance=0.0, rank=rank)
             for rank, (item_id, payload) in enumerate(rows, start=1)
@@ -210,30 +211,40 @@ def _requested_top_k(top_k: int | None) -> int:
 
 
 def _stable_ids(payloads: list[dict[str, Any]], ids: list[str] | None) -> list[str] | None:
-    requested = list(ids) if ids is not None else [None] * len(payloads)
-    stable = [
+    requested_ids = list(ids) if ids is not None else [None] * len(payloads)
+    if len(requested_ids) != len(payloads):
+        raise ValueError("ids and payloads must have the same length")
+    stable_ids = [
         payload.get("fact_id") if payload.get("fact_id") is not None else requested_id
-        for payload, requested_id in zip(payloads, requested)
+        for payload, requested_id in zip(payloads, requested_ids)
     ]
-    if any(item is None for item in stable):
+    store_must_generate_ids = any(stable_id is None for stable_id in stable_ids)
+    if store_must_generate_ids:
         return None
-    return [str(item) for item in stable]
+    stable_id_texts = [str(stable_id) for stable_id in stable_ids]
+    if "" in stable_id_texts:
+        raise ValueError("Mem0 vector ids must not be empty.")
+    return stable_id_texts
 
 
 def _normalize_memory_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
     normalized = dict(payload or {})
-    memory = normalized.get("memory") or normalized.get("data") or normalized.get("text") or ""
-    normalized.setdefault("memory", memory)
-    normalized.setdefault("data", memory)
-    normalized.setdefault("text", memory)
-    metadata = normalized.get("metadata")
-    metadata = dict(metadata) if isinstance(metadata, dict) else {}
-    for key in FACT_METADATA_KEYS:
-        top_value = normalized.get(key)
-        metadata_value = metadata.get(key)
-        if top_value is None and metadata_value is not None:
-            normalized[key] = metadata_value
-        elif metadata_value is None and top_value is not None:
-            metadata[key] = top_value
+    memory_text = normalized.get("memory") or normalized.get("data") or normalized.get("text") or ""
+    normalized.setdefault("memory", memory_text)
+    normalized.setdefault("data", memory_text)
+    normalized.setdefault("text", memory_text)
+    raw_metadata = normalized.get("metadata")
+    metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
+    _mirror_fact_metadata(normalized, metadata)
     normalized["metadata"] = metadata
     return normalized
+
+
+def _mirror_fact_metadata(payload: dict[str, Any], metadata: dict[str, Any]) -> None:
+    for key in FACT_METADATA_KEYS:
+        top_level_value = payload.get(key)
+        metadata_value = metadata.get(key)
+        if top_level_value is None and metadata_value is not None:
+            payload[key] = metadata_value
+        elif metadata_value is None and top_level_value is not None:
+            metadata[key] = top_level_value

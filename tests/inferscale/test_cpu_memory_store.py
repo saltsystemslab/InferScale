@@ -253,14 +253,15 @@ class TestCpuPinnedMemoryStoreOnGpu:
         host = store._host["u0"]
         assert all(t.is_pinned() for t in host.kv_by_layer_host.values())
 
-    def test_staging_pool_evicts_lru(self) -> None:
-        store = self._store(num_staging_slots=1)
-        store.add_user_memory("u0", self._kv(), num_tokens=8, token_ids=list(range(8)))
-        store.add_user_memory("u1", self._kv(), num_tokens=8, token_ids=list(range(8)))
+    def test_staging_pool_evicts_the_oldest_staged_slot_even_when_it_was_used_last(self) -> None:
+        store = self._store(num_staging_slots=2)
+        for user_id in ("u0", "u1", "u2"):
+            store.add_user_memory(user_id, self._kv(), num_tokens=8, token_ids=list(range(8)))
         store.prefetch_user_to_gpu("u0")
         store.prefetch_user_to_gpu("u1")
-        assert "u0" not in store._slots
-        assert "u1" in store._slots
+        store.get_user_memory("u0")
+        store.prefetch_user_to_gpu("u2")
+        assert list(store._slots) == ["u1", "u2"]
 
     def test_peek_reads_metadata_without_staging(self) -> None:
         store = self._store()

@@ -23,6 +23,9 @@ from .types import RetrievedFact
 
 CHUNK_CACHE_VERSION = 2
 SCAFFOLD_SLOTS = ("header", "empty_memory", "footer")
+FINGERPRINT_HEX_DIGITS = 20
+HASHED_FIELD_TERMINATOR = b"\x00"
+BYTES_PER_MEGABYTE = 1e6
 
 
 class KVEncodingSettings(Protocol):
@@ -81,8 +84,8 @@ class ChunkCacheKey:
         )
 
     def path(self, cache_root: Path) -> Path:
-        name = f"{self.sample_id}-{self.sample_fingerprint}-{self.facts_fingerprint}.pt"
-        return self.directory(cache_root) / name
+        file_name = f"{self.sample_id}-{self.sample_fingerprint}-{self.facts_fingerprint}.pt"
+        return self.directory(cache_root) / file_name
 
     def meta(self) -> dict[str, Any]:
         return {
@@ -108,21 +111,21 @@ class CachedSampleEncode:
 def facts_fingerprint(facts: Sequence[RetrievedFact]) -> str:
     hasher = hashlib.sha256()
     for fact in facts:
-        for part in (fact.memory_id, fact.text_hash, fact.source_turn_id):
-            hasher.update(part.encode("utf-8"))
-            hasher.update(b"\x00")
-    return hasher.hexdigest()[:20]
+        for identifying_field in (fact.memory_id, fact.text_hash, fact.source_turn_id):
+            hasher.update(identifying_field.encode("utf-8"))
+            hasher.update(HASHED_FIELD_TERMINATOR)
+    return hasher.hexdigest()[:FINGERPRINT_HEX_DIGITS]
 
 
 def scaffold_chunks_match(
     scaffold_chunks: Mapping[str, KVChunk | None], scaffold: ScaffoldTokens
 ) -> bool:
-    expected = {
+    expected_by_slot = {
         "header": list(scaffold.header_token_ids),
         "empty_memory": list(scaffold.empty_token_ids),
         "footer": list(scaffold.footer_token_ids),
     }
-    for slot, expected_token_ids in expected.items():
+    for slot, expected_token_ids in expected_by_slot.items():
         chunk = scaffold_chunks.get(slot)
         cached_token_ids = list(chunk.token_ids) if chunk is not None else []
         if cached_token_ids != expected_token_ids:
@@ -177,7 +180,7 @@ def save_sample_chunks(
         "Saved KV chunk cache {} ({} fact chunks, {:.1f} MB)",
         path,
         len(fact_chunks),
-        path.stat().st_size / 1e6,
+        path.stat().st_size / BYTES_PER_MEGABYTE,
     )
 
 

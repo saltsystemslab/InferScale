@@ -28,6 +28,8 @@ from .facts import reverse_ranked_memory_facts, unique_memory_facts
 from .prompting import extract_memory_scaffold_token_ids, format_memory_fact
 from .types import ComposedSampleMemory, RetrievedFact
 
+DEFAULT_CHUNK_STORE_BACKEND = "gpu"
+
 
 class SampleComposer:
     def __init__(
@@ -51,16 +53,12 @@ class SampleComposer:
         self.max_position = encoder.max_position
         self.context_window = context_window
         self.block_size = block_size
-        # When set, the fact-chunk corpus lives in this store after
-        # move_chunks_to_store, with its ID lookup map on the GPU; self.chunks
-        # then holds metadata-only chunks and compose() stages the selected
-        # chunks per request. Scaffold chunks stay local GPU tensors either way.
         self.chunk_store = chunk_store
         self.chunks: dict[str, KVChunk] = {}
         self.header_chunk: KVChunk | None = None
         self.empty_memory_chunk: KVChunk | None = None
         self.footer_chunk: KVChunk | None = None
-        self._chunks_in_store = False
+        self._store_owns_chunk_payloads = False
         self._stored_chunk_bytes = 0
         self._stored_chunk_layers = 0
         self._fact_token_ids: dict[str, list[int]] = {}
@@ -97,7 +95,7 @@ class SampleComposer:
 
     @property
     def chunks_in_store(self) -> bool:
-        return self._chunks_in_store
+        return self._store_owns_chunk_payloads
 
     @property
     def stored_chunk_bytes(self) -> int:
@@ -120,14 +118,12 @@ class SampleComposer:
     def move_chunks_to_store(self) -> None:
         if self.chunk_store is None:
             return
-        if not self._chunks_in_store:
+        if not self._store_owns_chunk_payloads:
             first_chunk = next(iter(self.chunks.values()), None)
             self._stored_chunk_layers = len(first_chunk.kv_by_layer) if first_chunk else 0
             self._stored_chunk_bytes = sum(chunk_nbytes(chunk) for chunk in self.chunks.values())
             self.chunks = register_chunks(self.chunk_store, self.chunks)
-            # Registration transfers ownership even if GPU finalization fails;
-            # a retry must preserve these payloads instead of registering metadata.
-            self._chunks_in_store = True
+            self._store_owns_chunk_payloads = True
         finalize_chunk_store(self.chunk_store)
 
     def encode_sample(self, sample: ConversationSample, facts: Sequence[SearchHit]) -> None:
@@ -160,8 +156,8 @@ class SampleComposer:
         retrieved_facts = unique_memory_facts(hits)
         selected_facts = reverse_ranked_memory_facts(hits)
         self._check_selected_facts(selected_facts)
-        budget = self.max_position if memory_token_budget is None else memory_token_budget
-        budget = min(self.max_position, budget)
+        requested_budget = self.max_position if memory_token_budget is None else memory_token_budget
+        budget = min(self.max_position, requested_budget)
         heading_chunks = [] if selected_facts else [empty_memory]
         heading_tokens = sum(len(chunk.token_ids) for chunk in heading_chunks)
         fact_plan = plan_kv_memory(
@@ -242,13 +238,13 @@ class SampleComposer:
 
     def _check_selected_facts(self, selected_facts: Sequence[RetrievedFact]) -> None:
         for fact in selected_facts:
-            encoded = self._facts_by_id.get(fact.memory_id)
-            if encoded is None:
+            precomputed_fact = self._facts_by_id.get(fact.memory_id)
+            if precomputed_fact is None:
                 raise RuntimeError(
                     f"Retrieved Mem0 fact was not present in the precompute catalog: "
                     f"{fact.memory_id}."
                 )
-            if encoded != fact:
+            if precomputed_fact != fact:
                 raise RuntimeError(
                     f"Retrieved Mem0 fact changed after precompute: {fact.memory_id}."
                 )
@@ -272,10 +268,8 @@ class SampleComposer:
         footer: KVChunk,
     ) -> tuple[dict[str, Any], list[int]]:
         store = self._ensure_store()
-        # CPU payloads are staged after the GPU map selects their rows; the
-        # staging tensors stay valid through composition.
-        selected = fetch_chunks(store, self.chunks, selected_ids)
-        chunks = [header, *heading_chunks, *selected, footer]
+        staged_fact_chunks = fetch_chunks(store, self.chunks, selected_ids)
+        chunks = [header, *heading_chunks, *staged_fact_chunks, footer]
         try:
             kv_by_layer = self.encoder.compose(chunks)
         finally:
@@ -284,10 +278,10 @@ class SampleComposer:
 
     def _ensure_store(self) -> ChunkStore:
         if self.chunk_store is None:
-            # A composer built without a store (offline cache writes) still
-            # serves compositions through the GPU lookup map.
             self.chunk_store = build_chunk_store(
-                "gpu", device=str(self.device), top_k=max(1, len(self.chunks))
+                DEFAULT_CHUNK_STORE_BACKEND,
+                device=str(self.device),
+                top_k=max(1, len(self.chunks)),
             )
         self.move_chunks_to_store()
         return self.chunk_store

@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
 from benchmarks.common.config import RuntimeConfig, load_runtime_config, stamp_now
 from benchmarks.common.files import read_jsonl
 from benchmarks.common.json_fields import expand_path, load_json_object
@@ -11,31 +13,30 @@ from benchmarks.memory.config import MemoryRunConfig
 from benchmarks.memory.sweeps import MemoryCell
 
 DEFAULT_CONFIG = Path("configs/memory/accuracy-latency/llama.json")
-TOP_K = 100  # facts retrieved per question, on both sides
-CONTEXT_WINDOW = 50  # preceding turns in each fact's InferScale encoding prefix
-WARMUP = 3  # leading questions answered before the timed ones
-# The sweep cell each side runs: the memory benchmark's two baselines and its InferScale cell.
-SIDES = {
+FACTS_PER_QUESTION = 100
+PRECEDING_TURNS = 50
+WARMUP = 3
+SIDES: dict[str, MemoryCell] = {
     "mem0": MemoryCell(
         variant="prompt-injection",
         answer_backend="prompt-injection",
         vector_backend="qdrant",
-        top_k=TOP_K,
+        top_k=FACTS_PER_QUESTION,
         context_window=0,
     ),
     "lmcache": MemoryCell(
         variant="lmcache-blend",
         answer_backend="lmcache-blend",
         vector_backend="qdrant",
-        top_k=TOP_K,
+        top_k=FACTS_PER_QUESTION,
         context_window=0,
     ),
     "inferscale": MemoryCell(
         variant="kv",
         answer_backend="kv-injection",
         vector_backend="jasper",
-        top_k=TOP_K,
-        context_window=CONTEXT_WINDOW,
+        top_k=FACTS_PER_QUESTION,
+        context_window=PRECEDING_TURNS,
     ),
 }
 
@@ -44,7 +45,7 @@ def measure_side(mode: str, *, config_path: Path, questions: int, out: Path) -> 
     runtime = load_runtime_config()
     config = race_config(mode, runtime, config_path=config_path, questions=questions)
     out.parent.mkdir(parents=True, exist_ok=True)
-    runtime.apply_environment()  # Cache locations, before the GPU libraries load.
+    runtime.apply_environment()
 
     from benchmarks.memory.prediction import PREDICTIONS_FILE
     from benchmarks.memory.runner import run_benchmark
@@ -52,7 +53,7 @@ def measure_side(mode: str, *, config_path: Path, questions: int, out: Path) -> 
     run_benchmark(config)
     rows = timed_rows(config.run_dir / PREDICTIONS_FILE)
     for index, row in enumerate(rows):
-        print(f"{index:>2}  TTFT {row['ttft_ms']:>7.1f} ms  {row['question']}")
+        logger.info("{:>2}  TTFT {:>7.1f} ms  {}", index, row["ttft_ms"], row["question"])
     timeline = {
         "mode": mode,
         "model": config.model,
@@ -61,24 +62,27 @@ def measure_side(mode: str, *, config_path: Path, questions: int, out: Path) -> 
         "rows": rows,
     }
     out.write_text(json.dumps(timeline, indent=1))
-    print(f"wrote {out}; the full benchmark run is in {config.run_dir}")
+    logger.info("wrote {}; the full benchmark run is in {}", out, config.run_dir)
     return config.run_dir
 
 
 def race_config(
     mode: str, runtime: RuntimeConfig, *, config_path: Path, questions: int
 ) -> MemoryRunConfig:
-    data = SIDES[mode].materialize(load_json_object(expand_path(config_path, root=runtime.root)))
-    data.update(
+    cell = SIDES[mode]
+    authored = load_json_object(expand_path(config_path, root=runtime.root))
+    run = cell.materialize(authored)
+    run.update(
         run_id=f"ttft-race-{mode}-{stamp_now()}",
         max_samples=1,
         max_questions=WARMUP + questions,
         skip_judge=True,
     )
-    return MemoryRunConfig.from_dict(data, runtime=runtime)
+    return MemoryRunConfig.from_dict(run, runtime=runtime)
 
 
 def timed_rows(predictions_path: Path) -> list[dict[str, Any]]:
+    timed_records = read_jsonl(predictions_path)[WARMUP:]
     return [
         {
             "question": record["question"],
@@ -87,5 +91,5 @@ def timed_rows(predictions_path: Path) -> list[dict[str, Any]]:
             "ttft_ms": record["metrics"]["time_to_first_token_ms"],
             "total_ms": record["metrics"]["answer_generate_time_ms"],
         }
-        for record in read_jsonl(predictions_path)[WARMUP:]
+        for record in timed_records
     ]

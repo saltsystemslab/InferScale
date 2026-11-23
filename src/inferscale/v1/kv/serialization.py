@@ -49,9 +49,9 @@ def save_torch_payload(path: Path, payload: Any) -> None:
     import torch
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_name(path.name + ".tmp")
-    torch.save(payload, tmp_path)
-    tmp_path.replace(path)
+    partial_path = path.with_name(path.name + ".tmp")
+    torch.save(payload, partial_path)
+    partial_path.replace(path)
 
 
 def load_torch_payload(path: Path) -> Any | None:

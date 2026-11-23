@@ -137,9 +137,6 @@ class SampleMemoryBuilder:
     def _extract(self, sample: ConversationSample) -> BuiltMemory:
         total_started = time.perf_counter()
         store_root = self.config.local_store_scratch_dir() / "mem0-extraction" / sample.sample_id
-        # Mem0 keeps a messages table (its last ten messages feed the extraction
-        # prompt) in history.sqlite under the store root, so a repeated
-        # extraction must start from an empty directory.
         shutil.rmtree(store_root, ignore_errors=True)
         memory, embedder = self._create_memory(
             store_root, vector_store_config(self.config, backend="qdrant")
@@ -200,7 +197,7 @@ class SampleMemoryBuilder:
         if not self.config.embedding_cache_enabled:
             logger.info("Embedding cache disabled")
             return TimedEmbedder(raw_embedder)
-        cached = CachedEmbedder(
+        cached_embedder = CachedEmbedder(
             raw_embedder,
             cache_dir=self.config.embedding_cache_dir,
             model=self.config.embedding_model,
@@ -208,12 +205,14 @@ class SampleMemoryBuilder:
             endpoint=self.config.embedding_base_url,
         )
         logger.info(
-            "Embedding cache enabled mode={} dir={}", self.embedding_cache_mode, cached.cache_dir
+            "Embedding cache enabled mode={} dir={}",
+            self.embedding_cache_mode,
+            cached_embedder.cache_dir,
         )
-        return cached
+        return cached_embedder
 
     def _install_llm_cache(self, memory: Any) -> CachedMemoryLLM:
-        cached = CachedMemoryLLM(
+        llm_cache = CachedMemoryLLM(
             memory.llm,
             cache_dir=self.config.memory_llm_cache_dir,
             provider=self.config.memory_llm_provider,
@@ -222,15 +221,15 @@ class SampleMemoryBuilder:
             endpoint=self.config.memory_llm_base_url,
             temperature=MEMORY_LLM_TEMPERATURE,
         )
-        memory.llm = cached
+        memory.llm = llm_cache
         logger.info(
             "Mem0 inference cache enabled mode={} provider={} model={} dir={}",
             self.memory_llm_cache_mode,
             self.config.memory_llm_provider,
             self.config.memory_llm_model,
-            cached.cache_dir,
+            llm_cache.cache_dir,
         )
-        return cached
+        return llm_cache
 
     @staticmethod
     def _finalize(memory: Any, sample: ConversationSample, backend: str) -> float:

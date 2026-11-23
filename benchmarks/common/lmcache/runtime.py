@@ -8,12 +8,10 @@ from typing import Any
 
 from inferscale.v1.units import bytes_to_mb
 
-# Each request also stores its unique footer-plus-question tail segment; this
-# many tokens per request are budgeted when the exact tails are not known.
 TAIL_ALLOWANCE_TOKENS = 128
-# The share of the configured CPU cache the warm-up and the tails may fill.
 CACHE_FILL_FRACTION = 0.9
 GB = 1_000_000_000
+CHUNK_SIZE_AXIS = 2
 
 
 @dataclass(slots=True, frozen=True)
@@ -72,9 +70,8 @@ def kv_bytes_per_token() -> int:
     import torch
 
     metadata = lmcache_engine().metadata
-    # kv_shape is (layers, 1 or 2, chunk_size, kv_heads, head_size); axis 2 is per token.
-    shape = tuple(int(dim) for dim in metadata.kv_shape)
-    per_token_elements = math.prod(shape) // shape[2]
+    kv_shape = tuple(int(dim) for dim in metadata.kv_shape)
+    per_token_elements = math.prod(kv_shape) // kv_shape[CHUNK_SIZE_AXIS]
     return per_token_elements * torch.tensor([], dtype=metadata.kv_dtype).element_size()
 
 
@@ -86,15 +83,16 @@ def require_cache_capacity(
     max_local_cpu_size_gb: float,
     what: str,
 ) -> int:
-    required = int(bytes_per_token) * (int(warm_tokens) + int(tail_tokens))
-    limit = max_local_cpu_size_gb * GB * CACHE_FILL_FRACTION
-    if required > limit:
+    required_bytes = int(bytes_per_token) * (int(warm_tokens) + int(tail_tokens))
+    fillable_bytes = max_local_cpu_size_gb * GB * CACHE_FILL_FRACTION
+    if required_bytes > fillable_bytes:
         raise RuntimeError(
-            f"{what} needs about {required / GB:.1f} GB of KV in LMCache's CPU cache, but "
-            f"lmcache.max_local_cpu_size_gb={max_local_cpu_size_gb:g} leaves {limit / GB:.1f} GB "
-            "for it; eviction would silently destroy blend hits. Raise max_local_cpu_size_gb."
+            f"{what} needs about {required_bytes / GB:.1f} GB of KV in LMCache's CPU cache, but "
+            f"lmcache.max_local_cpu_size_gb={max_local_cpu_size_gb:g} leaves "
+            f"{fillable_bytes / GB:.1f} GB for it; eviction would silently destroy blend hits. "
+            "Raise max_local_cpu_size_gb."
         )
-    return required
+    return required_bytes
 
 
 def warm_prompts(llm: Any, prompts: Sequence[Sequence[int]], *, batch_size: int) -> WarmupStats:

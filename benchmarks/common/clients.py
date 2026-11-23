@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+CONTEXT_TERMS = ("context", "prompt", "token", "sequence")
+LIMIT_TERMS = ("too long", "maximum", "limit", "length")
+
 
 @dataclass(slots=True)
 class ChatResult:
@@ -56,7 +59,11 @@ class OpenAICompatibleChatClient:
         try:
             response = self._client.chat.completions.create(**request)
         except Exception as exc:
-            _raise_context_limit_error(exc)
+            if _is_context_limit_error(exc):
+                raise RuntimeError(
+                    "The vLLM server rejected the prompt as too long. Increase the judge server "
+                    "max model length before starting scripts/serve_vllm.sh."
+                ) from exc
             raise
         content = _normalize_message_content(response.choices[0].message.content)
         return ChatResult(content=content)
@@ -68,27 +75,23 @@ def _normalize_message_content(content: Any) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        return "".join(text for text in (_content_part_text(item) for item in content) if text)
+        return "".join(_content_part_text(part) for part in content)
     return str(content)
 
 
-def _content_part_text(item: Any) -> str:
-    if isinstance(item, str):
-        return item
-    if isinstance(item, dict):
-        return _normalize_message_content(item.get("text", item.get("content")))
-    value = getattr(item, "text", None)
-    if value is None:
-        value = getattr(item, "content", None)
-    return _normalize_message_content(value)
+def _content_part_text(part: Any) -> str:
+    if isinstance(part, str):
+        return part
+    if isinstance(part, dict):
+        return _normalize_message_content(part.get("text", part.get("content")))
+    text = getattr(part, "text", None)
+    if text is None:
+        text = getattr(part, "content", None)
+    return _normalize_message_content(text)
 
 
-def _raise_context_limit_error(exc: Exception) -> None:
-    text = str(exc).lower()
-    context_terms = ("context", "prompt", "token", "sequence")
-    limit_terms = ("too long", "maximum", "max", "limit", "length")
-    if any(term in text for term in context_terms) and any(term in text for term in limit_terms):
-        raise RuntimeError(
-            "The vLLM server rejected the prompt as too long. Increase the judge server "
-            "max model length before starting scripts/serve_vllm.sh."
-        ) from exc
+def _is_context_limit_error(error: Exception) -> bool:
+    message = str(error).lower()
+    return any(term in message for term in CONTEXT_TERMS) and any(
+        term in message for term in LIMIT_TERMS
+    )

@@ -13,11 +13,7 @@ class MemoryLoadMeta:
     user_id: str
     slot_mapping: torch.Tensor
     num_tokens: int
-    # Memory tokens covered by a native prefix-cache hit; the injected KV
-    # starts at this offset into the user's stored memory.
     skip_tokens: int = 0
-    # Originating vLLM request, so load accounting is per request rather than
-    # per event.
     request_id: str = ""
 
 

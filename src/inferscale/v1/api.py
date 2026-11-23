@@ -49,9 +49,8 @@ from .types import (
     SearchHit,
 )
 
-# Each encoding forward pass leaves allocator fragments behind; releasing them
-# every few chunks bounds the reserved memory without syncing on every chunk.
-_EMPTY_CACHE_EVERY = 25
+_CHUNKS_PER_FRAGMENT_RELEASE = 25
+_IN_FLIGHT_MEMORY_BACKEND = "gpu"
 
 
 class InferScale:
@@ -67,10 +66,7 @@ class InferScale:
         self._config = config
         self._namespace = f"inferscale-{uuid.uuid4().hex}"
         self._active_user_id = f"{self._namespace}-active"
-        # The namespace registry holds the in-flight composed memory for the
-        # connector handoff and is always GPU-resident; the chunk store is
-        # where the corpus lives.
-        get_gpu_memory_store(self._namespace, backend="gpu")
+        _create_in_flight_memory_registry(self._namespace)
         self._corpus = KVCorpus(
             chunk_store if chunk_store is not None else _build_chunk_store(config)
         )
@@ -79,11 +75,7 @@ class InferScale:
         self._retriever = Retriever(
             self._embedder, self._index, batch_size=config.embedding.batch_size
         )
-        self._engine = (
-            engine
-            if engine is not None
-            else VLLMEngine(config.model, config.kv.dtype, config.engine)
-        )
+        self._engine = engine if engine is not None else _build_engine(config)
         self._encoder: ChunkedRopeEncoder | None = None
         self._chunks: dict[str, ChunkInfo] = {}
         self._started = False
@@ -105,17 +97,20 @@ class InferScale:
             raise RuntimeError("InferScale is serving; precompute all context before start().")
         chunk_list = list(chunks)
         if not chunk_list:
-            return PrecomputeStats(0, 0, 0, 0.0, 0.0, self._corpus.stats())
+            return PrecomputeStats(
+                chunk_count=0,
+                token_count=0,
+                kv_bytes=0,
+                encode_time_ms=0.0,
+                embed_time_ms=0.0,
+                store=self._corpus.stats(),
+            )
         self._require_new_ids(chunk_list)
 
         encoder = self._ensure_encoder()
-        # Plan the complete batch before embedding or encoding its chunks.
-        plans = self._plans_for(encoder, chunk_list)
+        plans = self._plan_batch_before_embedding(encoder, chunk_list)
         self._ensure_scaffold(encoder)
-        payloads = [
-            dict(chunk.payload) if chunk.payload is not None else {"text": chunk.text}
-            for chunk in chunk_list
-        ]
+        payloads = [_indexed_payload(chunk) for chunk in chunk_list]
         embed_ms = self._retriever.add(
             [chunk.id for chunk in chunk_list], [chunk.text for chunk in chunk_list], payloads
         )
@@ -123,13 +118,15 @@ class InferScale:
         encode_started = time.perf_counter()
         token_count = 0
         kv_bytes = 0
-        for index, (chunk, plan, payload) in enumerate(zip(chunk_list, plans, payloads), start=1):
+        for chunk_number, (chunk, plan, payload) in enumerate(
+            zip(chunk_list, plans, payloads), start=1
+        ):
             kv_chunk = encoder.encode_plan(plan)
             kv_bytes += chunk_nbytes(kv_chunk)
             token_count += len(kv_chunk.token_ids)
             self._corpus.add(kv_chunk)
             self._chunks[chunk.id] = _chunk_info(chunk, plan, kv_chunk, payload)
-            if index % _EMPTY_CACHE_EVERY == 0:
+            if chunk_number % _CHUNKS_PER_FRAGMENT_RELEASE == 0:
                 empty_cuda_cache()
         return PrecomputeStats(
             chunk_count=len(chunk_list),
@@ -155,7 +152,7 @@ class InferScale:
                 connector_module=self._config.engine.connector_module,
                 namespace=self._namespace,
                 default_user_id=self._active_user_id,
-                store_backend="gpu",
+                store_backend=_IN_FLIGHT_MEMORY_BACKEND,
             )
         )
         self._started = True
@@ -186,20 +183,20 @@ class InferScale:
         finally:
             self._corpus.release(selected_ids)
         prompt = build_prompt_tokens(memory.token_ids, query_tokens)
-        output, store_write_ms, store_gpu_mb = self._generate_with_memory(prompt, memory)
+        output, registration_ms, in_flight_gpu_mb = self._generate_with_memory(prompt, memory)
         metrics = _answer_metrics(
             memory,
             prompt,
             output,
             fetch_ms=fetch_ms,
-            store_write_ms=store_write_ms,
+            registration_ms=registration_ms,
             request_started=request_started,
             query_started_at=query_started_at,
             selected_ids=selected_ids,
             retrieved_count=len(hits),
             block_size=self._config.engine.block_size,
         )
-        metrics["kv_store_gpu_mb"] = store_gpu_mb
+        metrics["kv_store_gpu_mb"] = in_flight_gpu_mb
         return QueryResult(
             text=output.text, ttft_ms=output.ttft_ms, hits=list(hits), metrics=metrics
         )
@@ -222,8 +219,10 @@ class InferScale:
         return list(self._chunks)
 
     def get_chunk(self, chunk_id: str) -> ChunkInfo | None:
-        chunk = self._chunks.get(chunk_id)
-        return replace(chunk, token_ids=list(chunk.token_ids)) if chunk is not None else None
+        info = self._chunks.get(chunk_id)
+        if info is None:
+            return None
+        return replace(info, token_ids=list(info.token_ids))
 
     def close(self) -> None:
         if self._closed:
@@ -247,52 +246,56 @@ class InferScale:
 
     def _ensure_encoder(self) -> ChunkedRopeEncoder:
         if self._encoder is None:
-            cfg = self._config
+            config = self._config
             self._encoder = ChunkedRopeEncoder(
-                model=cfg.model,
-                dtype=cfg.kv.dtype,
-                device=cfg.kv.device,
-                max_position=cfg.kv.max_position,
+                model=config.model,
+                dtype=config.kv.dtype,
+                device=config.kv.device,
+                max_position=config.kv.max_position,
             )
         return self._encoder
 
     def _ensure_scaffold(self, encoder: ChunkedRopeEncoder) -> None:
         if self._corpus.scaffold is not None:
             return
-        cfg = self._config
+        config = self._config
         scaffold_tokens = build_scaffold_tokens(
             encoder.tokenizer,
-            system_prompt=cfg.prompt.system_prompt,
-            empty_text=cfg.prompt.empty_context_text,
-            block_size=cfg.engine.block_size,
+            system_prompt=config.prompt.system_prompt,
+            empty_text=config.prompt.empty_context_text,
+            block_size=config.engine.block_size,
         )
         self._corpus.set_scaffold(encode_scaffold(encoder, scaffold_tokens))
 
-    def _plans_for(
+    def _plan_batch_before_embedding(
         self, encoder: ChunkedRopeEncoder, chunks: Sequence[Chunk]
     ) -> list[EncodingPlan]:
-        cfg = self._config
-        window = cfg.context_window
-        history = _last([(info.id, info.token_ids) for info in self._chunks.values()], window)
+        config = self._config
+        window = config.context_window
+        preceding_targets = _last(
+            [(info.id, info.token_ids) for info in self._chunks.values()], window
+        )
         plans: list[EncodingPlan] = []
         for chunk in chunks:
-            if chunk.token_ids is not None:
-                token_ids = list(chunk.token_ids)
-            else:
-                token_ids = encode_text_no_special(
-                    encoder.tokenizer, chunk.text + cfg.prompt.chunk_separator
-                )
             plan = build_encoding_plan(
                 chunk.id,
-                token_ids,
-                context_token_ids=[token for _, tokens in history for token in tokens],
-                context_ids=tuple(chunk_id for chunk_id, _ in history),
-                max_input_tokens=cfg.kv.max_position,
+                self._target_token_ids(encoder, chunk),
+                context_token_ids=[token for _, tokens in preceding_targets for token in tokens],
+                context_ids=tuple(chunk_id for chunk_id, _ in preceding_targets),
+                max_input_tokens=config.kv.max_position,
             )
             plans.append(plan)
-            # Prefixes never become part of the history for later chunks.
-            history = _last([*history, (chunk.id, plan.target_token_ids)], window)
+            preceding_targets = _last(
+                [*preceding_targets, (chunk.id, plan.target_token_ids)], window
+            )
         return plans
+
+    def _target_token_ids(self, encoder: ChunkedRopeEncoder, chunk: Chunk) -> list[int]:
+        if chunk.token_ids is not None:
+            return list(chunk.token_ids)
+        return encode_text_no_special(
+            encoder.tokenizer, chunk.text + self._config.prompt.chunk_separator
+        )
 
     def _fetch_memory_parts(self, selected_ids: list[str]) -> tuple[list[KVChunk], float]:
         scaffold = self._corpus.scaffold
@@ -314,20 +317,20 @@ class InferScale:
     def _compose_memory(
         self, parts: list[KVChunk], memory_token_ids: list[int], query_token_count: int
     ) -> ComposedMemory:
-        cfg = self._config
+        config = self._config
         scaffold = self._corpus.scaffold
         encoder = self._encoder
         if scaffold is None or encoder is None:
             raise RuntimeError("No precomputed context is available.")
         budget = memory_token_budget(
             query_token_count=query_token_count,
-            max_position=cfg.kv.max_position,
-            max_model_len=cfg.engine.max_model_len,
-            max_answer_tokens=cfg.generation.max_tokens,
+            max_position=config.kv.max_position,
+            max_model_len=config.engine.max_model_len,
+            max_answer_tokens=config.generation.max_tokens,
         )
         require_memory_within_budget(len(memory_token_ids), budget)
         loaded_memory_tokens, recomputed_tail_tokens = block_aligned_prefix(
-            len(memory_token_ids), len(scaffold.footer.token_ids), cfg.engine.block_size
+            len(memory_token_ids), len(scaffold.footer.token_ids), config.engine.block_size
         )
         compose_started = time.perf_counter()
         kv_by_layer = encoder.compose(parts)
@@ -343,11 +346,8 @@ class InferScale:
     def _generate_with_memory(
         self, prompt: PromptTokens, memory: ComposedMemory
     ) -> tuple[GenerationOutput, float, float]:
-        cfg = self._config
-        # Registration hands the composed memory to the GPU-resident in-flight
-        # registry (a dict insert, no transfer); it is timed separately and
-        # excluded from the latency metrics.
-        store_write_started = time.perf_counter()
+        config = self._config
+        registration_started = time.perf_counter()
         register_user_memory(
             self._namespace,
             user_id=self._active_user_id,
@@ -355,18 +355,18 @@ class InferScale:
             num_tokens=memory.num_tokens,
             token_ids=memory.token_ids,
         )
-        store_write_ms = (time.perf_counter() - store_write_started) * 1000
+        registration_ms = (time.perf_counter() - registration_started) * 1000
         try:
-            store_gpu_mb = namespace_stats(self._namespace).get("total_gpu_mb", 0.0)
+            in_flight_gpu_mb = namespace_stats(self._namespace).get("total_gpu_mb", 0.0)
             output = self._engine.generate(
                 prompt.prompt_token_ids,
-                max_tokens=cfg.generation.max_tokens,
-                temperature=cfg.generation.temperature,
-                top_p=cfg.generation.top_p,
+                max_tokens=config.generation.max_tokens,
+                temperature=config.generation.temperature,
+                top_p=config.generation.top_p,
             )
         finally:
             remove_user_memory(self._namespace, self._active_user_id)
-        return output, store_write_ms, store_gpu_mb
+        return output, registration_ms, in_flight_gpu_mb
 
     def _require_new_ids(self, chunks: Sequence[Chunk]) -> None:
         seen: set[str] = set()
@@ -387,6 +387,10 @@ class InferScale:
             raise RuntimeError("InferScale.start() must be called before answering queries.")
 
 
+def _create_in_flight_memory_registry(namespace: str) -> None:
+    get_gpu_memory_store(namespace, backend=_IN_FLIGHT_MEMORY_BACKEND)
+
+
 def _build_chunk_store(config: InferScaleConfig) -> ChunkStore:
     return build_chunk_store(
         config.kv.store_backend,
@@ -404,6 +408,16 @@ def _build_index(config: InferScaleConfig) -> VectorIndex:
     if config.vector_backend == "exact":
         return MatmulIndex(device=config.kv.device)
     return JasperIndex(config.index)
+
+
+def _build_engine(config: InferScaleConfig) -> VLLMEngine:
+    return VLLMEngine(config.model, config.kv.dtype, config.engine)
+
+
+def _indexed_payload(chunk: Chunk) -> dict[str, Any]:
+    if chunk.payload is not None:
+        return dict(chunk.payload)
+    return {"text": chunk.text}
 
 
 def _chunk_info(chunk: Chunk, plan: EncodingPlan, kv_chunk: KVChunk, payload: dict) -> ChunkInfo:
@@ -427,14 +441,14 @@ def _answer_metrics(
     output: GenerationOutput,
     *,
     fetch_ms: float,
-    store_write_ms: float,
+    registration_ms: float,
     request_started: float,
     query_started_at: float | None,
     selected_ids: list[str],
     retrieved_count: int,
     block_size: int,
 ) -> dict[str, Any]:
-    excluded_ms = store_write_ms
+    excluded_ms = registration_ms
     generate_started = output.started_at
     finished = output.finished_at
     prep_ms = max(0.0, (generate_started - request_started) * 1000 - excluded_ms)
@@ -442,7 +456,7 @@ def _answer_metrics(
         "kv_memory_tokens": memory.num_tokens,
         "kv_fetch_time_ms": fetch_ms,
         "kv_compose_time_ms": memory.compose_time_ms,
-        "kv_store_write_time_ms": store_write_ms,
+        "kv_store_write_time_ms": registration_ms,
         "kv_query_tokens": len(prompt.query_token_ids),
         "kv_query_bos_stripped": int(prompt.stripped_query_bos),
         "kv_selected_chunk_ids": selected_ids,

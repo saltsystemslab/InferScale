@@ -12,6 +12,9 @@ FailedPayload = Callable[[Exception], dict[str, Any]]
 SaveRecords = Callable[[list[Record], bool], dict[str, Any]]
 RecordLabel = Callable[[Record], str]
 
+PROGRESS_SAVE = False
+FINAL_SAVE = True
+
 
 def judge_pending_records(
     records: list[Record],
@@ -31,12 +34,12 @@ def judge_pending_records(
             record["judge"] = judge(record)
         except Exception as exc:
             record["judge"] = failed_payload(exc)
-            save(records, False)
+            save(records, PROGRESS_SAVE)
             raise RuntimeError(
                 f"Judge request failed for row {row_number}/{len(records)} {label(record)}. "
                 f"Saved progress to {predictions_path}; fix or restart the judge server, "
                 f"then rerun the judge stage. Original error: {type(exc).__name__}: {exc}"
             ) from exc
         judged_now += 1
-        save(records, False)
-    return save(records, True), judged_now
+        save(records, PROGRESS_SAVE)
+    return save(records, FINAL_SAVE), judged_now

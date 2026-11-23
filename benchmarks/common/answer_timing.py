@@ -16,19 +16,19 @@ def generation_latency_metrics(
 ) -> dict[str, float]:
     generate_started = output.started_at
     finished = output.finished_at
-    ttft_ms = output.ttft_ms
+    engine_ttft_ms = output.ttft_ms
     metrics = {
         "answer_generate_time_ms": (finished - generate_started) * 1000,
         "answer_total_time_ms": _elapsed_ms(request_started, finished, excluded_ms),
-        engine_ttft_key: ttft_ms,
+        engine_ttft_key: engine_ttft_ms,
         "answer_time_to_first_token_ms": (
-            _elapsed_ms(request_started, generate_started, excluded_ms) + ttft_ms
+            _elapsed_ms(request_started, generate_started, excluded_ms) + engine_ttft_ms
         ),
     }
     if query_started_at is not None:
         metrics["query_to_answer_ms"] = _elapsed_ms(query_started_at, finished, excluded_ms)
         metrics["query_to_first_token_ms"] = (
-            _elapsed_ms(query_started_at, generate_started, excluded_ms) + ttft_ms
+            _elapsed_ms(query_started_at, generate_started, excluded_ms) + engine_ttft_ms
         )
     return metrics
 

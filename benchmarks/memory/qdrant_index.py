@@ -9,9 +9,7 @@ from typing import Any
 import numpy as np
 
 from benchmarks.common.vector_types import SearchHit, SearchMetrics, VectorStoreConfig
-from inferscale.v1.index.filters import payload_matches
-
-FILTER_OPERATORS = {"eq", "in", "ne"}
+from inferscale.v1.index.filters import FILTER_OPERATORS, payload_matches
 
 
 class QdrantVectorStore:
@@ -25,7 +23,6 @@ class QdrantVectorStore:
         self._collection_name = "memories"
         self._client = _qdrant_client(self.root / "qdrant")
         self._dim = self._load_dim()
-        # Filled by finalize(); serves rows() and count() without touching the client.
         self._rows_cache: list[tuple[str, dict[str, Any]]] | None = None
 
     @property
@@ -47,11 +44,11 @@ class QdrantVectorStore:
             return 0
         if not filters:
             return self.vector_count
-        query_filter = self._native_filter(filters)
-        if query_filter is None:
+        native_filter = self._native_filter(filters)
+        if native_filter is None:
             return len(self.rows(filters))
         result = self._client.count(
-            collection_name=self._collection_name, count_filter=query_filter, exact=True
+            collection_name=self._collection_name, count_filter=native_filter, exact=True
         )
         return int(result.count or 0)
 
@@ -102,18 +99,17 @@ class QdrantVectorStore:
             raise ValueError("query_vector must be one-dimensional")
         if self.dim is not None and query.shape[0] != self.dim:
             raise ValueError(f"query dim {query.shape[0]} does not match store dim {self.dim}")
-        top_k = max(1, min(top_k, vector_count))
-        query_filter = self._native_filter(filters)
-        # A filter Qdrant cannot evaluate is applied here, after fetching every vector.
-        candidate_k = vector_count if filters and query_filter is None else top_k
+        clamped_top_k = max(1, min(top_k, vector_count))
+        native_filter = self._native_filter(filters)
+        candidate_k = vector_count if filters and native_filter is None else clamped_top_k
         query_kwargs: dict[str, Any] = {
             "collection_name": self._collection_name,
             "query": query.tolist(),
             "limit": candidate_k,
             "with_payload": True,
         }
-        if query_filter is not None:
-            query_kwargs["query_filter"] = query_filter
+        if native_filter is not None:
+            query_kwargs["query_filter"] = native_filter
         started = time.perf_counter()
         result = self._client.query_points(**query_kwargs)
         elapsed_ms = (time.perf_counter() - started) * 1000
@@ -121,7 +117,7 @@ class QdrantVectorStore:
             self._hit_from_point(point, rank)
             for rank, point in enumerate(result.points, start=1)
             if payload_matches(self._payload_from_qdrant(point.payload), filters)
-        ][:top_k]
+        ][:clamped_top_k]
         for rank, hit in enumerate(hits, start=1):
             hit.rank = rank
         return hits, SearchMetrics(elapsed_ms, vector_backend="qdrant")
@@ -218,8 +214,9 @@ class QdrantVectorStore:
             conditions = _field_conditions(models, key, expected)
             if conditions is None:
                 return None
-            must.extend(conditions[0])
-            must_not.extend(conditions[1])
+            field_must, field_must_not = conditions
+            must.extend(field_must)
+            must_not.extend(field_must_not)
         return models.Filter(must=must or None, must_not=must_not or None)
 
     def _load_rows(self) -> list[tuple[str, dict[str, Any]]]:
@@ -285,7 +282,9 @@ def _qdrant_models() -> Any:
 def _field_conditions(models: Any, key: str, expected: Any) -> tuple[list[Any], list[Any]] | None:
     if not isinstance(expected, dict):
         match = _match_value(models, expected)
-        return ([models.FieldCondition(key=key, match=match)], []) if match is not None else None
+        if match is None:
+            return None
+        return [models.FieldCondition(key=key, match=match)], []
     if not expected or not set(expected).issubset(FILTER_OPERATORS):
         return None
     must: list[Any] = []

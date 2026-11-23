@@ -4,6 +4,7 @@ import time
 from importlib.metadata import version
 
 TOKENIZE_BATCH_SIZE = 256
+UNIT_LENGTH_TOLERANCE = 1e-4
 
 
 class QwenEmbedder:
@@ -21,10 +22,9 @@ class QwenEmbedder:
             if self.device.index is None:
                 self.device = torch.device("cuda", torch.cuda.current_device())
             torch.cuda.set_device(self.device)
-        if dtype == "auto":
-            dtype = self._default_dtype()
+        resolved_dtype = self._default_dtype() if dtype == "auto" else dtype
         self.max_length = max_length
-        started = time.perf_counter()
+        load_started = time.perf_counter()
         self.tokenizer = AutoTokenizer.from_pretrained(
             model, revision=revision, padding_side="left"
         )
@@ -32,7 +32,7 @@ class QwenEmbedder:
             AutoModel.from_pretrained(
                 model,
                 revision=revision,
-                torch_dtype=getattr(torch, dtype),
+                torch_dtype=getattr(torch, resolved_dtype),
                 attn_implementation=attention,
             )
             .to(self.device)
@@ -44,11 +44,11 @@ class QwenEmbedder:
             "revision": revision,
             "resolved_revision": getattr(self.model.config, "_commit_hash", None),
             "device": str(self.device),
-            "dtype": dtype,
+            "dtype": resolved_dtype,
             "attention": attention,
             "max_length": max_length,
             "embedding_dimensions": self.model.config.hidden_size,
-            "load_seconds": time.perf_counter() - started,
+            "load_seconds": time.perf_counter() - load_started,
             "torch": version("torch"),
             "transformers": version("transformers"),
             "cpu_threads": torch.get_num_threads(),
@@ -60,10 +60,11 @@ class QwenEmbedder:
         lengths: list[int] = []
         for start in range(0, len(texts), TOKENIZE_BATCH_SIZE):
             encoded = self.tokenizer(texts[start : start + TOKENIZE_BATCH_SIZE], truncation=False)
-            lengths.extend(len(ids) for ids in encoded["input_ids"])
-        if max(lengths) > self.max_length:
+            lengths.extend(len(token_ids) for token_ids in encoded["input_ids"])
+        longest = max(lengths)
+        if longest > self.max_length:
             raise ValueError(
-                f"Longest fact has {max(lengths)} tokens, exceeding --max-length "
+                f"Longest fact has {longest} tokens, exceeding --max-length "
                 f"{self.max_length}; increase the limit to embed the complete facts"
             )
         return lengths
@@ -85,7 +86,9 @@ class QwenEmbedder:
             raise ValueError(f"Invalid embedding shape: {embeddings.shape}")
         if not self.torch.isfinite(embeddings).all():
             raise ValueError("Non-finite embeddings")
-        if not self.torch.allclose(embeddings.norm(dim=1), self.torch.ones(count), atol=1e-4):
+        lengths = embeddings.norm(dim=1)
+        unit_lengths = self.torch.ones(count)
+        if not self.torch.allclose(lengths, unit_lengths, atol=UNIT_LENGTH_TOLERANCE):
             raise ValueError("Embeddings are not unit length")
 
     def reset_peak_memory(self) -> None:

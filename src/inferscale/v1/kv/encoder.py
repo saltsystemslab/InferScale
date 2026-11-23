@@ -11,7 +11,6 @@ from .tokenization import encode_text_no_special
 
 logger = logging.getLogger(__name__)
 
-# Accepted KV dtype spellings and the torch dtype name each selects.
 KV_DTYPE_ALIASES = {
     "bfloat16": "bfloat16",
     "bf16": "bfloat16",
@@ -22,8 +21,6 @@ KV_DTYPE_ALIASES = {
     "fp32": "float32",
 }
 
-# vLLM's name for the attention module of decoder layer ``index``; KV chunks
-# are keyed by it so the connector can address the paged cache per layer.
 VLLM_ATTENTION_LAYER_NAME = "model.layers.{index}.self_attn.attn"
 
 
@@ -174,8 +171,6 @@ def encode_scaffold(encoder: ChunkedRopeEncoder, tokens: ScaffoldTokens) -> Scaf
     )
 
 
-# Mixed-script probe so tokenizer stacks that differ in template, whitespace,
-# byte-fallback, or unicode handling cannot encode it identically by accident.
 TOKENIZER_PARITY_PROBE_TEXT = (
     "SPEAKER Caroline (2023-05-08): I'll re-check trip #42 - cost $1,300.50; "
     "email caroline@example.com, emoji \U0001f642, CJK 你好, newline\nend.\n"
@@ -218,14 +213,16 @@ def _compose_encoded_chunks(
         layer_chunks = [
             chunk.kv_by_layer[layer_name].to(device=device, non_blocking=True) for chunk in chunks
         ]
-        k_pre = torch.cat([chunk_kv[0] for chunk_kv in layer_chunks], dim=0)
+        keys_by_token = torch.cat([chunk_kv[0] for chunk_kv in layer_chunks], dim=0)
         values = torch.cat([chunk_kv[1] for chunk_kv in layer_chunks], dim=0)
-        # Keys are stored as [tokens, heads, head_dim]; RoPE rotates per head
-        # over the token axis, so rotate the transposed view.
-        k_rot = rotate_pre_rope_k(
-            k_pre.transpose(0, 1).contiguous(), cos_table[:total_tokens], sin_table[:total_tokens]
+        rotated_by_head = rotate_pre_rope_k(
+            keys_by_token.transpose(0, 1).contiguous(),
+            cos_table[:total_tokens],
+            sin_table[:total_tokens],
         )
-        composed[layer_name] = torch.stack([k_rot.transpose(0, 1).contiguous(), values], dim=0)
+        composed[layer_name] = torch.stack(
+            [rotated_by_head.transpose(0, 1).contiguous(), values], dim=0
+        )
     return composed
 
 
@@ -270,7 +267,6 @@ def _slice_tokens(tensor: Any, start: int, end: int) -> Any:
 
 
 def _head_dim(config: Any) -> int:
-    # Older model configs do not spell out head_dim.
     head_dim = getattr(config, "head_dim", None)
     if head_dim is None:
         head_dim = config.hidden_size // config.num_attention_heads
@@ -288,9 +284,6 @@ def load_encoder_tokenizer(model: str) -> Any:
     from vllm.transformers_utils.tokenizer import get_tokenizer
 
     tokenizer = get_tokenizer(model)
-    # The encoder never pads (chunks are encoded one sequence at a time); this
-    # fixup only keeps HF tokenizers usable elsewhere. vLLM's MistralTokenizer
-    # wrapper exposes no pad_token attribute, so skip it there.
     if getattr(tokenizer, "pad_token", None) is None and hasattr(tokenizer, "eos_token"):
         try:
             tokenizer.pad_token = tokenizer.eos_token

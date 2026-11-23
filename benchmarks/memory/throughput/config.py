@@ -47,13 +47,9 @@ from inferscale.v1.kv.connector_utils import (
 BENCHMARK_NAME = "memory-throughput"
 LMCACHE_CONDITION = "lmcache_blend"
 ALL_CONDITIONS = ("mem0_qdrant", "mem0_jasper", LMCACHE_CONDITION, "kv_injection")
-# The conditions a run measures unless it lists its own; the LMCache arm is
-# opted into because it needs an lmcache section.
-DEFAULT_CONDITIONS = ("mem0_qdrant", "mem0_jasper", "kv_injection")
-# Which vector backend a condition retrieves with. kv_injection performs the
-# same Jasper top-k search as mem0_jasper and injects the retrieved chunks'
-# KV instead of their text; lmcache_blend retrieves like mem0_qdrant and serves
-# the facts' KV through LMCache CacheBlend.
+DEFAULT_CONDITIONS = tuple(
+    condition for condition in ALL_CONDITIONS if condition != LMCACHE_CONDITION
+)
 CONDITION_VECTOR_BACKENDS = {
     "mem0_qdrant": "qdrant",
     "mem0_jasper": "jasper",
@@ -71,8 +67,6 @@ DEFAULT_SEED = 42
 DEFAULT_LOG_LEVEL = "INFO"
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 REDACTED_API_KEY = "<redacted>"
-# The runner hands the embedding key to its workers through the environment,
-# never through the snapshot on disk.
 WORKER_API_KEY_VARIABLE = "LOCOMO_THROUGHPUT_EMBEDDING_API_KEY"
 PATH_FIELDS = (
     "results_dir",
@@ -143,14 +137,12 @@ class ThroughputConfig:
     embedding_base_url: str | None = None
     embedding_cache_enabled: bool = True
     memory_llm_provider: str = "vllm"
-    # Mem0 fact extraction always uses the answer model; None resolves to it.
     memory_llm_model: str | None = None
     memory_llm_base_url: str | None = DEFAULT_EXTRACTION_LLM_BASE_URL
     jasper_n_neighbors: int = 64
     jasper_alpha: float = 1.0
     jasper_workspace_budget: str = "10GB"
     jasper_beam_width: int = 64
-    # The lmcache section, flattened; the size stays None until a run names the LMCache arm.
     lmcache_max_local_cpu_size_gb: float | None = None
     lmcache_chunk_size: int = DEFAULT_CHUNK_SIZE
     lmcache_blend_recompute_ratio: float = DEFAULT_BLEND_RECOMPUTE_RATIO
@@ -186,41 +178,43 @@ class ThroughputConfig:
         )
 
     def to_jsonable(self) -> dict[str, Any]:
-        data = asdict(self)
+        settings = asdict(self)
         for name in PATH_FIELDS:
-            data[name] = str(data[name])
-        data["conditions"] = list(self.conditions)
-        data["user_counts"] = list(self.user_counts)
-        data["lmcache_blend_check_layers"] = list(self.lmcache_blend_check_layers)
-        if data["embedding_api_key"]:
-            data["embedding_api_key"] = REDACTED_API_KEY
-        return data
+            settings[name] = str(settings[name])
+        settings["conditions"] = list(self.conditions)
+        settings["user_counts"] = list(self.user_counts)
+        settings["lmcache_blend_check_layers"] = list(self.lmcache_blend_check_layers)
+        if settings["embedding_api_key"]:
+            settings["embedding_api_key"] = REDACTED_API_KEY
+        return settings
 
     @classmethod
     def from_json_file(cls, path: str | Path) -> ThroughputConfig:
         where = "throughput worker snapshot"
-        data = load_json_object(path)
-        reject_unknown_keys(data, FIELD_NAMES, where)
+        snapshot = load_json_object(path)
+        reject_unknown_keys(snapshot, FIELD_NAMES, where)
         for name in ("model", "model_label", "run_id"):
-            require(data, name, str, where)
+            require(snapshot, name, str, where)
         for name in PATH_FIELDS:
-            data[name] = Path(require(data, name, str, where))
-        data["conditions"] = str_list(data, "conditions", where)
-        data["user_counts"] = int_list(data, "user_counts", where)
-        data["lmcache_blend_check_layers"] = int_list(data, "lmcache_blend_check_layers", where)
-        if data.get("embedding_api_key") == REDACTED_API_KEY:
-            data["embedding_api_key"] = (
+            snapshot[name] = Path(require(snapshot, name, str, where))
+        snapshot["conditions"] = str_list(snapshot, "conditions", where)
+        snapshot["user_counts"] = int_list(snapshot, "user_counts", where)
+        snapshot["lmcache_blend_check_layers"] = int_list(
+            snapshot, "lmcache_blend_check_layers", where
+        )
+        if snapshot.get("embedding_api_key") == REDACTED_API_KEY:
+            snapshot["embedding_api_key"] = (
                 os.environ.get(WORKER_API_KEY_VARIABLE) or embedding_api_key()
             )
-        return cls(**data)
+        return cls(**snapshot)
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any], *, runtime: RuntimeConfig) -> ThroughputConfig:
         where = BENCHMARK_NAME
         reject_unknown_keys(data, RUN_KEYS, where)
-        benchmark = optional(data, "benchmark", str, where, where)
-        if benchmark != where:
-            raise ConfigError(f"Expected benchmark {where!r}, got {benchmark!r}.")
+        benchmark = optional(data, "benchmark", str, BENCHMARK_NAME, where)
+        if benchmark != BENCHMARK_NAME:
+            raise ConfigError(f"Expected benchmark {BENCHMARK_NAME!r}, got {benchmark!r}.")
         model_name = require(data, "model", str, where).strip()
         if not model_name:
             raise ConfigError(f"{where}.model must be non-empty.")
@@ -251,7 +245,7 @@ class ThroughputConfig:
         )
 
 
-FIELD_NAMES = tuple(item.name for item in fields(ThroughputConfig))
+FIELD_NAMES = tuple(field.name for field in fields(ThroughputConfig))
 
 
 def condition_vector_backend(condition: str) -> str:
@@ -324,21 +318,25 @@ def _library_config(
         context_window=run["context_window"],
         where=where,
     )
-    nested = section_of(data, "inferscale", where)
-    nested_where = f"{where}.inferscale"
-    if "prompt" in nested:
-        raise ConfigError(f"{nested_where}.prompt is fixed by the benchmark protocol.")
-    embedding = section_of(nested, "embedding", nested_where, required=False)
+    section = section_of(data, "inferscale", where)
+    section_where = f"{where}.inferscale"
+    if "prompt" in section:
+        raise ConfigError(f"{section_where}.prompt is fixed by the benchmark protocol.")
+    embedding = section_of(section, "embedding", section_where, required=False)
     if "batch_size" in embedding:
         raise ConfigError(
-            f"{nested_where}.embedding.batch_size is not supported; Mem0 replays individual facts."
+            f"{section_where}.embedding.batch_size is not supported; Mem0 replays individual facts."
         )
-    generation = section_of(nested, "generation", nested_where, required=False)
-    fixed = {"max_tokens": run["max_output_tokens"], "temperature": 0.0, "top_p": 1.0}
-    for key, expected in fixed.items():
+    generation = section_of(section, "generation", section_where, required=False)
+    fixed_generation = {
+        "max_tokens": run["max_output_tokens"],
+        "temperature": 0.0,
+        "top_p": 1.0,
+    }
+    for key, expected in fixed_generation.items():
         if key in generation and generation[key] != expected:
             raise ConfigError(
-                f"{nested_where}.generation.{key} must be {expected!r}; throughput uses "
+                f"{section_where}.generation.{key} must be {expected!r}; throughput uses "
                 "fixed-length deterministic generation configured by max_output_tokens."
             )
     return library
@@ -371,7 +369,7 @@ def _lmcache_settings(
     if data.get("lmcache") is not None:
         return parse_lmcache_config(section_of(data, "lmcache", where), f"{where}.lmcache")
     sweep_conditions = [
-        condition for sweep in sweeps.values() for condition in sweep.get("conditions", ())
+        condition for sweep in sweeps.values() for condition in sweep.get("conditions") or ()
     ]
     if LMCACHE_CONDITION in conditions or LMCACHE_CONDITION in sweep_conditions:
         raise ConfigError(f"{where}.lmcache is required when {LMCACHE_CONDITION} is a condition.")
@@ -481,24 +479,24 @@ def _validate_config(config: ThroughputConfig) -> None:
         raise ConfigError(f"Effective Jasper beam width must be at most {MAX_JASPER_BEAM_WIDTH}.")
 
 
-def _validate_field_types(data: Mapping[str, Any], where: str) -> None:
+def _validate_field_types(settings: Mapping[str, Any], where: str) -> None:
     for name in _POSITIVE_INT_FIELDS:
-        if require(data, name, int, where) < 1:
+        if require(settings, name, int, where) < 1:
             raise ConfigError(f"{where}.{name} must be at least 1.")
     for name in _NON_NEGATIVE_INT_FIELDS:
-        if require(data, name, int, where) < 0:
+        if require(settings, name, int, where) < 0:
             raise ConfigError(f"{where}.{name} must be at least 0.")
     for name in _BOOL_FIELDS:
-        require(data, name, bool, where)
+        require(settings, name, bool, where)
     for name in _TEXT_FIELDS:
-        if not require(data, name, str, where).strip():
+        if not require(settings, name, str, where).strip():
             raise ConfigError(f"{where}.{name} must be non-empty.")
     for name in _OPTIONAL_TEXT_FIELDS:
-        if data[name] is not None:
-            require(data, name, str, where)
+        if settings[name] is not None:
+            require(settings, name, str, where)
     for name in _POSITIVE_NUMBER_FIELDS:
-        value = require(data, name, (int, float), where)
-        if not math.isfinite(value) or value <= 0:
+        number = require(settings, name, (int, float), where)
+        if not math.isfinite(number) or number <= 0:
             raise ConfigError(f"{where}.{name} must be a finite positive number.")
 
 
@@ -535,9 +533,9 @@ def _is_index(value: Any) -> bool:
 
 
 def _validate_user_counts(user_counts: tuple[int, ...], where: str) -> None:
-    valid = all(
+    all_positive_integers = all(
         isinstance(count, int) and not isinstance(count, bool) and count >= 1
         for count in user_counts
     )
-    if not user_counts or not valid or len(set(user_counts)) != len(user_counts):
+    if not user_counts or not all_positive_integers or len(set(user_counts)) != len(user_counts):
         raise ConfigError(f"{where}.user_counts must be distinct positive integers.")

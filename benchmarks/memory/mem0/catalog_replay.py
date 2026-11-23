@@ -17,5 +17,4 @@ def load_facts_into_memory(
             metadata=fact.metadata(),
         )
         if link_entities and added_memory_ids(result):
-            # Mem0 links entities inside ``add`` only on the inference path.
             memory._link_entities_for_memory(fact.id, fact.text, {"user_id": fact.sample_id})

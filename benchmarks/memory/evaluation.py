@@ -8,7 +8,7 @@ from benchmarks.common.clients import ChatResult
 from benchmarks.common.judge import skipped_judge_payload
 from benchmarks.common.vector_types import RetrievalMetrics, SearchHit
 from benchmarks.memory.config import MemoryRunConfig
-from benchmarks.memory.data import ConversationSample, QuestionAnswer
+from benchmarks.memory.data import ConversationSample, QuestionAnswer, Turn
 from benchmarks.memory.facts import payload_value, text_hash
 from benchmarks.memory.judging import judge_metadata, judge_qa
 from benchmarks.memory.modes import result_mode
@@ -38,14 +38,14 @@ def answer_question(
     )
     answer.content = final_answer_text(answer.content)
     evidence = evidence_context(sample, qa)
-    judge = _judge_answer(config, clients, qa, answer.content, evidence)
+    judge_payload = _judge_answer(config, clients, qa, answer.content, evidence)
     return build_prediction_record(
         config,
         sample,
         qa,
         hits,
         answer,
-        judge_payload=judge,
+        judge_payload=judge_payload,
         evidence=evidence,
         retrieval_metrics=retrieval_metrics,
     )
@@ -80,22 +80,34 @@ def build_prediction_record(
 
 
 def evidence_context(sample: ConversationSample, qa: QuestionAnswer) -> str:
-    evidence = qa.evidence
-    if isinstance(evidence, str):
-        evidence_ids = [evidence]
-    elif isinstance(evidence, list):
-        evidence_ids = [str(item) for item in evidence]
-    else:
-        return ""
+    evidence_ids = _evidence_ids(qa.evidence)
     requested = set(evidence_ids)
-    by_id: dict[str, str] = {}
+    quote_by_id: dict[str, str] = {}
     for turn in sample.turns:
-        raw = turn.raw if isinstance(turn.raw, dict) else {}
-        dialogue_id = str(raw.get("dia_id") or "")
+        dialogue_id = _dialogue_id(turn)
         if dialogue_id in requested:
-            date_suffix = f", said on {turn.timestamp}" if turn.timestamp else ""
-            by_id[dialogue_id] = f'[{dialogue_id}{date_suffix}] {turn.speaker}: "{turn.text}"'
-    return "\n".join(by_id[evidence_id] for evidence_id in evidence_ids if evidence_id in by_id)
+            quote_by_id[dialogue_id] = _evidence_quote(turn, dialogue_id)
+    return "\n".join(
+        quote_by_id[evidence_id] for evidence_id in evidence_ids if evidence_id in quote_by_id
+    )
+
+
+def _evidence_ids(evidence: Any) -> list[str]:
+    if isinstance(evidence, str):
+        return [evidence]
+    if isinstance(evidence, list):
+        return [str(dialogue_id) for dialogue_id in evidence]
+    return []
+
+
+def _dialogue_id(turn: Turn) -> str:
+    turn_record = turn.raw if isinstance(turn.raw, dict) else {}
+    return str(turn_record.get("dia_id") or "")
+
+
+def _evidence_quote(turn: Turn, dialogue_id: str) -> str:
+    date_suffix = f", said on {turn.timestamp}" if turn.timestamp else ""
+    return f'[{dialogue_id}{date_suffix}] {turn.speaker}: "{turn.text}"'
 
 
 def _judge_answer(

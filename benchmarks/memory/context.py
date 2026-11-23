@@ -92,13 +92,13 @@ def plan_kv_memory(
     fact_token_ids: Mapping[str, list[int]],
     encoded_chunks: Mapping[str, KVChunk],
 ) -> MemoryFactPlan:
-    retrieved = _checked_facts(selected_facts, retrieved_facts, fact_token_ids)
+    retrieved = _checked_retrieved_facts(selected_facts, retrieved_facts, fact_token_ids)
     missing = [fact.memory_id for fact in selected_facts if fact.memory_id not in encoded_chunks]
     if missing:
         raise RuntimeError("Retrieved Mem0 facts were not pre-encoded: " + ", ".join(missing[:5]))
     chunks = [encoded_chunks[fact.memory_id] for fact in selected_facts]
-    prefix_counts = [chunk.context_prefix_tokens for chunk in chunks]
-    return _plan(
+    prefix_token_counts = [chunk.context_prefix_tokens for chunk in chunks]
+    return _fact_plan(
         selected_facts,
         retrieved,
         context_window=context_window,
@@ -106,8 +106,8 @@ def plan_kv_memory(
         scaffold_token_count=scaffold_token_count,
         fact_token_ids=fact_token_ids,
         context_turn_ids=[turn_id for chunk in chunks for turn_id in chunk.context_ids],
-        context_encoding_tokens_total=sum(prefix_counts),
-        context_encoding_tokens_max=max(prefix_counts, default=0),
+        context_encoding_tokens_total=sum(prefix_token_counts),
+        context_encoding_tokens_max=max(prefix_token_counts, default=0),
         context_encoding_truncated_tokens=sum(
             chunk.context_prefix_truncated_tokens for chunk in chunks
         ),
@@ -126,8 +126,8 @@ def plan_prompt_memory(
     context_turn_ids: Sequence[str] = (),
     context_text_tokens: int = 0,
 ) -> MemoryFactPlan:
-    retrieved = _checked_facts(selected_facts, retrieved_facts, fact_token_ids)
-    return _plan(
+    retrieved = _checked_retrieved_facts(selected_facts, retrieved_facts, fact_token_ids)
+    return _fact_plan(
         selected_facts,
         retrieved,
         context_window=context_window,
@@ -158,7 +158,7 @@ def memory_context_metrics(plan: MemoryFactPlan) -> dict[str, Any]:
     }
 
 
-def _checked_facts(
+def _checked_retrieved_facts(
     selected_facts: Sequence[RetrievedFact],
     retrieved_facts: Sequence[RetrievedFact] | None,
     fact_token_ids: Mapping[str, list[int]],
@@ -174,7 +174,7 @@ def _checked_facts(
     return retrieved
 
 
-def _plan(
+def _fact_plan(
     selected_facts: Sequence[RetrievedFact],
     retrieved_facts: Sequence[RetrievedFact],
     *,

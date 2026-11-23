@@ -36,6 +36,8 @@ from .sample_cache import PrecomputedSamples
 from .sample_precompute import SamplePrecompute
 from .types import ComposedSampleMemory
 
+COMPOSED_MEMORY_STORE_BACKEND = "gpu"
+
 
 class KVAnswerClient:
     def __init__(self, config: MemoryRunConfig) -> None:
@@ -43,10 +45,7 @@ class KVAnswerClient:
         self.config = config
         self.namespace = f"{config.run_id}-{uuid.uuid4().hex}"
         self.active_user_id = f"{self.namespace}-active"
-        # The namespace registry holds the in-flight composed memory for the
-        # connector handoff and is always GPU-resident; kv_store_backend only
-        # selects where each sample's fact-chunk corpus lives.
-        get_gpu_memory_store(self.namespace, backend="gpu")
+        _create_composed_memory_store(self.namespace)
         self._engine = VLLMEngine(config.model, config.kv_dtype, config.engine_config())
         self._tokenizer: Any | None = None
         self._samples = PrecomputedSamples()
@@ -101,9 +100,7 @@ class KVAnswerClient:
                     connector_module=self.config.kv_connector_module,
                     namespace=self.namespace,
                     default_user_id=self.active_user_id,
-                    # The connector's namespace registry holds the in-flight
-                    # composed memory and is always GPU-resident.
-                    store_backend="gpu",
+                    store_backend=COMPOSED_MEMORY_STORE_BACKEND,
                 )
             )
             self._tokenizer = self._engine.tokenizer
@@ -201,9 +198,9 @@ class KVAnswerClient:
         store = composer.chunk_store
         if store is None:
             raise RuntimeError("The precomputed sample has no chunk store.")
-        before = store.transfer_totals()
+        totals_before = store.transfer_totals()
         composed = composer.compose(hits, memory_token_budget=query.memory_token_budget)
-        return composed, _transfer_metrics(before, store.transfer_totals())
+        return composed, _transfer_metrics(totals_before, store.transfer_totals())
 
     def _verify_against_prompt(
         self,
@@ -236,6 +233,10 @@ class KVAnswerClient:
         return (time.perf_counter() - started) * 1000
 
 
+def _create_composed_memory_store(namespace: str) -> None:
+    get_gpu_memory_store(namespace, backend=COMPOSED_MEMORY_STORE_BACKEND)
+
+
 def _composed_memory_metrics(
     composed: ComposedSampleMemory, prompt: PromptTokens, config: MemoryRunConfig
 ) -> dict[str, Any]:
@@ -255,21 +256,23 @@ def _composed_memory_metrics(
     }
 
 
-def _transfer_metrics(before: dict[str, float], after: dict[str, float]) -> dict[str, float]:
-    h2d_ms = float(after.get("total_h2d_latency_ms", 0.0)) - float(
-        before.get("total_h2d_latency_ms", 0.0)
+def _transfer_metrics(
+    totals_before: dict[str, float], totals_after: dict[str, float]
+) -> dict[str, float]:
+    h2d_ms = float(totals_after.get("total_h2d_latency_ms", 0.0)) - float(
+        totals_before.get("total_h2d_latency_ms", 0.0)
     )
-    stall_ms = float(after.get("total_staging_stall_ms", 0.0)) - float(
-        before.get("total_staging_stall_ms", 0.0)
+    stall_ms = float(totals_after.get("total_staging_stall_ms", 0.0)) - float(
+        totals_before.get("total_staging_stall_ms", 0.0)
     )
-    transferred = int(after.get("total_bytes_transferred", 0)) - int(
-        before.get("total_bytes_transferred", 0)
+    transferred_bytes = int(totals_after.get("total_bytes_transferred", 0)) - int(
+        totals_before.get("total_bytes_transferred", 0)
     )
-    overlap = max(0.0, min(1.0, 1.0 - stall_ms / h2d_ms)) if h2d_ms > 0 else 0.0
+    overlap_ratio = max(0.0, min(1.0, 1.0 - stall_ms / h2d_ms)) if h2d_ms > 0 else 0.0
     return {
         "kv_h2d_latency_ms": h2d_ms,
-        "kv_h2d_bytes": transferred,
-        "kv_h2d_overlap_ratio": overlap,
+        "kv_h2d_bytes": transferred_bytes,
+        "kv_h2d_overlap_ratio": overlap_ratio,
         "kv_staging_stall_ms": stall_ms,
     }
 

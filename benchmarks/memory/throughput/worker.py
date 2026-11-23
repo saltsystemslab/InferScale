@@ -16,24 +16,25 @@ from benchmarks.memory.throughput.lmcache_condition import run_lmcache_blend
 from benchmarks.memory.throughput.mem0_condition import run_mem0
 
 JOB_KEYS = ("config_path", "condition", "user_counts", "output_path")
+WHERE = "throughput worker job"
 
 
 def main(job: dict[str, Any]) -> None:
-    where = "throughput worker job"
     if not isinstance(job, dict):
-        raise ConfigError(f"{where} must be a JSON object.")
-    reject_unknown_keys(job, JOB_KEYS, where)
-    config_path = Path(require(job, "config_path", str, where))
-    condition = require(job, "condition", str, where)
-    output_path = Path(require(job, "output_path", str, where))
-    user_counts = int_list(job, "user_counts", where)
+        raise ConfigError(f"{WHERE} must be a JSON object.")
+    reject_unknown_keys(job, JOB_KEYS, WHERE)
+    config_path = Path(require(job, "config_path", str, WHERE))
+    condition = require(job, "condition", str, WHERE)
+    output_path = Path(require(job, "output_path", str, WHERE))
+    user_counts = int_list(job, "user_counts", WHERE)
     config = ThroughputConfig.from_json_file(config_path)
     if condition not in config.conditions:
         raise ConfigError(f"Worker condition {condition!r} is not in the configured list.")
-    unknown = [count for count in user_counts if count not in config.user_counts]
-    if unknown:
+    unconfigured_counts = [count for count in user_counts if count not in config.user_counts]
+    if unconfigured_counts:
         raise ConfigError(
-            "Worker user counts are not in the configured list: " + ", ".join(map(str, unknown))
+            "Worker user counts are not in the configured list: "
+            + ", ".join(map(str, unconfigured_counts))
         )
     configure_logging(config.log_level)
     results = run_condition(config, condition, user_counts)

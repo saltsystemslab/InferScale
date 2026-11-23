@@ -50,8 +50,8 @@ class PreparedMem0Retriever:
     def _search_hit(self, row: Any, rank: int) -> SearchHit:
         if not isinstance(row, dict):
             raise RuntimeError(f"Mem0 search returned a non-object result at rank {rank}.")
-        metadata = row.get("metadata")
-        metadata = dict(metadata) if isinstance(metadata, dict) else {}
+        raw_metadata = row.get("metadata")
+        metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
         fact = self._facts_by_id.get(str(metadata.get("fact_id") or ""))
         if fact is None:
             raise RuntimeError(

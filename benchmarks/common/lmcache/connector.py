@@ -55,8 +55,6 @@ class DeferredBlender:
             _stub_sparse_flashinfer_backend()
             _alias_input_embeddings(model)
             _blend_mistral_as_llama()
-            # LMCache builds a vLLM rotary embedding for the blender, and vLLM
-            # constructs its custom ops only while its config is current.
             with set_current_vllm_config(self._vllm_config):
                 blender = LMCBlender(
                     cache_engine=engine,

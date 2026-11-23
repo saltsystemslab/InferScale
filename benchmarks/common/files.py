@@ -8,38 +8,39 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any
 
-from benchmarks.common.atomic_files import atomic_write_text
+from benchmarks.common.atomic_files import COMPACT_SEPARATORS, atomic_write_text
 
 
 class JsonlWriter(AbstractContextManager["JsonlWriter"]):
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._fh = self.path.open("w", encoding="utf-8")
+        self._file = self.path.open("w", encoding="utf-8")
 
     def write(self, row: dict[str, Any]) -> None:
-        self._fh.write(json.dumps(row, ensure_ascii=False) + "\n")
-        self._fh.flush()
+        self._file.write(json.dumps(row, ensure_ascii=False) + "\n")
+        self._file.flush()
 
     def close(self) -> None:
-        if not self._fh.closed:
-            self._fh.close()
+        if not self._file.closed:
+            self._file.close()
 
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
         self.close()
 
 
 def write_json(path: str | Path, data: dict[str, Any]) -> None:
-    atomic_write_text(Path(path), json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    serialized = json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False)
+    atomic_write_text(Path(path), serialized + "\n")
 
 
 def read_json_or_default(path: Path, default: dict[str, Any]) -> dict[str, Any]:
     if not path.exists():
         return default
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(saved, dict):
         return default
-    return data
+    return saved
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -69,7 +70,7 @@ def write_csv(path: str | Path, rows: Iterable[dict[str, Any]], columns: list[st
 
 def csv_value(value: Any) -> Any:
     if isinstance(value, list | dict):
-        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        return json.dumps(value, ensure_ascii=False, separators=COMPACT_SEPARATORS)
     if isinstance(value, bool):
         return int(value)
     return value

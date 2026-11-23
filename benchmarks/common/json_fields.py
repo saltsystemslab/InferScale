@@ -7,22 +7,31 @@ from dataclasses import fields, is_dataclass
 from pathlib import Path
 from typing import Any, get_args, get_type_hints
 
+JSON_TYPE_DESCRIPTIONS = {
+    int: "an integer",
+    float: "a number",
+    str: "a string",
+    bool: "a boolean",
+    list: "a list",
+    dict: "an object",
+}
+
 
 class ConfigError(ValueError):
     pass
 
 
 def load_json_object(path: str | Path) -> dict[str, Any]:
-    target = Path(path)
+    config_path = Path(path)
     try:
-        raw = json.loads(target.read_text(encoding="utf-8"))
+        parsed = json.loads(config_path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
-        raise ConfigError(f"Config file not found: {target}") from exc
+        raise ConfigError(f"Config file not found: {config_path}") from exc
     except json.JSONDecodeError as exc:
-        raise ConfigError(f"Config file is not valid JSON: {target} ({exc})") from exc
-    if not isinstance(raw, dict):
-        raise ConfigError(f"Config file must contain a JSON object: {target}")
-    return raw
+        raise ConfigError(f"Config file is not valid JSON: {config_path} ({exc})") from exc
+    if not isinstance(parsed, dict):
+        raise ConfigError(f"Config file must contain a JSON object: {config_path}")
+    return parsed
 
 
 def require(
@@ -54,23 +63,23 @@ def reject_unknown_keys(section: Mapping[str, Any], allowed: Sequence[str], wher
 def section_of(
     data: Mapping[str, Any], key: str, where: str, *, required: bool = True
 ) -> dict[str, Any]:
-    value = data.get(key)
-    if value is None:
+    section = data.get(key)
+    if section is None:
         if required:
             raise ConfigError(f"{where} is missing required section {key!r}.")
         return {}
-    if not isinstance(value, dict):
+    if not isinstance(section, dict):
         raise ConfigError(f"{where}.{key} must be a JSON object.")
-    return value
+    return section
 
 
 def string_map(section: Mapping[str, Any], where: str) -> dict[str, str]:
-    result: dict[str, str] = {}
+    strings: dict[str, str] = {}
     for key, value in section.items():
         if not isinstance(value, str):
             raise ConfigError(f"{where}.{key} must be a string.")
-        result[str(key)] = value
-    return result
+        strings[str(key)] = value
+    return strings
 
 
 def int_list(
@@ -97,16 +106,16 @@ def _unique_list(
         if default is None:
             raise ConfigError(f"{where} is missing required key {key!r}.")
         return tuple(default)
-    values = section[key]
-    well_typed = isinstance(values, list) and all(
-        isinstance(item, item_type) and not isinstance(item, bool) for item in values
+    authored = section[key]
+    well_typed = isinstance(authored, list) and all(
+        isinstance(item, item_type) and not isinstance(item, bool) for item in authored
     )
-    if not well_typed or not values:
+    if not well_typed or not authored:
         noun = "integers" if item_type is int else "strings"
         raise ConfigError(f"{where}.{key} must be a non-empty list of {noun}.")
-    if len(set(values)) != len(values):
+    if len(set(authored)) != len(authored):
         raise ConfigError(f"{where}.{key} must not contain duplicates.")
-    return tuple(values)
+    return tuple(authored)
 
 
 def expand_path(value: str | Path, *, root: Path) -> Path:
@@ -117,14 +126,14 @@ def expand_path(value: str | Path, *, root: Path) -> Path:
 def parse_dataclass_section(section: Mapping[str, Any], schema: type, where: str) -> Any:
     hints = get_type_hints(schema)
     reject_unknown_keys(section, tuple(hints), where)
-    values: dict[str, Any] = {}
+    authored: dict[str, Any] = {}
     for field in fields(schema):
         if section.get(field.name) is None:
             continue
-        values[field.name] = typed_value(
+        authored[field.name] = typed_value(
             section[field.name], field.name, accepted_types(hints[field.name]), where
         )
-    return schema(**values)
+    return schema(**authored)
 
 
 def validate_dataclass_types(data: Mapping[str, Any], schema: type, where: str) -> None:
@@ -145,7 +154,7 @@ def validate_dataclass_types(data: Mapping[str, Any], schema: type, where: str) 
 def accepted_types(hint: Any) -> tuple[type, ...]:
     choices = tuple(choice for choice in (get_args(hint) or (hint,)) if choice is not type(None))
     if float in choices and int not in choices:
-        choices = (*choices, int)
+        return (*choices, int)
     return choices
 
 
@@ -161,12 +170,7 @@ def typed_value(value: Any, key: str, expected: type | tuple[type, ...], where: 
 
 
 def _describe(expected_types: tuple[type, ...]) -> str:
-    names = {
-        int: "an integer",
-        float: "a number",
-        str: "a string",
-        bool: "a boolean",
-        list: "a list",
-        dict: "an object",
-    }
-    return " or ".join(names.get(item, item.__name__) for item in expected_types)
+    return " or ".join(
+        JSON_TYPE_DESCRIPTIONS.get(expected_type, expected_type.__name__)
+        for expected_type in expected_types
+    )

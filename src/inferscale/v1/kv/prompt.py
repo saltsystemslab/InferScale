@@ -61,13 +61,14 @@ def _padded_footer(tokenizer: Any, footer_text: str, block_size: int) -> list[in
     newline_token_ids = encode_text_no_special(tokenizer, "\n")
     if not newline_token_ids:
         raise RuntimeError("Tokenizer produced no tokens for a newline pad.")
-    pad_repeats = max(0, block_size - 1 - len(footer_close_token_ids))
+    longest_recomputed_tail = block_size - 1
+    pad_repeats = max(0, longest_recomputed_tail - len(footer_close_token_ids))
     footer_token_ids = newline_token_ids * pad_repeats + footer_close_token_ids
-    if len(footer_token_ids) < block_size - 1:
+    if len(footer_token_ids) < longest_recomputed_tail:
         raise RuntimeError(
             "The scaffold does not contain enough trailing whitespace to keep "
             f"retrieved chunks outside the recomputed KV tail: {len(footer_token_ids)} "
-            f"footer token(s); need at least {block_size - 1}."
+            f"footer token(s); need at least {longest_recomputed_tail}."
         )
     return footer_token_ids
 
@@ -154,14 +155,7 @@ def require_identical_token_ids(
 ) -> None:
     if precomputed_token_ids == live_token_ids:
         return
-    mismatch_index = next(
-        (
-            index
-            for index, (left, right) in enumerate(zip(precomputed_token_ids, live_token_ids))
-            if left != right
-        ),
-        min(len(precomputed_token_ids), len(live_token_ids)),
-    )
+    mismatch_index = _first_difference(precomputed_token_ids, live_token_ids)
     raise RuntimeError(
         "Precomputed memory tokens differ from the live tokenizer at "
         f"index={mismatch_index}: precomputed_length={len(precomputed_token_ids)} "
@@ -169,17 +163,25 @@ def require_identical_token_ids(
     )
 
 
+def _first_difference(left_token_ids: list[int], right_token_ids: list[int]) -> int:
+    for index, (left, right) in enumerate(zip(left_token_ids, right_token_ids)):
+        if left != right:
+            return index
+    return min(len(left_token_ids), len(right_token_ids))
+
+
 def strip_duplicate_query_bos(
     tokenizer: Any, *, memory_token_ids: list[int], query_token_ids: list[int]
 ) -> tuple[list[int], bool]:
     bos_token_id = getattr(tokenizer, "bos_token_id", None)
-    if (
+    both_start_with_bos = (
         bos_token_id is not None
         and memory_token_ids
         and query_token_ids
         and memory_token_ids[0] == bos_token_id
         and query_token_ids[0] == bos_token_id
-    ):
+    )
+    if both_start_with_bos:
         return list(query_token_ids[1:]), True
     return list(query_token_ids), False
 

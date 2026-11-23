@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 DEFAULT_LOCAL_STORE_DIR = Path("/tmp")
+RUN_CONFIG_FILE = "config.json"
 
 
 def project_root() -> Path:
@@ -67,12 +68,12 @@ class StorageLayout:
         }
 
     def apply_environment(self) -> None:
-        for key, value in self.environment().items():
-            os.environ[key] = value
+        for name, value in self.environment().items():
+            os.environ[name] = value
 
     def create_directories(self) -> None:
         directories = [self.cache_root, self.results_root, self.tmp_dir, self.mem0_dir]
-        directories.extend(Path(value) for value in self.environment().values())
+        directories.extend(Path(location) for location in self.environment().values())
         for directory in directories:
             directory.mkdir(parents=True, exist_ok=True)
 
@@ -97,7 +98,7 @@ def resolve_layout(storage: StorageConfig, *, root: Path | None = None) -> Stora
 
 
 def mem0_dir_from_environment() -> Path:
-    value = os.environ.get("MEM0_DIR")
-    if value:
-        return Path(value)
+    configured = os.environ.get("MEM0_DIR")
+    if configured:
+        return Path(configured)
     return project_root() / ".cache" / "mem0"

@@ -17,6 +17,9 @@ from .kv.prompt import DEFAULT_BLOCK_SIZE
 
 DEFAULT_CONNECTOR_MODULE = "inferscale.v1.kv.connector"
 KV_DTYPES = tuple(KV_DTYPE_ALIASES)
+_EXACT_RETRIEVAL = "exact"
+_JASPER_RETRIEVAL = "jasper"
+_RETRIEVAL_IMPLEMENTATIONS = (_EXACT_RETRIEVAL, _JASPER_RETRIEVAL)
 
 
 @dataclass(slots=True)
@@ -64,10 +67,8 @@ class GenerationConfig:
 class InferScaleConfig:
     model: str
     top_k: int = 10
-    # Preceding chunks used only while encoding each target chunk's KV.
     context_window: int = field(default=0, kw_only=True)
-    # Retrieval implementation; Jasper tuning lives in the index section.
-    vector_backend: str = field(default="exact", kw_only=True)
+    vector_backend: str = field(default=_EXACT_RETRIEVAL, kw_only=True)
     engine: EngineConfig = field(default_factory=EngineConfig)
     kv: KVConfig = field(default_factory=KVConfig)
     index: JasperIndexConfig = field(default_factory=JasperIndexConfig)
@@ -81,13 +82,14 @@ class InferScaleConfig:
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> InferScaleConfig:
         _require_known_keys(data, cls, "inferscale")
-        kwargs: dict[str, Any] = {}
+        field_values: dict[str, Any] = {}
         for name, value in data.items():
-            section = _NESTED_SECTIONS.get(name)
-            kwargs[name] = (
-                _build_section(section, value, f"inferscale.{name}") if section else value
-            )
-        return cls(**kwargs)
+            section_class = _NESTED_SECTIONS.get(name)
+            if section_class is None:
+                field_values[name] = value
+            else:
+                field_values[name] = _build_section(section_class, value, f"inferscale.{name}")
+        return cls(**field_values)
 
     @classmethod
     def from_json(cls, path: str | Path) -> InferScaleConfig:
@@ -113,7 +115,7 @@ _NESTED_SECTIONS: dict[str, type] = {
 def _require_known_keys(data: Any, cls: type, where: str) -> None:
     if not isinstance(data, Mapping):
         raise ValueError(f"{where} must be a JSON object.")
-    unknown = sorted(set(data) - {item.name for item in fields(cls)})
+    unknown = sorted(set(data) - {known_field.name for known_field in fields(cls)})
     if unknown:
         raise ValueError(f"{where} has unknown keys: {', '.join(unknown)}.")
 
@@ -128,19 +130,21 @@ def validate_config(config: InferScaleConfig) -> None:
         raise ValueError("model must be a non-empty model id or path.")
     if config.top_k < 1:
         raise ValueError("top_k must be >= 1.")
-    if (
-        isinstance(config.context_window, bool)
-        or not isinstance(config.context_window, int)
-        or config.context_window < 0
-    ):
+    if not _is_nonnegative_integer(config.context_window):
         raise ValueError("context_window must be a nonnegative integer.")
-    if config.vector_backend not in ("exact", "jasper"):
+    if config.vector_backend not in _RETRIEVAL_IMPLEMENTATIONS:
         raise ValueError("vector_backend must be 'exact' or 'jasper'.")
     _validate_engine(config.engine)
     _validate_kv(config.kv)
-    if config.vector_backend == "jasper":
-        _validate_jasper(config.index, config.top_k)
-    _validate_text_sections(config)
+    if config.vector_backend == _JASPER_RETRIEVAL:
+        _validate_jasper_tuning(config.index, config.top_k)
+    _validate_embedding(config.embedding)
+    _validate_prompt(config.prompt)
+    _validate_generation(config.generation)
+
+
+def _is_nonnegative_integer(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
 def _validate_engine(engine: EngineConfig) -> None:
@@ -167,26 +171,33 @@ def _validate_kv(kv: KVConfig) -> None:
         raise ValueError(f"kv.dtype must be one of {KV_DTYPES}, got {kv.dtype!r}.")
 
 
-def _validate_jasper(index: JasperIndexConfig, top_k: int) -> None:
+def _validate_jasper_tuning(index: JasperIndexConfig, top_k: int) -> None:
     if index.n_neighbors < 1:
         raise ValueError("index.n_neighbors must be >= 1.")
     if index.beam_width < 1:
         raise ValueError("index.beam_width must be >= 1.")
-    if max(index.beam_width, top_k) > MAX_JASPER_BEAM_WIDTH:
+    effective_beam_width = max(index.beam_width, top_k)
+    if effective_beam_width > MAX_JASPER_BEAM_WIDTH:
         raise ValueError(
             "Effective Jasper beam width must be <= "
             f"{MAX_JASPER_BEAM_WIDTH}; got max({index.beam_width}, {top_k})."
         )
 
 
-def _validate_text_sections(config: InferScaleConfig) -> None:
-    if config.embedding.batch_size < 1:
+def _validate_embedding(embedding: EmbeddingConfig) -> None:
+    if embedding.batch_size < 1:
         raise ValueError("embedding.batch_size must be >= 1.")
-    if not config.embedding.model:
+    if not embedding.model:
         raise ValueError("embedding.model must be non-empty.")
-    if not config.prompt.system_prompt:
+
+
+def _validate_prompt(prompt: PromptConfig) -> None:
+    if not prompt.system_prompt:
         raise ValueError("prompt.system_prompt must be non-empty.")
-    if not config.prompt.empty_context_text:
+    if not prompt.empty_context_text:
         raise ValueError("prompt.empty_context_text must be non-empty.")
-    if config.generation.max_tokens < 0:
+
+
+def _validate_generation(generation: GenerationConfig) -> None:
+    if generation.max_tokens < 0:
         raise ValueError("generation.max_tokens must be >= 0.")

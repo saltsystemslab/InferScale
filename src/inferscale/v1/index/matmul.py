@@ -12,10 +12,12 @@ from ..types import DeviceSearchResult, SearchHit, SearchMetrics
 from .filters import payload_matches
 from .vectors import as_float32_vector
 
+_CUDA_DEVICE_NAME = r"cuda(?::[0-9]+)?"
+
 
 class MatmulIndex:
     def __init__(self, *, device: str = "cuda:0") -> None:
-        if not isinstance(device, str) or re.fullmatch(r"cuda(?::[0-9]+)?", device) is None:
+        if not isinstance(device, str) or re.fullmatch(_CUDA_DEVICE_NAME, device) is None:
             raise ValueError("MatmulIndex.device must be a CUDA device such as 'cuda:0'.")
         self.device = device
         self._vectors: np.ndarray | None = None
@@ -63,7 +65,6 @@ class MatmulIndex:
         if self._vectors is not None:
             matrix = np.concatenate((self._vectors, matrix), axis=0)
         first_ordinal = self.vector_count
-        # The resident GPU copy was built for the previous matrix; finalize rebuilds it.
         self.close()
         self._vectors = matrix
         self._rows.extend(zip(id_list, payload_list))
@@ -172,8 +173,10 @@ class MatmulIndex:
         ordinal = self._ordinals.get(str(item_id))
         if ordinal is None:
             return None
-        candidate_id, payload = self._rows[ordinal]
-        return SearchHit(candidate_id, dict(payload), 1.0, 0.0, ordinal + 1)
+        row_id, payload = self._rows[ordinal]
+        return SearchHit(
+            id=row_id, payload=dict(payload), score=1.0, distance=0.0, rank=ordinal + 1
+        )
 
     def close(self) -> None:
         self._vectors_gpu = None

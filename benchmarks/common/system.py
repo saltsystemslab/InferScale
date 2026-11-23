@@ -10,8 +10,15 @@ from typing import Any
 from benchmarks.common.paths import project_root
 
 PACKAGES = ("torch", "vllm", "lmcache", "mem0ai", "openai", "jasper", "qdrant-client")
-# Without a MemAvailable figure, this share of the physical RAM is treated as
-# available; the kernel, page cache, and resident processes own an unknown share.
+NVIDIA_SMI_QUERY = [
+    "nvidia-smi",
+    "--query-gpu=name,driver_version,memory.total",
+    "--format=csv,noheader",
+]
+NVIDIA_SMI_TIMEOUT_S = 5
+GPU_FIELDS = ("name", "driver_version", "memory_total")
+MEMINFO_PATH = Path("/proc/meminfo")
+BYTES_PER_MEMINFO_KB = 1024
 ASSUMED_AVAILABLE_FRACTION = 0.8
 
 
@@ -43,22 +50,22 @@ def _package_version(name: str) -> str | None:
 
 def _gpu_metadata() -> dict[str, Any]:
     try:
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader"],
+        nvidia_smi = subprocess.run(
+            NVIDIA_SMI_QUERY,
             check=False,
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=NVIDIA_SMI_TIMEOUT_S,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return {"available": False, "gpus": []}
-    if result.returncode != 0:
-        return {"available": False, "gpus": [], "error": result.stderr.strip()}
+    if nvidia_smi.returncode != 0:
+        return {"available": False, "gpus": [], "error": nvidia_smi.stderr.strip()}
     gpus = []
-    for line in result.stdout.splitlines():
-        parts = [part.strip() for part in line.split(",")]
-        if len(parts) >= 3:
-            gpus.append({"name": parts[0], "driver_version": parts[1], "memory_total": parts[2]})
+    for line in nvidia_smi.stdout.splitlines():
+        fields = [field.strip() for field in line.split(",")]
+        if len(fields) >= len(GPU_FIELDS):
+            gpus.append(dict(zip(GPU_FIELDS, fields)))
     return {"available": bool(gpus), "count": len(gpus), "gpus": gpus}
 
 
@@ -66,26 +73,35 @@ def _jasper_commit() -> str | None:
     jasper_dir = project_root() / "jasperpy"
     if not jasper_dir.exists():
         return None
-    result = subprocess.run(
-        ["git", "-C", str(jasper_dir), "rev-parse", "HEAD"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
+    try:
+        rev_parse = subprocess.run(
+            ["git", "-C", str(jasper_dir), "rev-parse", "HEAD"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
         return None
-    return result.stdout.strip()
+    if rev_parse.returncode != 0:
+        return None
+    return rev_parse.stdout.strip()
 
 
 def available_host_memory_bytes() -> int | None:
+    reported_by_kernel = _meminfo_available_bytes()
+    if reported_by_kernel is not None:
+        return reported_by_kernel
+    physical_bytes = total_host_memory_bytes()
+    if physical_bytes is None:
+        return None
+    return int(physical_bytes * ASSUMED_AVAILABLE_FRACTION)
+
+
+def _meminfo_available_bytes() -> int | None:
     try:
-        available = parse_mem_available_bytes(Path("/proc/meminfo").read_text(encoding="ascii"))
+        return parse_mem_available_bytes(MEMINFO_PATH.read_text(encoding="ascii"))
     except OSError:
-        available = None
-    if available is not None:
-        return available
-    total = total_host_memory_bytes()
-    return None if total is None else int(total * ASSUMED_AVAILABLE_FRACTION)
+        return None
 
 
 def total_host_memory_bytes() -> int | None:
@@ -102,7 +118,7 @@ def total_host_memory_bytes() -> int | None:
 def parse_mem_available_bytes(meminfo_text: str) -> int | None:
     for line in meminfo_text.splitlines():
         if line.startswith("MemAvailable:"):
-            parts = line.split()
-            if len(parts) >= 2 and parts[1].isdigit():
-                return int(parts[1]) * 1024
+            fields = line.split()
+            if len(fields) >= 2 and fields[1].isdigit():
+                return int(fields[1]) * BYTES_PER_MEMINFO_KB
     return None

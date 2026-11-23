@@ -5,6 +5,7 @@ from library_fakes import FakeChunkStore, FakeEmbedder, FakeEncoder, FakeEngine,
 
 import inferscale.v1.api as api_module
 from inferscale.v1 import Chunk, InferScale, InferScaleConfig
+from inferscale.v1.kv.memory_store import GPUMemoryStore
 from inferscale.v1.kv.registry import namespace_stats
 
 
@@ -192,11 +193,11 @@ def test_windows_use_only_preceding_target_tokens(make_engine, context_window):
             len(prefix),
             len(prefix) + len(target.token_ids),
         )
-        stored = engine._corpus.get(target.id)
-        assert stored.token_ids == target.token_ids
-        assert all(
-            tensor.shape[1] == len(target.token_ids) for tensor in stored.kv_by_layer.values()
-        )
+        assert engine._corpus.get(target.id).token_ids == target.token_ids
+        stored = GPUMemoryStore.get_user_memory(engine._corpus.store, target.id)
+        assert list(stored.kv_by_layer) == list(FakeEncoder.layers)
+        for tensor in stored.kv_by_layer.values():
+            assert tensor.array[0, :, 0, 0].tolist() == target.token_ids
 
 
 @pytest.mark.parametrize("batch_sizes", [(4,), (1, 1, 1, 1), (1, 0, 2, 1), (2, 2)])

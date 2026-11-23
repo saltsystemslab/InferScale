@@ -7,10 +7,10 @@ from loguru import logger
 from benchmarks.common.deferred_judging import judge_pending_records
 from benchmarks.common.files import read_json_or_default, read_jsonl
 from benchmarks.common.judge import failed_judge_payload, format_accuracy
+from benchmarks.common.paths import RUN_CONFIG_FILE
 from benchmarks.rag.config import RagBenchConfig
 from benchmarks.rag.judging import judge_client_for, judge_metadata, judge_rag_record, record_label
 from benchmarks.rag.run_outputs import (
-    CONFIG_FILE,
     PREDICTIONS_FILE,
     SETUP_FILE,
     SYSTEM_FILE,
@@ -31,14 +31,14 @@ def judge_existing_run(config: RagBenchConfig) -> dict[str, Any]:
     if judge_client is None:
         raise RuntimeError("Deferred judging requires the vllm judge provider.")
 
-    def save(rows: list[dict[str, Any]], final: bool) -> dict[str, Any]:
+    def save(rows: list[dict[str, Any]], is_final_save: bool) -> dict[str, Any]:
         return write_run_outputs(
             config,
             rows,
             saved_config=saved_config,
             system_metadata=system_metadata,
             setup_metrics=setup_metrics,
-            write_reports=final,
+            write_reports=is_final_save,
         )
 
     summary, judged_now = judge_pending_records(
@@ -50,6 +50,11 @@ def judge_existing_run(config: RagBenchConfig) -> dict[str, Any]:
         save=save,
         label=record_label,
     )
+    _log_accuracy(config, summary, judged_now)
+    return summary
+
+
+def _log_accuracy(config: RagBenchConfig, summary: dict[str, Any], judged_now: int) -> None:
     logger.info(
         "Finished deferred judging run_id={} judged_now={} judged={} accuracy={}",
         config.run_id,
@@ -65,11 +70,10 @@ def judge_existing_run(config: RagBenchConfig) -> dict[str, Any]:
             stats.get("correct"),
             stats.get("total"),
         )
-    return summary
 
 
 def _saved_config(config: RagBenchConfig) -> dict[str, Any]:
-    saved = read_json_or_default(config.run_dir / CONFIG_FILE, config.to_jsonable())
+    saved = read_json_or_default(config.run_dir / RUN_CONFIG_FILE, config.to_jsonable())
     saved_dataset = saved.get("dataset_name")
     if saved_dataset and saved_dataset != config.dataset_name:
         logger.warning(

@@ -35,10 +35,11 @@ class KVCorpus:
     def add(self, chunk: KVChunk) -> None:
         if chunk.chunk_id in self._meta:
             raise ValueError(f"Chunk {chunk.chunk_id!r} is already in the corpus.")
-        # Registration empties chunk.kv_by_layer, so measure first.
-        self._registered_bytes += chunk_nbytes(chunk)
-        self._registered_layers = max(self._registered_layers, len(chunk.kv_by_layer))
+        bytes_before_registration = chunk_nbytes(chunk)
+        layers_before_registration = len(chunk.kv_by_layer)
         self._meta.update(register_chunks(self._store, {chunk.chunk_id: chunk}))
+        self._registered_bytes += bytes_before_registration
+        self._registered_layers = max(self._registered_layers, layers_before_registration)
 
     def ids(self) -> list[str]:
         return list(self._meta)
@@ -67,8 +68,8 @@ class KVCorpus:
             "chunk_bytes": self._registered_bytes,
             "layers": self._registered_layers,
         }
-        for key, value in self._store.get_stats().items():
-            stats[f"store_{key}"] = value
+        for stat_name, stat in self._store.get_stats().items():
+            stats[f"store_{stat_name}"] = stat
         return stats
 
     def close(self) -> None:

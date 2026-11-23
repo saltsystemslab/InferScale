@@ -20,8 +20,6 @@ class UserMemory:
 
 
 class GPUMemoryStore:
-    # Entries are already on the GPU: there is nothing to stage and no
-    # transfers to meter. CpuPinnedMemoryStore overrides these members.
     num_staging_slots = 0
 
     def __init__(self, device: str = "cuda:0") -> None:
@@ -95,8 +93,6 @@ class GPUMemoryStore:
                 )
             return stats
 
-    # Corpus access: every path below resolves IDs through the GPU lookup.
-
     def finalize_packed(self) -> None:
         return
 
@@ -121,8 +117,6 @@ class GPUMemoryStore:
     ) -> list[tuple[str, UserMemory]]:
         with self._lock:
             return self._lookup_locked().resolve_device(stable_ids, id_to_row, reverse=reverse)
-
-    # Staging and transfer metrics: no-ops for GPU-resident entries.
 
     def prefetch_user_to_gpu(self, user_id: str) -> bool:
         del user_id
@@ -160,7 +154,7 @@ class GPUMemoryStore:
 
 def _contiguous_on_device(tensor: Any, device: str) -> Any:
     if str(tensor.device) != device:
-        tensor = tensor.to(device=device)
+        return tensor.to(device=device).contiguous()
     return tensor.contiguous()
 
 

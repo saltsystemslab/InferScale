@@ -45,6 +45,7 @@ from inferscale.v1.serving.vllm import build_kv_transfer_config, force_vllm_inpr
 
 CONDITION = "kv_injection"
 GPU_DEVICES = {"cuda", "cuda:0"}
+REGISTRY_BACKEND = "gpu"
 
 
 def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]:
@@ -59,10 +60,7 @@ def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]
     catalog_store = fact_catalog_store(config)
     facts_by_sample = {sample.sample_id: catalog_store.load(sample) for sample in used_samples}
     namespace = f"throughput-{config.run_id}-{uuid.uuid4().hex}"
-    # The namespace registry holds the in-flight per-request compositions for
-    # the connector handoff and is always GPU-resident; it is not the corpus
-    # store, whose backend is inferscale.kv.store_backend.
-    get_gpu_memory_store(namespace, backend="gpu")
+    _create_registry(namespace)
     store_root = config.local_store_scratch_dir / f"kv-stores-{num_users}u"
     shutil.rmtree(store_root, ignore_errors=True)
     corpus: PrecomputedCorpus | None = None
@@ -98,10 +96,7 @@ def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]
         composed = compose_requests(
             context, group_requests_by_user(requests, num_users), samples, facts_by_sample
         )
-        # Composition was the corpus's only consumer: capture its statistics,
-        # then free it before the engine claims its memory pool. The row maps
-        # reference the chunk stores, so they go first.
-        corpus_stats = corpus.stats()
+        stats_before_close = corpus.stats()
         retrieval.clear()
         corpus.close()
         engine = start_kv_engine(config, namespace)
@@ -116,7 +111,7 @@ def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]
             measured=measured,
             load_stats=load_stats,
             corpus=corpus,
-            corpus_stats=corpus_stats,
+            corpus_stats=stats_before_close,
             memory_setup_time_s=memory_setup_time_s,
             engine_startup_time_s=engine.startup_time_s,
             kv_store_gpu_mb=float(namespace_stats(namespace).get("total_gpu_mb", 0.0)),
@@ -135,16 +130,17 @@ def load_connector_module(config: ThroughputConfig) -> ModuleType:
     return importlib.import_module(config.kv_connector_module)
 
 
+def _create_registry(namespace: str) -> None:
+    get_gpu_memory_store(namespace, backend=REGISTRY_BACKEND)
+
+
 def start_kv_engine(config: ThroughputConfig, namespace: str) -> StartedEngine:
     transfer_config = build_kv_transfer_config(
         connector_module=config.kv_connector_module,
         namespace=namespace,
         default_user_id=None,
         log_memory_hits=False,
-        # The connector's namespace registry holds the in-flight composed
-        # memories and is always GPU-resident; the corpus backend is the
-        # chunk store's concern, not the connector's.
-        store_backend="gpu",
+        store_backend=REGISTRY_BACKEND,
     )
     return start_llm(config, kv_transfer_config=transfer_config)
 
@@ -163,9 +159,11 @@ def measure_kv_batch(
         engine.sampling_params,
         kv_warmup=_kv_warmup(config, engine, composed, tokenizer),
     )
-    routed = sampling_params_with_memory_user_ids(engine.sampling_params, composed.memory_user_ids)
+    routed_sampling_params = sampling_params_with_memory_user_ids(
+        engine.sampling_params, composed.memory_user_ids
+    )
     connector.reset_load_stats()
-    measured = measure_batch(engine.llm, composed.prompts, routed)
+    measured = measure_batch(engine.llm, composed.prompts, routed_sampling_params)
     load_stats = connector.snapshot_load_stats()
     _require_full_coverage(load_stats, len(composed.prompts))
     return measured, load_stats
@@ -174,9 +172,6 @@ def measure_kv_batch(
 def _kv_warmup(
     config: ThroughputConfig, engine: StartedEngine, composed: ComposedRequests, tokenizer: Any
 ) -> KVWarmup | None:
-    # The KV warmup prompt reaches its memory through the same explicit routing
-    # as measured requests; the random warmup prompts stay unrouted so they
-    # match nothing.
     if composed.first_memory_user_id is None or composed.first_memory_token_ids is None:
         return None
     prompt = build_kv_warmup_prompt(
@@ -184,20 +179,17 @@ def _kv_warmup(
         vocab_size=tokenizer_vocab_size(tokenizer),
         seed=config.seed,
     )
-    (sampling_params,) = sampling_params_with_memory_user_ids(
+    (routed_sampling_params,) = sampling_params_with_memory_user_ids(
         engine.sampling_params, [composed.first_memory_user_id]
     )
-    return KVWarmup(prompt=prompt, sampling_params=sampling_params)
+    return KVWarmup(prompt=prompt, sampling_params=routed_sampling_params)
 
 
 def _require_full_coverage(load_stats: dict[str, int], prompt_count: int) -> None:
-    # requests_covered counts distinct request ids that either had memory
-    # injected or whose memory region was fully served by the native prefix
-    # cache (a legitimate no-load), so the check stays exact per request even
-    # with prefix caching enabled and preemption re-loads.
-    if load_stats["requests_covered"] < prompt_count:
+    covered_requests = load_stats["requests_covered"]
+    if covered_requests < prompt_count:
         raise RuntimeError(
-            f"KV memory covered {load_stats['requests_covered']} of {prompt_count} requests "
+            f"KV memory covered {covered_requests} of {prompt_count} requests "
             "(injected or natively cached); some requests generated without their memory."
         )
 

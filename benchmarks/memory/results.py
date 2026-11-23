@@ -60,40 +60,40 @@ def summarize_records(
     system_metadata: dict[str, Any],
     sample_setup_metrics: Iterable[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    rows = list(records)
+    predictions = list(records)
     setup_rows = list(sample_setup_metrics or [])
-    judged = judged_records(rows)
+    judged = judged_records(predictions)
     correct = correct_count(judged)
-    vector_query_times = number_values(_metric_values(rows, "vector_db_query_time_ms"))
+    vector_query_times = number_values(_metric_values(predictions, "vector_db_query_time_ms"))
     vector_query_total_ms = sum(vector_query_times)
     vector_query_count = len(vector_query_times)
 
     metrics = {
         "accuracy": safe_div(correct, len(judged)),
         "accuracy_by_category": _accuracy_by_category(judged),
-        "time_to_first_token_ms": numeric_summary(_metric_values(rows, "time_to_first_token_ms")),
-        "query_to_first_token_ms": numeric_summary(_metric_values(rows, "query_to_first_token_ms")),
-        "query_to_answer_ms": numeric_summary(_metric_values(rows, "query_to_answer_ms")),
-        "query_embedding_time_ms": numeric_summary(_metric_values(rows, "query_embedding_time_ms")),
-        "query_retrieval_time_ms": numeric_summary(_metric_values(rows, "query_retrieval_time_ms")),
+        "time_to_first_token_ms": _metric_summary(predictions, "time_to_first_token_ms"),
+        "query_to_first_token_ms": _metric_summary(predictions, "query_to_first_token_ms"),
+        "query_to_answer_ms": _metric_summary(predictions, "query_to_answer_ms"),
+        "query_embedding_time_ms": _metric_summary(predictions, "query_embedding_time_ms"),
+        "query_retrieval_time_ms": _metric_summary(predictions, "query_retrieval_time_ms"),
         "vector_db_query_time_ms": numeric_summary(vector_query_times),
         "vector_db_query_count": vector_query_count,
         "vector_db_query_time_total_ms": vector_query_total_ms,
         "vector_db_queries_per_sec": queries_per_second(vector_query_count, vector_query_total_ms),
     }
     for key in (*MEMORY_AUDIT_NUMERIC_METRIC_KEYS, *KV_QUERY_METRIC_KEYS):
-        summary = numeric_summary(_metric_values(rows, key))
-        if summary["count"]:
+        summary = _metric_summary(predictions, key)
+        if summary["count"] > 0:
             metrics[key] = summary
     if setup_rows:
         metrics["sample_setup_count"] = len(setup_rows)
         for key in SETUP_METRIC_COLUMNS:
             summary = numeric_summary(row.get(key) for row in setup_rows if key in row)
-            if summary["count"]:
+            if summary["count"] > 0:
                 metrics[key] = summary
 
     return summary_envelope(
-        rows,
+        predictions,
         run_id=run_id,
         mode=mode,
         metrics=metrics,
@@ -104,11 +104,11 @@ def summarize_records(
 
 def _accuracy_by_category(judged: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     by_category: dict[str, dict[str, int]] = {}
-    for row in judged:
-        category = str(row.get("category") or "")
+    for prediction in judged:
+        category = str(prediction.get("category") or "")
         counters = by_category.setdefault(category, {"total": 0, "correct": 0})
         counters["total"] += 1
-        if row.get("judge", {}).get("correct") is True:
+        if prediction.get("judge", {}).get("correct") is True:
             counters["correct"] += 1
     return {
         category: {
@@ -121,8 +121,12 @@ def _accuracy_by_category(judged: list[dict[str, Any]]) -> dict[str, dict[str, A
     }
 
 
-def _metric_values(rows: list[dict[str, Any]], key: str) -> Iterable[Any]:
-    for row in rows:
-        metrics = row.get("metrics")
+def _metric_summary(predictions: list[dict[str, Any]], key: str) -> dict[str, float | int | None]:
+    return numeric_summary(_metric_values(predictions, key))
+
+
+def _metric_values(predictions: list[dict[str, Any]], key: str) -> Iterable[Any]:
+    for prediction in predictions:
+        metrics = prediction.get("metrics")
         if isinstance(metrics, dict) and key in metrics:
             yield metrics.get(key)

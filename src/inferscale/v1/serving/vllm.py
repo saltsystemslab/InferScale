@@ -17,9 +17,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 KV_CONNECTOR_NAME = "MemoryKVConnector"
-
-# Shell conveniences for the vllm CLI. vLLM validates every VLLM_* name when its
-# environment module loads and rejects these as unknown settings.
 VLLM_CLI_ENV_VARIABLES = (
     "VLLM_MODEL",
     "VLLM_API_KEY",
@@ -59,23 +56,26 @@ def build_kv_transfer_config(
 
 def force_vllm_inprocess_mode() -> None:
     clear_vllm_cli_env()
-    current = os.environ.get("VLLM_ENABLE_V1_MULTIPROCESSING")
-    if _is_truthy(current):
+    requested_multiprocessing = os.environ.get("VLLM_ENABLE_V1_MULTIPROCESSING")
+    if _is_truthy(requested_multiprocessing):
         logger.warning(
             "Overriding VLLM_ENABLE_V1_MULTIPROCESSING=%s because KV injection requires "
             "vLLM's offline engine to share this process.",
-            current,
+            requested_multiprocessing,
         )
     os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
-    # vllm.envs reads the environment once at import; patch it if it is loaded.
-    loaded_envs = sys.modules.get("vllm.envs")
-    if loaded_envs is not None and hasattr(loaded_envs, "VLLM_ENABLE_V1_MULTIPROCESSING"):
-        loaded_envs.VLLM_ENABLE_V1_MULTIPROCESSING = False
+    _patch_loaded_vllm_envs()
 
 
 def clear_vllm_cli_env() -> None:
     for name in VLLM_CLI_ENV_VARIABLES:
         os.environ.pop(name, None)
+
+
+def _patch_loaded_vllm_envs() -> None:
+    loaded_envs = sys.modules.get("vllm.envs")
+    if loaded_envs is not None and hasattr(loaded_envs, "VLLM_ENABLE_V1_MULTIPROCESSING"):
+        loaded_envs.VLLM_ENABLE_V1_MULTIPROCESSING = False
 
 
 def vllm_engine_kwargs(*, model: str, dtype: str, engine: EngineConfig) -> dict[str, Any]:

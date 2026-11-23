@@ -178,7 +178,7 @@ def test_serve_uses_its_fixed_json_workflow(repo: Path) -> None:
 
 
 def test_programmatic_serve_preview_reads_json_without_starting_a_server(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, serve_log
 ):
     from benchmarks.common import serve
     from benchmarks.common.config import RuntimeConfig
@@ -200,5 +200,5 @@ def test_programmatic_serve_preview_reads_json_without_starting_a_server(
     )
 
     assert serve.serve(plan) == 0
-    assert "judge/model" in capsys.readouterr().out
+    assert "judge/model" in "\n".join(serve_log)
     assert not (tmp_path / "data").exists()

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from benchmarks.common.logging import configure_logging
 from benchmarks.ttft_race.gif import load_timelines, render_gif
 from benchmarks.ttft_race.measure import DEFAULT_CONFIG, SIDES, measure_side
 
@@ -23,6 +24,7 @@ def main() -> None:
     if args.command == "measure":
         measure_side(args.mode, config_path=args.config, questions=args.questions, out=args.out)
         return
+    configure_logging()
     timelines = load_timelines(args.timelines)
     render_gif(timelines, out=args.out, question=args.question, slowdown=args.slowdown)
 

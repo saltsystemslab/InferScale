@@ -24,7 +24,7 @@ def build_judge_messages(
     evidence_block = (
         f"Evidence from the conversation:\n{evidence_context}\n\n" if evidence_context else ""
     )
-    user = (
+    user_message = (
         f"{JUDGE_SYSTEM_PROMPT}\n\n"
         f"{evidence_block}"
         f"Question: {qa.question}\n"
@@ -35,7 +35,7 @@ def build_judge_messages(
         "Return false for contradictions, unsupported answers, or missing key facts. "
         "Output only true or false. Do not return JSON, punctuation, or an explanation."
     )
-    return [{"role": "user", "content": user}]
+    return [{"role": "user", "content": user_message}]
 
 
 def judge_metadata(config: MemoryRunConfig) -> dict[str, Any]:

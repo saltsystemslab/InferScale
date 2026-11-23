@@ -11,7 +11,6 @@ from benchmarks.rag.results import (
 )
 
 PREDICTIONS_FILE = "predictions.jsonl"
-CONFIG_FILE = "config.json"
 SYSTEM_FILE = "system.json"
 SETUP_FILE = "setup.json"
 SUMMARY_FILE = "summary.json"

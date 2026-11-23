@@ -19,9 +19,8 @@ def build_rag_judge_messages(
     gold_answers: Sequence[str] | str,
     predicted_answer: str,
 ) -> list[dict[str, str]]:
-    if isinstance(gold_answers, str):
-        gold_answers = (gold_answers,)
-    references = [str(gold).strip() for gold in gold_answers if str(gold).strip()] or [""]
+    answers = (gold_answers,) if isinstance(gold_answers, str) else gold_answers
+    references = [str(gold).strip() for gold in answers if str(gold).strip()] or [""]
     if len(references) == 1:
         reference_block = f"Reference answer: {references[0]}\n"
         match_clause = "the reference answer"
@@ -32,7 +31,7 @@ def build_rag_judge_messages(
             f"if it matches any one of them):\n{listed}\n"
         )
         match_clause = "any one reference answer"
-    user = (
+    prompt = (
         f"{RAG_JUDGE_INSTRUCTIONS}\n\n"
         f"Question: {question}\n"
         f"{reference_block}"
@@ -42,7 +41,7 @@ def build_rag_judge_messages(
         "Return false for contradictions, unsupported answers, or missing key facts. "
         "Output only true or false. Do not return JSON, punctuation, or an explanation."
     )
-    return [{"role": "user", "content": user}]
+    return [{"role": "user", "content": prompt}]
 
 
 def judge_metadata(config: RagBenchConfig) -> dict[str, Any]:

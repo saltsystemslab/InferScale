@@ -20,11 +20,9 @@ class RoPECapture:
 
 
 def _capturing(original: Any, capture: RoPECapture) -> Any:
-    def apply_rotary_pos_emb(
-        q: Any, k: Any, cos: Any, sin: Any, position_ids: Any = None, *args: Any, **kwargs: Any
-    ) -> Any:
+    def apply_rotary_pos_emb(q: Any, k: Any, *args: Any, **kwargs: Any) -> Any:
         capture.keys.append(k.detach().clone())
-        return original(q, k, cos, sin, position_ids, *args, **kwargs)
+        return original(q, k, *args, **kwargs)
 
     return apply_rotary_pos_emb
 
@@ -38,7 +36,6 @@ def capture_pre_rope() -> Iterator[RoPECapture]:
             module = importlib.import_module(module_path)
         except ImportError:
             continue
-        # A family module without the function cannot be captured; skip it.
         original = getattr(module, "apply_rotary_pos_emb", None)
         if original is None:
             continue

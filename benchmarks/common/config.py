@@ -32,6 +32,7 @@ EXTRACTION_LLM_API_KEY_ENV = "EXTRACTION_LLM_API_KEY"
 DEFAULT_EXTRACTION_LLM_BASE_URL = "http://localhost:8000/v1"
 REDACTED = "<redacted>"
 
+WHERE = "runtime"
 RUNTIME_SECTIONS = (
     "storage",
     "build",
@@ -39,6 +40,15 @@ RUNTIME_SECTIONS = (
     "reasoning_parsers",
     "judge_server",
     "environment",
+)
+STORAGE_WHERE = f"{WHERE}.storage"
+STORAGE_KEYS = (
+    "runtime_root",
+    "cache_root",
+    "results_root",
+    "tmp_dir",
+    "mem0_dir",
+    "local_store_dir",
 )
 
 
@@ -77,8 +87,8 @@ class RuntimeConfig:
 
     @classmethod
     def from_json(cls, path: str | Path, *, root: Path | None = None) -> RuntimeConfig:
-        target = Path(path)
-        return cls.from_dict(load_json_object(target), path=target, root=root)
+        runtime_path = Path(path)
+        return cls.from_dict(load_json_object(runtime_path), path=runtime_path, root=root)
 
     @classmethod
     def from_dict(
@@ -88,29 +98,17 @@ class RuntimeConfig:
         path: str | Path = "runtime.json",
         root: Path | None = None,
     ) -> RuntimeConfig:
-        where = "runtime"
         project = root if root is not None else project_root()
-        reject_unknown_keys(data, RUNTIME_SECTIONS, where)
-        storage = _storage_config(section_of(data, "storage", where, required=False), project)
+        reject_unknown_keys(data, RUNTIME_SECTIONS, WHERE)
+        storage = _storage_config(_optional_section(data, "storage"), project)
         return cls(
             storage=storage,
             layout=resolve_layout(storage, root=project),
-            build=parse_dataclass_section(
-                section_of(data, "build", where, required=False), BuildConfig, f"{where}.build"
-            ),
-            models=string_map(section_of(data, "models", where, required=False), f"{where}.models"),
-            reasoning_parsers=string_map(
-                section_of(data, "reasoning_parsers", where, required=False),
-                f"{where}.reasoning_parsers",
-            ),
-            judge_server=parse_dataclass_section(
-                section_of(data, "judge_server", where, required=False),
-                JudgeServerConfig,
-                f"{where}.judge_server",
-            ),
-            environment=string_map(
-                section_of(data, "environment", where, required=False), f"{where}.environment"
-            ),
+            build=_dataclass_section(data, "build", BuildConfig),
+            models=_string_section(data, "models"),
+            reasoning_parsers=_string_section(data, "reasoning_parsers"),
+            judge_server=_dataclass_section(data, "judge_server", JudgeServerConfig),
+            environment=_string_section(data, "environment"),
             path=Path(path),
             root=project,
         )
@@ -137,22 +135,29 @@ class RuntimeConfig:
         return judge_llm_api_key() or self.judge_server.api_key
 
     def apply_environment(self) -> None:
-        for key, value in self.environment.items():
-            os.environ[key] = value
+        for name, value in self.environment.items():
+            os.environ[name] = value
         self.layout.apply_environment()
 
 
+def _optional_section(data: Mapping[str, Any], name: str) -> dict[str, Any]:
+    return section_of(data, name, WHERE, required=False)
+
+
+def _dataclass_section(data: Mapping[str, Any], name: str, schema: type) -> Any:
+    return parse_dataclass_section(_optional_section(data, name), schema, f"{WHERE}.{name}")
+
+
+def _string_section(data: Mapping[str, Any], name: str) -> dict[str, str]:
+    return string_map(_optional_section(data, name), f"{WHERE}.{name}")
+
+
 def _storage_config(section: Mapping[str, Any], project: Path) -> StorageConfig:
-    where = "runtime.storage"
-    reject_unknown_keys(
-        section,
-        ("runtime_root", "cache_root", "results_root", "tmp_dir", "mem0_dir", "local_store_dir"),
-        where,
-    )
+    reject_unknown_keys(section, STORAGE_KEYS, STORAGE_WHERE)
 
     def storage_path(key: str) -> Path | None:
-        value = optional(section, key, str, None, where)
-        return expand_path(value, root=project) if value else None
+        authored_path = optional(section, key, str, None, STORAGE_WHERE)
+        return expand_path(authored_path, root=project) if authored_path else None
 
     return StorageConfig(
         runtime_root=storage_path("runtime_root"),

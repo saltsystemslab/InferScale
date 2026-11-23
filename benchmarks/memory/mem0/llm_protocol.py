@@ -52,31 +52,35 @@ def bounded_memory_response_format() -> dict[str, Any]:
 
 
 def prepare_memory_extraction_kwargs(kwargs: dict[str, Any]) -> tuple[dict[str, Any], bool]:
-    effective = dict(kwargs)
-    response_format = effective.get("response_format")
-    if not isinstance(response_format, dict) or response_format.get("type") != "json_object":
-        return effective, False
-    effective["response_format"] = bounded_memory_response_format()
-    effective["max_tokens"] = MEMORY_EXTRACTION_MAX_TOKENS
-    return effective, True
+    effective_kwargs = dict(kwargs)
+    if not _is_extraction_request(effective_kwargs):
+        return effective_kwargs, False
+    effective_kwargs["response_format"] = bounded_memory_response_format()
+    effective_kwargs["max_tokens"] = MEMORY_EXTRACTION_MAX_TOKENS
+    return effective_kwargs, True
+
+
+def _is_extraction_request(kwargs: dict[str, Any]) -> bool:
+    response_format = kwargs.get("response_format")
+    return isinstance(response_format, dict) and response_format.get("type") == "json_object"
 
 
 def validate_memory_extraction_response(response: Any) -> str:
     payload = _parse_payload(response)
-    memories = payload["memory"]
-    if not isinstance(memories, list):
+    facts = payload["memory"]
+    if not isinstance(facts, list):
         raise InvalidMemoryExtractionResponseError("Mem0 extraction 'memory' must be an array.")
-    if len(memories) > MEMORY_EXTRACTION_MAX_FACTS:
+    if len(facts) > MEMORY_EXTRACTION_MAX_FACTS:
         raise InvalidMemoryExtractionResponseError(
-            f"Mem0 extraction returned {len(memories)} facts; "
+            f"Mem0 extraction returned {len(facts)} facts; "
             f"maximum is {MEMORY_EXTRACTION_MAX_FACTS}."
         )
-    renumbered = False
-    for index, memory in enumerate(memories):
-        renumbered |= _validate_fact(index, memory)
-    if renumbered:
-        return json.dumps(payload, ensure_ascii=False)
-    return response
+    for position, fact in enumerate(facts):
+        _validate_fact(position, fact)
+    if _ids_are_sequential_as_prompted(facts):
+        return response
+    _renumber_unread_ids_by_position(facts)
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def _parse_payload(response: Any) -> dict[str, Any]:
@@ -98,42 +102,47 @@ def _parse_payload(response: Any) -> dict[str, Any]:
     return payload
 
 
-def _validate_fact(index: int, memory: Any) -> bool:
-    if not isinstance(memory, dict):
+def _validate_fact(position: int, fact: Any) -> None:
+    if not isinstance(fact, dict):
         raise InvalidMemoryExtractionResponseError(
-            f"Mem0 extraction fact {index} must be an object."
+            f"Mem0 extraction fact {position} must be an object."
         )
-    if not REQUIRED_FACT_FIELDS.issubset(memory) or not set(memory).issubset(ALLOWED_FACT_FIELDS):
+    if not REQUIRED_FACT_FIELDS.issubset(fact) or not set(fact).issubset(ALLOWED_FACT_FIELDS):
         raise InvalidMemoryExtractionResponseError(
-            f"Mem0 extraction fact {index} has invalid or missing fields."
+            f"Mem0 extraction fact {position} has invalid or missing fields."
         )
-    if not isinstance(memory["id"], str):
+    if not isinstance(fact["id"], str):
         raise InvalidMemoryExtractionResponseError(
-            f"Mem0 extraction fact {index} id must be a string."
+            f"Mem0 extraction fact {position} id must be a string."
         )
-    text = memory["text"]
+    text = fact["text"]
     if not isinstance(text, str) or not text.strip():
         raise InvalidMemoryExtractionResponseError(
-            f"Mem0 extraction fact {index} must have nonempty text."
+            f"Mem0 extraction fact {position} must have nonempty text."
         )
     if len(text) > MEMORY_EXTRACTION_MAX_TEXT_CHARS:
         raise InvalidMemoryExtractionResponseError(
-            f"Mem0 extraction fact {index} has {len(text)} characters; "
+            f"Mem0 extraction fact {position} has {len(text)} characters; "
             f"maximum is {MEMORY_EXTRACTION_MAX_TEXT_CHARS}."
         )
-    if memory["attributed_to"] not in ATTRIBUTIONS:
+    if fact["attributed_to"] not in ATTRIBUTIONS:
         raise InvalidMemoryExtractionResponseError(
-            f"Mem0 extraction fact {index} has invalid attributed_to."
+            f"Mem0 extraction fact {position} has invalid attributed_to."
         )
-    linked = memory.get("linked_memory_ids", [])
-    if not isinstance(linked, list) or any(not isinstance(value, str) for value in linked):
+    if not _is_array_of_strings(fact.get("linked_memory_ids", [])):
         raise InvalidMemoryExtractionResponseError(
-            f"Mem0 extraction fact {index} linked_memory_ids must be an array of strings."
+            f"Mem0 extraction fact {position} linked_memory_ids must be an array of strings."
         )
-    # The prompt asks for sequential ids but guided decoding cannot enforce
-    # that, and no consumer reads the id, so renumber by position instead of
-    # rejecting the response.
-    if memory["id"] != str(index):
-        memory["id"] = str(index)
-        return True
-    return False
+
+
+def _is_array_of_strings(candidate: Any) -> bool:
+    return isinstance(candidate, list) and all(isinstance(entry, str) for entry in candidate)
+
+
+def _ids_are_sequential_as_prompted(facts: list[dict[str, Any]]) -> bool:
+    return all(fact["id"] == str(position) for position, fact in enumerate(facts))
+
+
+def _renumber_unread_ids_by_position(facts: list[dict[str, Any]]) -> None:
+    for position, fact in enumerate(facts):
+        fact["id"] = str(position)

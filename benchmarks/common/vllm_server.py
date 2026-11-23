@@ -5,6 +5,7 @@ from urllib.parse import SplitResult, urlsplit
 from benchmarks.common.json_fields import ConfigError
 
 LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+DEFAULT_HTTP_PORT = 80
 
 
 def require_local_http_endpoint(url: str, *, where: str) -> SplitResult:
@@ -33,7 +34,7 @@ def vllm_serve_command(
         "--host",
         str(endpoint.hostname),
         "--port",
-        str(endpoint.port or 80),
+        str(endpoint.port or DEFAULT_HTTP_PORT),
         "--trust-remote-code",
         "--dtype",
         dtype,

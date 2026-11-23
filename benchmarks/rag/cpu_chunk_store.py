@@ -14,8 +14,6 @@ from inferscale.v1.kv.chunk_store import chunk_nbytes
 from inferscale.v1.types import KVChunk
 
 LOAD_LOG_EVERY = 200
-# The chunks must fit in RAM beside the engine and the page cache; above this
-# share of the physical total the load is reported as likely to fail.
 HOST_MEMORY_WARNING_FRACTION = 0.9
 GIB = 1024**3
 
@@ -67,29 +65,29 @@ class CpuChunkStore:
         self.resident_bytes = 0
 
     def _load_entries(self, chunks: Sequence[RagChunk]) -> None:
-        for index, chunk in enumerate(chunks, start=1):
+        for chunk_number, chunk in enumerate(chunks, start=1):
             encoded = self._load_entry(chunk)
             self._entries.append(encoded)
             self.resident_bytes += chunk_nbytes(encoded)
-            if index % LOAD_LOG_EVERY == 0 or index == len(chunks):
+            if chunk_number % LOAD_LOG_EVERY == 0 or chunk_number == len(chunks):
                 logger.info(
                     "Loaded {}/{} KV chunks into host RAM ({:.1f} GiB)",
-                    index,
+                    chunk_number,
                     len(chunks),
                     self.resident_bytes / GIB,
                 )
 
     def _load_entry(self, chunk: RagChunk) -> KVChunk:
-        path = self._cache.chunk_path(chunk.chunk_id)
+        chunk_file = self._cache.chunk_path(chunk.chunk_id)
         encoded = load_chunk(
-            path,
+            chunk_file,
             expected_meta=self._cache.key.chunk_meta(chunk),
             expected_token_ids=chunk.token_ids,
             device="cpu",
         )
         if encoded is None:
             raise RuntimeError(
-                f"RAG KV chunk cache is stale for chunk {chunk.chunk_id} at {path}. "
+                f"RAG KV chunk cache is stale for chunk {chunk.chunk_id} at {chunk_file}. "
                 "Run the precompute-kv stage with the same model, chunk size, and "
                 "context window first."
             )
@@ -97,11 +95,11 @@ class CpuChunkStore:
 
 
 def _warn_if_low_host_memory(expected_bytes: int) -> None:
-    total = total_host_memory_bytes()
-    if total is not None and expected_bytes > HOST_MEMORY_WARNING_FRACTION * total:
+    total_bytes = total_host_memory_bytes()
+    if total_bytes is not None and expected_bytes > HOST_MEMORY_WARNING_FRACTION * total_bytes:
         logger.warning(
             "RAG KV chunks need about {:.1f} GiB of host RAM but this host reports "
             "{:.1f} GiB total; the cpu store may not fit.",
             expected_bytes / GIB,
-            total / GIB,
+            total_bytes / GIB,
         )

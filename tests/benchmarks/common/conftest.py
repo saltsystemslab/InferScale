@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from loguru import logger
 
+from benchmarks.common import serve
 from benchmarks.common.config import RuntimeConfig, load_json_object
 from benchmarks.common.launcher import execute
 
@@ -25,6 +26,15 @@ def runtime(tmp_path: Path) -> RuntimeConfig:
 @pytest.fixture
 def launcher_log(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
     monkeypatch.setattr(execute, "configure_logging", lambda: None)
+    messages: list[str] = []
+    sink = logger.add(lambda message: messages.append(message.record["message"]), level="INFO")
+    yield messages
+    logger.remove(sink)
+
+
+@pytest.fixture
+def serve_log(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
+    monkeypatch.setattr(serve, "configure_logging", lambda: None)
     messages: list[str] = []
     sink = logger.add(lambda message: messages.append(message.record["message"]), level="INFO")
     yield messages

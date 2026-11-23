@@ -35,18 +35,16 @@ def start_llm(
 ) -> StartedEngine:
     from inferscale.v1.serving.vllm import force_vllm_inprocess_mode, vllm_engine_kwargs
 
-    # Every condition measures the same in-process V1 engine; otherwise QPS
-    # differences would be confounded by engine architecture.
     force_vllm_inprocess_mode()
     from vllm import LLM, SamplingParams
 
-    kwargs = vllm_engine_kwargs(
+    engine_kwargs = vllm_engine_kwargs(
         model=config.model, dtype=config.kv_dtype, engine=engine or config.engine_config()
     )
     if kv_transfer_config is not None:
-        kwargs["kv_transfer_config"] = kv_transfer_config
+        engine_kwargs["kv_transfer_config"] = kv_transfer_config
     started = time.perf_counter()
-    llm = LLM(**kwargs)
+    llm = LLM(**engine_kwargs)
     startup_time_s = time.perf_counter() - started
     sampling_params = SamplingParams(
         temperature=0.0,
@@ -81,26 +79,41 @@ def warm_up(
     kv_warmup: KVWarmup | None = None,
 ) -> None:
     if batches > 0 and prompts:
-        vocab_size = tokenizer_vocab_size(llm.get_tokenizer())
-        warmup_prompts = build_warmup_prompts(prompts, vocab_size=vocab_size, seed=seed)
-        warmup_sampling: Any = sampling_params
-        if kv_warmup is not None:
-            warmup_sampling = [
-                *([sampling_params] * len(warmup_prompts)),
-                kv_warmup.sampling_params,
-            ]
-            warmup_prompts = [*warmup_prompts, kv_warmup.prompt]
-        for _ in range(batches):
-            llm.generate(warmup_prompts, warmup_sampling, use_tqdm=False)
-    # Reset even with warmup disabled: conditions that measure several user
-    # counts against one engine must not let count N's prompts serve count
-    # N+1 from the native cache.
+        _generate_warmup_batches(
+            llm, prompts, sampling_params, batches, seed=seed, kv_warmup=kv_warmup
+        )
     reset_prefix_cache(llm)
 
 
+def _generate_warmup_batches(
+    llm: Any,
+    prompts: list[dict[str, list[int]]],
+    sampling_params: Any,
+    batches: int,
+    *,
+    seed: int,
+    kv_warmup: KVWarmup | None,
+) -> None:
+    vocab_size = tokenizer_vocab_size(llm.get_tokenizer())
+    random_prompts = build_warmup_prompts(prompts, vocab_size=vocab_size, seed=seed)
+    warmup_prompts, warmup_sampling = _with_kv_warmup(random_prompts, sampling_params, kv_warmup)
+    for _ in range(batches):
+        llm.generate(warmup_prompts, warmup_sampling, use_tqdm=False)
+
+
+def _with_kv_warmup(
+    random_prompts: list[dict[str, list[int]]], sampling_params: Any, kv_warmup: KVWarmup | None
+) -> tuple[list[dict[str, list[int]]], Any]:
+    if kv_warmup is None:
+        return random_prompts, sampling_params
+    unrouted_sampling = [sampling_params] * len(random_prompts)
+    warmup_sampling = [*unrouted_sampling, kv_warmup.sampling_params]
+    return [*random_prompts, kv_warmup.prompt], warmup_sampling
+
+
 def tokenizer_vocab_size(tokenizer: Any) -> int:
-    # Hugging Face tokenizers expose vocab_size; other tokenizers only their length.
-    return int(getattr(tokenizer, "vocab_size", 0) or 0) or len(tokenizer)
+    hugging_face_vocab_size = int(getattr(tokenizer, "vocab_size", 0) or 0)
+    return hugging_face_vocab_size or len(tokenizer)
 
 
 def sampling_params_with_memory_user_ids(
@@ -116,9 +129,8 @@ def sampling_params_with_memory_user_ids(
     return routed
 
 
-def _clone_sampling_params(sampling_params: Any) -> Any:
-    # SamplingParams is vLLM's type; the benchmark only relies on its clone().
-    clone = getattr(sampling_params, "clone", None)
+def _clone_sampling_params(vllm_sampling_params: Any) -> Any:
+    clone = getattr(vllm_sampling_params, "clone", None)
     if not callable(clone):
         raise RuntimeError("vLLM SamplingParams must provide clone() for request routing.")
     return clone()
@@ -147,16 +159,14 @@ def build_warmup_prompts(
 
 
 def reset_prefix_cache(llm: Any) -> None:
-    # Fail closed: measurement isolation depends on this reset (the KV warmup
-    # prompt shares blocks with a measured request's memory, and prompts
-    # repeat across user counts), so a stale cache must abort, not warn.
     reset = getattr(llm, "reset_prefix_cache", None)
     if not callable(reset):
         raise RuntimeError(
             "vLLM LLM has no reset_prefix_cache(); cannot clear the prefix cache "
             "before the measured batch."
         )
-    if reset() is False:
+    reset_reported_failure = reset() is False
+    if reset_reported_failure:
         raise RuntimeError(
             "reset_prefix_cache() reported failure; cached warmup blocks would "
             "contaminate the measured batch."
@@ -181,11 +191,11 @@ def measure_batch(
 def validate_prompt_lengths(
     config: ThroughputConfig, prompts: Iterable[dict[str, list[int]]]
 ) -> None:
-    longest = max((len(prompt["prompt_token_ids"]) for prompt in prompts), default=0)
-    required = longest + config.max_output_tokens
-    if required > config.kv_max_model_len:
+    longest_prompt_tokens = max((len(prompt["prompt_token_ids"]) for prompt in prompts), default=0)
+    required_model_len = longest_prompt_tokens + config.max_output_tokens
+    if required_model_len > config.kv_max_model_len:
         raise RuntimeError(
-            f"Longest prompt plus output is {required} tokens, "
+            f"Longest prompt plus output is {required_model_len} tokens, "
             f"exceeding max_model_len={config.kv_max_model_len}."
         )
 

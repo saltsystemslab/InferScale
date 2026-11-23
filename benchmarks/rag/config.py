@@ -42,9 +42,7 @@ RESULT_MODES = {
     "prompt-injection": "rag-prompt-injection",
     LMCACHE_BACKEND: "rag-lmcache-blend",
 }
-# The corpus chunk KV is host-RAM resident at answer time, loaded once from
-# the precompute cache; there is no GPU-resident corpus backend.
-KV_STORE_BACKEND = "cpu"
+ONLY_KV_STORE_BACKEND = "cpu"
 STAGES = ("estimate", "preembed", "precompute-kv", "run", "judge")
 LOG_LEVELS = ("TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL")
 RUN_KEYS = (
@@ -79,15 +77,17 @@ PATH_KEYS = ("data_dir", "results_dir", "embedding_cache_dir", "kv_chunk_cache_r
 SECRET_KEYS = ("judge_api_key", "embedding_api_key")
 
 DEFAULT_DATASET = "multihoprag"
+DEFAULT_MODEL = "llama"
+DEFAULT_ANSWER_BACKEND = "kv-injection"
 DEFAULT_CHUNK_SIZE = 1024
 DEFAULT_CONTEXT_WINDOW = 5
 DEFAULT_TOP_K = 15
 DEFAULT_MAX_ANSWER_TOKENS = 64
 DEFAULT_EMBED_BATCH_SIZE = 128
 DEFAULT_EMBEDDING_MODEL = EmbeddingConfig().model
-# Parse-time slack for the scaffold and the templated question on top of the
-# retrieved chunks; the answer path still enforces the exact budget per query.
-MEMORY_BUDGET_MARGIN_TOKENS = 512
+DEFAULT_LOG_EVERY = 25
+DEFAULT_LOG_LEVEL = "INFO"
+SCAFFOLD_QUERY_MARGIN_TOKENS = 512
 
 
 @dataclass(slots=True)
@@ -97,8 +97,8 @@ class RagBenchConfig:
     results_dir: Path = Path("results")
     run_id: str = field(default_factory=stamp_now)
 
-    model: str = "llama"
-    answer_backend: str = "kv-injection"
+    model: str = DEFAULT_MODEL
+    answer_backend: str = DEFAULT_ANSWER_BACKEND
 
     chunk_size: int = DEFAULT_CHUNK_SIZE
     context_window: int = DEFAULT_CONTEXT_WINDOW
@@ -137,11 +137,10 @@ class RagBenchConfig:
     kv_chunk_cache_root: Path | None = None
 
     max_queries: int | None = None
-    log_every: int = 25
-    log_level: str = "INFO"
+    log_every: int = DEFAULT_LOG_EVERY
+    log_level: str = DEFAULT_LOG_LEVEL
     skip_judge: bool = False
     rejudge: bool = False
-    # Present whenever this run or one of its sweeps uses the LMCache arm.
     lmcache: LMCacheConfig | None = None
 
     def __post_init__(self) -> None:
@@ -188,18 +187,18 @@ class RagBenchConfig:
         )
 
     def to_jsonable(self) -> dict[str, object]:
-        data = asdict(self)
-        data["mode"] = self.result_mode()
-        data["jasper_effective_beam_width"] = self.jasper_effective_beam_width
-        data["kv_store_backend"] = KV_STORE_BACKEND
-        data["lmcache"] = None if self.lmcache is None else self.lmcache.to_jsonable()
+        jsonable = asdict(self)
+        jsonable["mode"] = self.result_mode()
+        jsonable["jasper_effective_beam_width"] = self.jasper_effective_beam_width
+        jsonable["kv_store_backend"] = ONLY_KV_STORE_BACKEND
+        jsonable["lmcache"] = None if self.lmcache is None else self.lmcache.to_jsonable()
         for key in PATH_KEYS:
-            if data[key] is not None:
-                data[key] = str(data[key])
+            if jsonable[key] is not None:
+                jsonable[key] = str(jsonable[key])
         for key in SECRET_KEYS:
-            if data[key]:
-                data[key] = REDACTED
-        return data
+            if jsonable[key]:
+                jsonable[key] = REDACTED
+        return jsonable
 
     @classmethod
     def from_json_file(
@@ -223,7 +222,7 @@ class RagBenchConfig:
         judge = _judge(data, runtime)
         skip_judge = optional(data, "skip_judge", bool, False, WHERE) or judge.provider == "none"
         paths = _RunPaths.parse(data, runtime, dataset_name)
-        answer_backend = optional(data, "answer_backend", str, "kv-injection", WHERE)
+        answer_backend = optional(data, "answer_backend", str, DEFAULT_ANSWER_BACKEND, WHERE)
         sweeps = section_of(data, "sweeps", WHERE, required=False)
         _validate_sweeps(sweeps)
         config = cls(
@@ -266,8 +265,8 @@ class RagBenchConfig:
             kv_enable_prefix_caching=library.engine.enable_prefix_caching,
             kv_chunk_cache_root=paths.kv_chunk_cache_root,
             max_queries=optional(data, "max_queries", int, None, WHERE),
-            log_every=optional(data, "log_every", int, 25, WHERE),
-            log_level=optional(data, "log_level", str, "INFO", WHERE).upper(),
+            log_every=optional(data, "log_every", int, DEFAULT_LOG_EVERY, WHERE),
+            log_level=optional(data, "log_level", str, DEFAULT_LOG_LEVEL, WHERE).upper(),
             skip_judge=skip_judge,
             rejudge=optional(data, "rejudge", bool, False, WHERE),
             lmcache=_lmcache(data, answer_backend, sweeps),
@@ -299,8 +298,10 @@ class _RunPaths:
 
 
 def _path(data: Mapping[str, Any], key: str, runtime: RuntimeConfig, default: Path) -> Path:
-    value = optional(data, key, str, None, WHERE)
-    return expand_path(value, root=runtime.root) if value is not None else default
+    authored_path = optional(data, key, str, None, WHERE)
+    if authored_path is None:
+        return default
+    return expand_path(authored_path, root=runtime.root)
 
 
 def _model(data: Mapping[str, Any], runtime: RuntimeConfig) -> str:
@@ -309,7 +310,7 @@ def _model(data: Mapping[str, Any], runtime: RuntimeConfig) -> str:
     if "models" in data:
         models = str_list(data, "models", WHERE)
     else:
-        models = [optional(data, "model", str, "llama", WHERE)]
+        models = [optional(data, "model", str, DEFAULT_MODEL, WHERE)]
     if len(models) != 1:
         raise ConfigError(
             "A RAG invocation requires one model; use the sweep launcher for multiple models."
@@ -326,21 +327,24 @@ def _dataset_name(data: Mapping[str, Any]) -> str:
 
 
 def _library(data: Mapping[str, Any], *, model: str, top_k: int, context_window: int) -> Any:
-    raw = dict(section_of(data, "inferscale", WHERE, required=False))
-    # RAG caps answers shorter than the memory benchmark and keeps the corpus KV in host RAM.
-    raw["generation"] = {
+    section = dict(section_of(data, "inferscale", WHERE, required=False))
+    section["generation"] = {
         "max_tokens": DEFAULT_MAX_ANSWER_TOKENS,
-        **section_of(raw, "generation", "rag.inferscale", required=False),
+        **section_of(section, "generation", "rag.inferscale", required=False),
     }
-    raw["kv"] = {
-        "store_backend": KV_STORE_BACKEND,
-        **section_of(raw, "kv", "rag.inferscale", required=False),
+    section["kv"] = {
+        "store_backend": ONLY_KV_STORE_BACKEND,
+        **section_of(section, "kv", "rag.inferscale", required=False),
     }
     library = inferscale_section(
-        {"inferscale": raw}, model=model, top_k=top_k, context_window=context_window, where=WHERE
+        {"inferscale": section},
+        model=model,
+        top_k=top_k,
+        context_window=context_window,
+        where=WHERE,
     )
-    reject_unknown_keys(raw, LIBRARY_SECTIONS, "rag.inferscale")
-    if library.kv.store_backend != KV_STORE_BACKEND:
+    reject_unknown_keys(section, LIBRARY_SECTIONS, "rag.inferscale")
+    if library.kv.store_backend != ONLY_KV_STORE_BACKEND:
         raise ConfigError("rag.inferscale.kv.store_backend must be cpu.")
     return library
 
@@ -393,16 +397,16 @@ def _validate_choices(config: RagBenchConfig) -> None:
 
 
 def _validate_bounds(config: RagBenchConfig) -> None:
-    positive = {
+    positive_settings = {
         "top_k": config.top_k,
         "chunk_size": config.chunk_size,
         "embed_batch_size": config.embed_batch_size,
         "log_every": config.log_every,
         "max_answer_tokens": config.max_answer_tokens,
     }
-    for name, value in positive.items():
+    for setting, value in positive_settings.items():
         if value < 1:
-            raise ConfigError(f"rag.{name} must be >= 1.")
+            raise ConfigError(f"rag.{setting} must be >= 1.")
     if config.context_window < 0:
         raise ConfigError("rag.context_window must be >= 0.")
     if config.max_queries is not None and config.max_queries < 1:
@@ -416,21 +420,22 @@ def _validate_run_id(run_id: str) -> None:
 
 def _validate_memory_budget(config: RagBenchConfig) -> None:
     budget = min(config.kv_max_position, config.kv_max_model_len - config.max_answer_tokens)
-    if config.top_k * config.chunk_size + MEMORY_BUDGET_MARGIN_TOKENS > budget:
+    estimated_memory_tokens = config.top_k * config.chunk_size + SCAFFOLD_QUERY_MARGIN_TOKENS
+    if estimated_memory_tokens > budget:
         raise ConfigError(
-            f"top_k x chunk_size + {MEMORY_BUDGET_MARGIN_TOKENS} scaffold/query margin exceeds "
+            f"top_k x chunk_size + {SCAFFOLD_QUERY_MARGIN_TOKENS} scaffold/query margin exceeds "
             f"the memory budget min(inferscale.kv.max_position, "
             f"inferscale.engine.max_model_len - inferscale.generation.max_tokens) = {budget}."
         )
 
 
 def _validate_sweeps(sweeps: Mapping[str, Any]) -> None:
-    for name in sweeps:
-        where = f"rag.sweeps.{name}"
-        sweep = section_of(sweeps, name, "rag.sweeps")
+    for sweep_name in sweeps:
+        where = f"rag.sweeps.{sweep_name}"
+        sweep = section_of(sweeps, sweep_name, "rag.sweeps")
         reject_unknown_keys(sweep, SWEEP_KEYS, where)
         top_ks = int_list(sweep, "top_k", where, default=[DEFAULT_TOP_K])
-        if any(k < 1 or k > MAX_JASPER_BEAM_WIDTH for k in top_ks):
+        if any(top_k < 1 or top_k > MAX_JASPER_BEAM_WIDTH for top_k in top_ks):
             raise ConfigError(f"{where}.top_k must be between 1 and {MAX_JASPER_BEAM_WIDTH}.")
         backends = str_list(sweep, "answer_backends", where, default=list(ANSWER_BACKENDS))
         if any(backend not in ANSWER_BACKENDS for backend in backends):
@@ -440,9 +445,9 @@ def _validate_sweeps(sweeps: Mapping[str, Any]) -> None:
 def load_rag_config(
     path: str | Path, *, runtime: RuntimeConfig | None = None, stage: str = "run"
 ) -> RagBenchConfig:
-    raw = load_json_object(path)
-    config = RagBenchConfig.from_dict(raw, runtime=runtime)
-    validate_rag_stage(config, stage, has_run_id=bool(raw.get("run_id")))
+    authored = load_json_object(path)
+    config = RagBenchConfig.from_dict(authored, runtime=runtime)
+    validate_rag_stage(config, stage, has_run_id=bool(authored.get("run_id")))
     return config
 
 

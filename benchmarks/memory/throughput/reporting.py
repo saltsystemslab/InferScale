@@ -11,6 +11,10 @@ from benchmarks.common.atomic_files import atomic_write_text
 from benchmarks.common.files import write_csv, write_json
 from benchmarks.memory.throughput.config import ALL_CONDITIONS, ThroughputConfig
 
+LEFT_ALIGNED = "---"
+RIGHT_ALIGNED = "---:"
+EMPTY_CELL = "-"
+
 
 @dataclass(frozen=True, slots=True)
 class ThroughputResultRow:
@@ -52,11 +56,11 @@ class ThroughputResultRow:
     output_tokens_per_second: float
 
 
-RESULT_COLUMNS = tuple(item.name for item in fields(ThroughputResultRow))
+RESULT_COLUMNS = tuple(field.name for field in fields(ThroughputResultRow))
 
 
 def _optional(parse: Callable[[Any], Any]) -> Callable[[Any], Any]:
-    return lambda value: None if value in (None, "") else parse(value)
+    return lambda cell: None if cell in (None, "") else parse(cell)
 
 
 _PARSERS: dict[Any, Callable[[Any], Any]] = {
@@ -169,22 +173,22 @@ def condition_csv_path(run_dir: str | Path, condition: str) -> Path:
 def read_existing_results(run_dir: str | Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for condition in ALL_CONDITIONS:
-        path = condition_csv_path(run_dir, condition)
-        if not path.exists():
+        csv_path = condition_csv_path(run_dir, condition)
+        if not csv_path.exists():
             continue
-        with path.open(newline="", encoding="utf-8") as handle:
-            rows.extend(_coerce_row(row) for row in csv.DictReader(handle))
+        with csv_path.open(newline="", encoding="utf-8") as csv_file:
+            rows.extend(_coerce_row(row) for row in csv.DictReader(csv_file))
     return rows
 
 
 def merge_result_rows(
     existing: Iterable[dict[str, Any]], replacements: Iterable[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    by_key: dict[tuple[str, int], dict[str, Any]] = {}
+    latest_rows: dict[tuple[str, int], dict[str, Any]] = {}
     for row in [*existing, *replacements]:
         normalized = validate_result_row(row)
-        by_key[(normalized["condition"], normalized["num_users"])] = normalized
-    return sorted(by_key.values(), key=_result_sort_key)
+        latest_rows[(normalized["condition"], normalized["num_users"])] = normalized
+    return sorted(latest_rows.values(), key=_result_sort_key)
 
 
 def write_reports(
@@ -210,10 +214,10 @@ def write_reports(
 def build_summary(
     config: ThroughputConfig, rows: Iterable[dict[str, Any]], *, system_metadata: dict[str, Any]
 ) -> dict[str, Any]:
-    values = list(rows)
+    all_rows = list(rows)
     condition_summaries: dict[str, dict[str, Any]] = {}
     for condition in ALL_CONDITIONS:
-        qps_values = [row["throughput_qps"] for row in values if row["condition"] == condition]
+        qps_values = [row["throughput_qps"] for row in all_rows if row["condition"] == condition]
         if qps_values:
             condition_summaries[condition] = {
                 "row_count": len(qps_values),
@@ -226,7 +230,7 @@ def build_summary(
         "benchmark": "multi-user-throughput",
         "model": config.model,
         "model_label": config.model_label,
-        "row_count": len(values),
+        "row_count": len(all_rows),
         "conditions": condition_summaries,
         "user_counts": list(config.user_counts),
         "config": config.to_jsonable(),
@@ -235,7 +239,7 @@ def build_summary(
 
 
 def render_markdown_report(config: ThroughputConfig, rows: Iterable[dict[str, Any]]) -> str:
-    values = list(rows)
+    all_rows = list(rows)
     lines = [
         "# Multi-User Throughput Report",
         "",
@@ -258,31 +262,30 @@ def render_markdown_report(config: ThroughputConfig, rows: Iterable[dict[str, An
         "per request, `kv_requests_loaded` counts requests whose header and retrieved facts were "
         "served from the cache, and `kv_prefix_caching` is 0.",
         "",
-        *_qps_table(config, values),
+        *_qps_table(config, all_rows),
         "",
         "## Timing Components",
         "",
-        *_timing_table(values),
+        *_timing_table(all_rows),
     ]
     return "\n".join(lines) + "\n"
 
 
 def _qps_table(config: ThroughputConfig, rows: list[dict[str, Any]]) -> list[str]:
-    by_count: dict[int, dict[str, dict[str, Any]]] = defaultdict(dict)
+    rows_by_user_count: dict[int, dict[str, dict[str, Any]]] = defaultdict(dict)
     for row in rows:
-        by_count[row["num_users"]][row["condition"]] = row
+        rows_by_user_count[row["num_users"]][row["condition"]] = row
     table_rows = []
-    for count in config.user_counts:
-        group = by_count.get(count, {})
-        kv_qps = _qps(group.get("kv_injection"))
-        mem0_jasper_qps = _qps(group.get("mem0_jasper"))
-        lmcache_qps = _qps(group.get("lmcache_blend"))
-        fact_counts = [row["fact_count"] for row in group.values() if row["fact_count"] > 0]
+    for num_users in config.user_counts:
+        row_by_condition = rows_by_user_count.get(num_users, {})
+        kv_qps = _qps(row_by_condition.get("kv_injection"))
+        mem0_jasper_qps = _qps(row_by_condition.get("mem0_jasper"))
+        lmcache_qps = _qps(row_by_condition.get("lmcache_blend"))
         table_rows.append(
             (
-                str(count),
-                f"{fact_counts[0]:.0f}" if fact_counts else "-",
-                _format_qps(_qps(group.get("mem0_qdrant"))),
+                str(num_users),
+                _format_fact_count(row_by_condition.values()),
+                _format_qps(_qps(row_by_condition.get("mem0_qdrant"))),
                 _format_qps(mem0_jasper_qps),
                 _format_qps(lmcache_qps),
                 _format_qps(kv_qps),
@@ -300,7 +303,7 @@ def _qps_table(config: ThroughputConfig, rows: list[dict[str, Any]]) -> list[str
         "KV / Mem0 Jasper",
         "KV / LMCache",
     )
-    return _markdown_table(headers, table_rows, align=("---:",) * len(headers))
+    return _markdown_table(headers, table_rows, align=(RIGHT_ALIGNED,) * len(headers))
 
 
 def _timing_table(rows: list[dict[str, Any]]) -> list[str]:
@@ -329,7 +332,8 @@ def _timing_table(rows: list[dict[str, Any]]) -> list[str]:
                 f"{row['generation_time_s']:.3f}",
             )
         )
-    return _markdown_table(headers, table_rows, align=("---", *(("---:",) * (len(headers) - 1))))
+    align = (LEFT_ALIGNED, *((RIGHT_ALIGNED,) * (len(headers) - 1)))
+    return _markdown_table(headers, table_rows, align=align)
 
 
 def _markdown_table(
@@ -348,11 +352,16 @@ def _qps(row: dict[str, Any] | None) -> float | None:
     return None if row is None else row["throughput_qps"]
 
 
-def _format_qps(value: float | None) -> str:
-    return "-" if value is None else f"{value:.2f}"
+def _format_fact_count(rows: Iterable[dict[str, Any]]) -> str:
+    fact_counts = [row["fact_count"] for row in rows if row["fact_count"] > 0]
+    return f"{fact_counts[0]:.0f}" if fact_counts else EMPTY_CELL
+
+
+def _format_qps(qps: float | None) -> str:
+    return EMPTY_CELL if qps is None else f"{qps:.2f}"
 
 
 def _format_ratio(numerator: float | None, denominator: float | None) -> str:
     if numerator is None or denominator is None or denominator <= 0:
-        return "-"
+        return EMPTY_CELL
     return f"{numerator / denominator:.2f}x"

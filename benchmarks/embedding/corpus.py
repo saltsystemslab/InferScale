@@ -6,8 +6,8 @@ import random
 from pathlib import Path
 from typing import Any
 
-FACT_CATALOG_VERSION = 5
-# Catalog keys that vary per sample; every other key must agree across the directory.
+from benchmarks.memory.protocol import FACT_CATALOG_FORMAT_VERSION
+
 PER_SAMPLE_KEYS = frozenset({"facts", "sample_id", "sample_fingerprint"})
 
 
@@ -16,80 +16,91 @@ def load_corpus(
 ) -> tuple[list[str], dict[str, Any]]:
     if max_facts is not None and max_facts < 1:
         raise ValueError("max_facts must be positive")
-    paths = sorted(catalog_dir.glob("*.json"))
-    if not paths:
+    catalog_paths = sorted(catalog_dir.glob("*.json"))
+    if not catalog_paths:
         raise ValueError(
             f"No catalogs in {catalog_dir}; select a leaf containing sample JSON files"
         )
-    texts: list[str] = []
+    all_texts: list[str] = []
     sources: list[dict[str, Any]] = []
-    samples: set[str] = set()
-    identity: dict[str, Any] | None = None
-    for path in paths:
-        raw = path.read_bytes()
-        payload = _catalog_payload(path, raw)
-        sample = _sample_id(path, payload, samples)
-        current = {key: value for key, value in payload.items() if key not in PER_SAMPLE_KEYS}
-        if identity is not None and current != identity:
-            raise ValueError(f"Mixed extraction/embedding catalog identities in {path}")
-        identity = current
-        facts = _fact_texts(path, payload, sample)
-        texts.extend(facts)
+    seen_sample_ids: set[str] = set()
+    directory_identity: dict[str, Any] | None = None
+    for catalog_path in catalog_paths:
+        catalog_bytes = catalog_path.read_bytes()
+        catalog = _parse_catalog(catalog_path, catalog_bytes)
+        sample_id = _new_sample_id(catalog_path, catalog, seen_sample_ids)
+        seen_sample_ids.add(sample_id)
+        identity = _shared_identity(catalog)
+        if directory_identity is not None and identity != directory_identity:
+            raise ValueError(f"Mixed extraction/embedding catalog identities in {catalog_path}")
+        directory_identity = identity
+        sample_texts = _fact_texts(catalog_path, catalog, sample_id)
+        all_texts.extend(sample_texts)
         sources.append(
             {
-                "path": str(path.resolve()),
-                "sha256": hashlib.sha256(raw).hexdigest(),
-                "sample_id": sample,
-                "fact_count": len(facts),
+                "path": str(catalog_path.resolve()),
+                "sha256": hashlib.sha256(catalog_bytes).hexdigest(),
+                "sample_id": sample_id,
+                "fact_count": len(sample_texts),
             }
         )
-    available = len(texts)
-    if not available:
+    available_facts = len(all_texts)
+    if not available_facts:
         raise ValueError("The selected catalogs contain no facts")
-    random.Random(seed).shuffle(texts)
-    if max_facts is not None:
-        texts = texts[:max_facts]
-    digest = hashlib.sha256(json.dumps(texts, ensure_ascii=False).encode()).hexdigest()
-    return texts, {
+    random.Random(seed).shuffle(all_texts)
+    selected_texts = all_texts if max_facts is None else all_texts[:max_facts]
+    ordered_texts_sha256 = hashlib.sha256(
+        json.dumps(selected_texts, ensure_ascii=False).encode()
+    ).hexdigest()
+    return selected_texts, {
         "sources": sources,
-        "catalog_identity": identity,
+        "catalog_identity": directory_identity,
         "seed": seed,
-        "available_facts": available,
-        "selected_facts": len(texts),
-        "unique_texts": len(set(texts)),
-        "ordered_texts_sha256": digest,
+        "available_facts": available_facts,
+        "selected_facts": len(selected_texts),
+        "unique_texts": len(set(selected_texts)),
+        "ordered_texts_sha256": ordered_texts_sha256,
     }
 
 
-def _catalog_payload(path: Path, raw: bytes) -> dict[str, Any]:
-    payload = json.loads(raw)
-    if not isinstance(payload, dict) or payload.get("version") != FACT_CATALOG_VERSION:
-        raise ValueError(f"Expected a version {FACT_CATALOG_VERSION} Mem0 fact catalog: {path}")
-    return payload
+def _parse_catalog(catalog_path: Path, catalog_bytes: bytes) -> dict[str, Any]:
+    catalog = json.loads(catalog_bytes)
+    if not isinstance(catalog, dict) or catalog.get("version") != FACT_CATALOG_FORMAT_VERSION:
+        raise ValueError(
+            f"Expected a version {FACT_CATALOG_FORMAT_VERSION} Mem0 fact catalog: {catalog_path}"
+        )
+    return catalog
 
 
-def _sample_id(path: Path, payload: dict[str, Any], seen: set[str]) -> str:
-    sample = payload.get("sample_id")
-    if not isinstance(sample, str) or not sample or sample in seen:
-        raise ValueError(f"Missing or duplicate sample_id in {path}")
-    seen.add(sample)
-    return sample
+def _new_sample_id(catalog_path: Path, catalog: dict[str, Any], seen_sample_ids: set[str]) -> str:
+    sample_id = catalog.get("sample_id")
+    if not _is_new_identifier(sample_id, seen_sample_ids):
+        raise ValueError(f"Missing or duplicate sample_id in {catalog_path}")
+    return sample_id
 
 
-def _fact_texts(path: Path, payload: dict[str, Any], sample: str) -> list[str]:
-    facts = payload.get("facts")
+def _shared_identity(catalog: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in catalog.items() if key not in PER_SAMPLE_KEYS}
+
+
+def _fact_texts(catalog_path: Path, catalog: dict[str, Any], sample_id: str) -> list[str]:
+    facts = catalog.get("facts")
     if not isinstance(facts, list):
-        raise ValueError(f"Missing facts list in {path}")
+        raise ValueError(f"Missing facts list in {catalog_path}")
     texts: list[str] = []
-    ids: set[str] = set()
+    seen_fact_ids: set[str] = set()
     for fact in facts:
         if not isinstance(fact, dict):
-            raise ValueError(f"Invalid fact in {path}")
+            raise ValueError(f"Invalid fact in {catalog_path}")
         fact_id, text = fact.get("id"), fact.get("text")
-        if not isinstance(fact_id, str) or not fact_id or fact_id in ids:
-            raise ValueError(f"Missing or duplicate fact id in {path}")
-        if fact.get("sample_id") != sample or not isinstance(text, str) or not text.strip():
-            raise ValueError(f"Invalid fact text or sample_id in {path}")
-        ids.add(fact_id)
+        if not _is_new_identifier(fact_id, seen_fact_ids):
+            raise ValueError(f"Missing or duplicate fact id in {catalog_path}")
+        if fact.get("sample_id") != sample_id or not isinstance(text, str) or not text.strip():
+            raise ValueError(f"Invalid fact text or sample_id in {catalog_path}")
+        seen_fact_ids.add(fact_id)
         texts.append(text)
     return texts
+
+
+def _is_new_identifier(identifier: Any, seen_identifiers: set[str]) -> bool:
+    return isinstance(identifier, str) and bool(identifier) and identifier not in seen_identifiers

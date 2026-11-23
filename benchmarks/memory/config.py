@@ -71,6 +71,7 @@ RUN_KEYS = (
     "lmcache",
     "sweeps",
 )
+MEM0_KEYS = ("llm_base_url",)
 
 
 @dataclass(slots=True)
@@ -103,10 +104,8 @@ class MemoryRunConfig:
     embedding_api_key: str | None = None
     extraction: ExtractionConfig = field(default_factory=ExtractionConfig)
     sweeps: dict[str, MemorySweep] = field(default_factory=dict)
-    # Present whenever this run or one of its sweeps uses the LMCache arm.
     lmcache: LMCacheConfig | None = None
 
-    # Views over the library configuration.
     @property
     def model(self) -> str:
         return self.inferscale.model
@@ -201,7 +200,6 @@ class MemoryRunConfig:
     def max_answer_tokens(self) -> int:
         return self.inferscale.generation.max_tokens
 
-    # Views over the judge configuration.
     @property
     def judge_provider(self) -> str:
         return self.judge.provider
@@ -245,8 +243,8 @@ class MemoryRunConfig:
 
     def sweep_cells(self, name: str) -> list[MemoryCell]:
         if name not in self.sweeps:
-            known = ", ".join(sorted(self.sweeps)) or "none"
-            raise ConfigError(f"Unknown sweep {name!r}; configured sweeps: {known}.")
+            configured_names = ", ".join(sorted(self.sweeps)) or "none"
+            raise ConfigError(f"Unknown sweep {name!r}; configured sweeps: {configured_names}.")
         return sweep_cells(self.sweeps[name])
 
     def context_windows(self) -> tuple[int, ...]:
@@ -300,43 +298,38 @@ class MemoryRunConfig:
         runtime: RuntimeConfig,
         where: str = "memory config",
     ) -> MemoryRunConfig:
-        merged = dict(data)
-        reject_unknown_keys(merged, RUN_KEYS, where)
-        benchmark = optional(merged, "benchmark", str, BENCHMARK_NAME, where)
-        if benchmark != BENCHMARK_NAME:
-            raise ConfigError(f"{where}.benchmark must be {BENCHMARK_NAME!r}, got {benchmark!r}.")
-        alias = require(merged, "model", str, where)
-        answer_backend, vector_backend = _backends(merged, where)
-        limits = _RunLimits.parse(merged, where)
+        settings = dict(data)
+        reject_unknown_keys(settings, RUN_KEYS, where)
+        _check_benchmark_name(settings, where)
+        authored_model = require(settings, "model", str, where)
+        answer_backend, vector_backend = _backends(settings, where)
+        limits = _RunLimits.parse(settings, where)
         inferscale = inferscale_section(
-            merged,
-            model=runtime.resolve_model(alias),
+            settings,
+            model=runtime.resolve_model(authored_model),
             top_k=limits.top_k,
             context_window=limits.context_window,
             where=where,
         )
-        _check_library_settings(
+        _check_backend_requirements(
             inferscale, answer_backend, vector_backend, limits.top_k, limits.context_window, where
         )
         sweeps = parse_sweeps(
-            section_of(merged, "sweeps", where, required=False), f"{where}.sweeps"
+            section_of(settings, "sweeps", where, required=False), f"{where}.sweeps"
         )
         judge = judge_config(
-            section_of(merged, "judge", where, required=False), runtime, where=f"{where}.judge"
+            section_of(settings, "judge", where, required=False), runtime, where=f"{where}.judge"
         )
         extraction = parse_extraction_config(
-            section_of(merged, "extraction", where, required=False), f"{where}.extraction"
+            section_of(settings, "extraction", where, required=False), f"{where}.extraction"
         )
         layout = runtime.layout
         return cls(
             inferscale=inferscale,
-            label=runtime.model_label(alias),
-            dataset_path=expand_path(
-                optional(merged, "dataset_path", str, DEFAULT_DATASET_PATH, where),
-                root=runtime.root,
-            ),
-            results_dir=_results_dir(merged, runtime, where),
-            run_id=_run_id(merged, where),
+            label=runtime.model_label(authored_model),
+            dataset_path=_dataset_path(settings, runtime, where),
+            results_dir=_results_dir(settings, runtime, where),
+            run_id=_run_id(settings, where),
             cache_root=layout.cache_root,
             local_store_dir=layout.local_store_dir,
             embedding_cache_dir=layout.embedding_cache_dir,
@@ -348,28 +341,30 @@ class MemoryRunConfig:
             max_samples=limits.max_samples,
             max_questions=limits.max_questions,
             log_every=limits.log_every,
-            log_level=optional(merged, "log_level", str, "INFO", where),
+            log_level=optional(settings, "log_level", str, "INFO", where),
             preembed_workers=limits.preembed_workers,
-            embedding_cache_enabled=optional(merged, "embedding_cache_enabled", bool, True, where),
-            kv_chunk_cache_enabled=optional(merged, "kv_chunk_cache_enabled", bool, True, where),
-            skip_judge=optional(merged, "skip_judge", bool, False, where)
+            embedding_cache_enabled=optional(
+                settings, "embedding_cache_enabled", bool, True, where
+            ),
+            kv_chunk_cache_enabled=optional(settings, "kv_chunk_cache_enabled", bool, True, where),
+            skip_judge=optional(settings, "skip_judge", bool, False, where)
             or judge.provider == "none",
-            rejudge=optional(merged, "rejudge", bool, False, where),
-            memory_llm_base_url=_extraction_endpoint(merged, extraction, where),
+            rejudge=optional(settings, "rejudge", bool, False, where),
+            memory_llm_base_url=_extraction_endpoint(settings, extraction, where),
             memory_llm_api_key=extraction_llm_api_key(),
             embedding_api_key=embedding_api_key(),
             extraction=extraction,
             sweeps=sweeps,
-            lmcache=_lmcache_settings(merged, answer_backend, sweeps, where),
+            lmcache=_lmcache_settings(settings, answer_backend, sweeps, where),
         )
 
 
 def load_memory_config(
     path: str | Path, runtime: RuntimeConfig, *, stage: str = "run"
 ) -> MemoryRunConfig:
-    data = load_json_object(path)
-    config = MemoryRunConfig.from_dict(data, runtime=runtime, where=f"memory config {path}")
-    validate_memory_stage(config, stage, has_run_id=bool(data.get("run_id")))
+    settings = load_json_object(path)
+    config = MemoryRunConfig.from_dict(settings, runtime=runtime, where=f"memory config {path}")
+    validate_memory_stage(config, stage, has_run_id=bool(settings.get("run_id")))
     return config
 
 
@@ -384,6 +379,12 @@ def validate_memory_stage(config: MemoryRunConfig, stage: str, *, has_run_id: bo
         raise ConfigError("The judge stage requires judging to be enabled in JSON.")
 
 
+def _check_benchmark_name(settings: Mapping[str, Any], where: str) -> None:
+    benchmark = optional(settings, "benchmark", str, BENCHMARK_NAME, where)
+    if benchmark != BENCHMARK_NAME:
+        raise ConfigError(f"{where}.benchmark must be {BENCHMARK_NAME!r}, got {benchmark!r}.")
+
+
 @dataclass(slots=True, frozen=True)
 class _RunLimits:
     top_k: int
@@ -394,38 +395,38 @@ class _RunLimits:
     max_questions: int | None
 
     @classmethod
-    def parse(cls, data: Mapping[str, Any], where: str) -> _RunLimits:
-        top_k = optional(data, "top_k", int, 50, where)
+    def parse(cls, settings: Mapping[str, Any], where: str) -> _RunLimits:
+        top_k = optional(settings, "top_k", int, 50, where)
         if top_k < 1:
             raise ConfigError(f"{where}.top_k must be >= 1.")
-        context_window = optional(data, "context_window", int, 0, where)
+        context_window = optional(settings, "context_window", int, 0, where)
         if context_window < 0:
             raise ConfigError(f"{where}.context_window must be >= 0.")
-        preembed_workers = optional(data, "preembed_workers", int, 4, where)
+        preembed_workers = optional(settings, "preembed_workers", int, 4, where)
         if preembed_workers < 1:
             raise ConfigError(f"{where}.preembed_workers must be >= 1.")
-        log_every = optional(data, "log_every", int, 5, where)
+        log_every = optional(settings, "log_every", int, 5, where)
         if log_every < 0:
             raise ConfigError(f"{where}.log_every must be >= 0 (0 disables progress logging).")
-        max_samples = optional(data, "max_samples", int, None, where)
-        max_questions = optional(data, "max_questions", int, None, where)
-        for name, value in (("max_samples", max_samples), ("max_questions", max_questions)):
-            if value is not None and value < 1:
-                raise ConfigError(f"{where}.{name} must be >= 1.")
+        max_samples = optional(settings, "max_samples", int, None, where)
+        max_questions = optional(settings, "max_questions", int, None, where)
+        for key, limit in (("max_samples", max_samples), ("max_questions", max_questions)):
+            if limit is not None and limit < 1:
+                raise ConfigError(f"{where}.{key} must be >= 1.")
         return cls(top_k, context_window, preembed_workers, log_every, max_samples, max_questions)
 
 
-def _backends(data: Mapping[str, Any], where: str) -> tuple[str, str]:
-    answer_backend = optional(data, "answer_backend", str, "kv-injection", where)
+def _backends(settings: Mapping[str, Any], where: str) -> tuple[str, str]:
+    answer_backend = optional(settings, "answer_backend", str, "kv-injection", where)
     if answer_backend not in ANSWER_BACKENDS:
         raise ConfigError(f"{where}.answer_backend must be one of {ANSWER_BACKENDS}.")
-    vector_backend = optional(data, "vector_backend", str, "jasper", where)
+    vector_backend = optional(settings, "vector_backend", str, "jasper", where)
     if vector_backend not in VECTOR_BACKENDS:
         raise ConfigError(f"{where}.vector_backend must be one of {VECTOR_BACKENDS}.")
     return answer_backend, vector_backend
 
 
-def _check_library_settings(
+def _check_backend_requirements(
     inferscale: InferScaleConfig,
     answer_backend: str,
     vector_backend: str,
@@ -452,10 +453,13 @@ def _check_library_settings(
 
 
 def _lmcache_settings(
-    data: Mapping[str, Any], answer_backend: str, sweeps: Mapping[str, MemorySweep], where: str
+    settings: Mapping[str, Any],
+    answer_backend: str,
+    sweeps: Mapping[str, MemorySweep],
+    where: str,
 ) -> LMCacheConfig | None:
-    if data.get("lmcache") is not None:
-        return parse_lmcache_config(section_of(data, "lmcache", where), f"{where}.lmcache")
+    if settings.get("lmcache") is not None:
+        return parse_lmcache_config(section_of(settings, "lmcache", where), f"{where}.lmcache")
     if answer_backend == LMCACHE_BACKEND or sweeps_use_backend(sweeps.values(), LMCACHE_BACKEND):
         raise ConfigError(
             f"{where}.lmcache is required when answer_backend or a sweep variant is "
@@ -464,32 +468,44 @@ def _lmcache_settings(
     return None
 
 
-def _extraction_endpoint(data: Mapping[str, Any], extraction: ExtractionConfig, where: str) -> str:
-    mem0_section = section_of(data, "mem0", where, required=False)
-    reject_unknown_keys(mem0_section, ("llm_base_url",), f"{where}.mem0")
+def _extraction_endpoint(
+    settings: Mapping[str, Any], extraction: ExtractionConfig, where: str
+) -> str:
+    mem0_section = section_of(settings, "mem0", where, required=False)
+    reject_unknown_keys(mem0_section, MEM0_KEYS, f"{where}.mem0")
     base_url = optional(
         mem0_section, "llm_base_url", str, DEFAULT_EXTRACTION_LLM_BASE_URL, f"{where}.mem0"
     )
-    port = urlsplit(base_url).port
-    if port is not None and port != extraction.port:
+    endpoint_port = urlsplit(base_url).port
+    if endpoint_port is not None and endpoint_port != extraction.port:
         raise ConfigError(
-            f"{where}: mem0.llm_base_url port {port} must equal extraction.port "
+            f"{where}: mem0.llm_base_url port {endpoint_port} must equal extraction.port "
             f"{extraction.port}; the fact-catalog identity records the extraction endpoint."
         )
     return base_url
 
 
-def _results_dir(data: Mapping[str, Any], runtime: RuntimeConfig, where: str) -> Path:
-    value = optional(data, "results_dir", str, None, where)
-    if value:
-        return expand_path(value, root=runtime.root)
+def _dataset_path(settings: Mapping[str, Any], runtime: RuntimeConfig, where: str) -> Path:
+    dataset_path = optional(settings, "dataset_path", str, DEFAULT_DATASET_PATH, where)
+    return expand_path(dataset_path, root=runtime.root)
+
+
+def _results_dir(settings: Mapping[str, Any], runtime: RuntimeConfig, where: str) -> Path:
+    results_dir = optional(settings, "results_dir", str, None, where)
+    if results_dir:
+        return expand_path(results_dir, root=runtime.root)
     return runtime.layout.results_root
 
 
-def _run_id(data: Mapping[str, Any], where: str) -> str:
-    run_id = optional(data, "run_id", str, None, where)
+def _run_id(settings: Mapping[str, Any], where: str) -> str:
+    run_id = optional(settings, "run_id", str, None, where)
     if run_id is None:
         return stamp_now()
-    if not run_id.strip() or run_id in {".", ".."} or "/" in run_id or "\\" in run_id:
+    if not _is_directory_name(run_id):
         raise ConfigError(f"{where}.run_id must be a non-empty directory name.")
     return run_id
+
+
+def _is_directory_name(name: str) -> bool:
+    has_separator = "/" in name or "\\" in name
+    return bool(name.strip()) and name not in {".", ".."} and not has_separator

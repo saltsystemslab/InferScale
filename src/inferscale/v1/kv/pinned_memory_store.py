@@ -42,12 +42,9 @@ class CpuPinnedMemoryStore:
         self._host: dict[str, HostUserMemory] = {}
         self._chunk_lookup: ChunkLookup[HostUserMemory] | None = None
         self._slots: dict[str, StagingSlot] = {}
-        # The connector sizes its sliding prefetch window to this.
         self.num_staging_slots = num_staging_slots
         self._lock = threading.Lock()
         self._metrics = TransferMetrics()
-
-    # Write path
 
     def add_user_memory(
         self,
@@ -61,13 +58,10 @@ class CpuPinnedMemoryStore:
         nbytes = 0
         for layer_name, tensor in kv_by_layer.items():
             host_buf = torch.empty(tensor.shape, dtype=tensor.dtype, pin_memory=True)
-            # Synchronous D2H: this is the registration path, not serving.
             host_buf.copy_(tensor.detach(), non_blocking=False)
             pinned[layer_name] = host_buf
             nbytes += int(host_buf.nbytes)
 
-        # Release any staging of a previous registration before swapping the
-        # host payload, so its transfer record keeps the old sizes.
         self.release_staging(user_id)
         with self._lock:
             self._close_lookup_locked()
@@ -90,8 +84,6 @@ class CpuPinnedMemoryStore:
             present = user_id in self._host
         if not present:
             return False
-        # Release while the host entry still exists so a still-staged memory's
-        # transfer record carries its real token and byte sizes.
         self.release_staging(user_id)
         with self._lock:
             removed = self._host.pop(user_id, None) is not None
@@ -104,8 +96,6 @@ class CpuPinnedMemoryStore:
     def get_all_user_ids(self) -> list[str]:
         with self._lock:
             return list(self._host)
-
-    # Read path
 
     def peek_user_memory(self, user_id: str) -> UserMemory | None:
         with self._lock:
@@ -147,8 +137,6 @@ class CpuPinnedMemoryStore:
             )
         )
 
-    # Corpus access through the GPU lookup
-
     def finalize_packed(self) -> None:
         return
 
@@ -176,8 +164,6 @@ class CpuPinnedMemoryStore:
             resolved = self._lookup_locked().resolve_device(stable_ids, id_to_row, reverse=reverse)
         return [(chunk_id, self._staged_memory(chunk_id, memory)) for chunk_id, memory in resolved]
 
-    # Statistics
-
     def get_stats(self) -> dict[str, Any]:
         with self._lock:
             lookup = self._chunk_lookup
@@ -188,8 +174,6 @@ class CpuPinnedMemoryStore:
             return {
                 "num_users": len(self._host),
                 "total_tokens": sum(memory.num_tokens for memory in self._host.values()),
-                # total_gpu_mb keeps the GPU-store meaning of resident HBM, which
-                # for this store is the staging pool rather than the payload.
                 "total_gpu_mb": staging_mb + bytes_to_mb(lookup_bytes),
                 "gpu_staging_mb": staging_mb,
                 "gpu_chunk_map_mb": bytes_to_mb(lookup_bytes),
@@ -200,9 +184,6 @@ class CpuPinnedMemoryStore:
 
     def get_bench_summary(self) -> dict[str, float | int]:
         summary = self._metrics.summary()
-        # The store sizes its own staging pool, so it reports the steady-state
-        # HBM footprint (slots times the average transfer) itself; outside an
-        # injection step the instantaneous staging footprint is zero.
         transfers = int(summary["total_transfers"])
         avg_transfer_bytes = summary["total_bytes_transferred"] / transfers if transfers else 0.0
         summary["steady_state_staging_mb"] = bytes_to_mb(
@@ -212,8 +193,6 @@ class CpuPinnedMemoryStore:
 
     def transfer_totals(self) -> dict[str, float]:
         return self._metrics.totals()
-
-    # Internals
 
     def _staged_memory(self, user_id: str, host_memory: HostUserMemory) -> UserMemory:
         self._prefetch_host_memory(user_id, host_memory)
@@ -225,7 +204,7 @@ class CpuPinnedMemoryStore:
                 "increase the staging slot count."
             )
         return UserMemory(
-            kv_by_layer=slot.view,  # type: ignore[arg-type]  # dict-like lazy view
+            kv_by_layer=slot.view,  # type: ignore[arg-type]
             num_tokens=host_memory.num_tokens,
             token_ids=host_memory.token_ids,
         )
@@ -272,8 +251,6 @@ class CpuPinnedMemoryStore:
             victim = next((candidate for candidate in self._slots if candidate != keep), None)
         if victim is None:
             return
-        # The connector's sliding prefetch window keeps residency at or below
-        # the pool size, so eviction indicates an undersized pool.
         logger.warning(
             "Evicting staging slot for user %s; consider raising num_staging_slots", victim
         )

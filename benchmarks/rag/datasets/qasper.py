@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from benchmarks.rag.data_types import (
+    UNANSWERABLE_TYPE,
     EvidenceRef,
     RagDatasetSpec,
     RagDocument,
@@ -34,39 +35,19 @@ QASPER_PROMPT_PROFILE = RagPromptProfile(
 )
 
 _ARXIV_ID_RE = re.compile(r"^(\d{2})(\d{2})\.\d{4,5}(v\d+)?$")
+ARXIV_ID_CENTURY = 2000
+FLOAT_EVIDENCE_MARKER = "FLOAT SELECTED"
 
 
 def load_qasper(data_dir: Path) -> tuple[list[RagDocument], list[RagQuery]]:
     path = Path(data_dir) / TEST_FILENAME
-    if not path.exists():
-        raise FileNotFoundError(
-            f"{path} does not exist. Run bash scripts/rag/setup_data.sh to download it "
-            f"(source: {ARCHIVE_URL})."
-        )
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        raise ValueError(f"{path}: expected a top-level JSON object keyed by paper id.")
+    papers = _load_papers(path)
 
     docs: list[RagDocument] = []
     queries: list[RagQuery] = []
     seen_question_ids: set[str] = set()
-    for paper_id, paper in data.items():
-        if not isinstance(paper, dict):
-            raise ValueError(f"{path}: paper {paper_id} is not a JSON object.")
-        title = str(paper.get("title") or "").strip()
-        if not title:
-            raise ValueError(f"{path}: paper {paper_id} has no title.")
-        url = f"https://arxiv.org/abs/{paper_id}"
-        doc = RagDocument(
-            doc_id=doc_id_for_url(url),
-            title=title,
-            source="arXiv",
-            published_at=_published_from_arxiv_id(str(paper_id)),
-            category="NLP research paper",
-            url=url,
-            body=_render_paper_body(path, paper_id, paper),
-            author=None,
-        )
+    for paper_id, paper in papers.items():
+        doc = _document(path, paper_id, paper)
         docs.append(doc)
         for qa in paper.get("qas") or []:
             query = _parse_question(path, paper_id, doc, qa)
@@ -82,6 +63,43 @@ def load_qasper(data_dir: Path) -> tuple[list[RagDocument], list[RagQuery]]:
     return docs, queries
 
 
+def _load_papers(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{path} does not exist. Run bash scripts/rag/setup_data.sh to download it "
+            f"(source: {ARCHIVE_URL})."
+        )
+    papers = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(papers, dict):
+        raise ValueError(f"{path}: expected a top-level JSON object keyed by paper id.")
+    return papers
+
+
+def _document(path: Path, paper_id: str, paper: Any) -> RagDocument:
+    if not isinstance(paper, dict):
+        raise ValueError(f"{path}: paper {paper_id} is not a JSON object.")
+    title = str(paper.get("title") or "").strip()
+    if not title:
+        raise ValueError(f"{path}: paper {paper_id} has no title.")
+    url = f"https://arxiv.org/abs/{paper_id}"
+    return RagDocument(
+        doc_id=doc_id_for_url(url),
+        title=title,
+        source="arXiv",
+        published_at=_published_from_arxiv_id(str(paper_id)),
+        category="NLP research paper",
+        url=url,
+        body=_render_paper_body(path, paper_id, paper),
+        author=None,
+    )
+
+
+class _Reference(NamedTuple):
+    text: str
+    question_type: str
+    evidence: list[str]
+
+
 def _parse_question(path: Path, paper_id: str, doc: RagDocument, qa: Any) -> RagQuery:
     if not isinstance(qa, dict):
         raise ValueError(f"{path}: paper {paper_id} has a non-object qa entry.")
@@ -90,61 +108,55 @@ def _parse_question(path: Path, paper_id: str, doc: RagDocument, qa: Any) -> Rag
     if not question or not question_id:
         raise ValueError(f"{path}: paper {paper_id} has a qa without question or question_id.")
 
-    references: list[str] = []
-    evidence_texts: dict[str, None] = {}
-    first_type: str | None = None
-    for annotation in qa.get("answers") or []:
-        answer_info = (annotation or {}).get("answer")
-        if not isinstance(answer_info, dict):
-            raise ValueError(f"{path}: question {question_id} has a malformed annotation.")
-        reference, reference_type, evidence = _derive_reference(path, question_id, answer_info)
-        references.append(reference)
-        if first_type is None:
-            first_type = reference_type
-        for text in evidence:
-            evidence_texts.setdefault(text)
-    if not references or first_type is None:
+    references = [
+        _reference(path, question_id, annotation) for annotation in qa.get("answers") or []
+    ]
+    if not references:
         raise ValueError(f"{path}: question {question_id} has no reference answers.")
-
+    first_reference = references[0]
+    distinct_evidence = dict.fromkeys(
+        paragraph for reference in references for paragraph in reference.evidence
+    )
     return RagQuery(
         query_id=question_id,
         question=question,
-        gold_answers=tuple(references),
-        question_type=first_type,
+        gold_answers=tuple(reference.text for reference in references),
+        question_type=first_reference.question_type,
         evidence=tuple(
             EvidenceRef(doc_id=doc.doc_id, title=doc.title, url=doc.url, fact=fact)
-            for fact in evidence_texts
+            for fact in distinct_evidence
         ),
     )
 
 
-def _derive_reference(
-    path: Path,
-    question_id: str,
-    answer_info: dict[str, Any],
-) -> tuple[str, str, list[str]]:
+def _reference(path: Path, question_id: str, annotation: Any) -> _Reference:
+    answer_info = (annotation or {}).get("answer")
+    if not isinstance(answer_info, dict):
+        raise ValueError(f"{path}: question {question_id} has a malformed annotation.")
     if answer_info.get("unanswerable"):
-        return UNANSWERABLE_TEXT, "unanswerable", []
+        return _Reference(UNANSWERABLE_TEXT, UNANSWERABLE_TYPE, [])
+    text, question_type = _answer_and_type(path, question_id, answer_info)
+    return _Reference(text, question_type, _evidence_paragraphs(answer_info))
+
+
+def _answer_and_type(path: Path, question_id: str, answer_info: dict[str, Any]) -> tuple[str, str]:
     if answer_info.get("extractive_spans"):
-        reference = ", ".join(str(span) for span in answer_info["extractive_spans"])
-        reference_type = "extractive"
-    elif answer_info.get("free_form_answer"):
-        reference = str(answer_info["free_form_answer"])
-        reference_type = "abstractive"
-    elif answer_info.get("yes_no"):
-        reference = "Yes"
-        reference_type = "boolean"
-    elif answer_info.get("yes_no") is not None:
-        reference = "No"
-        reference_type = "boolean"
-    else:
-        raise ValueError(f"{path}: question {question_id} has an annotation without an answer.")
-    evidence = [
+        return ", ".join(str(span) for span in answer_info["extractive_spans"]), "extractive"
+    if answer_info.get("free_form_answer"):
+        return str(answer_info["free_form_answer"]), "abstractive"
+    if answer_info.get("yes_no"):
+        return "Yes", "boolean"
+    if answer_info.get("yes_no") is not None:
+        return "No", "boolean"
+    raise ValueError(f"{path}: question {question_id} has an annotation without an answer.")
+
+
+def _evidence_paragraphs(answer_info: dict[str, Any]) -> list[str]:
+    return [
         text.strip()
         for text in answer_info.get("evidence") or []
-        if isinstance(text, str) and text.strip() and "FLOAT SELECTED" not in text
+        if isinstance(text, str) and text.strip() and FLOAT_EVIDENCE_MARKER not in text
     ]
-    return reference, reference_type, evidence
 
 
 def _render_paper_body(path: Path, paper_id: str, paper: dict[str, Any]) -> str:
@@ -172,8 +184,8 @@ def _published_from_arxiv_id(paper_id: str) -> str:
     match = _ARXIV_ID_RE.match(paper_id.strip())
     if match is None:
         return "unknown"
-    year = 2000 + int(match.group(1))
-    return f"{year}-{match.group(2)}"
+    two_digit_year, month = match.group(1), match.group(2)
+    return f"{ARXIV_ID_CENTURY + int(two_digit_year)}-{month}"
 
 
 QASPER_SPEC = RagDatasetSpec(

@@ -27,11 +27,9 @@ from benchmarks.memory.protocol import (
     MEMORY_EXTRACTION_RETRY_TOP_P,
 )
 
-# Mem0 writes today's date into the extraction prompt. The observation date
-# section stays part of the key; the current date is replaced so a prompt
-# replayed on another day still hits the cache.
 CURRENT_DATE_SECTION = re.compile(r"(?m)^(## Current Date\n)\d{4}-\d{2}-\d{2}$")
 CURRENT_DATE_PLACEHOLDER = r"\1<preembed-date>"
+UNKEYED_TEMPERATURE = 0.0
 CACHE_ENTRY_VERSION = 1
 
 
@@ -75,24 +73,25 @@ class CachedMemoryLLM:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def __getattr__(self, name: str) -> Any:
-        # Mem0 reads provider attributes such as ``config`` from its LLM.
         return getattr(self._wrapped, name)
 
     def generate_response(self, messages: Any, *args: Any, **kwargs: Any) -> Any:
-        effective_kwargs, validate_extraction = prepare_memory_extraction_kwargs(kwargs)
-        path = self._cache_path(messages, args, effective_kwargs)
-        cached = self._load_cached(path, validate_extraction)
-        if cached is not None:
+        effective_kwargs, is_extraction = prepare_memory_extraction_kwargs(kwargs)
+        entry_path = self._cache_path(messages, args, effective_kwargs)
+        cached_response = self._load_cached(entry_path, is_extraction)
+        if cached_response is not None:
             self.hits += 1
-            return cached
+            return cached_response
         self.misses += 1
         if self.mode == "read":
-            raise self._missing_error(path, "Missing cached Mem0 LLM response")
-        if validate_extraction:
-            response = self._generate_validated_extraction(path, messages, args, effective_kwargs)
+            raise self._missing_error(entry_path, "Missing cached Mem0 LLM response")
+        if is_extraction:
+            response = self._generate_validated_extraction(
+                entry_path, messages, args, effective_kwargs
+            )
         else:
             response = self._wrapped.generate_response(messages, *args, **effective_kwargs)
-        atomic_write_json(path, {"version": CACHE_ENTRY_VERSION, "response": response})
+        atomic_write_json(entry_path, {"version": CACHE_ENTRY_VERSION, "response": response})
         return response
 
     def stats(self) -> dict[str, Any]:
@@ -114,59 +113,68 @@ class CachedMemoryLLM:
             "misses": self.misses,
         }
 
-    def _load_cached(self, path: Path, validate_extraction: bool) -> Any | None:
-        if not path.exists():
+    def _load_cached(self, entry_path: Path, is_extraction: bool) -> Any | None:
+        if not entry_path.exists():
             return None
         try:
-            response = _read_entry(path)
-            return (
-                validate_memory_extraction_response(response) if validate_extraction else response
-            )
+            response = _read_entry(entry_path)
+            return validate_memory_extraction_response(response) if is_extraction else response
         except Exception as exc:
             if self.mode == "read":
                 self.misses += 1
-                raise self._missing_error(path, "Cached Mem0 LLM response is corrupt") from exc
-            path.unlink(missing_ok=True)
+                raise self._missing_error(
+                    entry_path, "Cached Mem0 LLM response is corrupt"
+                ) from exc
+            entry_path.unlink(missing_ok=True)
             return None
 
     def _generate_validated_extraction(
         self,
-        path: Path,
+        entry_path: Path,
         messages: Any,
         args: tuple[Any, ...],
-        effective_kwargs: dict[str, Any],
+        baseline_kwargs: dict[str, Any],
     ) -> str:
-        attempts = [effective_kwargs] + [
-            {**effective_kwargs, "temperature": temperature, "top_p": MEMORY_EXTRACTION_RETRY_TOP_P}
+        retry_kwargs = [
+            {**baseline_kwargs, "temperature": temperature, "top_p": MEMORY_EXTRACTION_RETRY_TOP_P}
             for temperature in MEMORY_EXTRACTION_RETRY_TEMPERATURES
         ]
+        kwargs_per_attempt = [baseline_kwargs, *retry_kwargs]
+        attempt_count = len(kwargs_per_attempt)
         dump_paths: list[Path] = []
         last_error: InvalidMemoryExtractionResponseError | None = None
-        for attempt, kwargs in enumerate(attempts, start=1):
-            response = self._wrapped.generate_response(messages, *args, **kwargs)
+        for attempt, attempt_kwargs in enumerate(kwargs_per_attempt, start=1):
+            response = self._wrapped.generate_response(messages, *args, **attempt_kwargs)
             try:
                 return validate_memory_extraction_response(response)
             except InvalidMemoryExtractionResponseError as exc:
                 last_error = exc
-                dump_paths.append(self._dump_invalid_response(path, response, attempt, kwargs, exc))
+                dump_paths.append(
+                    self._dump_invalid_response(entry_path, response, attempt, attempt_kwargs, exc)
+                )
                 logger.warning(
                     "Mem0 extraction attempt {}/{} failed validation model={} temperature={}: {}",
                     attempt,
-                    len(attempts),
+                    attempt_count,
                     self.model,
-                    kwargs.get("temperature", self.temperature),
+                    attempt_kwargs.get("temperature", self.temperature),
                     exc,
                 )
         assert last_error is not None
         raise InvalidMemoryExtractionResponseError(
-            f"{last_error} Mem0 extraction failed validation on all {len(attempts)} attempts; "
+            f"{last_error} Mem0 extraction failed validation on all {attempt_count} attempts; "
             "raw responses saved to: " + ", ".join(str(dump_path) for dump_path in dump_paths)
         ) from last_error
 
     def _dump_invalid_response(
-        self, path: Path, response: Any, attempt: int, kwargs: dict[str, Any], error: Exception
+        self,
+        entry_path: Path,
+        response: Any,
+        attempt: int,
+        attempt_kwargs: dict[str, Any],
+        error: Exception,
     ) -> Path:
-        dump_path = path.parent / "invalid" / f"{path.stem}.attempt{attempt}.json"
+        dump_path = entry_path.parent / "invalid" / f"{entry_path.stem}.attempt{attempt}.json"
         atomic_write_json(
             dump_path,
             {
@@ -176,7 +184,7 @@ class CachedMemoryLLM:
                 "endpoint": self.endpoint,
                 "mem0_version": self.mem0_version,
                 "attempt": attempt,
-                "temperature": kwargs.get("temperature", self.temperature),
+                "temperature": attempt_kwargs.get("temperature", self.temperature),
                 "error": str(error),
                 "response": response if isinstance(response, str) else repr(response),
             },
@@ -190,50 +198,48 @@ class CachedMemoryLLM:
             "model": self.model,
             "endpoint": self.endpoint,
             "mem0_version": self.mem0_version,
-            "messages": _without_current_date(messages),
+            "messages": _replayable_on_another_day(messages),
             "args": args,
             "kwargs": kwargs,
         }
-        # Cache format rule: the key carries the temperature only when it is
-        # not 0.0, so every non-zero temperature gets its own entries.
-        if self.temperature != 0.0:
+        if self.temperature != UNKEYED_TEMPERATURE:
             request["temperature"] = self.temperature
         try:
-            canonical = json.dumps(
+            canonical_request = json.dumps(
                 request, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")
             )
         except (TypeError, ValueError) as exc:
             raise TypeError("Mem0 LLM cache inputs must be JSON-serializable.") from exc
-        digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        digest = hashlib.sha256(canonical_request.encode("utf-8")).hexdigest()
         return self.cache_dir / f"{digest}.json"
 
-    def _missing_error(self, path: Path, reason: str) -> CachedMemoryLLMMissingError:
+    def _missing_error(self, entry_path: Path, reason: str) -> CachedMemoryLLMMissingError:
         return CachedMemoryLLMMissingError(
             f"{reason} for provider={self.provider!r} model={self.model!r} "
-            f"endpoint={self.endpoint!r} mem0ai={self.mem0_version!r} at {path}. "
+            f"endpoint={self.endpoint!r} mem0ai={self.mem0_version!r} at {entry_path}. "
             "Rerun the extract-facts stage with the same dataset, memory LLM model, "
             "and memory LLM cache dir before running the benchmark."
         )
 
 
-def _read_entry(path: Path) -> Any:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+def _read_entry(entry_path: Path) -> Any:
+    entry = json.loads(entry_path.read_text(encoding="utf-8"))
     if (
-        not isinstance(payload, dict)
-        or payload.get("version") != CACHE_ENTRY_VERSION
-        or "response" not in payload
+        not isinstance(entry, dict)
+        or entry.get("version") != CACHE_ENTRY_VERSION
+        or "response" not in entry
     ):
         raise ValueError("Unsupported Mem0 LLM cache entry format.")
-    return payload["response"]
+    return entry["response"]
 
 
-def _without_current_date(value: Any) -> Any:
-    if isinstance(value, str):
-        return CURRENT_DATE_SECTION.sub(CURRENT_DATE_PLACEHOLDER, value)
-    if isinstance(value, list):
-        return [_without_current_date(item) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_without_current_date(item) for item in value)
-    if isinstance(value, dict):
-        return {key: _without_current_date(item) for key, item in value.items()}
-    return value
+def _replayable_on_another_day(prompt: Any) -> Any:
+    if isinstance(prompt, str):
+        return CURRENT_DATE_SECTION.sub(CURRENT_DATE_PLACEHOLDER, prompt)
+    if isinstance(prompt, list):
+        return [_replayable_on_another_day(part) for part in prompt]
+    if isinstance(prompt, tuple):
+        return tuple(_replayable_on_another_day(part) for part in prompt)
+    if isinstance(prompt, dict):
+        return {key: _replayable_on_another_day(part) for key, part in prompt.items()}
+    return prompt

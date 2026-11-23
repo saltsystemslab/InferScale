@@ -60,19 +60,20 @@ def prepare_user_batches(
     prepare_request: PrepareRequest,
 ) -> list[UserCountAccumulator]:
     batches = [
-        UserCountAccumulator(count, stores.setup_time_for_users(samples, count))
-        for count in user_counts
+        UserCountAccumulator(num_users, stores.setup_time_for_users(samples, num_users))
+        for num_users in user_counts
     ]
     max_users = len(requests_by_user)
     for user_index in range(max_users):
         sample = sample_for_user(samples, user_index)
-        charged = [batch for batch in batches if batch.includes(user_index)]
-        for batch in charged:
+        charged_batches = [batch for batch in batches if batch.includes(user_index)]
+        for batch in charged_batches:
             batch.fact_count_total += len(facts_by_sample[sample.sample_id])
         for request in requests_by_user[user_index]:
             prepared = prepare_request(sample, request)
-            for batch in charged:
+            for batch in charged_batches:
                 batch.add(prepared)
-        if is_progress_step(user_index + 1, max_users):
-            logger.info("{}: prepared {}/{} users", condition, user_index + 1, max_users)
+        users_prepared = user_index + 1
+        if is_progress_step(users_prepared, max_users):
+            logger.info("{}: prepared {}/{} users", condition, users_prepared, max_users)
     return batches

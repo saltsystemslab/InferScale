@@ -57,10 +57,10 @@ class RagLMCacheBlendAnswerClient(RagEngineClient):
         self._chunks = list(chunks)
         self._query_count = query_count
         self._separator: list[int] | None = None
-        self._warm: dict[str, Any] = {}
+        self._warm_up_metrics: dict[str, Any] = {}
 
     def setup_stats(self) -> dict[str, Any]:
-        return dict(self._warm)
+        return dict(self._warm_up_metrics)
 
     def answer(
         self,
@@ -81,12 +81,12 @@ class RagLMCacheBlendAnswerClient(RagEngineClient):
         prompt = build_prompt_tokens(layout.token_ids, query_tokens)
         reset_load_stats()
         output = self._generate(prompt)
-        stats = snapshot_load_stats()
-        matched = int(stats["tokens_matched"])
-        if matched < layout.expected_matched_tokens:
+        load_stats = snapshot_load_stats()
+        matched_tokens = int(load_stats["tokens_matched"])
+        if matched_tokens < layout.expected_matched_tokens:
             logger.warning(
                 "LMCache matched {} of the {} expected tokens for query_id={}",
-                matched,
+                matched_tokens,
                 layout.expected_matched_tokens,
                 query.query_id,
             )
@@ -101,8 +101,8 @@ class RagLMCacheBlendAnswerClient(RagEngineClient):
             "lmcache_separator_tokens": len(separator),
             "lmcache_segment_count": layout.segment_count,
             "lmcache_expected_matched_tokens": layout.expected_matched_tokens,
-            "lmcache_matched_tokens": matched,
-            "lmcache_load_time_ms": float(stats["load_time_ms"]),
+            "lmcache_matched_tokens": matched_tokens,
+            "lmcache_load_time_ms": float(load_stats["load_time_ms"]),
             **generation_latency_metrics(
                 output,
                 request_started=request_started,
@@ -124,7 +124,7 @@ class RagLMCacheBlendAnswerClient(RagEngineClient):
     def _kv_transfer_config(self) -> Mapping[str, Any]:
         return lmcache_kv_transfer_config(self.config.lmcache_settings())
 
-    def _after_start(self) -> None:
+    def _after_engine_start(self) -> None:
         settings = self.config.lmcache_settings()
         register_model(self._engine.llm)
         separator = lmcache_separator()
@@ -133,7 +133,7 @@ class RagLMCacheBlendAnswerClient(RagEngineClient):
             scaffold.header_token_ids, (chunk.token_ids for chunk in self._chunks), separator
         )
         bytes_per_token = kv_bytes_per_token()
-        required = require_cache_capacity(
+        required_cache_bytes = require_cache_capacity(
             warm_tokens=prompt_token_count(prompts),
             tail_tokens=TAIL_ALLOWANCE_TOKENS * self._query_count,
             bytes_per_token=bytes_per_token,
@@ -146,12 +146,12 @@ class RagLMCacheBlendAnswerClient(RagEngineClient):
             prompt_token_count(prompts),
             len(self._chunks),
         )
-        stats = warm_prompts(self._engine.llm, prompts, batch_size=WARM_BATCH_SIZE)
+        warm_up_stats = warm_prompts(self._engine.llm, prompts, batch_size=WARM_BATCH_SIZE)
         self._separator = separator
-        self._warm = {
-            **warmup_metrics(stats),
+        self._warm_up_metrics = {
+            **warmup_metrics(warm_up_stats),
             "lmcache_kv_bytes_per_token": bytes_per_token,
-            "lmcache_required_cpu_cache_gb": required / GB,
+            "lmcache_required_cpu_cache_gb": required_cache_bytes / GB,
             "lmcache_max_local_cpu_size_gb": settings.max_local_cpu_size_gb,
             "lmcache_separator_tokens": len(separator),
         }

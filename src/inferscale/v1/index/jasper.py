@@ -17,8 +17,8 @@ from .vectors import as_float32_vector
 
 logger = logging.getLogger(__name__)
 
-# Largest effective beam width jasperpy accepts.
 MAX_JASPER_BEAM_WIDTH = 959
+PADDING_DISTANCE_MAGNITUDE = 1e30
 
 
 @dataclass(slots=True)
@@ -78,7 +78,6 @@ class JasperIndex:
                     f"store dim {self._vectors.shape[1]}"
                 )
             matrix = np.vstack([self._vectors, matrix])
-        # Any resident graph was built for the previous matrix.
         self.close()
         self._vectors = matrix
         for item_id, payload in zip(id_list, payload_list):
@@ -112,16 +111,15 @@ class JasperIndex:
     ) -> tuple[list[SearchHit], SearchMetrics]:
         if not self.vector_count:
             return [], self._metrics(0.0, self.config.beam_width)
-        query = self._query(query_vector)
-        top_k = max(1, min(top_k, self.vector_count))
-        beam_width = max(self.config.beam_width, top_k)
-        # A filter that rejects some rows must score every row to stay complete.
-        exact_filter = bool(filters) and not self._filter_matches_all(filters)
-        candidate_k = self.vector_count if exact_filter else top_k
-        hits, search_time_ms = self._search_candidates(query, candidate_k, beam_width)
+        query = self._validated_query(query_vector)
+        clamped_top_k = max(1, min(top_k, self.vector_count))
+        effective_beam_width = max(self.config.beam_width, clamped_top_k)
+        filter_rejects_some_rows = bool(filters) and not self._filter_matches_all(filters)
+        candidate_k = self.vector_count if filter_rejects_some_rows else clamped_top_k
+        hits, search_time_ms = self._search_candidates(query, candidate_k, effective_beam_width)
         if filters:
             hits = [hit for hit in hits if payload_matches(hit.payload, filters)]
-        return _ranked(hits[:top_k]), self._metrics(search_time_ms, beam_width)
+        return _ranked(hits[:clamped_top_k]), self._metrics(search_time_ms, effective_beam_width)
 
     def search_device(
         self,
@@ -131,22 +129,24 @@ class JasperIndex:
     ) -> DeviceSearchResult | None:
         if not self.vector_count:
             return None
-        query = self._query(query_vector)
-        top_k = max(1, min(top_k, self.vector_count))
+        query = self._validated_query(query_vector)
+        clamped_top_k = max(1, min(top_k, self.vector_count))
         if filters and not self._filter_matches_all(filters):
             return None
         if not self._finalized or self._graph is None or self._vectors_gpu is None:
             return None
-        beam_width = max(self.config.beam_width, top_k)
-        stable_ids, distances, search_time_ms = self._device_candidates(query, top_k, beam_width)
+        effective_beam_width = max(self.config.beam_width, clamped_top_k)
+        stable_ids, distances, search_time_ms = self._device_candidates(
+            query, clamped_top_k, effective_beam_width
+        )
         if not _device_result_is_complete(
-            stable_ids, distances, expected_count=top_k, vector_count=self.vector_count
+            stable_ids, distances, expected_count=clamped_top_k, vector_count=self.vector_count
         ):
             raise RuntimeError("Jasper exact GPU search returned incomplete or invalid results.")
         return DeviceSearchResult(
             stable_ids=stable_ids,
             distances=distances,
-            metrics=self._metrics(search_time_ms, beam_width),
+            metrics=self._metrics(search_time_ms, effective_beam_width),
         )
 
     def materialize_device_result(self, result: DeviceSearchResult) -> list[SearchHit]:
@@ -170,8 +170,10 @@ class JasperIndex:
         ordinal = self._ordinals.get(str(item_id))
         if ordinal is None:
             return None
-        candidate_id, payload = self._rows[ordinal]
-        return SearchHit(candidate_id, dict(payload), 1.0, 0.0, ordinal + 1)
+        row_id, payload = self._rows[ordinal]
+        return SearchHit(
+            id=row_id, payload=dict(payload), score=1.0, distance=0.0, rank=ordinal + 1
+        )
 
     def update(
         self,
@@ -197,7 +199,8 @@ class JasperIndex:
                 )
         self.close()
         if payload is not None:
-            self._rows[ordinal] = (self._rows[ordinal][0], dict(payload))
+            row_id, _ = self._rows[ordinal]
+            self._rows[ordinal] = (row_id, dict(payload))
         if next_vector is not None:
             self._vectors[ordinal] = next_vector
 
@@ -212,8 +215,8 @@ class JasperIndex:
         else:
             self._vectors = None
         self._ordinals = {}
-        for index, (candidate_id, _) in enumerate(self._rows):
-            self._ordinals.setdefault(candidate_id, index)
+        for row_ordinal, (row_id, _) in enumerate(self._rows):
+            self._ordinals.setdefault(row_id, row_ordinal)
 
     def reset(self) -> None:
         self.close()
@@ -244,8 +247,6 @@ class JasperIndex:
         self, query: np.ndarray, candidate_k: int, beam_width: int
     ) -> tuple[list[SearchHit], float]:
         beam_ready = self._finalized and self._graph is not None
-        # Beam search does not guarantee reaching every vertex, so a request for
-        # the whole store must use exact scoring to stay complete.
         if beam_ready and candidate_k < self.vector_count:
             hits, search_time_ms = self._search_jasper(query, candidate_k, beam_width=beam_width)
             if len(hits) >= candidate_k:
@@ -277,8 +278,8 @@ class JasperIndex:
             "Jasper device search returned incomplete or invalid results; "
             "retrying with exact GPU search."
         )
-        stable_ids, distances, exact_time_ms = self._search_exact_gpu_device(query, top_k)
-        return stable_ids, distances, search_time_ms + exact_time_ms
+        exact_ids, exact_distances, exact_time_ms = self._search_exact_gpu_device(query, top_k)
+        return exact_ids, exact_distances, search_time_ms + exact_time_ms
 
     def _search_jasper(
         self, query: np.ndarray, top_k: int, *, beam_width: int
@@ -288,12 +289,14 @@ class JasperIndex:
         )
         ordinal_values = [int(ordinal) for ordinal in ordinals.detach().cpu().numpy()]
         distance_values = list(distances.detach().cpu().numpy())
-        # Jasper pads the row with -1 when fewer than k vertices were reached.
-        found = next(
-            (index for index, ordinal in enumerate(ordinal_values) if ordinal < 0),
+        reached_vertex_count = next(
+            (padding_start for padding_start, ordinal in enumerate(ordinal_values) if ordinal < 0),
             len(ordinal_values),
         )
-        return self._hits_for(ordinal_values[:found], distance_values[:found]), search_time_ms
+        hits = self._hits_for(
+            ordinal_values[:reached_vertex_count], distance_values[:reached_vertex_count]
+        )
+        return hits, search_time_ms
 
     def _search_jasper_device(
         self, query: np.ndarray, top_k: int, *, beam_width: int
@@ -343,8 +346,8 @@ class JasperIndex:
 
     def _hits_for(self, ordinals: Iterable[Any], distances: Iterable[Any]) -> list[SearchHit]:
         hits: list[SearchHit] = []
-        for ordinal, raw_distance in zip(ordinals, distances):
-            ordinal = int(ordinal)
+        for raw_ordinal, raw_distance in zip(ordinals, distances):
+            ordinal = int(raw_ordinal)
             if not 0 <= ordinal < len(self._rows):
                 raise RuntimeError(f"Jasper returned invalid vector ordinal {ordinal}.")
             item_id, payload = self._rows[ordinal]
@@ -352,7 +355,7 @@ class JasperIndex:
             hits.append(SearchHit(item_id, dict(payload), -distance, distance, len(hits) + 1))
         return hits
 
-    def _query(self, query_vector: np.ndarray | list[float]) -> np.ndarray:
+    def _validated_query(self, query_vector: np.ndarray | list[float]) -> np.ndarray:
         query = as_float32_vector(query_vector, name="query_vector")
         if query.shape[0] != self.dim:
             raise ValueError(f"query dim {query.shape[0]} does not match store dim {self.dim}")
@@ -384,7 +387,7 @@ def _device_result_is_complete(
         (stable_ids >= 0)
         & (stable_ids < vector_count)
         & torch.isfinite(distances)
-        & (distances.abs() < 1e30)
+        & (distances.abs() < PADDING_DISTANCE_MAGNITUDE)
     ).all()
     if expected_count > 1:
         sorted_ids = torch.sort(stable_ids).values

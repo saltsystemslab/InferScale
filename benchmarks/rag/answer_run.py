@@ -9,6 +9,7 @@ from benchmarks.common.answers import final_answer_text
 from benchmarks.common.clients import ChatClient
 from benchmarks.common.files import JsonlWriter, write_json
 from benchmarks.common.judge import format_accuracy, skipped_judge_payload
+from benchmarks.common.paths import RUN_CONFIG_FILE
 from benchmarks.common.system import collect_system_metadata
 from benchmarks.rag.config import LMCACHE_BACKEND, RagBenchConfig
 from benchmarks.rag.corpus import RagCorpus, load_rag_corpus
@@ -20,7 +21,6 @@ from benchmarks.rag.judging import judge_client_for, judge_metadata, judge_rag_a
 from benchmarks.rag.metrics import retrieval_metrics_for_query
 from benchmarks.rag.retrieval import CorpusRetriever
 from benchmarks.rag.run_outputs import (
-    CONFIG_FILE,
     PREDICTIONS_FILE,
     SETUP_FILE,
     SYSTEM_FILE,
@@ -42,7 +42,6 @@ def run_answer(config: RagBenchConfig) -> dict[str, Any]:
         len(corpus.chunks),
         len(queries),
     )
-    # The client validates its caches before anything is written for this run.
     client = build_answer_client(config, corpus)
     setup_metrics: dict[str, Any] = {
         "dataset": config.dataset_name,
@@ -55,7 +54,7 @@ def run_answer(config: RagBenchConfig) -> dict[str, Any]:
     try:
         judge_client = _judge_client(config)
         config.run_dir.mkdir(parents=True, exist_ok=True)
-        write_json(config.run_dir / CONFIG_FILE, config.to_jsonable())
+        write_json(config.run_dir / RUN_CONFIG_FILE, config.to_jsonable())
         system_metadata = collect_system_metadata()
         write_json(config.run_dir / SYSTEM_FILE, system_metadata)
         retriever = CorpusRetriever(
@@ -145,14 +144,14 @@ def _answer_queries(
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     with JsonlWriter(config.run_dir / PREDICTIONS_FILE) as writer:
-        for index, query in enumerate(queries, start=1):
+        for query_number, query in enumerate(queries, start=1):
             record = _answer_query(config, query, corpus, retriever, client, judge_client)
             records.append(record)
             writer.write(record)
-            if index % max(1, config.log_every) == 0 or index == len(queries):
+            if query_number % max(1, config.log_every) == 0 or query_number == len(queries):
                 logger.info(
                     "Answered {}/{} queries (last: {} {})",
-                    index,
+                    query_number,
                     len(queries),
                     query.query_id,
                     query.question_type,

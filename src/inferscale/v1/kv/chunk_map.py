@@ -9,8 +9,6 @@ from typing import Any
 
 class GPUChunkMap:
     def __init__(self, chunk_ids: Sequence[str], *, device: str) -> None:
-        # Validate before importing torch so invalid targets fail clearly even
-        # in lightweight environments without the optional CUDA dependencies.
         if not isinstance(device, str) or re.fullmatch(r"cuda(?::[0-9]+)?", device) is None:
             raise ValueError("GPUChunkMap requires a CUDA device, such as cuda:0.")
         keys = _registered_keys(chunk_ids)
@@ -18,19 +16,18 @@ class GPUChunkMap:
         import torch
 
         self._torch = torch
-        self._device = torch.device(device)
+        requested_device = torch.device(device)
         self._closed = False
         self._size = len(keys)
         self._primary = torch.tensor(
-            [primary for primary, _, _ in keys], dtype=torch.long, device=self._device
+            [primary for primary, _, _ in keys], dtype=torch.long, device=requested_device
         )
         self._secondary = torch.tensor(
-            [secondary for _, secondary, _ in keys], dtype=torch.long, device=self._device
+            [secondary for _, secondary, _ in keys], dtype=torch.long, device=requested_device
         )
         self._rows = torch.tensor(
-            [row for _, _, row in keys], dtype=torch.long, device=self._device
+            [row for _, _, row in keys], dtype=torch.long, device=requested_device
         )
-        # Resolve an unspecified CUDA device to the device actually allocated.
         self._device = self._primary.device
 
     @property
@@ -101,18 +98,23 @@ def _string_ids(chunk_ids: Sequence[str]) -> list[str]:
     return ids
 
 
+def _require_string_ids(chunk_ids: Sequence[str]) -> None:
+    _string_ids(chunk_ids)
+
+
 def _registered_keys(chunk_ids: Sequence[str]) -> list[tuple[int, int, int]]:
     ids = _string_ids(chunk_ids)
     if len(ids) != len(set(ids)):
         raise ValueError("GPU chunk map registration contains duplicate chunk IDs.")
     keys = sorted((*_fingerprint(chunk_id), row) for row, chunk_id in enumerate(ids))
-    # Equal primary hashes would make binary search ambiguous even if the
-    # secondary hashes differ.
-    # Fail closed rather than selecting an arbitrary row or consulting a host
-    # dictionary in this exceptionally unlikely case.
-    if any(first[0] == second[0] for first, second in zip(keys, keys[1:])):
+    if _binary_search_is_ambiguous(keys):
         raise ValueError("GPU chunk map registration contains a chunk-ID hash collision.")
     return keys
+
+
+def _binary_search_is_ambiguous(sorted_keys: list[tuple[int, int, int]]) -> bool:
+    primary_hashes = [primary for primary, _, _ in sorted_keys]
+    return any(first == second for first, second in zip(primary_hashes, primary_hashes[1:]))
 
 
 def _stable_binding_ids(bindings: Iterable[tuple[int, str]]) -> list[str]:
@@ -128,7 +130,7 @@ def _stable_binding_ids(bindings: Iterable[tuple[int, str]]) -> list[str]:
             raise ValueError("Jasper stable IDs must be non-negative.")
         stable_ids.append(int(stable_id))
         chunk_ids.append(chunk_id)
-    _string_ids(chunk_ids)
+    _require_string_ids(chunk_ids)
     if len(stable_ids) != len(set(stable_ids)):
         raise ValueError("Jasper stable-ID bindings contain duplicates.")
     if sorted(stable_ids) != list(range(len(stable_ids))):

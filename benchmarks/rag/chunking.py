@@ -7,6 +7,9 @@ from typing import Any
 from benchmarks.rag.data_types import RagChunk, RagDocument, chunk_id_for
 from inferscale.v1.kv.tokenization import encode_text_no_special
 
+FINGERPRINT_PART_TERMINATOR = b"\x00"
+FINGERPRINT_HEX_LENGTH = 20
+
 
 def render_document(doc: RagDocument) -> str:
     return (
@@ -25,15 +28,15 @@ def chunk_document(doc: RagDocument, *, tokenizer: Any, chunk_size: int) -> list
     if not token_ids:
         raise ValueError(f"Document {doc.doc_id} rendered to zero tokens.")
     chunks: list[RagChunk] = []
-    for chunk_index, start in enumerate(range(0, len(token_ids), chunk_size)):
-        slice_ids = token_ids[start : start + chunk_size]
+    for chunk_index, chunk_start in enumerate(range(0, len(token_ids), chunk_size)):
+        chunk_token_ids = token_ids[chunk_start : chunk_start + chunk_size]
         chunks.append(
             RagChunk(
                 chunk_id=chunk_id_for(doc.doc_id, chunk_index),
                 doc_id=doc.doc_id,
                 chunk_index=chunk_index,
-                token_ids=list(slice_ids),
-                text=_decode(tokenizer, slice_ids),
+                token_ids=list(chunk_token_ids),
+                text=str(tokenizer.decode(chunk_token_ids)),
             )
         )
     return chunks
@@ -66,10 +69,5 @@ def corpus_fingerprint(docs: Sequence[RagDocument]) -> str:
         render_digest = hashlib.sha256(render_document(doc).encode("utf-8")).hexdigest()
         for part in (doc.doc_id, render_digest):
             hasher.update(part.encode("utf-8"))
-            hasher.update(b"\x00")
-    return hasher.hexdigest()[:20]
-
-
-def _decode(tokenizer: Any, token_ids: list[int]) -> str:
-    # vLLM and transformers tokenizers share the decode call but no base class.
-    return str(tokenizer.decode(token_ids))
+            hasher.update(FINGERPRINT_PART_TERMINATOR)
+    return hasher.hexdigest()[:FINGERPRINT_HEX_LENGTH]

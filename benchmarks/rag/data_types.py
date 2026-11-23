@@ -5,16 +5,16 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-# Question types whose gold behavior is abstention: MultiHop-RAG null queries
-# and QASPER questions whose first reference is unanswerable.
-ABSTENTION_QUESTION_TYPES = frozenset({"null_query", "unanswerable"})
+NULL_QUERY_TYPE = "null_query"
+UNANSWERABLE_TYPE = "unanswerable"
+ABSTENTION_QUESTION_TYPES = frozenset({NULL_QUERY_TYPE, UNANSWERABLE_TYPE})
 
 
 def doc_id_for_url(url: str) -> str:
-    normalized = url.strip()
-    if not normalized:
+    stripped_url = url.strip()
+    if not stripped_url:
         raise ValueError("Document URL must be non-empty to derive a doc id.")
-    return "d" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
+    return "d" + hashlib.sha256(stripped_url.encode("utf-8")).hexdigest()[:12]
 
 
 @dataclass(slots=True, frozen=True)

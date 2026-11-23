@@ -31,26 +31,27 @@ class CorpusStats:
     @classmethod
     def from_stores(cls, stores: Sequence[ChunkStore]) -> CorpusStats:
         summaries = [store.get_bench_summary() for store in stores]
-        transfers = [int(summary.get("total_transfers", 0)) for summary in summaries]
-        total_transfers = sum(transfers)
+        transfers_per_store = [int(summary.get("total_transfers", 0)) for summary in summaries]
+        total_transfers = sum(transfers_per_store)
 
-        def weighted(key: str) -> float:
+        def transfer_weighted_average(key: str) -> float:
             if not total_transfers:
                 return 0.0
             weighted_sum = sum(
-                float(summary.get(key, 0.0)) * count for summary, count in zip(summaries, transfers)
+                float(summary.get(key, 0.0)) * transfers
+                for summary, transfers in zip(summaries, transfers_per_store)
             )
             return weighted_sum / total_transfers
 
         return cls(
             host_mb=sum(float(store.get_stats().get("total_host_mb", 0.0)) for store in stores),
             h2d_bytes=sum(int(summary.get("total_bytes_transferred", 0)) for summary in summaries),
-            h2d_avg_ms=weighted("avg_h2d_latency_ms"),
+            h2d_avg_ms=transfer_weighted_average("avg_h2d_latency_ms"),
             h2d_p95_ms=max(
                 (float(summary.get("p95_h2d_latency_ms", 0.0)) for summary in summaries),
                 default=0.0,
             ),
-            h2d_overlap_ratio=weighted("avg_overlap_ratio"),
+            h2d_overlap_ratio=transfer_weighted_average("avg_overlap_ratio"),
             staging_stall_ms=sum(
                 float(summary.get("total_staging_stall_ms", 0.0)) for summary in summaries
             ),
@@ -96,22 +97,23 @@ def precompute_corpus(
     precompute = SamplePrecompute(config)
     composers: dict[str, SampleComposer] = {}
     try:
-        for number, sample in enumerate(samples, start=1):
+        for sample_number, sample in enumerate(samples, start=1):
             hits = fact_catalog_hits(facts_by_sample[sample.sample_id])
             composer, cache_hit = precompute.precompute(sample, hits)
             composers[sample.sample_id] = composer
             logger.info(
                 "kv_injection: {} sample {}/{} ({} facts)",
                 "loaded" if cache_hit else "encoded",
-                number,
+                sample_number,
                 len(samples),
                 len(composer.chunks),
             )
-        first = composers[samples[0].sample_id]
-        # Read before the weights are released: releasing drops the encoder's tokenizer.
-        tokenizer = first.encoder.tokenizer
-        probe_token_ids = encode_text_no_special(tokenizer, TOKENIZER_PARITY_PROBE_TEXT)
-        footprint = corpus_footprint(first)
+        first_composer = composers[samples[0].sample_id]
+        tokenizer_before_release = first_composer.encoder.tokenizer
+        probe_token_ids = encode_text_no_special(
+            tokenizer_before_release, TOKENIZER_PARITY_PROBE_TEXT
+        )
+        footprint = corpus_footprint(first_composer)
     except BaseException:
         for composer in composers.values():
             composer.close()
@@ -122,7 +124,7 @@ def precompute_corpus(
     return PrecomputedCorpus(
         composers=composers,
         precompute=precompute,
-        tokenizer=tokenizer,
+        tokenizer=tokenizer_before_release,
         probe_token_ids=probe_token_ids,
         footprint=footprint,
         precompute_time_s=time.perf_counter() - started,

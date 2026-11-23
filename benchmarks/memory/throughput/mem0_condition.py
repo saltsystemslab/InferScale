@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import shutil
 import time
-from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
 from typing import Any
@@ -10,7 +9,6 @@ from typing import Any
 from loguru import logger
 
 from benchmarks.memory.data import ConversationSample
-from benchmarks.memory.mem0.fact_catalog import MemoryFact
 from benchmarks.memory.prompting import (
     build_memory_prompt_token_ids,
     extract_memory_scaffold_token_ids,
@@ -53,9 +51,7 @@ class _ConditionContext:
     condition: str
     tokenizer: Any
     scaffold: ScaffoldTokens
-    samples: Sequence[ConversationSample]
     stores: SampleStores
-    facts_by_sample: Mapping[str, tuple[MemoryFact, ...]]
 
 
 def run_mem0(
@@ -92,9 +88,7 @@ def run_mem0(
             condition=condition,
             tokenizer=tokenizer,
             scaffold=extract_memory_scaffold_token_ids(tokenizer, block_size=config.kv_block_size),
-            samples=samples,
             stores=stores,
-            facts_by_sample=facts_by_sample,
         )
         batches = prepare_user_batches(
             condition=condition,

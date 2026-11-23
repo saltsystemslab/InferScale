@@ -8,7 +8,7 @@ from loguru import logger
 def load_rag_tokenizer(model: str, *, allow_transformers_fallback: bool = False) -> Any:
     try:
         from inferscale.v1.kv.encoder import load_encoder_tokenizer
-    except ModuleNotFoundError as exc:  # pragma: no cover - import environment specific
+    except ModuleNotFoundError as exc:  # pragma: no cover
         raise RuntimeError("inferscale is required to load the RAG tokenizer.") from exc
 
     try:

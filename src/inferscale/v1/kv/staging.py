@@ -26,13 +26,14 @@ class LayerKVView:
         return tensor
 
     def _wait_for_layer(self, key: str, tensor: Any) -> None:
-        event = self._events[key]
+        copy_event = self._events[key]
         compute_stream = self._compute_stream_fn()
-        if not event.query():
+        copy_is_pending = not copy_event.query()
+        if copy_is_pending:
             stall_started = time.perf_counter()
-            event.synchronize()
+            copy_event.synchronize()
             self.stall_ms += (time.perf_counter() - stall_started) * 1e3
-        compute_stream.wait_event(event)
+        compute_stream.wait_event(copy_event)
         tensor.record_stream(compute_stream)
         self._waited.add(key)
 

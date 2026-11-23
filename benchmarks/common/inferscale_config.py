@@ -33,11 +33,9 @@ def inferscale_section(
     section["model"] = model
     section["top_k"] = top_k
     section["context_window"] = context_window
-    # Benchmarks pick their retrieval backend elsewhere; the library config still
-    # validates the Jasper tuning fields.
     section["vector_backend"] = "jasper"
+    validate_dataclass_types(section, InferScaleConfig, f"{where}.inferscale")
     try:
-        validate_dataclass_types(section, InferScaleConfig, f"{where}.inferscale")
         return InferScaleConfig.from_dict(section)
     except ValueError as exc:
         raise ConfigError(f"{where}.inferscale: {exc}") from exc

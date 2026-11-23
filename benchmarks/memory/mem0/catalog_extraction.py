@@ -11,14 +11,14 @@ from benchmarks.memory.mem0.memory_handles import added_memory_texts
 
 def extract_facts(memory: Any, sample: ConversationSample, *, embedder: Any) -> list[MemoryFact]:
     facts: list[MemoryFact] = []
-    seen: set[str] = set()
+    seen_fact_ids: set[str] = set()
     for turn in sample.turns:
         for text in _add_turn(memory, sample, turn):
             fact = make_memory_fact(text, sample, turn)
-            if fact.id not in seen:
+            if fact.id not in seen_fact_ids:
                 facts.append(fact)
-                seen.add(fact.id)
-    _embed_final_texts(embedder, facts)
+                seen_fact_ids.add(fact.id)
+    _embed_final_texts_for_replay(embedder, facts)
     return facts
 
 
@@ -34,10 +34,6 @@ def _add_turn(memory: Any, sample: ConversationSample, turn: Turn) -> list[str]:
     return added_memory_texts(result)
 
 
-def _embed_final_texts(embedder: Any, facts: list[MemoryFact]) -> None:
-    # Mem0's merge phase can store a fact text that differs from the string it
-    # embedded (an update rewrites the text after the add-path embedding), so a
-    # catalog replay would miss the read-only cache. Embedding every final text
-    # makes catalogs replay-complete; cache hits make this free in the common case.
+def _embed_final_texts_for_replay(embedder: Any, facts: list[MemoryFact]) -> None:
     for fact in facts:
         embedder.embed(fact.text, CachedEmbedder.DOCUMENT_PURPOSE)

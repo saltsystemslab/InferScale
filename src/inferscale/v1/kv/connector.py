@@ -47,7 +47,6 @@ def snapshot_load_stats() -> dict[str, int]:
 @dataclass(slots=True, frozen=True)
 class _PendingMatch:
     user_id: str
-    # Memory tokens the native prefix cache already covers; the load skips them.
     skip_tokens: int
 
 
@@ -87,8 +86,6 @@ class MemoryKVConnector(KVConnectorBase_V1):
             self._block_size,
         )
 
-    # Scheduler side
-
     def get_num_new_matched_tokens(
         self, request: Request, num_computed_tokens: int
     ) -> tuple[int | None, bool]:
@@ -106,14 +103,10 @@ class MemoryKVConnector(KVConnectorBase_V1):
         aligned_tokens, raw_memory_tokens = match
         new_tokens = aligned_tokens - num_computed_tokens
         if new_tokens <= 0:
-            # The native prefix cache fully covers this request's memory
-            # region: a legitimate no-load that still counts as covered.
             load_stats.record_native_covered(str(request.request_id))
             return 0, False
-        # With prefix caching enabled, num_computed_tokens can cover a
-        # block-aligned front of the memory region; the load then skips those
-        # tokens and targets the blocks after the cached ones.
-        self._pending_matches[request.request_id] = _PendingMatch(user_id, int(num_computed_tokens))
+        natively_cached_tokens = int(num_computed_tokens)
+        self._pending_matches[request.request_id] = _PendingMatch(user_id, natively_cached_tokens)
         self._log_hit(
             "Memory hit user=%s aligned_tokens=%d raw_tokens=%d new_tokens=%d",
             user_id,
@@ -124,8 +117,6 @@ class MemoryKVConnector(KVConnectorBase_V1):
         return new_tokens, False
 
     def _try_match_user(self, user_id: str, prompt_token_ids: list[int]) -> tuple[int, int] | None:
-        # Metadata-only read: matching must never stage KV (the cpu store's
-        # get_user_memory issues a full H2D prefetch).
         memory = self._memory_store.peek_user_memory(user_id)
         if memory is None or memory.token_ids is None:
             return None
@@ -207,9 +198,6 @@ class MemoryKVConnector(KVConnectorBase_V1):
         num_memory_blocks = self._blocks_for(load.num_tokens)
         memory_block_ids = block_ids[skip_blocks : skip_blocks + num_memory_blocks]
         if len(memory_block_ids) != num_memory_blocks:
-            # vLLM's NewRequestData.block_ids must include the natively cached
-            # front blocks for the offset above to hold; fail rather than
-            # inject into the wrong blocks.
             raise RuntimeError(
                 f"Request {req_id} exposes {len(block_ids)} block(s); "
                 f"expected at least {skip_blocks + num_memory_blocks} "
@@ -237,9 +225,6 @@ class MemoryKVConnector(KVConnectorBase_V1):
         self, meta: MemoryConnectorMetadata, req_id: str, block_ids: list[int], load: _ScheduledLoad
     ) -> None:
         if load.skip_tokens > 0:
-            # A resumed request whose memory region was partially covered by
-            # the native prefix cache has no verified block layout; fail
-            # closed instead of guessing where the tail blocks landed.
             raise RuntimeError(
                 f"Resumed request {req_id} has a partial native prefix hit "
                 f"({load.skip_tokens} tokens); this combination is unsupported."
@@ -255,8 +240,6 @@ class MemoryKVConnector(KVConnectorBase_V1):
     def _blocks_for(self, num_tokens: int) -> int:
         return (num_tokens + self._block_size - 1) // self._block_size
 
-    # Worker side
-
     def start_load_kv(self, forward_context: ForwardContext, **kwargs: Any) -> None:
         del kwargs
         metadata = self._get_connector_metadata()
@@ -264,38 +247,28 @@ class MemoryKVConnector(KVConnectorBase_V1):
             raise TypeError(f"Unexpected connector metadata type: {type(metadata)!r}")
         loads = metadata.loads
         if not loads:
-            # Decode-only steps must stay zero-cost: no staging traffic and
-            # no store interaction of any kind.
             return
-        # By now the scheduler has credited the memory tokens as externally
-        # computed and skipped their prefill, so any failure below must fail
-        # closed: continuing would let the request attend over uninitialized KV.
         attn_metadata = forward_context.attn_metadata
         if attn_metadata is None:
             raise RuntimeError(
                 "start_load_kv called with no attention metadata while "
                 f"{len(loads)} memory load(s) are pending."
             )
-        # Pinned-host store: slide a prefetch window sized to the staging
-        # pool. Staging every load up front would evict just-prefetched
-        # memories whenever one step carries more loads than slots; instead
-        # each release frees the slot the next pending load fills. The GPU
-        # store reports zero slots, which selects the full window.
-        slots = int(self._memory_store.num_staging_slots or 0)
-        window = min(slots, len(loads)) if slots > 0 else len(loads)
-        for load in loads[:window]:
+        staging_slots = int(self._memory_store.num_staging_slots or 0)
+        prefetch_window = min(staging_slots, len(loads)) if staging_slots > 0 else len(loads)
+        for load in loads[:prefetch_window]:
             self._memory_store.prefetch_user_to_gpu(load.user_id)
-        released = 0
+        released_count = 0
         try:
             for index, load in enumerate(loads):
                 self._inject_one_load(load, forward_context, attn_metadata)
                 self._memory_store.release_staging(load.user_id)
-                released = index + 1
-                if index + window < len(loads):
-                    self._memory_store.prefetch_user_to_gpu(loads[index + window].user_id)
+                released_count = index + 1
+                next_to_prefetch = index + prefetch_window
+                if next_to_prefetch < len(loads):
+                    self._memory_store.prefetch_user_to_gpu(loads[next_to_prefetch].user_id)
         finally:
-            # Error path only: free the slots of loads that never released.
-            for load in loads[released:]:
+            for load in loads[released_count:]:
                 self._memory_store.release_staging(load.user_id)
 
     def _inject_one_load(

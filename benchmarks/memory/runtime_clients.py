@@ -63,22 +63,24 @@ def build_clients(config: MemoryRunConfig) -> RuntimeClients:
         config.judge_provider,
         config.judge_base_url,
     )
-    answer_client: AnswerClient
+    answer_client = _build_answer_client(config)
+    return RuntimeClients(answer_client=answer_client, judge_client=judge_client_for(config))
+
+
+def _build_answer_client(config: MemoryRunConfig) -> AnswerClient:
     if config.answer_backend == "kv-injection":
         from benchmarks.memory.answer_kv import KVAnswerClient
 
-        answer_client = KVAnswerClient(config)
-    elif config.answer_backend == "prompt-injection":
+        return KVAnswerClient(config)
+    if config.answer_backend == "prompt-injection":
         from benchmarks.memory.answer_prompt_injection import PromptInjectionAnswerClient
 
-        answer_client = PromptInjectionAnswerClient(config)
-    elif config.answer_backend == LMCACHE_BACKEND:
+        return PromptInjectionAnswerClient(config)
+    if config.answer_backend == LMCACHE_BACKEND:
         from benchmarks.memory.answer_lmcache import LMCacheBlendAnswerClient
 
-        answer_client = LMCacheBlendAnswerClient(config)
-    else:
-        raise ValueError(f"Unsupported answer backend: {config.answer_backend!r}.")
-    return RuntimeClients(answer_client=answer_client, judge_client=judge_client_for(config))
+        return LMCacheBlendAnswerClient(config)
+    raise ValueError(f"Unsupported answer backend: {config.answer_backend!r}.")
 
 
 def judge_client_for(config: MemoryRunConfig) -> ChatClient | None:

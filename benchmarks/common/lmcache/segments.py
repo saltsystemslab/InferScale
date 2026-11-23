@@ -32,28 +32,38 @@ def blend_memory_layout(
     if not separator_ids:
         raise ValueError("The blend separator must be non-empty.")
     chunks = [list(chunk) for chunk in ordered_chunk_token_ids]
-    chunk_tokens = sum(len(chunk) for chunk in chunks)
     if not chunks:
-        token_ids = [
-            *scaffold.header_token_ids,
-            *scaffold.empty_token_ids,
-            *scaffold.footer_token_ids,
-        ]
-        return BlendMemoryLayout(token_ids, separator_ids, 1, 0, len(token_ids))
+        return _empty_layout(scaffold, separator_ids)
     token_ids = list(scaffold.header_token_ids)
     for chunk in chunks:
         require_chunk_without_separator(chunk, separator_ids)
         token_ids.extend(separator_ids)
         token_ids.extend(chunk)
-    expected_matched_tokens = len(token_ids)
+    tokens_through_last_chunk = len(token_ids)
     token_ids.extend(separator_ids)
     token_ids.extend(scaffold.footer_token_ids)
+    chunk_tokens = sum(len(chunk) for chunk in chunks)
     return BlendMemoryLayout(
         token_ids=token_ids,
         separator_token_ids=separator_ids,
         segment_count=1 + len(chunks),
-        expected_matched_tokens=expected_matched_tokens,
+        expected_matched_tokens=tokens_through_last_chunk,
         scaffold_tokens=len(token_ids) - chunk_tokens,
+    )
+
+
+def _empty_layout(scaffold: ScaffoldTokens, separator_ids: list[int]) -> BlendMemoryLayout:
+    token_ids = [
+        *scaffold.header_token_ids,
+        *scaffold.empty_token_ids,
+        *scaffold.footer_token_ids,
+    ]
+    return BlendMemoryLayout(
+        token_ids=token_ids,
+        separator_token_ids=separator_ids,
+        segment_count=1,
+        expected_matched_tokens=0,
+        scaffold_tokens=len(token_ids),
     )
 
 
@@ -62,11 +72,11 @@ def warm_up_prompts(
     chunk_token_ids: Iterable[Sequence[int]],
     separator: Sequence[int],
 ) -> list[list[int]]:
-    prompts: dict[tuple[int, ...], None] = {tuple(header_token_ids): None}
+    unique_prompts: dict[tuple[int, ...], None] = {tuple(header_token_ids): None}
     for chunk in chunk_token_ids:
         require_chunk_without_separator(chunk, separator)
-        prompts.setdefault(tuple(chunk), None)
-    return [list(prompt) for prompt in prompts]
+        unique_prompts.setdefault(tuple(chunk), None)
+    return [list(prompt) for prompt in unique_prompts]
 
 
 def require_chunk_without_separator(chunk: Sequence[int], separator: Sequence[int]) -> None:

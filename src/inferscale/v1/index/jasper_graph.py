@@ -9,13 +9,10 @@ import numpy as np
 from ..types import VECTOR_DISTANCE
 from ..units import bytes_to_mb
 
-# jasperpy serializes a graph as a fixed header followed by one node per
-# vector: the float16 vector, one edge-count byte, and n_neighbors int32 edges.
-_FILE_HEADER_BYTES = 4 * 8
-_EDGE_INDEX_BYTES = 4
+_FIXED_HEADER_BYTES = 4 * 8
+_GPU_FLOAT16_ELEMENT_BYTES = 2
 _EDGE_COUNT_BYTES = 1
-# jasperpy keeps vectors on the GPU as float16 whatever the input dtype.
-_VECTOR_ELEMENT_BYTES = 2
+_INT32_EDGE_BYTES = 4
 
 
 @dataclass(slots=True, frozen=True)
@@ -81,7 +78,7 @@ def build_graph(
 def serialized_bytes(*, vector_count: int, dim: int, n_neighbors: int) -> int:
     if vector_count <= 0 or dim <= 0:
         return 0
-    bytes_per_node = (
-        dim * _VECTOR_ELEMENT_BYTES + _EDGE_COUNT_BYTES + n_neighbors * _EDGE_INDEX_BYTES
-    )
-    return _FILE_HEADER_BYTES + vector_count * bytes_per_node
+    float16_vector_bytes = dim * _GPU_FLOAT16_ELEMENT_BYTES
+    int32_edges_bytes = n_neighbors * _INT32_EDGE_BYTES
+    bytes_per_node = float16_vector_bytes + _EDGE_COUNT_BYTES + int32_edges_bytes
+    return _FIXED_HEADER_BYTES + vector_count * bytes_per_node

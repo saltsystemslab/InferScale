@@ -7,7 +7,9 @@ import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
+
+from loguru import logger
 
 Timeline = dict[str, Any]
 Row = dict[str, Any]
@@ -20,6 +22,13 @@ FINAL_HOLD_MS = 3000
 BODY_LINES = 11
 PANEL_COLUMN_WIDTH = 480
 FAST_MODE = "inferscale"
+MS_PER_SECOND = 1000
+LOOP_FOREVER = 0
+DOT_STEP_MS = 400
+MAX_DOTS = 3
+MIN_READING_WIDTH = 11
+ELLIPSIS = "..."
+RIGHT_ALIGNED = "ra"
 
 GROUND: Color = (11, 18, 32)
 CARD: Color = (19, 28, 46)
@@ -31,11 +40,34 @@ BLUE: Color = (56, 189, 248)
 ROSE: Color = (248, 113, 113)
 AMBER: Color = (251, 191, 36)
 
-# The label and accent color of each side a timeline can come from.
-STYLES: dict[str, tuple[str, Color]] = {
-    FAST_MODE: ("InferScale", BLUE),
-    "mem0": ("Mem0", ROSE),
-    "lmcache": ("LMCache CacheBlend", AMBER),
+BANNER_TOP = 22
+QUESTION_TOP = 32
+BANNER_GAP = 32
+FOOTER_GAP = 20
+CLOCK_DROP = 2
+
+CARD_RADIUS = 8
+STRIPE_WIDTH = 4
+PADDING_LEFT = 22
+PADDING_RIGHT = 18
+NAME_TOP = 22
+DIVIDER_TOP = 70
+PREFILLING_TOP = 24
+READING_TOP = 14
+CAPTION_TOP = 44
+BODY_TOP = 86
+LINE_HEIGHT = 22
+
+
+class SideStyle(NamedTuple):
+    label: str
+    accent: Color
+
+
+STYLES: dict[str, SideStyle] = {
+    FAST_MODE: SideStyle("InferScale", BLUE),
+    "mem0": SideStyle("Mem0", ROSE),
+    "lmcache": SideStyle("LMCache CacheBlend", AMBER),
 }
 
 
@@ -130,8 +162,8 @@ def load_timelines(paths: Sequence[Path]) -> list[Timeline]:
 
 def stream(row: Row) -> list[Event]:
     words = re.findall(r"\S+\s*", row["answer"])
-    gap = (row["total_ms"] - row["ttft_ms"]) / max(1, len(words) - 1)
-    return [(row["ttft_ms"] + gap * index, word) for index, word in enumerate(words)]
+    gap_ms = (row["total_ms"] - row["ttft_ms"]) / max(1, len(words) - 1)
+    return [(row["ttft_ms"] + gap_ms * index, word) for index, word in enumerate(words)]
 
 
 def render_gif(
@@ -145,53 +177,54 @@ def render_gif(
         from PIL import Image
     except ImportError:
         sys.exit("Rendering the GIF needs Pillow: pip install pillow")
-    fast, baselines = timelines[0], timelines[1:]
-    speedups = [
-        [slow["ttft_ms"] / quick["ttft_ms"] for quick, slow in zip(fast["rows"], base["rows"])]
-        for base in baselines
-    ]
-    chosen = _choose_question(speedups[0], question)
-    _print_speedups(timelines, speedups, chosen)
-    race = _build_race(timelines, chosen, [column[chosen] for column in speedups], slowdown)
+    speedup_columns = _speedup_columns(timelines)
+    chosen = _choose_question(speedup_columns[0], question)
+    _log_speedups(timelines, speedup_columns, chosen)
+    chosen_speedups = [column[chosen] for column in speedup_columns]
+    race = _build_race(timelines, chosen, chosen_speedups, slowdown)
 
-    # Twenty frames per second of playback, fewer when that would exceed MAX_FRAMES.
-    step_ms = max(1000 / FRAMES_PER_SECOND, race.end_ms * slowdown / MAX_FRAMES)
-    count = max(1, math.ceil(race.end_ms * slowdown / step_ms))
-    frames = [_draw_frame(Image, race, race.end_ms * index / count) for index in range(count + 1)]
+    playback_ms = race.end_ms * slowdown
+    frame_ms = max(MS_PER_SECOND / FRAMES_PER_SECOND, playback_ms / MAX_FRAMES)
+    frame_count = max(1, math.ceil(playback_ms / frame_ms))
+    frames = [
+        _draw_frame(Image, race, race.end_ms * index / frame_count)
+        for index in range(frame_count + 1)
+    ]
     frames[0].save(
         out,
         save_all=True,
         append_images=frames[1:],
-        duration=[round(step_ms)] * count + [FINAL_HOLD_MS],
-        loop=0,
+        duration=[round(frame_ms)] * frame_count + [FINAL_HOLD_MS],
+        loop=LOOP_FOREVER,
     )
     readings = " vs ".join(
         f"{timeline['rows'][chosen]['ttft_ms']:.0f} ms ({label(timeline)})"
         for timeline in timelines
     )
-    print(f"wrote {out}: question {chosen}, first token {readings}")
+    logger.info("wrote {}: question {}, first token {}", out, chosen, readings)
     return chosen
 
 
 def label(timeline: Timeline) -> str:
-    return STYLES[timeline["mode"]][0]
+    return STYLES[timeline["mode"]].label
 
 
 def load_font(size: int, bold: bool = False, mono: bool = True) -> Any:
     from PIL import ImageFont
 
     dejavu = f"DejaVuSans{'Mono' if mono else ''}{'-Bold' if bold else ''}.ttf"
-    # (file, face index in the file)
-    candidates = [(dejavu, 0), ("Menlo.ttc" if mono else "Helvetica.ttc", int(bold))]
+    macos_face = ("Menlo.ttc" if mono else "Helvetica.ttc", int(bold))
+    faces = [(dejavu, 0)]
     try:
         from matplotlib import get_data_path
 
-        candidates.insert(1, (str(Path(get_data_path(), "fonts", "ttf", dejavu)), 0))
+        faces.append((str(Path(get_data_path(), "fonts", "ttf", dejavu)), 0))
     except ImportError:
         pass
-    for name, index in candidates:
+    faces.append(macos_face)
+    for font_file, face_index in faces:
         try:
-            return ImageFont.truetype(name, size, index=index)
+            return ImageFont.truetype(font_file, size, index=face_index)
         except OSError:
             continue
     return ImageFont.load_default(size)
@@ -212,30 +245,45 @@ def wrap_text(draw: Any, text: str, font: Any, width: int) -> list[str]:
     return lines
 
 
+def _speedup_columns(timelines: Sequence[Timeline]) -> list[list[float]]:
+    fast, baselines = timelines[0], timelines[1:]
+    return [
+        [
+            baseline_row["ttft_ms"] / fast_row["ttft_ms"]
+            for fast_row, baseline_row in zip(fast["rows"], baseline["rows"])
+        ]
+        for baseline in baselines
+    ]
+
+
 def _choose_question(speedups: list[float], requested: int | None) -> int:
     if requested is None:
-        # A representative question, not the best one: the median speedup.
-        return sorted(range(len(speedups)), key=speedups.__getitem__)[len(speedups) // 2]
+        return _median_speedup_question(speedups)
     if not 0 <= requested < len(speedups):
         sys.exit(f"--question must be between 0 and {len(speedups) - 1}")
     return requested
 
 
-def _print_speedups(
-    timelines: Sequence[Timeline], speedups: list[list[float]], chosen: int
+def _median_speedup_question(speedups: list[float]) -> int:
+    by_speedup = sorted(range(len(speedups)), key=speedups.__getitem__)
+    return by_speedup[len(speedups) // 2]
+
+
+def _log_speedups(
+    timelines: Sequence[Timeline], speedup_columns: list[list[float]], chosen: int
 ) -> None:
-    widths = [max(11, len(label(timeline))) for timeline in timelines]
+    widths = [max(MIN_READING_WIDTH, len(label(timeline))) for timeline in timelines]
     header = "  ".join(f"{label(timeline):>{width}}" for timeline, width in zip(timelines, widths))
-    columns = "  ".join(f"{'speedup':>7}" for _ in speedups)
-    print(f"     {header}  {columns}  question")
+    columns = "  ".join(f"{'speedup':>7}" for _ in speedup_columns)
+    logger.info("     {}  {}  question", header, columns)
     for index, question in enumerate(row["question"] for row in timelines[0]["rows"]):
         marker = "*" if index == chosen else " "
         readings = "  ".join(
             f"{timeline['rows'][index]['ttft_ms']:>{width - 3}.1f} ms"
             for timeline, width in zip(timelines, widths)
         )
-        ratios = "  ".join(f"{column[index]:>6.2f}x" for column in speedups)
-        print(f"{marker}{index:>2}  {readings}  {ratios}  {question}")
+        ratios = "  ".join(f"{column[index]:>6.2f}x" for column in speedup_columns)
+        logger.info("{}{:>2}  {}  {}  {}", marker, index, readings, ratios, question)
 
 
 def _build_race(
@@ -245,7 +293,12 @@ def _build_race(
     layout = Layout(columns=len(timelines))
     fonts = Fonts.load()
     panels = tuple(
-        Panel(_panel_name(timeline), STYLES[timeline["mode"]][1], row, stream(row))
+        Panel(
+            name=_panel_name(timeline),
+            accent=STYLES[timeline["mode"]].accent,
+            row=row,
+            events=stream(row),
+        )
         for timeline, row in zip(timelines, rows)
     )
     labels = [label(timeline) for timeline in timelines]
@@ -272,7 +325,8 @@ def _panel_name(timeline: Timeline) -> str:
 
 def _verdict(baselines: Sequence[tuple[str, float]]) -> str:
     if len(baselines) == 1:
-        return "InferScale: first token " + _sooner_or_later(baselines[0][1])
+        _, speedup = baselines[0]
+        return "InferScale: first token " + _sooner_or_later(speedup)
     return "InferScale: first token " + ", ".join(
         f"{_sooner_or_later(speedup)} than {name}" for name, speedup in baselines
     )
@@ -284,58 +338,78 @@ def _sooner_or_later(speedup: float) -> str:
 
 def _shortened_question(question: str, layout: Layout, fonts: Fonts, banner: str) -> str:
     asked = "LoCoMo question: " + question
-    room = layout.width - 2 * layout.margin - 32 - fonts.title.getlength(banner)
+    room = layout.width - 2 * layout.margin - BANNER_GAP - fonts.title.getlength(banner)
     while fonts.note.getlength(asked) > room:
-        asked = asked[:-4].rstrip() + "..."
+        asked = asked[: -len(ELLIPSIS) - 1].rstrip() + ELLIPSIS
     return asked
 
 
-def _draw_frame(image_module: Any, race: Race, now: float) -> Any:
+def _draw_frame(image_module: Any, race: Race, now_ms: float) -> Any:
     from PIL import ImageDraw
 
     layout, fonts = race.layout, race.fonts
     image = image_module.new("RGB", (layout.width, layout.height), GROUND)
     draw = ImageDraw.Draw(image)
-    draw.text((layout.margin, 22), race.banner, font=fonts.title, fill=BRIGHT)
-    draw.text(
-        (layout.width - layout.margin, 32), race.asked, font=fonts.note, fill=DIM, anchor="ra"
-    )
+    right = layout.width - layout.margin
+    draw.text((layout.margin, BANNER_TOP), race.banner, font=fonts.title, fill=BRIGHT)
+    draw.text((right, QUESTION_TOP), race.asked, font=fonts.note, fill=DIM, anchor=RIGHT_ALIGNED)
     for column, panel in enumerate(race.panels):
-        _draw_panel(draw, race, column, panel, now)
-    foot = layout.floor + 20
-    draw.text(
-        (layout.margin, foot + 2), f"t = {now:,.0f} ms{race.footer_note}", font=fonts.note, fill=DIM
-    )
-    if now >= race.all_started_ms:
+        _draw_panel(draw, race, column, panel, now_ms)
+    footer_top = layout.floor + FOOTER_GAP
+    clock = f"t = {now_ms:,.0f} ms{race.footer_note}"
+    draw.text((layout.margin, footer_top + CLOCK_DROP), clock, font=fonts.note, fill=DIM)
+    if now_ms >= race.all_started_ms:
         draw.text(
-            (layout.width - layout.margin, foot),
-            race.verdict,
-            font=fonts.strong,
-            fill=TEXT,
-            anchor="ra",
+            (right, footer_top), race.verdict, font=fonts.strong, fill=TEXT, anchor=RIGHT_ALIGNED
         )
     return image
 
 
-def _draw_panel(draw: Any, race: Race, column: int, panel: Panel, now: float) -> None:
+def _draw_panel(draw: Any, race: Race, column: int, panel: Panel, now_ms: float) -> None:
     layout, fonts = race.layout, race.fonts
     left = layout.panel_left(column)
     right, top, floor = left + layout.panel_width, layout.top, layout.floor
-    # An accent-colored card under the real one leaves a stripe down its left edge.
-    draw.rounded_rectangle((left, top, right, floor), radius=8, fill=panel.accent)
-    draw.rounded_rectangle((left + 4, top, right, floor), radius=8, fill=CARD, outline=EDGE)
-    draw.text((left + 22, top + 22), panel.name, font=fonts.heading, fill=TEXT)
-    draw.line((left + 22, top + 70, right - 18, top + 70), fill=EDGE)
-    if now < panel.row["ttft_ms"]:
-        # Every side starts together; the dots keep the slower ones visibly working.
-        dots = "." * (1 + int(now * race.slowdown / 400) % 3)
-        start = right - 18 - draw.textlength("prefilling...", font=fonts.strong)
-        draw.text((start, top + 24), "prefilling" + dots, font=fonts.strong, fill=DIM)
+    text_left, text_right = left + PADDING_LEFT, right - PADDING_RIGHT
+    _draw_striped_card(draw, left, top, right, floor, panel.accent)
+    draw.text((text_left, top + NAME_TOP), panel.name, font=fonts.heading, fill=TEXT)
+    draw.line((text_left, top + DIVIDER_TOP, text_right, top + DIVIDER_TOP), fill=EDGE)
+    if now_ms < panel.row["ttft_ms"]:
+        _draw_prefilling(draw, race, text_right, top, now_ms)
         return
     reading = f"{panel.row['ttft_ms']:,.0f} ms"
-    draw.text((right - 18, top + 14), reading, font=fonts.clock, fill=panel.accent, anchor="ra")
-    draw.text((right - 18, top + 44), "first token", font=fonts.note, fill=DIM, anchor="ra")
-    shown = "".join(word for at, word in panel.events if at <= now).strip()
-    lines = wrap_text(draw, shown, fonts.body, layout.panel_width - 40)[:BODY_LINES]
+    draw.text(
+        (text_right, top + READING_TOP),
+        reading,
+        font=fonts.clock,
+        fill=panel.accent,
+        anchor=RIGHT_ALIGNED,
+    )
+    draw.text(
+        (text_right, top + CAPTION_TOP),
+        "first token",
+        font=fonts.note,
+        fill=DIM,
+        anchor=RIGHT_ALIGNED,
+    )
+    shown = "".join(word for shown_at_ms, word in panel.events if shown_at_ms <= now_ms).strip()
+    lines = wrap_text(draw, shown, fonts.body, text_right - text_left)[:BODY_LINES]
     for index, line in enumerate(lines):
-        draw.text((left + 22, top + 86 + 22 * index), line, font=fonts.body, fill=TEXT)
+        line_top = top + BODY_TOP + LINE_HEIGHT * index
+        draw.text((text_left, line_top), line, font=fonts.body, fill=TEXT)
+
+
+def _draw_striped_card(
+    draw: Any, left: int, top: int, right: int, floor: int, accent: Color
+) -> None:
+    accent_underlay = (left, top, right, floor)
+    card = (left + STRIPE_WIDTH, top, right, floor)
+    draw.rounded_rectangle(accent_underlay, radius=CARD_RADIUS, fill=accent)
+    draw.rounded_rectangle(card, radius=CARD_RADIUS, fill=CARD, outline=EDGE)
+
+
+def _draw_prefilling(draw: Any, race: Race, text_right: int, top: int, now_ms: float) -> None:
+    font = race.fonts.strong
+    working_dots = "." * (1 + int(now_ms * race.slowdown / DOT_STEP_MS) % MAX_DOTS)
+    widest = "prefilling..."
+    left = text_right - draw.textlength(widest, font=font)
+    draw.text((left, top + PREFILLING_TOP), "prefilling" + working_dots, font=font, fill=DIM)

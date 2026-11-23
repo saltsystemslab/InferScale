@@ -9,9 +9,12 @@ from loguru import logger
 
 from benchmarks.common.stats import as_number
 
+HEADLESS_BACKEND = "Agg"
 FIGURE_SIZE = (8, 5)
 FIGURE_DPI = 160
+X_COLUMN = "total_prompt_tokens"
 X_LABEL = "Input prompt tokens"
+ACCURACY_PLOT_FILE = "tokens_vs_accuracy_binned.png"
 
 
 @dataclass(slots=True, frozen=True)
@@ -50,7 +53,7 @@ def write_token_plots(
     try:
         import matplotlib
 
-        matplotlib.use("Agg")
+        matplotlib.use(HEADLESS_BACKEND)
         import matplotlib.pyplot as plt
     except ImportError as exc:
         logger.warning("Skipping token plots because matplotlib is unavailable: {}", exc)
@@ -60,7 +63,7 @@ def write_token_plots(
         _write_latency_scatter(plt, plots_dir / plot.file_name, rows, plot)
     _write_accuracy_plot(
         plt,
-        plots_dir / "tokens_vs_accuracy_binned.png",
+        plots_dir / ACCURACY_PLOT_FILE,
         accuracy_bins,
         missing_x_count=_judged_rows_missing_tokens(rows),
     )
@@ -126,14 +129,14 @@ def _latency_points(
     points = []
     missing_x_count = 0
     for row in rows:
-        y_value = as_number(row.get(y_column))
-        if y_value is None:
+        latency_ms = as_number(row.get(y_column))
+        if latency_ms is None:
             continue
-        x_value = as_number(row.get("total_prompt_tokens"))
-        if x_value is None:
+        prompt_tokens = as_number(row.get(X_COLUMN))
+        if prompt_tokens is None:
             missing_x_count += 1
             continue
-        points.append((x_value, y_value))
+        points.append((prompt_tokens, latency_ms))
     return points, missing_x_count
 
 
@@ -141,7 +144,7 @@ def _judged_rows_missing_tokens(rows: Iterable[dict[str, Any]]) -> int:
     return sum(
         1
         for row in rows
-        if row.get("judge_correct") in {0, 1} and as_number(row.get("total_prompt_tokens")) is None
+        if row.get("judge_correct") in {0, 1} and as_number(row.get(X_COLUMN)) is None
     )
 
 

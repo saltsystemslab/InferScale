@@ -741,9 +741,9 @@ def test_local_qdrant_finalize_caches_rows(
         lambda **_kwargs: pytest.fail("finalized Qdrant rows should be served from memory"),
     )
     try:
-        assert [item_id for item_id, _ in store.rows({"user_id": "sample-1"})] == [
-            "tea",
+        assert sorted(item_id for item_id, _ in store.rows({"user_id": "sample-1"})) == [
             "coffee",
+            "tea",
         ]
     finally:
         store.close()

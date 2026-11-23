@@ -87,7 +87,7 @@ def test_missing_fact_catalogs_uses_the_full_catalog_identity(
 def test_check_catalogs_fails_with_remediation_and_creates_no_run_dir(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
+    stage_log: list[tuple[str, str]],
 ) -> None:
     monkeypatch.setattr(os, "environ", os.environ.copy())
     sample = _sample()
@@ -112,7 +112,7 @@ def test_check_catalogs_fails_with_remediation_and_creates_no_run_dir(
     with pytest.raises(SystemExit, match="1"):
         main(config_path, runtime_path=runtime_path, stage="check-catalogs")
 
-    err = capsys.readouterr().err
+    err = "\n".join(message for level, message in stage_log if level == "ERROR")
     assert "missing Mem0 fact catalogs for model answer/model" in err
     assert "scripts/extract_facts.sh" in err
     assert not (tmp_path / "results" / "check").exists()
@@ -120,6 +120,6 @@ def test_check_catalogs_fails_with_remediation_and_creates_no_run_dir(
     _write_catalog(_config(tmp_path), sample)
     main(config_path, runtime_path=runtime_path, stage="check-catalogs")
 
-    out = capsys.readouterr().out
+    out = "\n".join(message for level, message in stage_log if level == "INFO")
     assert "fact catalogs complete for model answer/model" in out
     assert not (tmp_path / "results" / "check").exists()

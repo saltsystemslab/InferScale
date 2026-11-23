@@ -48,8 +48,8 @@ ColumnReader = Callable[[Record], Any]
 
 
 def _section(record: Record, name: str) -> dict[str, Any]:
-    value = record.get(name)
-    return value if isinstance(value, dict) else {}
+    section = record.get(name)
+    return section if isinstance(section, dict) else {}
 
 
 def _field(key: str) -> ColumnReader:
@@ -78,8 +78,7 @@ def _as_flag(value: Any) -> int | None:
     return None if value is None else int(bool(value))
 
 
-# The CSV columns, in order, and where each one is read from in a prediction record.
-QUERY_METRIC_COLUMNS: tuple[tuple[str, ColumnReader], ...] = (
+CSV_COLUMN_READERS: tuple[tuple[str, ColumnReader], ...] = (
     ("query_id", _field("query_id")),
     ("question_type", _field("question_type")),
     ("exact_match", _flag("answer_metrics", "exact_match")),
@@ -109,11 +108,11 @@ QUERY_METRIC_COLUMNS: tuple[tuple[str, ColumnReader], ...] = (
     ("vector_db_query_time_ms", _value("metrics", "vector_db_query_time_ms")),
     ("query_retrieval_time_ms", _value("metrics", "query_retrieval_time_ms")),
 )
-QUERY_METRICS_COLUMNS = [name for name, _ in QUERY_METRIC_COLUMNS]
+QUERY_METRICS_COLUMNS = [name for name, _ in CSV_COLUMN_READERS]
 
 
 def build_query_metric_rows(records: Iterable[Record]) -> list[Record]:
-    return [{name: read(record) for name, read in QUERY_METRIC_COLUMNS} for record in records]
+    return [{name: read(record) for name, read in CSV_COLUMN_READERS} for record in records]
 
 
 def summarize_rag_records(
@@ -127,42 +126,19 @@ def summarize_rag_records(
 ) -> dict[str, Any]:
     rows = list(records)
     judged = judged_records(rows)
-    by_type = _rows_by_type(rows)
-    abstaining = [row for row in rows if row.get("question_type") in ABSTENTION_QUESTION_TYPES]
-    answerable = [row for row in rows if row.get("question_type") not in ABSTENTION_QUESTION_TYPES]
-    retrieval_rows = [row for row in rows if isinstance(row.get("retrieval"), dict)]
-
+    rows_by_type = _rows_by_type(rows)
     metrics: dict[str, Any] = {
         "accuracy": safe_div(correct_count(judged), len(judged)),
         "accuracy_by_type": _accuracy_by_type(judged),
-        "question_type_counts": {name: len(type_rows) for name, type_rows in by_type.items()},
-        "abstention_accuracy": mean(
-            _section_values(abstaining, "answer_metrics", "predicted_insufficient")
-        ),
-        "false_abstention_rate": mean(
-            _section_values(answerable, "answer_metrics", "predicted_insufficient")
-        ),
-    }
-    for key in ANSWER_METRIC_KEYS:
-        metrics[key] = mean(_section_values(rows, "answer_metrics", key))
-    metrics["answer_metrics_by_type"] = {
-        name: {
-            key: mean(_section_values(type_rows, "answer_metrics", key))
-            for key in ANSWER_METRIC_KEYS
-        }
-        for name, type_rows in by_type.items()
-    }
-    metrics["retrieval"] = {
-        "query_count": len(retrieval_rows),
-        **{
-            key: mean(_section_values(retrieval_rows, "retrieval", key))
-            for key in RETRIEVAL_METRIC_KEYS
+        "question_type_counts": {name: len(type_rows) for name, type_rows in rows_by_type.items()},
+        **_abstention_metrics(rows),
+        **_mean_answer_metrics(rows),
+        "answer_metrics_by_type": {
+            name: _mean_answer_metrics(type_rows) for name, type_rows in rows_by_type.items()
         },
+        "retrieval": _mean_retrieval_metrics(rows),
+        **_timing_summaries(rows),
     }
-    for key in TIMING_METRIC_KEYS:
-        summary = numeric_summary(_section_values(rows, "metrics", key))
-        if summary["count"]:
-            metrics[key] = summary
     return summary_envelope(
         rows,
         run_id=run_id,
@@ -172,6 +148,43 @@ def summarize_rag_records(
         system_metadata=system_metadata,
         setup=dict(setup_metrics or {}),
     )
+
+
+def _abstention_metrics(rows: list[Record]) -> dict[str, float | None]:
+    abstaining = [row for row in rows if row.get("question_type") in ABSTENTION_QUESTION_TYPES]
+    answerable = [row for row in rows if row.get("question_type") not in ABSTENTION_QUESTION_TYPES]
+    return {
+        "abstention_accuracy": mean(
+            _section_values(abstaining, "answer_metrics", "predicted_insufficient")
+        ),
+        "false_abstention_rate": mean(
+            _section_values(answerable, "answer_metrics", "predicted_insufficient")
+        ),
+    }
+
+
+def _mean_answer_metrics(rows: list[Record]) -> dict[str, float | None]:
+    return {key: mean(_section_values(rows, "answer_metrics", key)) for key in ANSWER_METRIC_KEYS}
+
+
+def _mean_retrieval_metrics(rows: list[Record]) -> dict[str, Any]:
+    retrieval_rows = [row for row in rows if isinstance(row.get("retrieval"), dict)]
+    return {
+        "query_count": len(retrieval_rows),
+        **{
+            key: mean(_section_values(retrieval_rows, "retrieval", key))
+            for key in RETRIEVAL_METRIC_KEYS
+        },
+    }
+
+
+def _timing_summaries(rows: list[Record]) -> dict[str, Any]:
+    summaries: dict[str, Any] = {}
+    for key in TIMING_METRIC_KEYS:
+        timing_summary = numeric_summary(_section_values(rows, "metrics", key))
+        if timing_summary["count"]:
+            summaries[key] = timing_summary
+    return summaries
 
 
 def _rows_by_type(rows: list[Record]) -> dict[str, list[Record]]:

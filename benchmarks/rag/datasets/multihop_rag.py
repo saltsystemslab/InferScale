@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from benchmarks.rag.data_types import (
+    NULL_QUERY_TYPE,
     EvidenceRef,
     RagDatasetSpec,
     RagDocument,
@@ -32,7 +34,7 @@ CORPUS_URL = "https://huggingface.co/datasets/yixuantt/MultiHopRAG/resolve/main/
 QUERIES_URL = "https://huggingface.co/datasets/yixuantt/MultiHopRAG/resolve/main/MultiHopRAG.json"
 
 MULTIHOP_QUESTION_TYPES = frozenset(
-    {"inference_query", "comparison_query", "temporal_query", "null_query"}
+    {"inference_query", "comparison_query", "temporal_query", NULL_QUERY_TYPE}
 )
 
 _REQUIRED_DOC_FIELDS = ("title", "body", "category", "published_at", "source", "url")
@@ -48,101 +50,137 @@ def load_multihop_rag(data_dir: Path) -> tuple[list[RagDocument], list[RagQuery]
 
 
 def _load_corpus(path: Path) -> list[RagDocument]:
-    records = _load_json_list(path, url=CORPUS_URL)
+    records = _load_json_list(path, source_url=CORPUS_URL)
     docs: list[RagDocument] = []
-    seen_urls: dict[str, int] = {}
+    record_index_by_url: dict[str, int] = {}
     for index, record in enumerate(records):
-        if not isinstance(record, dict):
-            raise ValueError(f"{path}: corpus record {index} is not a JSON object.")
-        for field in _REQUIRED_DOC_FIELDS:
-            value = record.get(field)
-            if not isinstance(value, str) or not value.strip():
-                raise ValueError(
-                    f"{path}: corpus record {index} is missing required field {field!r}."
-                )
+        _require_document_fields(path, index, record)
         url = record["url"].strip()
-        previous = seen_urls.get(url)
-        if previous is not None:
+        first_index = record_index_by_url.get(url)
+        if first_index is not None:
             raise ValueError(
-                f"{path}: corpus records {previous} and {index} share the url {url!r}; "
+                f"{path}: corpus records {first_index} and {index} share the url {url!r}; "
                 "urls must be unique because they identify documents."
             )
-        seen_urls[url] = index
-        author = record.get("author")
-        docs.append(
-            RagDocument(
-                doc_id=doc_id_for_url(url),
-                title=record["title"].strip(),
-                source=record["source"].strip(),
-                published_at=record["published_at"].strip(),
-                category=record["category"].strip(),
-                url=url,
-                body=record["body"],
-                author=str(author) if isinstance(author, str) and author.strip() else None,
-            )
-        )
+        record_index_by_url[url] = index
+        docs.append(_document(record, url))
     if not docs:
         raise ValueError(f"{path}: corpus contains no documents.")
     return docs
 
 
+def _require_document_fields(path: Path, index: int, record: Any) -> None:
+    if not isinstance(record, dict):
+        raise ValueError(f"{path}: corpus record {index} is not a JSON object.")
+    for field in _REQUIRED_DOC_FIELDS:
+        text = record.get(field)
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError(f"{path}: corpus record {index} is missing required field {field!r}.")
+
+
+def _document(record: dict[str, Any], url: str) -> RagDocument:
+    author = record.get("author")
+    return RagDocument(
+        doc_id=doc_id_for_url(url),
+        title=record["title"].strip(),
+        source=record["source"].strip(),
+        published_at=record["published_at"].strip(),
+        category=record["category"].strip(),
+        url=url,
+        body=record["body"],
+        author=str(author) if isinstance(author, str) and author.strip() else None,
+    )
+
+
 def _load_queries(path: Path, docs: list[RagDocument]) -> list[RagQuery]:
-    records = _load_json_list(path, url=QUERIES_URL)
+    records = _load_json_list(path, source_url=QUERIES_URL)
     docs_by_url = {doc.url: doc for doc in docs}
     docs_by_title = {doc.title: doc for doc in docs}
-    queries: list[RagQuery] = []
-    for index, record in enumerate(records):
-        if not isinstance(record, dict):
-            raise ValueError(f"{path}: query record {index} is not a JSON object.")
-        for field in _REQUIRED_QUERY_FIELDS:
-            if field not in record:
-                raise ValueError(
-                    f"{path}: query record {index} is missing required field {field!r}."
-                )
-        question_type = str(record["question_type"]).strip()
-        if question_type not in MULTIHOP_QUESTION_TYPES:
-            raise ValueError(
-                f"{path}: query record {index} has unknown question_type "
-                f"{question_type!r}; expected one of {sorted(MULTIHOP_QUESTION_TYPES)}."
-            )
-        raw_evidence = record["evidence_list"]
-        if not isinstance(raw_evidence, list):
-            raise ValueError(f"{path}: query record {index} evidence_list is not a list.")
-        evidence = tuple(
-            _resolve_evidence(path, index, item, docs_by_url, docs_by_title)
-            for item in raw_evidence
-        )
-        is_null = question_type == "null_query"
-        if is_null and evidence:
-            raise ValueError(f"{path}: query record {index} is a null_query but has evidence.")
-        if not is_null and not evidence:
-            raise ValueError(f"{path}: query record {index} ({question_type}) has no evidence.")
-        queries.append(
-            RagQuery(
-                query_id=f"q{index:04d}",
-                question=str(record["query"]).strip(),
-                gold_answers=(str(record["answer"]).strip(),),
-                question_type=question_type,
-                evidence=evidence,
-            )
-        )
+    queries = [
+        _query(path, index, record, docs_by_url, docs_by_title)
+        for index, record in enumerate(records)
+    ]
     if not queries:
         raise ValueError(f"{path}: query file contains no queries.")
     return queries
 
 
+def _query(
+    path: Path,
+    index: int,
+    record: Any,
+    docs_by_url: dict[str, RagDocument],
+    docs_by_title: dict[str, RagDocument],
+) -> RagQuery:
+    _require_query_fields(path, index, record)
+    question_type = _question_type(path, index, record)
+    evidence = _evidence(path, index, record, docs_by_url, docs_by_title)
+    _require_evidence_unless_null(path, index, question_type, evidence)
+    return RagQuery(
+        query_id=f"q{index:04d}",
+        question=str(record["query"]).strip(),
+        gold_answers=(str(record["answer"]).strip(),),
+        question_type=question_type,
+        evidence=evidence,
+    )
+
+
+def _require_query_fields(path: Path, index: int, record: Any) -> None:
+    if not isinstance(record, dict):
+        raise ValueError(f"{path}: query record {index} is not a JSON object.")
+    for field in _REQUIRED_QUERY_FIELDS:
+        if field not in record:
+            raise ValueError(f"{path}: query record {index} is missing required field {field!r}.")
+
+
+def _question_type(path: Path, index: int, record: dict[str, Any]) -> str:
+    question_type = str(record["question_type"]).strip()
+    if question_type not in MULTIHOP_QUESTION_TYPES:
+        raise ValueError(
+            f"{path}: query record {index} has unknown question_type "
+            f"{question_type!r}; expected one of {sorted(MULTIHOP_QUESTION_TYPES)}."
+        )
+    return question_type
+
+
+def _evidence(
+    path: Path,
+    index: int,
+    record: dict[str, Any],
+    docs_by_url: dict[str, RagDocument],
+    docs_by_title: dict[str, RagDocument],
+) -> tuple[EvidenceRef, ...]:
+    evidence_items = record["evidence_list"]
+    if not isinstance(evidence_items, list):
+        raise ValueError(f"{path}: query record {index} evidence_list is not a list.")
+    return tuple(
+        _resolve_evidence(path, index, evidence_item, docs_by_url, docs_by_title)
+        for evidence_item in evidence_items
+    )
+
+
+def _require_evidence_unless_null(
+    path: Path, index: int, question_type: str, evidence: tuple[EvidenceRef, ...]
+) -> None:
+    is_null_query = question_type == NULL_QUERY_TYPE
+    if is_null_query and evidence:
+        raise ValueError(f"{path}: query record {index} is a null_query but has evidence.")
+    if not is_null_query and not evidence:
+        raise ValueError(f"{path}: query record {index} ({question_type}) has no evidence.")
+
+
 def _resolve_evidence(
     path: Path,
     query_index: int,
-    item: object,
+    evidence_item: object,
     docs_by_url: dict[str, RagDocument],
     docs_by_title: dict[str, RagDocument],
 ) -> EvidenceRef:
-    if not isinstance(item, dict):
+    if not isinstance(evidence_item, dict):
         raise ValueError(f"{path}: query record {query_index} evidence item is not a JSON object.")
-    url = str(item.get("url") or "").strip()
-    title = str(item.get("title") or "").strip()
-    fact = str(item.get("fact") or "").strip()
+    url = str(evidence_item.get("url") or "").strip()
+    title = str(evidence_item.get("title") or "").strip()
+    fact = str(evidence_item.get("fact") or "").strip()
     if not fact:
         raise ValueError(f"{path}: query record {query_index} evidence item has no fact text.")
     doc = docs_by_url.get(url) if url else None
@@ -156,16 +194,16 @@ def _resolve_evidence(
     return EvidenceRef(doc_id=doc.doc_id, title=doc.title, url=doc.url, fact=fact)
 
 
-def _load_json_list(path: Path, *, url: str) -> list[object]:
+def _load_json_list(path: Path, *, source_url: str) -> list[object]:
     if not path.exists():
         raise FileNotFoundError(
             f"{path} does not exist. Run bash scripts/rag/setup_data.sh to download it "
-            f"(source: {url})."
+            f"(source: {source_url})."
         )
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, list):
-        raise ValueError(f"{path}: expected a top-level JSON list, got {type(data).__name__}.")
-    return data
+    parsed = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(parsed, list):
+        raise ValueError(f"{path}: expected a top-level JSON list, got {type(parsed).__name__}.")
+    return parsed
 
 
 MULTIHOP_RAG_SPEC = RagDatasetSpec(

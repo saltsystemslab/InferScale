@@ -7,9 +7,6 @@ from ..types import KVChunk
 from .memory_store import tensor_nbytes
 from .packed_memory_store import PackedGPUMemoryStore
 
-# Staging slots beyond one full top-k fetch: while a composition holds its
-# top_k chunks, the connector's sliding window already prefetches the next
-# request's first loads, and the allocator needs some slack on top.
 _STAGING_HEADROOM = 4
 
 
@@ -17,12 +14,10 @@ def build_chunk_store(backend: str, *, device: str, top_k: int, staging_slots: i
     if backend == "cpu":
         from .pinned_memory_store import CpuPinnedMemoryStore
 
-        # Every chunk of one composition must be staged at the same time, so
-        # the pool must cover a full top-k fetch; the configured slot count
-        # can only raise that floor.
+        configured_slots = int(staging_slots)
+        full_fetch_slots = int(top_k) + _STAGING_HEADROOM
         return CpuPinnedMemoryStore(
-            device=device,
-            num_staging_slots=max(int(staging_slots), int(top_k) + _STAGING_HEADROOM),
+            device=device, num_staging_slots=max(configured_slots, full_fetch_slots)
         )
     if backend == "gpu":
         return PackedGPUMemoryStore(device=device)
@@ -30,25 +25,27 @@ def build_chunk_store(backend: str, *, device: str, top_k: int, staging_slots: i
 
 
 def register_chunks(store: Any, chunks: Mapping[str, KVChunk]) -> dict[str, KVChunk]:
-    meta: dict[str, KVChunk] = {}
     for chunk_id, chunk in chunks.items():
         if chunk_id != chunk.chunk_id:
             raise ValueError(
                 f"Chunk map key {chunk_id!r} does not match chunk_id {chunk.chunk_id!r}."
             )
+    meta: dict[str, KVChunk] = {}
+    for chunk_id, chunk in chunks.items():
         chunk_meta = _metadata_only(chunk)
-        store.add_user_memory(
-            user_id=chunk_id,
-            kv_by_layer=chunk.kv_by_layer,
-            num_tokens=len(chunk.token_ids),
-            token_ids=chunk.token_ids,
-        )
-        # Registration transfers tensor ownership to the store. Dropping the
-        # source references matters once a packed store allocates its slabs:
-        # otherwise cache payloads would keep the pre-pack tensors alive.
-        chunk.kv_by_layer = {}
+        _move_tensors_to_store(store, chunk_id, chunk)
         meta[chunk_id] = chunk_meta
     return meta
+
+
+def _move_tensors_to_store(store: Any, chunk_id: str, chunk: KVChunk) -> None:
+    store.add_user_memory(
+        user_id=chunk_id,
+        kv_by_layer=chunk.kv_by_layer,
+        num_tokens=len(chunk.token_ids),
+        token_ids=chunk.token_ids,
+    )
+    chunk.kv_by_layer = {}
 
 
 def fetch_chunks(
@@ -119,7 +116,7 @@ def chunk_nbytes(chunk: KVChunk | None) -> int:
 
 def _require_staging_capacity(store: Any, chunk_count: int) -> None:
     capacity = int(store.num_staging_slots)
-    if capacity and chunk_count > capacity:
+    if capacity != 0 and chunk_count > capacity:
         raise RuntimeError(
             f"Composition needs {chunk_count} staged chunks but the chunk store has only "
             f"{capacity} staging slots; raise the staging slot count."
@@ -138,8 +135,6 @@ def _chunks_with_metadata(
             KVChunk(
                 chunk_id=chunk_id,
                 token_ids=chunk_meta.token_ids,
-                # A plain dict on the gpu store; a staged per-layer view on
-                # the cpu store. Compose consumes both identically.
                 kv_by_layer=memory.kv_by_layer,
                 context_ids=chunk_meta.context_ids,
                 context_prefix_tokens=chunk_meta.context_prefix_tokens,

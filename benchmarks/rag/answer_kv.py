@@ -39,6 +39,8 @@ from inferscale.v1.kv.registry import (
 from inferscale.v1.serving.vllm import build_kv_transfer_config, empty_cuda_cache
 from inferscale.v1.types import KVChunk, SearchHit
 
+HANDOFF_STORE_BACKEND = "gpu"
+
 
 @dataclass(slots=True)
 class ComposedPassages:
@@ -75,9 +77,7 @@ class RagKvAnswerClient(RagEngineClient):
                 block_size=config.kv_block_size,
             ),
         )
-        # Answer runs never load HF encoder weights: an encoder built from the
-        # cached RoPE tables only composes.
-        self._encoder = ChunkedRopeEncoder.from_tables(
+        self._composer = ChunkedRopeEncoder.from_tables(
             model=config.model,
             device=config.kv_device,
             max_position=config.kv_max_position,
@@ -89,9 +89,7 @@ class RagKvAnswerClient(RagEngineClient):
         self._store: CpuChunkStore | None = None
         self.namespace = f"{config.run_id}-{uuid.uuid4().hex}"
         self.active_user_id = f"{self.namespace}-active"
-        # The namespace registry holds the in-flight composed memory for the
-        # connector handoff and is always GPU-resident.
-        get_gpu_memory_store(self.namespace, backend="gpu")
+        _create_handoff_store(self.namespace)
 
     def answer(
         self,
@@ -115,12 +113,12 @@ class RagKvAnswerClient(RagEngineClient):
         verify_ms = self._verify(scaffold, ordered_chunk_ids, passages.token_ids)
         store_write_ms = self._register(kv_by_layer, passages.token_ids)
         try:
-            # Read while the composed memory is registered: removal empties the namespace.
-            store_gpu_mb = namespace_stats(self.namespace).get("total_gpu_mb", 0.0)
+            registered_gpu_mb = namespace_stats(self.namespace).get("total_gpu_mb", 0.0)
             prompt = build_prompt_tokens(passages.token_ids, query_tokens)
             output = self._generate(prompt)
         finally:
             remove_user_memory(self.namespace, self.active_user_id)
+        bookkeeping_ms = verify_ms + store_write_ms
         metrics: dict[str, Any] = {
             "kv_memory_tokens": len(passages.token_ids),
             "kv_fetch_time_ms": passages.fetch_ms,
@@ -135,16 +133,14 @@ class RagKvAnswerClient(RagEngineClient):
             "kv_loaded_memory_tokens": loaded_tokens,
             "kv_recomputed_memory_tail_tokens": tail_tokens,
             "retrieved_chunk_count": len(hits),
-            # Parity verification and the registry handoff are benchmark
-            # bookkeeping, not part of the serving path, so they are excluded.
             **generation_latency_metrics(
                 output,
                 request_started=request_started,
                 query_started_at=query_started_at,
                 engine_ttft_key="kv_engine_time_to_first_token_ms",
-                excluded_ms=verify_ms + store_write_ms,
+                excluded_ms=bookkeeping_ms,
             ),
-            "kv_store_gpu_mb": store_gpu_mb,
+            "kv_store_gpu_mb": registered_gpu_mb,
         }
         return ChatResult(content=output.text, ttft_ms=output.ttft_ms, metrics=metrics)
 
@@ -154,15 +150,14 @@ class RagKvAnswerClient(RagEngineClient):
     def close(self) -> None:
         clear_namespace(self.namespace)
         super().close()
-        self._encoder.close()
+        self._composer.close()
         if self._store is not None:
             self._store.close()
             self._store = None
         drop_namespace(self.namespace)
         empty_cuda_cache(collect_ipc=True)
 
-    def _prepare(self) -> None:
-        # The heavy step: the whole corpus chunk KV into host RAM, once.
+    def _before_engine_start(self) -> None:
         self._store = CpuChunkStore(self._cache, chunks=self._chunks, device=self.config.kv_device)
 
     def _kv_transfer_config(self) -> Mapping[str, Any]:
@@ -170,7 +165,7 @@ class RagKvAnswerClient(RagEngineClient):
             connector_module=self.config.kv_connector_module,
             namespace=self.namespace,
             default_user_id=self.active_user_id,
-            store_backend="gpu",
+            store_backend=HANDOFF_STORE_BACKEND,
         )
 
     def _fetch_passages(self, ordered_chunk_ids: list[str]) -> ComposedPassages:
@@ -189,7 +184,7 @@ class RagKvAnswerClient(RagEngineClient):
 
     def _compose(self, parts: list[KVChunk]) -> tuple[dict[str, Any], float]:
         started = time.perf_counter()
-        kv_by_layer = self._encoder.compose(parts)
+        kv_by_layer = self._composer.compose(parts)
         return kv_by_layer, (time.perf_counter() - started) * 1000
 
     def _verify(
@@ -212,6 +207,10 @@ class RagKvAnswerClient(RagEngineClient):
             token_ids=memory_token_ids,
         )
         return (time.perf_counter() - started) * 1000
+
+
+def _create_handoff_store(namespace: str) -> None:
+    get_gpu_memory_store(namespace, backend=HANDOFF_STORE_BACKEND)
 
 
 def _cached_scaffold(

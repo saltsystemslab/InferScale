@@ -106,13 +106,15 @@ def compose_requests(
         sample = sample_for_user(samples, user_index)
         composed.fact_count_total += len(facts_by_sample[sample.sample_id])
         for request in requests_by_user[user_index]:
-            memory_user_id = f"request-{len(composed.prompts):05d}"
+            request_number = len(composed.prompts)
+            memory_user_id = f"request-{request_number:05d}"
             prompt_token_ids, memory_token_ids = compose_request(
                 context, sample, request, memory_user_id, composed.timings
             )
             composed.add(memory_user_id, prompt_token_ids, memory_token_ids)
-        if is_progress_step(user_index + 1, num_users):
-            logger.info("kv_injection: retrieved {}/{} users", user_index + 1, num_users)
+        users_retrieved = user_index + 1
+        if is_progress_step(users_retrieved, num_users):
+            logger.info("kv_injection: retrieved {}/{} users", users_retrieved, num_users)
     return composed
 
 
@@ -127,7 +129,9 @@ def compose_request(
     search = _search(retrieval.memory, request.query, context.config.top_k, timings)
     kv_by_layer, memory_token_ids = _compose_memory(context, sample, search.result, timings)
     _register(context.namespace, memory_user_id, kv_by_layer, memory_token_ids, timings)
-    _verify(context, retrieval.memory, sample, search.result, memory_token_ids, timings)
+    _verify_token_equivalence(
+        context, retrieval.memory, sample, search.result, memory_token_ids, timings
+    )
     started = time.perf_counter()
     prompt_token_ids = request_prompt_token_ids(context.corpus.tokenizer, memory_token_ids, request)
     timings.prompt_build_s += time.perf_counter() - started
@@ -157,30 +161,24 @@ def _compose_memory(
     store = context.corpus.chunk_store(sample.sample_id)
     row_map = context.retrieval[sample.sample_id].row_map
     header, footer = _scaffold_chunks(composer)
-    # Compose launches asynchronous CUDA work; synchronize on both sides of
-    # the timer so it measures GPU time, not just kernel-enqueue time.
     synchronize_cuda()
     started = time.perf_counter()
     if context.config.kv_store_backend == "gpu":
-        selected = [fetch_device_chunk(store, device_result.stable_ids, row_map)]
+        selected_views = [fetch_device_chunk(store, device_result.stable_ids, row_map)]
         staged_ids: list[str] = []
     else:
-        # The lookup map stays on the GPU; only the selected rows cross to the
-        # host side to stage their pinned payloads.
-        selected = fetch_device_chunks(
+        selected_views = fetch_device_chunks(
             store, composer.chunks, device_result.stable_ids, row_map, reverse=True
         )
-        staged_ids = [chunk.chunk_id for chunk in selected]
+        staged_ids = [chunk.chunk_id for chunk in selected_views]
         if not staged_ids:
             raise RuntimeError("Retrieval returned no facts for a kv_injection request.")
-    chunks = [header, *selected, footer]
+    chunks = [header, *selected_views, footer]
     kv_by_layer = composer.encoder.compose(chunks)
     memory_token_ids = [token for chunk in chunks for token in chunk.token_ids]
     synchronize_cuda()
     timings.compose_s += time.perf_counter() - started
     release_chunks(store, staged_ids)
-    # Packed slices keep their backing slabs alive; the selected views die with
-    # this frame, well before the corpus store closes.
     return kv_by_layer, memory_token_ids
 
 
@@ -191,9 +189,6 @@ def _register(
     memory_token_ids: list[int],
     timings: RequestTimings,
 ) -> None:
-    # Registration hands the composed memory to the GPU-resident namespace
-    # registry (a dict insert, no transfer); timed for parity with the other
-    # setup metrics.
     started = time.perf_counter()
     register_user_memory(
         namespace,
@@ -206,7 +201,7 @@ def _register(
     timings.store_write_s += time.perf_counter() - started
 
 
-def _verify(
+def _verify_token_equivalence(
     context: RequestContext,
     memory: Any,
     sample: ConversationSample,
@@ -216,14 +211,14 @@ def _verify(
 ) -> None:
     started = time.perf_counter()
     hits = materialize_store_device_result(memory, device_result)
-    canonical = build_memory_prompt_token_ids(
+    prompt_injection_memory = build_memory_prompt_token_ids(
         context.corpus.tokenizer,
         sample,
         hits,
         context_window=0,
         memory_scaffold=context.scaffold,
     )
-    require_identical_token_ids(memory_token_ids, canonical.token_ids)
+    require_identical_token_ids(memory_token_ids, prompt_injection_memory.token_ids)
     timings.verify_s += time.perf_counter() - started
 
 

@@ -25,6 +25,7 @@ from benchmarks.memory.throughput.config import ThroughputConfig, jasper_effecti
 from benchmarks.memory.throughput.workload import samples_for_users
 from inferscale.v1.types import DeviceSearchResult, SearchHit
 
+SHARED_CONVERSATIONS = 1
 ResultT = TypeVar("ResultT")
 
 
@@ -64,10 +65,7 @@ def load_samples(config: ThroughputConfig) -> list[ConversationSample]:
     samples = load_locomo(config.dataset_path)
     if not samples:
         raise RuntimeError(f"No LoCoMo samples found in {config.dataset_path}.")
-    # The throughput workload is multi-user contention over one conversation:
-    # every user retrieves from the same session store, so request counts
-    # scale load while the memory corpus stays fixed.
-    return samples[:1]
+    return samples[:SHARED_CONVERSATIONS]
 
 
 def fact_catalog_store(config: ThroughputConfig) -> FactCatalogStore:
@@ -128,8 +126,6 @@ def build_user_store(
     )
     try:
         with _cached_fact_embeddings(config, memory):
-            # The conditions query the vector store directly and never read
-            # the entity store, so entity linking would only be setup overhead.
             load_facts_into_memory(memory, facts, link_entities=False)
         finalize_memory_stores(memory)
     except BaseException:
@@ -152,12 +148,12 @@ def search_store_for_kv(memory: Any, query: str, *, top_k: int) -> StoreSearch[D
         missing="KV retrieval requires a vector store with GPU device search.",
     )
     started = time.perf_counter()
-    result = search_device(query=query, vectors=embed_mem0_query(memory, query), top_k=top_k)
-    if result is None:
+    device_result = search_device(query=query, vectors=embed_mem0_query(memory, query), top_k=top_k)
+    if device_result is None:
         raise RuntimeError(
             "KV retrieval requires GPU device results; Jasper returned no device result."
         )
-    return StoreSearch(result, time.perf_counter() - started, _last_search_s(memory))
+    return StoreSearch(device_result, time.perf_counter() - started, _last_search_s(memory))
 
 
 def materialize_store_device_result(memory: Any, result: DeviceSearchResult) -> list[SearchHit]:
@@ -169,10 +165,6 @@ def store_stable_id_items(memory: Any) -> tuple[tuple[int, str], ...]:
 
 
 def _vector_store_method(memory: Any, name: str, *, missing: str | None = None) -> Callable:
-    # Mem0 types ``vector_store`` as its generic VectorStoreBase, and the device
-    # search, result materialization, and stable-id extensions exist only on
-    # the benchmark's Jasper adapter, so each capability is checked where it
-    # is used instead of assumed from the type.
     method = getattr(memory.vector_store, name, None)
     if not callable(method):
         raise RuntimeError(missing or f"Mem0 vector store has no {name}().")
@@ -185,22 +177,22 @@ def _last_search_s(memory: Any) -> float:
 
 @contextmanager
 def _cached_fact_embeddings(config: ThroughputConfig, memory: Any) -> Iterator[None]:
-    live = memory_embedder(memory)
+    live_embedder = memory_embedder(memory)
     if not config.embedding_cache_enabled:
         yield
         return
-    cached = CachedEmbedder(
-        live,
+    cached_embedder = CachedEmbedder(
+        live_embedder,
         cache_dir=config.embedding_cache_dir,
         model=config.embedding_model,
         mode="write",
         endpoint=config.embedding_base_url,
     )
-    install_embedder(memory, cached)
+    install_embedder(memory, cached_embedder)
     try:
         yield
     finally:
-        install_embedder(memory, live)
+        install_embedder(memory, live_embedder)
 
 
 def _vector_config(config: ThroughputConfig, backend: str) -> VectorStoreConfig:

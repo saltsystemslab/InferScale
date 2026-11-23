@@ -13,6 +13,7 @@ from typing import Any
 from loguru import logger
 
 from benchmarks.common.atomic_files import atomic_write_text
+from benchmarks.common.logging import configure_logging
 from benchmarks.common.stats import percentile
 from benchmarks.embedding.corpus import load_corpus
 
@@ -21,6 +22,11 @@ QWEN3_EMBEDDING_MAX_LENGTH = 32768
 DEFAULT_BATCH_SIZES = (1, 8, 32, 64, 128)
 LATENCY_PERCENTILES = (("p50", 0.5), ("p95", 0.95), ("p99", 0.99))
 REPORT_SCHEMA_VERSION = 1
+MS_PER_SECOND = 1000
+DEFAULT_OUTPUT_FOLDER = Path("results/embedding")
+OUTPUT_STAMP_FORMAT = "%Y%m%dT%H%M%S%fZ"
+TABLE_HEADER = "batch  facts/s   tokens/s   p50 batch ms   p95 batch ms   amortized ms/fact"
+TABLE_ROW = "{:5d}  {:8.1f}  {:9.1f}  {:13.3f}  {:13.3f}  {:17.3f}"
 
 
 def distribution(values: list[float]) -> dict[str, float]:
@@ -45,42 +51,42 @@ def measure(
         raise ValueError("Expected nonempty texts with matching token lengths")
     if min(batch_size, warmup, repeats) < 1:
         raise ValueError("batch_size, warmup, and repeats must be positive")
-    starts = list(range(0, len(texts), batch_size))
-    _warm_up(embedder, texts, starts, batch_size=batch_size, warmup=warmup)
+    batch_starts = list(range(0, len(texts), batch_size))
+    _warm_up(embedder, texts, batch_starts, batch_size=batch_size, warmup=warmup)
     embedder.reset_peak_memory()
     batches = [
         _timed_batch(
             embedder, texts, lengths, start, batch_size=batch_size, repeat=repeat, clock=clock
         )
         for repeat in range(repeats)
-        for start in starts
+        for start in batch_starts
     ]
-    seconds = sum(row["latency_ms"] for row in batches) / 1000
-    facts = sum(row["facts"] for row in batches)
-    tokens = sum(row["tokens"] for row in batches)
+    embedding_seconds = sum(batch["latency_ms"] for batch in batches) / MS_PER_SECOND
+    total_facts = sum(batch["facts"] for batch in batches)
+    total_tokens = sum(batch["tokens"] for batch in batches)
     return {
         "batch_size": batch_size,
         "effective_max_batch_size": min(batch_size, len(texts)),
         "warmup_batches": warmup,
         "repeats": repeats,
         "measured_batches": len(batches),
-        "total_facts": facts,
-        "total_tokens": tokens,
-        "embedding_seconds": seconds,
-        "facts_per_second": facts / seconds,
-        "tokens_per_second": tokens / seconds,
-        "amortized_ms_per_fact": seconds * 1000 / facts,
-        "batch_latency_ms": distribution([row["latency_ms"] for row in batches]),
+        "total_facts": total_facts,
+        "total_tokens": total_tokens,
+        "embedding_seconds": embedding_seconds,
+        "facts_per_second": total_facts / embedding_seconds,
+        "tokens_per_second": total_tokens / embedding_seconds,
+        "amortized_ms_per_fact": embedding_seconds * MS_PER_SECOND / total_facts,
+        "batch_latency_ms": distribution([batch["latency_ms"] for batch in batches]),
         "peak_cuda_allocated_bytes": embedder.peak_memory_bytes(),
         "batches": batches,
     }
 
 
 def _warm_up(
-    embedder: Any, texts: list[str], starts: list[int], *, batch_size: int, warmup: int
+    embedder: Any, texts: list[str], batch_starts: list[int], *, batch_size: int, warmup: int
 ) -> None:
     for step in range(warmup):
-        start = starts[step % len(starts)]
+        start = batch_starts[step % len(batch_starts)]
         batch = texts[start : start + batch_size]
         vectors = embedder.encode(batch)
         embedder.synchronize()
@@ -111,48 +117,41 @@ def _timed_batch(
         "start": start,
         "facts": len(batch),
         "tokens": sum(lengths[start : start + batch_size]),
-        "latency_ms": elapsed * 1000,
+        "latency_ms": elapsed * MS_PER_SECOND,
     }
 
 
 def main() -> None:
+    configure_logging()
     parser = _build_parser()
     args = parser.parse_args()
     if args.max_length > QWEN3_EMBEDDING_MAX_LENGTH:
         parser.error(f"--max-length must be <= {QWEN3_EMBEDDING_MAX_LENGTH} for {DEFAULT_MODEL}")
-    texts, corpus = load_corpus(args.catalog_dir, seed=args.seed, max_facts=args.max_facts)
+    texts, corpus_manifest = load_corpus(args.catalog_dir, seed=args.seed, max_facts=args.max_facts)
     if args.inspect:
-        print(json.dumps(corpus, indent=2))
+        logger.info(json.dumps(corpus_manifest, indent=2))
         return
-    output = _output_path(parser, args.output)
+    output_path = _new_output_path(parser, args.output)
     logger.info("Loading {}; corpus contains {} facts", args.model, len(texts))
-    from benchmarks.embedding.model import QwenEmbedder
-
-    embedder = QwenEmbedder(
-        model=args.model,
-        revision=args.revision,
-        device=args.device,
-        dtype=args.dtype,
-        attention=args.attention,
-        max_length=args.max_length,
-    )
-    lengths = embedder.token_lengths(texts)
-    corpus["token_lengths"] = {**distribution(lengths), "min": min(lengths), "max": max(lengths)}
-    report = _report_header(args, embedder.metadata, corpus)
-    print("batch  facts/s   tokens/s   p50 batch ms   p95 batch ms   amortized ms/fact")
-    for size in report["requested_batch_sizes"]:
-        row = measure(
-            embedder, texts, lengths, batch_size=size, warmup=args.warmup, repeats=args.repeats
+    embedder = _load_embedder(args)
+    token_lengths = embedder.token_lengths(texts)
+    corpus_manifest["token_lengths"] = _token_length_summary(token_lengths)
+    report = _report_header(args, embedder.metadata, corpus_manifest)
+    logger.info(TABLE_HEADER)
+    for batch_size in report["requested_batch_sizes"]:
+        result = measure(
+            embedder,
+            texts,
+            token_lengths,
+            batch_size=batch_size,
+            warmup=args.warmup,
+            repeats=args.repeats,
         )
-        report["results"].append(row)
+        report["results"].append(result)
         report["complete"] = len(report["results"]) == len(report["requested_batch_sizes"])
-        atomic_write_text(output, json.dumps(report, indent=2) + "\n")
-        print(
-            f"{size:5d}  {row['facts_per_second']:8.1f}  {row['tokens_per_second']:9.1f}  "
-            f"{row['batch_latency_ms']['p50']:13.3f}  {row['batch_latency_ms']['p95']:13.3f}  "
-            f"{row['amortized_ms_per_fact']:17.3f}"
-        )
-    print(f"Saved {output}")
+        atomic_write_text(output_path, json.dumps(report, indent=2) + "\n")
+        _log_table_row(batch_size, result)
+    logger.info("Saved {}", output_path)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -189,24 +188,41 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _positive_int(value: str) -> int:
-    result = int(value)
-    if result < 1:
+def _positive_int(text: str) -> int:
+    number = int(text)
+    if number < 1:
         raise argparse.ArgumentTypeError("must be positive")
-    return result
+    return number
 
 
-def _output_path(parser: argparse.ArgumentParser, requested: Path | None) -> Path:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    output = requested or Path("results/embedding") / f"{stamp}.json"
-    output.parent.mkdir(parents=True, exist_ok=True)
-    if output.exists():
-        parser.error(f"Output already exists: {output}")
-    return output
+def _new_output_path(parser: argparse.ArgumentParser, requested: Path | None) -> Path:
+    stamp = datetime.now(timezone.utc).strftime(OUTPUT_STAMP_FORMAT)
+    output_path = requested or DEFAULT_OUTPUT_FOLDER / f"{stamp}.json"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if output_path.exists():
+        parser.error(f"Output already exists: {output_path}")
+    return output_path
+
+
+def _load_embedder(args: argparse.Namespace) -> Any:
+    from benchmarks.embedding.model import QwenEmbedder
+
+    return QwenEmbedder(
+        model=args.model,
+        revision=args.revision,
+        device=args.device,
+        dtype=args.dtype,
+        attention=args.attention,
+        max_length=args.max_length,
+    )
+
+
+def _token_length_summary(token_lengths: list[int]) -> dict[str, float]:
+    return {**distribution(token_lengths), "min": min(token_lengths), "max": max(token_lengths)}
 
 
 def _report_header(
-    args: argparse.Namespace, model_metadata: dict[str, Any], corpus: dict[str, Any]
+    args: argparse.Namespace, model_metadata: dict[str, Any], corpus_manifest: dict[str, Any]
 ) -> dict[str, Any]:
     return {
         "schema_version": REPORT_SCHEMA_VERSION,
@@ -214,17 +230,33 @@ def _report_header(
         "python": platform.python_version(),
         "platform": platform.platform(),
         "model": model_metadata,
-        "corpus": corpus,
+        "corpus": corpus_manifest,
         "timing_scope": (
             "tokenization + host/device transfer + forward + pooling + normalization + CPU output"
         ),
         "scheduling": (
             "sequential batches, fixed seeded shuffle, no length sorting or embedding cache"
         ),
-        "requested_batch_sizes": list(dict.fromkeys(args.batch_sizes)),
+        "requested_batch_sizes": _without_repeats(args.batch_sizes),
         "complete": False,
         "results": [],
     }
+
+
+def _without_repeats(batch_sizes: list[int]) -> list[int]:
+    return list(dict.fromkeys(batch_sizes))
+
+
+def _log_table_row(batch_size: int, result: dict[str, Any]) -> None:
+    logger.info(
+        TABLE_ROW,
+        batch_size,
+        result["facts_per_second"],
+        result["tokens_per_second"],
+        result["batch_latency_ms"]["p50"],
+        result["batch_latency_ms"]["p95"],
+        result["amortized_ms_per_fact"],
+    )
 
 
 if __name__ == "__main__":

@@ -4,6 +4,9 @@ import threading
 from collections import deque
 from dataclasses import dataclass, field
 
+BYTES_PER_GB = 1e9
+MS_PER_S = 1e3
+
 
 @dataclass(slots=True)
 class TransferRecord:
@@ -62,7 +65,10 @@ class TransferMetrics:
         stalls = sorted(record.staging_stall_ms for record in records)
         timed = [record for record in records if record.h2d_latency_ms > 0]
         overlaps = [overlap_ratio(record) for record in timed]
-        bandwidths = [(record.num_bytes / 1e9) / (record.h2d_latency_ms / 1e3) for record in timed]
+        bandwidths = [
+            (record.num_bytes / BYTES_PER_GB) / (record.h2d_latency_ms / MS_PER_S)
+            for record in timed
+        ]
         return {
             "total_transfers": len(records),
             "total_bytes_transferred": sum(record.num_bytes for record in records),

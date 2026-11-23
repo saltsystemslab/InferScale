@@ -149,7 +149,7 @@ def _execute_run(
     log_file = execution.launch_folder / "logs" / f"{run_id}.{execution.stage}.log"
     if execution.stage == "extract":
         return run_extraction(run_config, execution.runtime, job, log_file)
-    if False:
+    if execution.family == "memory" and execution.stage == "run":
         catalog_check = {**job, "stage": "check-catalogs"}
         catalog_check_exit_code = run_job(catalog_check, log_file.with_suffix(".catalogs.log"))
         if catalog_check_exit_code != 0:

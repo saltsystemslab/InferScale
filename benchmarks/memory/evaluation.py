@@ -1,5 +1,3 @@
-"""Answer one question with the retrieved facts, judge it, and build its prediction record."""
-
 from __future__ import annotations
 
 from typing import Any
@@ -82,7 +80,6 @@ def build_prediction_record(
 
 
 def evidence_context(sample: ConversationSample, qa: QuestionAnswer) -> str:
-    """The evidence turns of a question, rendered the way the upstream judge prompt shows them."""
     evidence = qa.evidence
     if isinstance(evidence, str):
         evidence_ids = [evidence]

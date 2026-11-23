@@ -1,5 +1,3 @@
-"""Replay an immutable fact catalog into a fresh Mem0 store without inference."""
-
 from __future__ import annotations
 
 from typing import Any
@@ -11,11 +9,6 @@ from benchmarks.memory.mem0.memory_handles import added_memory_ids
 def load_facts_into_memory(
     memory: Any, facts: tuple[MemoryFact, ...], *, link_entities: bool = True
 ) -> None:
-    """Add every catalog fact with ``infer=False`` so Mem0 stores the text verbatim.
-
-    ``link_entities=False`` skips the entity store, which only Mem0's own
-    search reads; callers that query the vector store directly never need it.
-    """
     for fact in facts:
         result = memory.add(
             [{"role": "user", "content": fact.text}],

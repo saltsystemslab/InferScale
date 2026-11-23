@@ -1,10 +1,3 @@
-"""The requests of every user count, prepared once and charged to each count that includes them.
-
-A request's prompt and the time its retrieval and prompt construction took are
-charged to every user count whose batch includes that user, so one worker
-measures all user counts against the same engine.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
@@ -24,12 +17,6 @@ from benchmarks.memory.throughput.workload import (
 
 @dataclass(frozen=True, slots=True)
 class PreparedRequest:
-    """One request's prompt and the time its retrieval and prompt construction took.
-
-    ``cached_prefix_tokens`` is the prompt prefix an external KV cache is
-    expected to serve; zero for prompt injection.
-    """
-
     prompt_token_ids: list[int]
     retrieval_s: float
     search_s: float
@@ -39,8 +26,6 @@ class PreparedRequest:
 
 @dataclass(slots=True)
 class UserCountAccumulator:
-    """The batch and the setup costs charged to one user count."""
-
     num_users: int
     memory_setup_time_s: float
     prompts: list[dict[str, list[int]]] = field(default_factory=list)
@@ -74,7 +59,6 @@ def prepare_user_batches(
     requests_by_user: Mapping[int, Sequence[LocomoRequest]],
     prepare_request: PrepareRequest,
 ) -> list[UserCountAccumulator]:
-    """Prepare every user's requests once, charging each user count that includes the user."""
     batches = [
         UserCountAccumulator(count, stores.setup_time_for_users(samples, count))
         for count in user_counts

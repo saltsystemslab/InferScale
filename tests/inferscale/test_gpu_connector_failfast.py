@@ -149,8 +149,6 @@ def test_requests_covered_unions_loaded_and_native_request_ids() -> None:
 
 
 class _FakeStagingStore(_FakeStore):
-    """Fake store exposing the pinned-host staging protocol."""
-
     def __init__(self, memories: dict[str, object], num_staging_slots: int = 4) -> None:
         super().__init__(memories)
         self.num_staging_slots = num_staging_slots

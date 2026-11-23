@@ -1,5 +1,3 @@
-"""Run a memory benchmark end to end, or judge a saved run's predictions."""
-
 from __future__ import annotations
 
 from typing import Any
@@ -119,7 +117,6 @@ def write_run_outputs(
     sample_setup_metrics: list[dict[str, Any]],
     write_reports: bool,
 ) -> dict[str, Any]:
-    """Write predictions.jsonl and summary.json, plus the query reports when asked."""
     replace_jsonl(config.run_dir / PREDICTIONS_FILE, records)
     summary = summarize_records(
         records,
@@ -138,13 +135,6 @@ def write_run_outputs(
 def _reconcile_with_evidence(
     config: MemoryRunConfig, saved_config: dict[str, Any]
 ) -> dict[str, Any]:
-    """Keep deferred judging on the evidence protocol the run was recorded with.
-
-    Without rejudge the run's saved with_evidence value is adopted, so the
-    judge JSON cannot silently judge under a different protocol than
-    config.json. With rejudge the judge JSON wins and the saved config.json
-    is rewritten to match.
-    """
     saved_with_evidence = bool(saved_config.get("with_evidence", False))
     if config.rejudge:
         if config.with_evidence != saved_with_evidence:

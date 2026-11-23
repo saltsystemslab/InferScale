@@ -1,12 +1,3 @@
-"""vLLM KV connector that injects composed memory KV into scheduled requests.
-
-Scheduler side: a request whose prompt starts with a registered memory's
-token ids is credited with those tokens as externally computed, so vLLM
-skips their prefill. Worker side: before the forward pass, the memory's KV
-is scattered into the request's allocated blocks. Memories reach the
-connector through the namespace registry in this process.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -55,8 +46,6 @@ def snapshot_load_stats() -> dict[str, int]:
 
 @dataclass(slots=True, frozen=True)
 class _PendingMatch:
-    """A matched request that is waiting for its block allocation."""
-
     user_id: str
     # Memory tokens the native prefix cache already covers; the load skips them.
     skip_tokens: int
@@ -70,8 +59,6 @@ class _ScheduledLoad:
 
 
 class MemoryKVConnector(KVConnectorBase_V1):
-    """KV connector for composed memory tensors registered in this process."""
-
     def __init__(
         self, vllm_config: VllmConfig, role: KVConnectorRole, kv_cache_config: Any | None = None
     ) -> None:
@@ -180,7 +167,6 @@ class MemoryKVConnector(KVConnectorBase_V1):
     def request_finished(
         self, request: Request, block_ids: list[int]
     ) -> tuple[bool, dict[str, Any] | None]:
-        """Forget a match whose request ended before allocation; blocks free synchronously."""
         del block_ids
         self._pending_matches.pop(request.request_id, None)
         return False, None

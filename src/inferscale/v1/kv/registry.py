@@ -1,11 +1,3 @@
-"""Process-local registry of KV memory stores keyed by connector namespace.
-
-The facade (or a benchmark client) and the in-process vLLM connector are
-constructed independently but must share one store, so they meet here:
-whichever side asks for a namespace first creates its store, and both pass
-the backend explicitly so a mismatch fails fast.
-"""
-
 from __future__ import annotations
 
 import threading
@@ -62,7 +54,6 @@ def get_gpu_memory_store(
     backend: str | None = None,
     num_staging_slots: int | None = None,
 ) -> Any:
-    """Return the process-local KV memory store for a connector namespace."""
     resolved = backend or DEFAULT_KV_STORE_BACKEND
     if resolved not in KNOWN_KV_STORE_BACKENDS:
         raise ValueError(

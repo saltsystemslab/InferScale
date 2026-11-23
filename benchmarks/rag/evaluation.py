@@ -1,5 +1,3 @@
-"""The prediction record of one RAG query: answer, verdict, string metrics, retrieved chunks."""
-
 from __future__ import annotations
 
 from collections.abc import Mapping

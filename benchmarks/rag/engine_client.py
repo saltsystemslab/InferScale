@@ -1,5 +1,3 @@
-"""What every RAG answer client shares: a vLLM engine, the prompt scaffold, and the budget check."""
-
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
@@ -22,8 +20,6 @@ from inferscale.v1.types import SearchHit
 
 
 class RagAnswerClient(Protocol):
-    """The contract the answer run drives."""
-
     def start_llm(self) -> None: ...
 
     def answer(
@@ -36,11 +32,6 @@ class RagAnswerClient(Protocol):
 
 
 class RagEngineClient:
-    """A vLLM engine over the corpus chunks, started with the dataset's prompt scaffold.
-
-    Subclasses add how passages reach the model: injected KV or prompt text.
-    """
-
     label = "answer"
 
     def __init__(
@@ -83,10 +74,10 @@ class RagEngineClient:
         self._scaffold = None
 
     def _prepare(self) -> None:
-        """Load what the client needs beside the engine; runs once before the engine starts."""
+        pass
 
     def _after_start(self) -> None:
-        """Runs once the engine and the scaffold exist, before the first answer."""
+        pass
 
     def _engine_config(self) -> EngineConfig:
         return self.config.engine_config()

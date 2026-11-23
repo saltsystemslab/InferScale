@@ -1,5 +1,3 @@
-"""JSON, JSONL, and CSV result files written by the benchmark runners."""
-
 from __future__ import annotations
 
 import csv
@@ -14,8 +12,6 @@ from benchmarks.common.atomic_files import atomic_write_text
 
 
 class JsonlWriter(AbstractContextManager["JsonlWriter"]):
-    """Append one JSON object per line, flushing after every row so a crash keeps earlier rows."""
-
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -72,7 +68,6 @@ def write_csv(path: str | Path, rows: Iterable[dict[str, Any]], columns: list[st
 
 
 def csv_value(value: Any) -> Any:
-    """Lists and objects become compact JSON; booleans become 0 or 1."""
     if isinstance(value, list | dict):
         return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     if isinstance(value, bool):

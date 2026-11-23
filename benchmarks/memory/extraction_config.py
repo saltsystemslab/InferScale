@@ -1,5 +1,3 @@
-"""The ``extraction`` section: how the extract-facts stage serves the answer model for Mem0."""
-
 from __future__ import annotations
 
 from collections.abc import Mapping

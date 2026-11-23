@@ -1,5 +1,3 @@
-"""Build memory test configurations through the current JSON configuration API."""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -12,7 +10,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def jsonable_value(value: Any) -> Any:
-    """Paths become strings and tuples become lists, so test overrides read like JSON."""
     if isinstance(value, Path):
         return str(value)
     if isinstance(value, tuple | list):

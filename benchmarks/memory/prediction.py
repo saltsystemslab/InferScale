@@ -1,12 +1,3 @@
-"""The run stage: precompute each sample's KV, start vLLM once, then retrieve and answer.
-
-Samples are prepared in two passes because the HF encoder and vLLM cannot
-share the GPU: every sample's fact catalog is loaded and (for KV injection)
-encoded first, then vLLM starts and each sample's live retriever answers its
-questions. A backend that warms a cache from the catalog does so once vLLM
-runs, as part of the sample's preparation time.
-"""
-
 from __future__ import annotations
 
 import time
@@ -103,7 +94,6 @@ def planned_question_count(samples: list[ConversationSample], max_questions: int
 
 
 def scored_questions(questions: list[QuestionAnswer]) -> list[QuestionAnswer]:
-    """The questions the upstream scorer counts; adversarial questions are left out."""
     return [qa for qa in questions if str(qa.category).strip() in SCORED_CATEGORIES]
 
 
@@ -119,7 +109,6 @@ def _prepare_samples(
     builder: SampleMemoryBuilder,
     samples: list[ConversationSample],
 ) -> list[PreparedSample]:
-    """Load each sample's catalog and, for KV injection, encode it before vLLM starts."""
     prepared: list[PreparedSample] = []
     remaining = config.max_questions
     for index, sample in enumerate(samples, start=1):
@@ -157,7 +146,6 @@ def _answer_prepared_sample(
     writer: JsonlWriter,
     progress: _Progress,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Answer one prepared sample's questions; returns its setup row and records."""
     sample = prepared.sample
     retriever, memory_metrics = builder.build_retriever_with_metrics(sample)
     setup_row = {**prepared.setup_row, **memory_metrics}
@@ -198,8 +186,6 @@ def _answer_prepared_sample(
 
 
 class _Progress:
-    """Question-level progress logging at the configured interval."""
-
     def __init__(self, planned: int, interval: int) -> None:
         self.planned = planned
         self.interval = interval

@@ -1,11 +1,3 @@
-"""The mem0 prompt-injection throughput conditions: retrieved facts injected as prompt text.
-
-mem0_qdrant and mem0_jasper differ only in the vector backend of the per-sample
-store. Every user's requests are searched once, and a request's prompt and
-timings are charged to every user count whose batch includes that user, so one
-worker measures all user counts against the same engine.
-"""
-
 from __future__ import annotations
 
 import shutil

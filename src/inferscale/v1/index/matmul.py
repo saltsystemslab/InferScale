@@ -1,5 +1,3 @@
-"""Exact inner-product retrieval over a resident CUDA matrix."""
-
 from __future__ import annotations
 
 import re
@@ -16,12 +14,6 @@ from .vectors import as_float32_vector
 
 
 class MatmulIndex:
-    """Score every stored vector using FP32 CUDA matmul, then select top-k.
-
-    Stable IDs are row ordinals; equal-score results may appear in any order.
-    Torch and CUDA are required only when a nonempty corpus is finalized or searched.
-    """
-
     def __init__(self, *, device: str = "cuda:0") -> None:
         if not isinstance(device, str) or re.fullmatch(r"cuda(?::[0-9]+)?", device) is None:
             raise ValueError("MatmulIndex.device must be a CUDA device such as 'cuda:0'.")

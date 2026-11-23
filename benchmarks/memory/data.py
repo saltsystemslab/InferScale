@@ -1,17 +1,3 @@
-"""LoCoMo dataset records and the dataset-specific helpers the benchmark shares.
-
-A LoCoMo file is a JSON list of samples. Each sample has a ``sample_id``, a
-``conversation`` object, and a ``qa`` list. The conversation holds
-``speaker_a`` and ``speaker_b`` and, per session N, a ``session_N`` list of
-turns plus a ``session_N_date_time`` string such as "1:56 pm on 8 May, 2023".
-A turn has ``speaker``, ``dia_id``, and ``text``; image turns add
-``img_url``, ``blip_caption``, and ``query``. A question has ``question``,
-``evidence`` (dialogue ids), an integer ``category`` from 1 to 5, and an
-``answer``; adversarial questions (category 5) carry ``adversarial_answer``
-instead. Questions have no id in the file, so they are numbered ``q0``,
-``q1``, ... in file order.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -71,7 +57,6 @@ def load_locomo(path: str | Path, max_samples: int | None = None) -> list[Conver
 
 
 def format_turn_for_memory(turn: Turn) -> str:
-    """The turn text Mem0 ingests: speaker, utterance, and the shared image, if any."""
     text = turn.text.strip()
     raw = turn.raw if isinstance(turn.raw, dict) else {}
     image_query = str(raw.get("query") or "").strip()
@@ -91,7 +76,6 @@ def format_turn_for_memory(turn: Turn) -> str:
 
 
 def locomo_turn_role(sample: ConversationSample, turn: Turn) -> str:
-    """Mem0's chat role for a turn: speaker_a is the user and speaker_b the assistant."""
     conversation = sample.raw.get("conversation", sample.raw)
     if not isinstance(conversation, dict):
         conversation = {}
@@ -108,7 +92,6 @@ def locomo_turn_role(sample: ConversationSample, turn: Turn) -> str:
 
 
 def locomo_timestamp(value: str | None) -> tuple[int, str]:
-    """A UTC epoch and ISO pair for a session date; records without a date use the Unix epoch."""
     text = str(value or "").strip()
     if not text:
         parsed = datetime(1970, 1, 1, tzinfo=timezone.utc)
@@ -124,7 +107,6 @@ def locomo_timestamp(value: str | None) -> tuple[int, str]:
 
 
 def sample_fingerprint(sample: ConversationSample) -> str:
-    """A short digest of the conversation content, part of every per-sample cache key."""
     conversation = sample.raw.get("conversation", sample.raw)
     if not isinstance(conversation, dict):
         conversation = {}
@@ -168,7 +150,6 @@ def _sample(record: dict[str, Any]) -> ConversationSample:
 
 
 def _sessions_in_date_order(conversation: dict[str, Any]) -> list[tuple[str, str | None]]:
-    """Session keys and dates, earliest first; undated sessions keep their numeric order."""
     sessions = []
     for key in conversation:
         match = SESSION_KEY.match(key)

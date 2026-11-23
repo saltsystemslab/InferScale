@@ -1,21 +1,3 @@
-"""QASPER dataset loader (Dasigi et al., 2021), official test split.
-
-416 NLP papers with 1,451 questions. Each question targets one paper and has
-several independent reference annotations; reference answer strings are
-derived exactly like the official evaluator (qasper_evaluator.py, shipped in
-the same archive): unanswerable -> "Unanswerable", extractive spans joined
-with ", ", else the free-form answer, else Yes/No. String metrics take the
-best over references.
-
-The per-question type is the FIRST reference's type (extractive, abstractive,
-boolean, or unanswerable; the official evaluator buckets by best-matching
-reference instead and calls unanswerable "none"). Evidence is the union of
-the references' evidence paragraphs, minus "FLOAT SELECTED" table and figure
-entries, matching the evaluator's text_evidence_only mode; every evidence
-paragraph appears verbatim in the rendered paper body, so fact_recall_at_k
-measures whether retrieval surfaced an annotated evidence paragraph.
-"""
-
 from __future__ import annotations
 
 import json
@@ -141,12 +123,6 @@ def _derive_reference(
     question_id: str,
     answer_info: dict[str, Any],
 ) -> tuple[str, str, list[str]]:
-    """Reference string, reference type, and text evidence for one annotation.
-
-    Mirrors qasper_evaluator.get_answers_and_evidence with
-    text_evidence_only=True, except the unanswerable type is named
-    "unanswerable" instead of "none".
-    """
     if answer_info.get("unanswerable"):
         return UNANSWERABLE_TEXT, "unanswerable", []
     if answer_info.get("extractive_spans"):

@@ -1,5 +1,3 @@
-"""Shared stubs and fixtures for the RAG benchmark tests."""
-
 from __future__ import annotations
 
 import json
@@ -8,8 +6,6 @@ from typing import Any
 
 
 class CharTokenizer:
-    """Lossless char-level tokenizer: encode is ord per char, decode is chr join."""
-
     bos_token_id = None
 
     def encode(self, text: str, **_: Any) -> list[int]:
@@ -20,8 +16,6 @@ class CharTokenizer:
 
 
 class TemplateTokenizer(CharTokenizer):
-    """Char tokenizer with a content-trimming chat template (Llama-style)."""
-
     def apply_chat_template(
         self,
         messages: list[dict[str, str]],

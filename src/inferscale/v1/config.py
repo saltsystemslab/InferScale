@@ -1,5 +1,3 @@
-"""Configuration of the InferScale v1 API."""
-
 from __future__ import annotations
 
 import json
@@ -23,8 +21,6 @@ KV_DTYPES = tuple(KV_DTYPE_ALIASES)
 
 @dataclass(slots=True)
 class EngineConfig:
-    """In-process vLLM engine settings."""
-
     gpu_memory_utilization: float = 0.40
     max_model_len: int = 32768
     block_size: int = DEFAULT_BLOCK_SIZE
@@ -34,8 +30,6 @@ class EngineConfig:
 
 @dataclass(slots=True)
 class KVConfig:
-    """Chunk encoder and chunk store settings."""
-
     dtype: str = "bfloat16"
     device: str = "cuda:0"
     max_position: int = 32768
@@ -45,8 +39,6 @@ class KVConfig:
 
 @dataclass(slots=True)
 class EmbeddingConfig:
-    """Embedding model; the API key comes from OPENAI_API_KEY."""
-
     model: str = "text-embedding-3-small"
     base_url: str | None = None
     batch_size: int = 128
@@ -54,8 +46,6 @@ class EmbeddingConfig:
 
 @dataclass(slots=True)
 class PromptConfig:
-    """Text around the injected context and between chunks."""
-
     system_prompt: str = (
         "You are a helpful assistant. Answer using the retrieved context below.\n\n"
     )

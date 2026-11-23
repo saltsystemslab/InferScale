@@ -1,5 +1,3 @@
-"""Retrieved facts and the accounting attached to a composed memory."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -8,8 +6,6 @@ from typing import Any
 
 @dataclass(slots=True, frozen=True)
 class RetrievedFact:
-    """One Mem0 fact as read back from a retrieval hit, with its source turn."""
-
     memory_id: str
     text: str
     text_hash: str
@@ -22,8 +18,6 @@ class RetrievedFact:
 
 @dataclass(slots=True, frozen=True)
 class MemoryFactPlan:
-    """Which facts a memory holds, how they were encoded, and its token accounting."""
-
     context_window: int
     retrieved_fact_ids: tuple[str, ...]
     retrieved_fact_text_hashes: tuple[str, ...]
@@ -41,8 +35,6 @@ class MemoryFactPlan:
 
 @dataclass(slots=True)
 class ComposedSampleMemory:
-    """The KV memory composed for one question from a sample's precomputed chunks."""
-
     kv_by_layer: dict[str, Any]
     token_ids: list[int]
     num_tokens: int

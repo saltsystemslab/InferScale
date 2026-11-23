@@ -1,12 +1,3 @@
-"""Per-sample chunk encoding and top-k composition for LoCoMo Mem0 facts.
-
-The composer owns one LoCoMo sample's fact-chunk corpus: it encodes every
-fact (with its preceding conversation turns as an encoding-only prefix),
-keeps the scaffold chunks as local GPU tensors, and composes the retrieved
-facts in reverse rank order with the fact-plan accounting the benchmark
-records.
-"""
-
 from __future__ import annotations
 
 import time
@@ -39,8 +30,6 @@ from .types import ComposedSampleMemory, RetrievedFact
 
 
 class SampleComposer:
-    """GPU-resident pre-RoPE chunk encoder and top-k composer for one sample."""
-
     def __init__(
         self,
         *,
@@ -92,13 +81,6 @@ class SampleComposer:
         block_size: int = 16,
         chunk_store: ChunkStore | None = None,
     ) -> SampleComposer:
-        """A composer over cache-loaded chunks, skipping the encode entirely.
-
-        The live facts are re-attached (not read from the cache) so compose()
-        compares retrieved facts against the real catalog; fact token ids are
-        recomputed from the tokenizer. With a chunk store, the cache-loaded
-        KV moves straight into it.
-        """
         composer = cls(
             encoder=encoder,
             context_window=context_window,
@@ -119,7 +101,6 @@ class SampleComposer:
 
     @property
     def stored_chunk_bytes(self) -> int:
-        """KV bytes of the fact chunks as measured when they moved into the store."""
         return self._stored_chunk_bytes
 
     @property
@@ -127,7 +108,6 @@ class SampleComposer:
         return self._stored_chunk_layers
 
     def scaffold_chunks(self) -> dict[str, KVChunk | None]:
-        """The scaffold chunks by cache slot name."""
         return {
             "header": self.header_chunk,
             "empty_memory": self.empty_memory_chunk,
@@ -138,12 +118,6 @@ class SampleComposer:
         return [chunk for chunk in self.scaffold_chunks().values() if chunk is not None]
 
     def move_chunks_to_store(self) -> None:
-        """Move fact-chunk KV into the chunk store, keeping metadata locally.
-
-        No-op without a chunk store. Callers that save the disk cache must do
-        so before this move: afterwards the local chunks are metadata-only and
-        the store owns the tensors until close().
-        """
         if self.chunk_store is None:
             return
         if not self._chunks_in_store:
@@ -181,7 +155,6 @@ class SampleComposer:
     def compose(
         self, hits: list[SearchHit], *, memory_token_budget: int | None = None
     ) -> ComposedSampleMemory:
-        """Compose the retrieved facts' KV in reverse rank order, best fact last."""
         started = time.perf_counter()
         header, empty_memory, footer = self._encoded_scaffold()
         retrieved_facts = unique_memory_facts(hits)
@@ -268,7 +241,6 @@ class SampleComposer:
         return self.header_chunk, self.empty_memory_chunk, self.footer_chunk
 
     def _check_selected_facts(self, selected_facts: Sequence[RetrievedFact]) -> None:
-        """Every retrieved fact must be the fact that was encoded, unchanged."""
         for fact in selected_facts:
             encoded = self._facts_by_id.get(fact.memory_id)
             if encoded is None:
@@ -282,7 +254,6 @@ class SampleComposer:
                 )
 
     def _block_aligned_prefix(self, memory_tokens: int, fact_tokens_end: int) -> int:
-        """Tokens vLLM loads from the injected KV; the rest of the memory is recomputed."""
         loaded_tokens = (memory_tokens // self.block_size) * self.block_size
         if loaded_tokens < fact_tokens_end:
             raise RuntimeError(

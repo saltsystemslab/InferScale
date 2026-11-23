@@ -1,5 +1,3 @@
-"""The fact texts of one Mem0 fact catalog directory, as the embedding benchmark's corpus."""
-
 from __future__ import annotations
 
 import hashlib
@@ -16,7 +14,6 @@ PER_SAMPLE_KEYS = frozenset({"facts", "sample_id", "sample_fingerprint"})
 def load_corpus(
     catalog_dir: Path, *, seed: int = 0, max_facts: int | None = None
 ) -> tuple[list[str], dict[str, Any]]:
-    """Read one catalog leaf directory, preserving exact text and multiplicity."""
     if max_facts is not None and max_facts < 1:
         raise ValueError("max_facts must be positive")
     paths = sorted(catalog_dir.glob("*.json"))

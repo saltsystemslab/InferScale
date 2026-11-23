@@ -1,9 +1,3 @@
-"""What an answer client does around the LMCache engine once vLLM has started.
-
-Everything here imports lmcache, vllm, and torch inside the functions: the
-benchmark modules that use it must import on machines without a GPU.
-"""
-
 from __future__ import annotations
 
 import math
@@ -30,7 +24,6 @@ class WarmupStats:
 
 
 def register_model(llm: Any) -> None:
-    """Hand the loaded model to LMCache so the deferred blender can be built."""
     llm.apply_model(_register_with_lmcache)
 
 
@@ -54,12 +47,6 @@ def lmcache_engine() -> Any:
 
 
 def lmcache_separator() -> list[int]:
-    """The separator token ids LMCache splits prompts on, which the prompts must use.
-
-    LMCache encodes ``blend_special_str`` with its own Hugging Face tokenizer, and
-    for Mistral that encoding differs from vLLM's tokenizer, so the ids are read
-    from LMCache rather than derived again.
-    """
     database = getattr(lmcache_engine(), "token_database", None)
     separator = getattr(database, "sep_tokens", None)
     if separator is None:
@@ -71,7 +58,6 @@ def lmcache_separator() -> list[int]:
 
 
 def clear_cache() -> int:
-    """Empty every LMCache tier; returns the number of removed objects."""
     return int(lmcache_engine().clear())
 
 
@@ -83,7 +69,6 @@ def cpu_cache_usage_bytes() -> int | None:
 
 
 def kv_bytes_per_token() -> int:
-    """Bytes of KV one token occupies in LMCache's cache, from the engine's own layout."""
     import torch
 
     metadata = lmcache_engine().metadata
@@ -101,11 +86,6 @@ def require_cache_capacity(
     max_local_cpu_size_gb: float,
     what: str,
 ) -> int:
-    """Fail before warming when the cache cannot hold the units plus the request tails.
-
-    Eviction would silently turn blend hits into misses, so the limit is enforced
-    up front rather than observed afterwards. Returns the required bytes.
-    """
     required = int(bytes_per_token) * (int(warm_tokens) + int(tail_tokens))
     limit = max_local_cpu_size_gb * GB * CACHE_FILL_FRACTION
     if required > limit:
@@ -118,7 +98,6 @@ def require_cache_capacity(
 
 
 def warm_prompts(llm: Any, prompts: Sequence[Sequence[int]], *, batch_size: int) -> WarmupStats:
-    """Prefill each prompt once so LMCache stores its segment; one token is generated."""
     from vllm import SamplingParams
 
     if batch_size < 1:
@@ -138,7 +117,6 @@ def warm_prompts(llm: Any, prompts: Sequence[Sequence[int]], *, batch_size: int)
 
 
 def warmup_metrics(stats: WarmupStats) -> dict[str, Any]:
-    """The setup metrics every arm records after warming LMCache."""
     usage = cpu_cache_usage_bytes()
     return {
         "lmcache_warm_time_ms": stats.time_ms,
@@ -149,7 +127,6 @@ def warmup_metrics(stats: WarmupStats) -> dict[str, Any]:
 
 
 def shutdown() -> None:
-    """Destroy the LMCache engine and drop the seeded blender so a later engine starts clean."""
     try:
         from lmcache.integration.vllm.utils import ENGINE_NAME
         from lmcache.v1.cache_engine import LMCacheEngineBuilder

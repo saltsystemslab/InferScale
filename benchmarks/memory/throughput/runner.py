@@ -1,12 +1,3 @@
-"""Run every throughput condition in its own worker subprocess and merge the result rows.
-
-Each worker gets a fresh CUDA process so conditions cannot share engine state;
-kv_injection additionally gets one worker per user count because its composed
-memories stay GPU-resident for the whole measurement. Rows are merged into the
-run directory after every worker, so an interrupted run resumes by rerunning
-the same run id.
-"""
-
 from __future__ import annotations
 
 import importlib.util
@@ -183,7 +174,6 @@ def _validate_runtime_requirements(config: ThroughputConfig) -> None:
 
 
 def _validate_existing_config(config: ThroughputConfig) -> None:
-    """A resumed run id must carry exactly the settings its first invocation recorded."""
     path = config.run_dir / "config.json"
     if not path.exists():
         return

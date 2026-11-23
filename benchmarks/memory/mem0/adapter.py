@@ -1,5 +1,3 @@
-"""The Mem0 vector store provider that routes to Jasper or to the local Qdrant store."""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -28,13 +26,6 @@ DEFAULT_TOP_K = 5
 
 
 class Mem0JasperVectorStore(VectorStoreBase):
-    """Mem0 adapter dispatching to the requested local vector backend.
-
-    Mem0 instantiates it under the provider name "jasper" (see provider.py);
-    the ``backend`` setting selects the concrete store. Device search and the
-    stable-id table exist only for the Jasper backend.
-    """
-
     def __init__(
         self,
         *,
@@ -118,7 +109,6 @@ class Mem0JasperVectorStore(VectorStoreBase):
         filters: dict[str, Any] | None = None,
         **_: Any,
     ) -> DeviceSearchResult | None:
-        """Jasper results left on the GPU, or None for backends without device search."""
         del query
         requested = _requested_top_k(top_k)
         if not self.is_jasper:
@@ -220,7 +210,6 @@ def _requested_top_k(top_k: int | None) -> int:
 
 
 def _stable_ids(payloads: list[dict[str, Any]], ids: list[str] | None) -> list[str] | None:
-    """Catalog fact ids when every payload or id provides one, else let the store assign ids."""
     requested = list(ids) if ids is not None else [None] * len(payloads)
     stable = [
         payload.get("fact_id") if payload.get("fact_id") is not None else requested_id
@@ -232,7 +221,6 @@ def _stable_ids(payloads: list[dict[str, Any]], ids: list[str] | None) -> list[s
 
 
 def _normalize_memory_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
-    """Give the payload Mem0's three text aliases and mirror metadata between its two levels."""
     normalized = dict(payload or {})
     memory = normalized.get("memory") or normalized.get("data") or normalized.get("text") or ""
     normalized.setdefault("memory", memory)

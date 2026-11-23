@@ -1,5 +1,3 @@
-"""InferScale v1 API."""
-
 from .api import InferScale
 from .config import (
     EmbeddingConfig,

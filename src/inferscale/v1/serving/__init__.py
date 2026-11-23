@@ -1,5 +1,3 @@
-"""Serving engines."""
-
 from .vllm import (
     GenerationOutput,
     VLLMEngine,

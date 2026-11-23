@@ -1,5 +1,3 @@
-"""Answer text normalization applied before judging and metrics."""
-
 from __future__ import annotations
 
 

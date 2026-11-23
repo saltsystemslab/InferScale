@@ -1,12 +1,3 @@
-"""The kv_injection corpus: every sample's fact chunks encoded into chunk stores before vLLM starts.
-
-The HF encoder cannot share the GPU with vLLM, so the corpus is built first,
-through the same per-sample precompute the accuracy benchmark uses (the disk
-cache when enabled, otherwise encode and save), and the model weights are
-released before anything else is allocated. Only the chunk stores, the
-scaffold chunks, and the RoPE tables stay resident for composition.
-"""
-
 from __future__ import annotations
 
 import time
@@ -30,8 +21,6 @@ from inferscale.v1.protocols import ChunkStore
 
 @dataclass(frozen=True, slots=True)
 class CorpusStats:
-    """Chunk store residency and host-to-device transfer totals for the result row."""
-
     host_mb: float
     h2d_bytes: int
     h2d_avg_ms: float
@@ -41,12 +30,6 @@ class CorpusStats:
 
     @classmethod
     def from_stores(cls, stores: Sequence[ChunkStore]) -> CorpusStats:
-        """Totals over the stores.
-
-        Additive counters are summed, latency averages are weighted by transfer
-        count, and the p95 is the largest store's, so with one store (the
-        single-conversation workload) every figure is that store's own.
-        """
         summaries = [store.get_bench_summary() for store in stores]
         transfers = [int(summary.get("total_transfers", 0)) for summary in summaries]
         total_transfers = sum(transfers)
@@ -76,8 +59,6 @@ class CorpusStats:
 
 @dataclass(slots=True)
 class PrecomputedCorpus:
-    """Every sample's composer with its chunks in the store, plus what the later phases need."""
-
     composers: dict[str, SampleComposer]
     precompute: SamplePrecompute
     tokenizer: Any
@@ -111,7 +92,6 @@ def precompute_corpus(
     samples: Sequence[ConversationSample],
     facts_by_sample: Mapping[str, tuple[MemoryFact, ...]],
 ) -> PrecomputedCorpus:
-    """Encode or load every sample's chunks, then release the encoder weights."""
     started = time.perf_counter()
     precompute = SamplePrecompute(config)
     composers: dict[str, SampleComposer] = {}
@@ -150,7 +130,6 @@ def precompute_corpus(
 
 
 def corpus_footprint(composer: SampleComposer) -> CorpusFootprint:
-    """The size of one sample's encoded chunks, as the projection needs it."""
     header, footer = composer.header_chunk, composer.footer_chunk
     if header is None or footer is None:
         raise RuntimeError("The precomputed sample has no scaffold chunks.")
@@ -163,6 +142,5 @@ def corpus_footprint(composer: SampleComposer) -> CorpusFootprint:
 
 
 def release_cuda_memory() -> None:
-    """Return freed blocks to the driver; Jasper allocates its graphs outside torch's allocator."""
     torch.cuda.synchronize()
     torch.cuda.empty_cache()

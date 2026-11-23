@@ -1,5 +1,3 @@
-"""Encoding plans: an optional encoding-only context prefix plus the target chunk."""
-
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -15,12 +13,6 @@ def build_encoding_plan(
     context_ids: Sequence[str] = (),
     max_input_tokens: int,
 ) -> EncodingPlan:
-    """Plan one forward pass whose KV is kept only for the target span.
-
-    The context prefix conditions the target's KV and is sliced away after
-    the forward pass. When context plus target exceed ``max_input_tokens``
-    the oldest context tokens are dropped first; the target is never cut.
-    """
     if max_input_tokens < 1:
         raise ValueError("max_input_tokens must be >= 1.")
 

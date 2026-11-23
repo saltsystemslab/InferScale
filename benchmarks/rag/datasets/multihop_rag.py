@@ -1,11 +1,3 @@
-"""MultiHop-RAG dataset loader (Tang & Yang, 2024).
-
-Corpus: 609 news articles. Queries: 2,556 with types inference_query,
-comparison_query, temporal_query, and null_query. Null queries have an empty
-evidence_list and the gold answer "Insufficient information."; every non-null
-evidence item names a corpus document (title and url are unique corpus keys).
-"""
-
 from __future__ import annotations
 
 import json

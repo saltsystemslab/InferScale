@@ -1,16 +1,3 @@
-"""Disk cache for pre-encoded per-fact KV chunks, one file per LoCoMo sample.
-
-Chunks are deterministic given the encoder model, dtype, max position,
-context window, block size, sample content, and fact catalog content, so runs
-reuse them instead of reloading the HF encoder and re-encoding every fact.
-Retrieval and composition stay live; only the offline precompute is cached.
-The precompute-kv stage fills the cache ahead of time; run-time misses still
-encode and save inline.
-
-torch is imported only through the library payload helpers, so the key
-helpers stay importable and testable on machines without torch.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -39,8 +26,6 @@ SCAFFOLD_SLOTS = ("header", "empty_memory", "footer")
 
 
 class KVEncodingSettings(Protocol):
-    """The settings that determine a chunk's KV, as both benchmark configs expose them."""
-
     @property
     def model(self) -> str: ...
 
@@ -59,8 +44,6 @@ class KVEncodingSettings(Protocol):
 
 @dataclass(slots=True, frozen=True)
 class ChunkCacheKey:
-    """Everything a cached encode depends on, naming its file and validating its payload."""
-
     model: str
     dtype: str
     context_window: int
@@ -89,7 +72,6 @@ class ChunkCacheKey:
         )
 
     def directory(self, cache_root: Path) -> Path:
-        """The directory shared by every sample encoded with these settings."""
         return (
             Path(cache_root)
             / "kv-chunks"
@@ -103,7 +85,6 @@ class ChunkCacheKey:
         return self.directory(cache_root) / name
 
     def meta(self) -> dict[str, Any]:
-        """The key as stored in, and validated against, every payload."""
         return {
             "model": self.model,
             "dtype": self.dtype,
@@ -118,8 +99,6 @@ class ChunkCacheKey:
 
 @dataclass(slots=True)
 class CachedSampleEncode:
-    """One sample's cached encode, tensors already on the target device."""
-
     fact_chunks: dict[str, KVChunk]
     scaffold_chunks: dict[str, KVChunk | None]
     cos_table: Any
@@ -127,7 +106,6 @@ class CachedSampleEncode:
 
 
 def facts_fingerprint(facts: Sequence[RetrievedFact]) -> str:
-    """Order-sensitive content hash of the unique kv facts feeding the encode."""
     hasher = hashlib.sha256()
     for fact in facts:
         for part in (fact.memory_id, fact.text_hash, fact.source_turn_id):
@@ -139,7 +117,6 @@ def facts_fingerprint(facts: Sequence[RetrievedFact]) -> str:
 def scaffold_chunks_match(
     scaffold_chunks: Mapping[str, KVChunk | None], scaffold: ScaffoldTokens
 ) -> bool:
-    """Cached scaffold chunk token ids must equal the live tokenizer's scaffold."""
     expected = {
         "header": list(scaffold.header_token_ids),
         "empty_memory": list(scaffold.empty_token_ids),
@@ -159,7 +136,6 @@ def payload_is_valid(
     expected_meta: Mapping[str, Any],
     expected_fact_ids: Sequence[str],
 ) -> bool:
-    """Structural validation of a loaded payload, shared by load and tests."""
     if not payload_header_matches(
         payload, version=CHUNK_CACHE_VERSION, expected_meta=expected_meta
     ):
@@ -213,13 +189,6 @@ def load_sample_chunks(
     expected_meta: Mapping[str, Any],
     expected_fact_ids: Sequence[str],
 ) -> CachedSampleEncode | None:
-    """The cached encode, or None on any miss.
-
-    Fact chunks land on ``device``; pass "cpu" when they are headed into the
-    pinned-host chunk store so the disk payload never touches the GPU.
-    Scaffold chunks and the RoPE tables land on ``scaffold_device`` (default
-    ``device``) since composition consumes them directly on the GPU.
-    """
     payload = load_torch_payload(path)
     if payload is None:
         return None

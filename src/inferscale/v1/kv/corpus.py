@@ -1,5 +1,3 @@
-"""The chunk corpus: KV tensors in a chunk store plus per-chunk metadata."""
-
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
@@ -20,15 +18,6 @@ if TYPE_CHECKING:
 
 
 class KVCorpus:
-    """Chunk KV in a store with a GPU ID map, plus local planning metadata.
-
-    ``add`` moves a chunk's tensors into the store and keeps a metadata-only
-    copy (token ids and context provenance) for planning and inspection. The
-    scaffold chunks (header, empty context, footer) stay as local GPU tensors
-    and never enter the store. The store resolves text IDs to KV rows on the
-    GPU whether the payloads live on the GPU or in pinned host memory.
-    """
-
     def __init__(self, store: ChunkStore) -> None:
         self._store = store
         self._meta: dict[str, KVChunk] = {}
@@ -61,18 +50,15 @@ class KVCorpus:
         return chunk_id in self._meta
 
     def get(self, chunk_id: str) -> KVChunk | None:
-        """Metadata-only chunk (empty kv_by_layer)."""
         return self._meta.get(chunk_id)
 
     def fetch(self, chunk_ids: Sequence[str]) -> list[KVChunk]:
-        """Resolve IDs through the store's GPU map and load their KV payloads."""
         return fetch_chunks(self._store, self._meta, list(chunk_ids))
 
     def release(self, chunk_ids: Iterable[str]) -> None:
         release_chunks(self._store, chunk_ids)
 
     def finalize(self) -> None:
-        """Finalize the payload layout and build the GPU lookup."""
         finalize_chunk_store(self._store)
 
     def stats(self) -> dict[str, Any]:

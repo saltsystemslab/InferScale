@@ -1,5 +1,3 @@
-"""Immutable text-ID to KV-row lookup with the mapping resident on CUDA."""
-
 from __future__ import annotations
 
 import hashlib
@@ -10,14 +8,6 @@ from typing import Any
 
 
 class GPUChunkMap:
-    """Resolve chunk IDs on CUDA independently of where KV payloads live.
-
-    Host code hashes the requested strings, then CUDA searches the resident
-    keys and retrieves corpus rows.
-    Setup may inspect IDs on the host, but the map retains no host lookup
-    table and has no CPU lookup fallback.
-    """
-
     def __init__(self, chunk_ids: Sequence[str], *, device: str) -> None:
         # Validate before importing torch so invalid targets fail clearly even
         # in lightweight environments without the optional CUDA dependencies.
@@ -49,7 +39,6 @@ class GPUChunkMap:
 
     @property
     def nbytes(self) -> int:
-        """Resident key and row tensor bytes, excluding transient query inputs."""
         if self._closed:
             return 0
         return sum(
@@ -58,7 +47,6 @@ class GPUChunkMap:
         )
 
     def lookup(self, chunk_ids: Sequence[str]) -> Any:
-        """Return CUDA int64 registration rows in the requested order."""
         self._require_open()
         ids = _string_ids(chunk_ids)
         torch = self._torch
@@ -82,7 +70,6 @@ class GPUChunkMap:
         return self._rows.index_select(0, safe_positions)
 
     def stable_id_row_map(self, bindings: Iterable[tuple[int, str]]) -> Any:
-        """Bind contiguous Jasper stable IDs directly to CUDA corpus rows."""
         self._require_open()
         return self.lookup(_stable_binding_ids(bindings))
 

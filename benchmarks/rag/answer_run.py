@@ -1,5 +1,3 @@
-"""The run stage: retrieve, answer, and judge every query, then write the run's files."""
-
 from __future__ import annotations
 
 import time
@@ -96,7 +94,6 @@ def run_answer(config: RagBenchConfig) -> dict[str, Any]:
 
 
 def build_answer_client(config: RagBenchConfig, corpus: RagCorpus) -> RagAnswerClient:
-    """The client for the configured answer backend; the KV client needs a complete chunk cache."""
     if config.answer_backend == "kv-injection":
         from benchmarks.rag.answer_kv import RagKvAnswerClient
         from benchmarks.rag.kv_cache import RagChunkCache

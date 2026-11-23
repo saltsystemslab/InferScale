@@ -1,14 +1,3 @@
-"""Time one side of the race: the memory benchmark on the first questions of a conversation.
-
-Every side retrieves TOP_K facts from the same Mem0 fact catalog. Mem0 reads
-them as prompt text; LMCache CacheBlend reuses each fact's cached KV at its
-prompt position and recomputes a fraction of the tokens; InferScale injects
-the KV it precomputed for each fact, with CONTEXT_WINDOW preceding turns as
-the encoding prefix. The first WARMUP questions absorb the engine's one-off
-startup costs and are left out; they differ from the timed ones, so no timed
-prompt is already in vLLM's prefix cache.
-"""
-
 from __future__ import annotations
 
 import json
@@ -52,7 +41,6 @@ SIDES = {
 
 
 def measure_side(mode: str, *, config_path: Path, questions: int, out: Path) -> Path:
-    """Run the cell of ``mode`` and write its timeline to ``out``; returns the run directory."""
     runtime = load_runtime_config()
     config = race_config(mode, runtime, config_path=config_path, questions=questions)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -80,7 +68,6 @@ def measure_side(mode: str, *, config_path: Path, questions: int, out: Path) -> 
 def race_config(
     mode: str, runtime: RuntimeConfig, *, config_path: Path, questions: int
 ) -> MemoryRunConfig:
-    """One side's memory benchmark configuration: one conversation, warmup plus timed questions."""
     data = SIDES[mode].materialize(load_json_object(expand_path(config_path, root=runtime.root)))
     data.update(
         run_id=f"ttft-race-{mode}-{stamp_now()}",
@@ -92,7 +79,6 @@ def race_config(
 
 
 def timed_rows(predictions_path: Path) -> list[dict[str, Any]]:
-    """The timed questions with vLLM's own time to first token and the generation time."""
     return [
         {
             "question": record["question"],

@@ -1,5 +1,3 @@
-"""The encoding plan of one corpus chunk: its preceding chunks of the same document as prefix."""
-
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -16,15 +14,6 @@ def build_chunk_context_encoding_plan(
     context_window: int,
     max_input_tokens: int,
 ) -> EncodingPlan:
-    """Encoding plan for one chunk with its preceding-chunk context prefix.
-
-    The context is up to context_window chunks of the same document that
-    immediately precede the target (document order), used as an encode-only
-    prefix: the forward pass sees context + target and only the target span's
-    KV is sliced out and stored. Overflow truncates the oldest context tokens
-    first and never the target, as the memory benchmark's turn-window plan in
-    benchmarks/memory/context.py does.
-    """
     if context_window < 0:
         raise ValueError("context_window must be >= 0.")
     if max_input_tokens < 1:

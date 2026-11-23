@@ -1,5 +1,3 @@
-"""Per-step connector metadata: which memories to inject into which slots."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field

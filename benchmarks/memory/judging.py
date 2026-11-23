@@ -1,5 +1,3 @@
-"""LLM-as-judge for LoCoMo answers: the prompt, one verdict per question, and record judging."""
-
 from __future__ import annotations
 
 from typing import Any
@@ -67,7 +65,6 @@ def judge_qa(
 def judge_record(
     config: MemoryRunConfig, judge_client: ChatClient, record: dict[str, Any]
 ) -> dict[str, Any]:
-    """Judge a saved prediction record from its own question, gold answer, and evidence."""
     qa = QuestionAnswer(
         sample_id=str(record.get("sample_id") or ""),
         question_id=str(record.get("question_id") or ""),

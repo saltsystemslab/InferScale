@@ -1,5 +1,3 @@
-"""The clients a memory run talks to: the answer backend and the optional judge."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -16,8 +14,6 @@ from benchmarks.memory.protocol import LMCACHE_BACKEND
 
 
 class AnswerClient(Protocol):
-    """What the run stage needs from an answer backend."""
-
     def start_llm(self) -> None: ...
 
     def prepare_sample(self, sample: ConversationSample) -> None: ...
@@ -42,8 +38,6 @@ class AnswerClient(Protocol):
 
 @runtime_checkable
 class KVPrecomputeClient(Protocol):
-    """An answer backend that encodes each sample's KV before vLLM starts."""
-
     def precompute_sample_cache(
         self, sample: ConversationSample, facts: list[SearchHit]
     ) -> dict[str, Any]: ...
@@ -51,8 +45,6 @@ class KVPrecomputeClient(Protocol):
 
 @runtime_checkable
 class MemoryWarmupClient(Protocol):
-    """An answer backend that fills a cache from a sample's facts once vLLM is running."""
-
     def warm_sample_memory(
         self, sample: ConversationSample, facts: list[SearchHit]
     ) -> dict[str, Any]: ...

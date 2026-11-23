@@ -1,5 +1,3 @@
-"""The precomputed composers of the samples one answer client is serving."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -15,8 +13,6 @@ class PrecomputedSample:
 
 
 class PrecomputedSamples:
-    """Composers keyed by sample, with at most one sample active for answering."""
-
     def __init__(self) -> None:
         self._entries: dict[int, PrecomputedSample] = {}
         self._active_key: int | None = None

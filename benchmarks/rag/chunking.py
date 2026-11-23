@@ -1,5 +1,3 @@
-"""Render documents and cut them into fixed-size token chunks."""
-
 from __future__ import annotations
 
 import hashlib
@@ -11,13 +9,6 @@ from inferscale.v1.kv.tokenization import encode_text_no_special
 
 
 def render_document(doc: RagDocument) -> str:
-    """Render a document once, with a metadata header before the body.
-
-    Titles, sources, and publication dates carry signal for MultiHop-RAG's
-    comparison and temporal queries, so they are part of the retrievable and
-    injectable text. The header is prepended once and then the whole render
-    is chunked, so only a document's first chunk carries it.
-    """
     return (
         f"Title: {doc.title}\n"
         f"Source: {doc.source}\n"
@@ -28,12 +19,6 @@ def render_document(doc: RagDocument) -> str:
 
 
 def chunk_document(doc: RagDocument, *, tokenizer: Any, chunk_size: int) -> list[RagChunk]:
-    """Split one rendered document into contiguous chunk_size token slices.
-
-    The final remainder chunk is kept (it has at least one token). Chunk text
-    is the decode of the exact token ids so downstream embedding and metrics
-    can never drift from what the KV encoder and the prompt see.
-    """
     if chunk_size < 1:
         raise ValueError("chunk_size must be >= 1.")
     token_ids = encode_text_no_special(tokenizer, render_document(doc))
@@ -76,12 +61,6 @@ def chunks_by_doc(chunks: Sequence[RagChunk]) -> dict[str, list[RagChunk]]:
 
 
 def corpus_fingerprint(docs: Sequence[RagDocument]) -> str:
-    """Order-sensitive content hash over the rendered corpus.
-
-    Tokenizer-independent on purpose: the KV cache directory key combines this
-    fingerprint with the resolved model id, and per-chunk loads additionally
-    validate exact token ids.
-    """
     hasher = hashlib.sha256()
     for doc in docs:
         render_digest = hashlib.sha256(render_document(doc).encode("utf-8")).hexdigest()

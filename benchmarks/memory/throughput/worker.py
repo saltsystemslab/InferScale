@@ -1,12 +1,3 @@
-"""Subprocess entry point that runs one throughput condition.
-
-The runner invokes this module (``python -m benchmarks.memory.throughput.worker``)
-once per condition, and once per user count for kv_injection, so each
-measurement gets a fresh CUDA process. lmcache_blend measures every user count
-in one worker: its CPU cache persists across counts and holds the same facts
-for each. The job arrives as JSON on stdin.
-"""
-
 from __future__ import annotations
 
 import json
@@ -28,7 +19,6 @@ JOB_KEYS = ("config_path", "condition", "user_counts", "output_path")
 
 
 def main(job: dict[str, Any]) -> None:
-    """Run one isolated measurement from the runner's JSON job."""
     where = "throughput worker job"
     if not isinstance(job, dict):
         raise ConfigError(f"{where} must be a JSON object.")

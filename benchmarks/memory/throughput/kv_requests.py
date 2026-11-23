@@ -1,13 +1,3 @@
-"""Per-request retrieval, KV composition, registration, and verification for kv_injection.
-
-Every request is prepared before vLLM starts. The Jasper search keeps the
-retrieved IDs on the GPU, the chunk store gathers those rows into the request's
-memory, and the composed KV is registered in the connector namespace under the
-request's memory user id. The prompt-injection token stream for the same facts
-is built afterwards only to verify the composed tokens; that check and the
-registration are timed separately and excluded from QPS.
-"""
-
 from __future__ import annotations
 
 import time
@@ -49,8 +39,6 @@ from inferscale.v1.types import DeviceSearchResult, KVChunk
 
 @dataclass(slots=True)
 class RequestTimings:
-    """Seconds accumulated over every prepared request, split by phase."""
-
     retrieval_s: float = 0.0
     vector_search_s: float = 0.0
     compose_s: float = 0.0
@@ -61,8 +49,6 @@ class RequestTimings:
 
 @dataclass(slots=True)
 class ComposedRequests:
-    """Every request's prompt and memory routing, ready for the measured batch."""
-
     prompts: list[dict[str, list[int]]] = field(default_factory=list)
     memory_user_ids: list[str] = field(default_factory=list)
     first_memory_user_id: str | None = None
@@ -82,16 +68,12 @@ class ComposedRequests:
 
 @dataclass(slots=True)
 class SampleRetrieval:
-    """A sample's Jasper store and the GPU map from its stable IDs to chunk store rows."""
-
     memory: Any
     row_map: Any
 
 
 @dataclass(slots=True)
 class RequestContext:
-    """What composing a request needs, shared by every request of the run."""
-
     config: ThroughputConfig
     corpus: PrecomputedCorpus
     retrieval: dict[str, SampleRetrieval]
@@ -102,7 +84,6 @@ class RequestContext:
 def build_sample_retrieval(
     corpus: PrecomputedCorpus, stores: SampleStores
 ) -> tuple[dict[str, SampleRetrieval], float]:
-    """Pair each sample's Jasper store with the device row map over its chunk store."""
     started = time.perf_counter()
     retrieval = {}
     for sample_id, memory in stores.memories.items():
@@ -119,7 +100,6 @@ def compose_requests(
     samples: Sequence[ConversationSample],
     facts_by_sample: Mapping[str, tuple[MemoryFact, ...]],
 ) -> ComposedRequests:
-    """Prepare every user's requests in order; memory user ids follow request order."""
     composed = ComposedRequests()
     num_users = len(requests_by_user)
     for user_index in range(num_users):
@@ -143,7 +123,6 @@ def compose_request(
     memory_user_id: str,
     timings: RequestTimings,
 ) -> tuple[list[int], list[int]]:
-    """Retrieve, compose, register, and verify one request; returns its prompt and memory tokens."""
     retrieval = context.retrieval[sample.sample_id]
     search = _search(retrieval.memory, request.query, context.config.top_k, timings)
     kv_by_layer, memory_token_ids = _compose_memory(context, sample, search.result, timings)
@@ -174,7 +153,6 @@ def _compose_memory(
     device_result: DeviceSearchResult,
     timings: RequestTimings,
 ) -> tuple[dict[str, Any], list[int]]:
-    """Gather the retrieved rows from the chunk store and compose them inside the scaffold."""
     composer = context.corpus.composer(sample.sample_id)
     store = context.corpus.chunk_store(sample.sample_id)
     row_map = context.retrieval[sample.sample_id].row_map
@@ -236,7 +214,6 @@ def _verify(
     memory_token_ids: list[int],
     timings: RequestTimings,
 ) -> None:
-    """The composed tokens must equal the prompt-injection stream of the same retrieved facts."""
     started = time.perf_counter()
     hits = materialize_store_device_result(memory, device_result)
     canonical = build_memory_prompt_token_ids(

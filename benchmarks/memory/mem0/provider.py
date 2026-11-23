@@ -1,13 +1,3 @@
-"""Create Mem0 ``Memory`` objects wired to the benchmark's vector store, embedder, and LLM.
-
-Mem0 resolves vector store providers by name: its factory maps the name to a
-class path, and its pydantic ``VectorStoreConfig`` imports
-``mem0.configs.vector_stores.<name>`` to validate the provider's settings.
-Registering the benchmark's "jasper" provider therefore adds the class path to
-the factory, installs a config module under that import path, and adds the
-name to the pydantic model's private provider table.
-"""
-
 from __future__ import annotations
 
 import importlib.metadata
@@ -40,8 +30,6 @@ _registration_lock = threading.Lock()
 
 @dataclass(slots=True, frozen=True)
 class Mem0Settings:
-    """Everything needed to construct one Mem0 memory for the benchmark."""
-
     store_root: Path
     vector_config: VectorStoreConfig
     embedding_model: str
@@ -54,7 +42,6 @@ class Mem0Settings:
 
 
 def create_mem0_memory(settings: Mem0Settings) -> Any:
-    """A Mem0 memory whose vector store is the requested local backend."""
     installed_version = importlib.metadata.version("mem0ai")
     if installed_version != MEM0AI_VERSION:
         raise RuntimeError(
@@ -112,7 +99,6 @@ def build_mem0_config(settings: Mem0Settings) -> dict[str, Any]:
 
 
 def register_mem0_jasper_provider() -> None:
-    """Make the provider name resolvable by Mem0's factory and its pydantic config model."""
     from mem0.utils.factory import VectorStoreFactory
     from mem0.vector_stores.configs import VectorStoreConfig as Mem0VectorStoreConfig
 
@@ -126,7 +112,6 @@ def register_mem0_jasper_provider() -> None:
 
 
 def install_jasper_config_module() -> None:
-    """Install the pydantic settings model Mem0 imports for the provider."""
     from pydantic import BaseModel, ConfigDict, Field
 
     class JasperConfig(BaseModel):
@@ -164,7 +149,6 @@ def resolved_mem0_backend(memory: Any) -> str:
 
 
 def validate_resolved_backend(memory: Any, *, requested_backend: str) -> None:
-    """Close and reject a memory whose adapter did not end up on the requested backend."""
     from benchmarks.memory.qdrant_index import QdrantVectorStore
     from inferscale.v1.index.jasper import JasperIndex
 

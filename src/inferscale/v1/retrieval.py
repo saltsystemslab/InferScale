@@ -1,5 +1,3 @@
-"""Retriever: embed and index chunk texts, embed and search queries."""
-
 from __future__ import annotations
 
 import time
@@ -24,10 +22,6 @@ class Retriever:
         texts: Sequence[str],
         payloads: Sequence[Mapping[str, Any]] | None = None,
     ) -> float:
-        """Embed the texts in batches and add them to the index.
-
-        Returns the embedding time in milliseconds.
-        """
         id_list = [str(item_id) for item_id in ids]
         text_list = [str(text) for text in texts]
         if len(id_list) != len(text_list):

@@ -23,8 +23,6 @@ from inferscale.v1.types import KVChunk
 
 
 class _FakeTensor:
-    """Stand-in with the device surface the stores touch and a byte count."""
-
     def __init__(self, nbytes: int, device: str = "cuda:0") -> None:
         self.nbytes = nbytes
         self.device = device
@@ -112,8 +110,6 @@ def test_fetch_rejects_unknown_ids_and_capacity_overflow() -> None:
 
 
 class _FakeStagingStore:
-    """CpuPinnedMemoryStore stand-in recording the stage/release protocol."""
-
     num_staging_slots = 3
 
     def __init__(self) -> None:
@@ -184,7 +180,6 @@ class _NoTextPayloadLookup(dict):
 
 
 def _lookup_result(rows):
-    """Mock only the map API boundary, without simulating CUDA kernels."""
     result = Mock()
     result.detach.return_value.cpu.return_value.tolist.return_value = rows
     return result

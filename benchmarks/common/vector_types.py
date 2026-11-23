@@ -1,5 +1,3 @@
-"""Vector store selection shared by the Mem0 adapter and the retrieval baselines."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass

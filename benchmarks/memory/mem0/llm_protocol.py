@@ -1,5 +1,3 @@
-"""The bounded JSON schema Mem0's extraction LLM must follow, and its validator."""
-
 from __future__ import annotations
 
 import json
@@ -28,7 +26,7 @@ REQUIRED_FACT_FIELDS = frozenset(FACT_SCHEMA["required"])
 
 
 class InvalidMemoryExtractionResponseError(RuntimeError):
-    """The extraction LLM returned something outside the bounded schema."""
+    pass
 
 
 def bounded_memory_response_format() -> dict[str, Any]:
@@ -54,7 +52,6 @@ def bounded_memory_response_format() -> dict[str, Any]:
 
 
 def prepare_memory_extraction_kwargs(kwargs: dict[str, Any]) -> tuple[dict[str, Any], bool]:
-    """Replace Mem0's free-form JSON request with the bounded schema; the flag says so."""
     effective = dict(kwargs)
     response_format = effective.get("response_format")
     if not isinstance(response_format, dict) or response_format.get("type") != "json_object":
@@ -65,7 +62,6 @@ def prepare_memory_extraction_kwargs(kwargs: dict[str, Any]) -> tuple[dict[str, 
 
 
 def validate_memory_extraction_response(response: Any) -> str:
-    """Return the response, re-serialized when fact ids had to be renumbered."""
     payload = _parse_payload(response)
     memories = payload["memory"]
     if not isinstance(memories, list):
@@ -103,7 +99,6 @@ def _parse_payload(response: Any) -> dict[str, Any]:
 
 
 def _validate_fact(index: int, memory: Any) -> bool:
-    """Check one fact in place; returns True when its id was renumbered by position."""
     if not isinstance(memory, dict):
         raise InvalidMemoryExtractionResponseError(
             f"Mem0 extraction fact {index} must be an object."

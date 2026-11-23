@@ -1,5 +1,3 @@
-"""The memory benchmark's run configuration (configs/memory/accuracy-latency/*.json)."""
-
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -115,7 +113,6 @@ class MemoryRunConfig:
 
     @property
     def memory_llm_model(self) -> str:
-        """Mem0 fact extraction always uses the answer model."""
         return self.inferscale.model
 
     @property
@@ -253,7 +250,6 @@ class MemoryRunConfig:
         return sweep_cells(self.sweeps[name])
 
     def context_windows(self) -> tuple[int, ...]:
-        """Every context window the precompute-kv stage must encode for this config."""
         return kv_context_windows(self.sweeps.values(), self.context_window)
 
     def to_jsonable(self) -> dict[str, Any]:
@@ -390,8 +386,6 @@ def validate_memory_stage(config: MemoryRunConfig, stage: str, *, has_run_id: bo
 
 @dataclass(slots=True, frozen=True)
 class _RunLimits:
-    """The integer settings with lower bounds."""
-
     top_k: int
     context_window: int
     preembed_workers: int
@@ -460,7 +454,6 @@ def _check_library_settings(
 def _lmcache_settings(
     data: Mapping[str, Any], answer_backend: str, sweeps: Mapping[str, MemorySweep], where: str
 ) -> LMCacheConfig | None:
-    """The lmcache section, required as soon as this run or a sweep variant uses the arm."""
     if data.get("lmcache") is not None:
         return parse_lmcache_config(section_of(data, "lmcache", where), f"{where}.lmcache")
     if answer_backend == LMCACHE_BACKEND or sweeps_use_backend(sweeps.values(), LMCACHE_BACKEND):

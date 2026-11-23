@@ -1,5 +1,3 @@
-"""A ThroughputConfig for tests, with every storage path placed under a temporary directory."""
-
 from __future__ import annotations
 
 from pathlib import Path

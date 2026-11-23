@@ -1,9 +1,3 @@
-"""The InferScale facade: precompute context, start serving, answer queries.
-
-Phases are strict. Every ``precompute`` call happens before ``start``; after
-``start`` only ``retrieve``, ``answer``, and ``query`` are available.
-"""
-
 from __future__ import annotations
 
 import time
@@ -101,17 +95,11 @@ class InferScale:
 
     @property
     def tokenizer(self) -> Any:
-        """Encoder tokenizer before start(), engine tokenizer after."""
         if self._started:
             return self._engine.tokenizer
         return self._ensure_encoder().tokenizer
 
     def precompute(self, chunks: Iterable[Chunk]) -> PrecomputeStats:
-        """Encode and index chunks in order, continuing the window across calls.
-
-        Each chunk uses up to ``context_window`` preceding chunks as encoding
-        context. Only the target chunk's KV is kept for retrieval.
-        """
         self._require_open()
         if self._started:
             raise RuntimeError("InferScale is serving; precompute all context before start().")
@@ -153,7 +141,6 @@ class InferScale:
         )
 
     def start(self) -> None:
-        """Release the encoder weights, finalize the index, and start vLLM."""
         self._require_open()
         if self._started:
             return
@@ -188,7 +175,6 @@ class InferScale:
         *,
         query_started_at: float | None = None,
     ) -> QueryResult:
-        """Compose the retrieved chunks' KV, inject it, and generate."""
         self._require_serving()
         request_started = time.perf_counter()
         selected_ids = reverse_ranked_ids(hits)
@@ -219,7 +205,6 @@ class InferScale:
         )
 
     def query(self, question: str, *, top_k: int | None = None) -> QueryResult:
-        """Retrieve the top-k chunks for the question and answer with their KV injected."""
         query_started = time.perf_counter()
         hits, retrieval = self.retrieve(question, top_k=top_k)
         result = self.answer(question, hits, query_started_at=query_started)
@@ -237,7 +222,6 @@ class InferScale:
         return list(self._chunks)
 
     def get_chunk(self, chunk_id: str) -> ChunkInfo | None:
-        """Return metadata without exposing the token list used by future windows."""
         chunk = self._chunks.get(chunk_id)
         return replace(chunk, token_ids=list(chunk.token_ids)) if chunk is not None else None
 
@@ -287,7 +271,6 @@ class InferScale:
     def _plans_for(
         self, encoder: ChunkedRopeEncoder, chunks: Sequence[Chunk]
     ) -> list[EncodingPlan]:
-        """One plan per chunk; the window holds the preceding chunks' target tokens."""
         cfg = self._config
         window = cfg.context_window
         history = _last([(info.id, info.token_ids) for info in self._chunks.values()], window)
@@ -331,7 +314,6 @@ class InferScale:
     def _compose_memory(
         self, parts: list[KVChunk], memory_token_ids: list[int], query_token_count: int
     ) -> ComposedMemory:
-        """Check the budget and block alignment, then compose the KV of the parts."""
         cfg = self._config
         scaffold = self._corpus.scaffold
         encoder = self._encoder
@@ -361,12 +343,6 @@ class InferScale:
     def _generate_with_memory(
         self, prompt: PromptTokens, memory: ComposedMemory
     ) -> tuple[GenerationOutput, float, float]:
-        """Register the memory for the connector, generate, and drop the memory again.
-
-        Returns the output, the registration time in ms, and the namespace's GPU
-        footprint in MB, read while the memory is registered because removing it
-        empties the namespace.
-        """
         cfg = self._config
         # Registration hands the composed memory to the GPU-resident in-flight
         # registry (a dict insert, no transfer); it is timed separately and
@@ -442,7 +418,6 @@ def _chunk_info(chunk: Chunk, plan: EncodingPlan, kv_chunk: KVChunk, payload: di
 
 
 def _last(items: list, count: int) -> list:
-    """The trailing ``count`` items, or none when the window is zero."""
     return items[-count:] if count > 0 else []
 
 
@@ -459,7 +434,6 @@ def _answer_metrics(
     retrieved_count: int,
     block_size: int,
 ) -> dict[str, Any]:
-    """The per-answer metrics; the key names are read by the benchmark reports."""
     excluded_ms = store_write_ms
     generate_started = output.started_at
     finished = output.finished_at

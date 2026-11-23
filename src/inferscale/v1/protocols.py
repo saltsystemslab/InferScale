@@ -1,5 +1,3 @@
-"""Structural interfaces the facade composes."""
-
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
@@ -12,16 +10,12 @@ from .types import SearchHit, SearchMetrics
 
 
 class Embedder(Protocol):
-    """Embeds stored texts and queries; callers may wrap one in a cache."""
-
     def embed_documents(self, texts: Sequence[str]) -> list[list[float]]: ...
 
     def embed_query(self, text: str) -> list[float] | np.ndarray: ...
 
 
 class VectorIndex(Protocol):
-    """Vector index keyed by chunk id."""
-
     @property
     def vector_count(self) -> int: ...
 
@@ -50,12 +44,6 @@ class VectorIndex(Protocol):
 
 
 class MemoryStore(Protocol):
-    """Registered KV memories as the connector reads them.
-
-    A store without staging reports zero ``num_staging_slots`` and treats
-    prefetch and release as no-ops.
-    """
-
     num_staging_slots: int
 
     def add_user_memory(
@@ -82,8 +70,6 @@ class MemoryStore(Protocol):
 
 
 class ChunkStore(MemoryStore, Protocol):
-    """A memory store that also serves the corpus through a GPU ID lookup."""
-
     def finalize_packed(self) -> None: ...
 
     def finalize_chunk_lookup(self) -> None: ...

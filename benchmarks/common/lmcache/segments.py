@@ -1,11 +1,3 @@
-"""The CacheBlend prompt layout: separator-delimited segments LMCache stores and matches.
-
-LMCache's blending splits a prompt at every occurrence of the separator token
-sequence, hashes each segment on its own, and matches segments from the start
-of the prompt until the first miss. The warm-up therefore sends every chunk
-alone, and the prompt lays the same chunk token ids between separators.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
@@ -17,8 +9,6 @@ from inferscale.v1.types import ScaffoldTokens
 
 @dataclass(slots=True, frozen=True)
 class BlendMemoryLayout:
-    """The memory section of a blend prompt and what LMCache is expected to match in it."""
-
     token_ids: list[int]
     separator_token_ids: list[int]
     segment_count: int
@@ -27,13 +17,6 @@ class BlendMemoryLayout:
 
 
 def separator_token_ids(tokenizer: Any, special_str: str) -> list[int]:
-    """The separator as LMCache derives it from a tokenizer: the encoding minus its first token.
-
-    LMCache drops the first token to remove a BOS token; a tokenizer without
-    BOS loses a real token instead. LMCache applies this to its own Hugging Face
-    tokenizer, which can encode differently from vLLM's, so the benchmark reads
-    the ids LMCache splits on (``runtime.lmcache_separator``).
-    """
     token_ids = list(tokenizer.encode(special_str))[1:]
     if not token_ids:
         raise RuntimeError(f"The blend separator {special_str!r} encodes to no tokens.")
@@ -45,12 +28,6 @@ def blend_memory_layout(
     ordered_chunk_token_ids: Sequence[Sequence[int]],
     separator: Sequence[int],
 ) -> BlendMemoryLayout:
-    """``header + sep + chunk_1 + ... + sep + chunk_n + sep + footer``.
-
-    LMCache matches the header segment and every chunk segment; the separator
-    before the footer and the footer itself are computed by vLLM. Without
-    chunks the memory is prompt injection's empty memory and nothing is matched.
-    """
     separator_ids = list(separator)
     if not separator_ids:
         raise ValueError("The blend separator must be non-empty.")
@@ -85,7 +62,6 @@ def warm_up_prompts(
     chunk_token_ids: Iterable[Sequence[int]],
     separator: Sequence[int],
 ) -> list[list[int]]:
-    """The scaffold header and every distinct chunk, each as its own one-segment prompt."""
     prompts: dict[tuple[int, ...], None] = {tuple(header_token_ids): None}
     for chunk in chunk_token_ids:
         require_chunk_without_separator(chunk, separator)
@@ -94,7 +70,6 @@ def warm_up_prompts(
 
 
 def require_chunk_without_separator(chunk: Sequence[int], separator: Sequence[int]) -> None:
-    """A chunk holding the separator would be split into segments that never match."""
     if not chunk:
         raise ValueError("Blend chunks must hold at least one token.")
     if contains_separator(chunk, separator):

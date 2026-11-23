@@ -1,12 +1,3 @@
-"""Storage layout for datasets, caches, results, and scratch directories.
-
-The layout is derived from the ``storage`` section of ``configs/runtime.json``.
-An explicit ``runtime_root`` places caches, results, and temporary files under
-one persistent directory; a null root keeps them inside the project. Explicit
-``cache_root``, ``results_root``, ``tmp_dir``, and ``mem0_dir`` override the
-derived locations.
-"""
-
 from __future__ import annotations
 
 import os
@@ -52,16 +43,9 @@ class StorageLayout:
         return self.cache_root / "rag-kv-chunks"
 
     def local_store_scratch_dir(self, run_id: str) -> Path:
-        """Host-local scratch root for the vector stores rebuilt by every run.
-
-        Deliberately not under tmp_dir: remote hosts point tmp at a shared
-        network volume whose FUSE mount cannot support sqlite file locking,
-        while local_store_dir is local to the container.
-        """
         return self.local_store_dir / "inferscale-bench-stores" / run_id
 
     def environment(self) -> dict[str, str]:
-        """Cache locations every GPU library reads from the environment."""
         hf_home = self.cache_root / "huggingface"
         return {
             "MEM0_DIR": str(self.mem0_dir),
@@ -83,7 +67,6 @@ class StorageLayout:
         }
 
     def apply_environment(self) -> None:
-        """Export the cache locations from the runtime JSON, replacing any inherited values."""
         for key, value in self.environment().items():
             os.environ[key] = value
 
@@ -114,7 +97,6 @@ def resolve_layout(storage: StorageConfig, *, root: Path | None = None) -> Stora
 
 
 def mem0_dir_from_environment() -> Path:
-    """The Mem0 state directory the runtime exported, or the project-local default."""
     value = os.environ.get("MEM0_DIR")
     if value:
         return Path(value)

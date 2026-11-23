@@ -1,5 +1,3 @@
-"""The judge stage: judge the unjudged predictions of a saved run and rewrite its summary."""
-
 from __future__ import annotations
 
 from typing import Any

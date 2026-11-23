@@ -41,8 +41,6 @@ CATALOG = [_hit("m1", "Alice likes tea.", 1), _hit("m2", "Bob plays chess.", 2)]
 
 
 class _RecordingLLM:
-    """Records every engine call the condition makes, in order."""
-
     def __init__(self, events: list) -> None:
         self.events = events
         self.tokenizer = FakeTokenizer()

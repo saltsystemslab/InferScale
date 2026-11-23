@@ -1,11 +1,3 @@
-"""Validated access to the JSON configuration files every benchmark reads.
-
-Benchmarks are configured only by JSON files under ``configs/``. These helpers
-turn missing keys, wrong types, and unknown keys into ``ConfigError`` with the
-JSON path in the message, so a mistake in a config file fails before any model
-or server is started.
-"""
-
 from __future__ import annotations
 
 import json
@@ -17,11 +9,10 @@ from typing import Any, get_args, get_type_hints
 
 
 class ConfigError(ValueError):
-    """A configuration file is missing, malformed, or holds an invalid value."""
+    pass
 
 
 def load_json_object(path: str | Path) -> dict[str, Any]:
-    """Read a JSON file whose top level must be an object."""
     target = Path(path)
     try:
         raw = json.loads(target.read_text(encoding="utf-8"))
@@ -37,7 +28,6 @@ def load_json_object(path: str | Path) -> dict[str, Any]:
 def require(
     section: Mapping[str, Any], key: str, expected: type | tuple[type, ...], where: str
 ) -> Any:
-    """Return ``section[key]`` after checking its type; the key must be present."""
     if key not in section:
         raise ConfigError(f"{where} is missing required key {key!r}.")
     return typed_value(section[key], key, expected, where)
@@ -50,7 +40,6 @@ def optional(
     default: Any,
     where: str,
 ) -> Any:
-    """Return ``section[key]`` after checking its type, or ``default`` when absent or null."""
     if key not in section or section[key] is None:
         return default
     return typed_value(section[key], key, expected, where)
@@ -65,7 +54,6 @@ def reject_unknown_keys(section: Mapping[str, Any], allowed: Sequence[str], wher
 def section_of(
     data: Mapping[str, Any], key: str, where: str, *, required: bool = True
 ) -> dict[str, Any]:
-    """Return the nested object at ``key``; a missing optional section is an empty dict."""
     value = data.get(key)
     if value is None:
         if required:
@@ -77,7 +65,6 @@ def section_of(
 
 
 def string_map(section: Mapping[str, Any], where: str) -> dict[str, str]:
-    """An object whose values are all strings, such as a model alias table."""
     result: dict[str, str] = {}
     for key, value in section.items():
         if not isinstance(value, str):
@@ -123,17 +110,11 @@ def _unique_list(
 
 
 def expand_path(value: str | Path, *, root: Path) -> Path:
-    """Expand ``~`` and environment variables; relative paths are taken from ``root``."""
     expanded = Path(os.path.expandvars(os.path.expanduser(str(value))))
     return expanded if expanded.is_absolute() else root / expanded
 
 
 def parse_dataclass_section(section: Mapping[str, Any], schema: type, where: str) -> Any:
-    """Build a flat dataclass from a JSON object, taking defaults from the dataclass.
-
-    Field names are the allowed keys and the annotations are the accepted JSON
-    types, so adding a field to the dataclass is the whole change.
-    """
     hints = get_type_hints(schema)
     reject_unknown_keys(section, tuple(hints), where)
     values: dict[str, Any] = {}
@@ -147,7 +128,6 @@ def parse_dataclass_section(section: Mapping[str, Any], schema: type, where: str
 
 
 def validate_dataclass_types(data: Mapping[str, Any], schema: type, where: str) -> None:
-    """Reject JSON type mismatches for a nested dataclass tree before it is constructed."""
     hints = get_type_hints(schema)
     reject_unknown_keys(data, tuple(hints), where)
     for name, value in data.items():
@@ -163,7 +143,6 @@ def validate_dataclass_types(data: Mapping[str, Any], schema: type, where: str) 
 
 
 def accepted_types(hint: Any) -> tuple[type, ...]:
-    """The runtime types a JSON value may have for a type hint such as ``float | None``."""
     choices = tuple(choice for choice in (get_args(hint) or (hint,)) if choice is not type(None))
     if float in choices and int not in choices:
         choices = (*choices, int)
@@ -171,7 +150,6 @@ def accepted_types(hint: Any) -> tuple[type, ...]:
 
 
 def typed_value(value: Any, key: str, expected: type | tuple[type, ...], where: str) -> Any:
-    """Return ``value`` when it is an instance of ``expected``; booleans never pass as integers."""
     expected_types = expected if isinstance(expected, tuple) else (expected,)
     if bool not in expected_types and isinstance(value, bool):
         raise ConfigError(f"{where}.{key} must be {_describe(expected_types)}, got a boolean.")

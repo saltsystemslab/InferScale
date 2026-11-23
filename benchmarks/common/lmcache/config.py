@@ -1,10 +1,3 @@
-"""The LMCache CacheBlend arm's settings and how they reach vLLM.
-
-Every LMCache setting travels through vLLM's ``kv_connector_extra_config``
-under a ``lmcache.`` prefix, which LMCache's adapter applies on top of its
-defaults; no environment variable or YAML file is involved.
-"""
-
 from __future__ import annotations
 
 import math
@@ -48,8 +41,6 @@ LMCACHE_KEYS = (
 
 @dataclass(slots=True, frozen=True)
 class LMCacheConfig:
-    """The ``lmcache`` section of a benchmark JSON file."""
-
     max_local_cpu_size_gb: float
     chunk_size: int = DEFAULT_CHUNK_SIZE
     blend_recompute_ratio: float = DEFAULT_BLEND_RECOMPUTE_RATIO
@@ -58,7 +49,6 @@ class LMCacheConfig:
     adapter: str = DEFAULT_ADAPTER
 
     def to_jsonable(self) -> dict[str, Any]:
-        """The section plus the facts the arm fixes, recorded in a run's config.json."""
         return {
             "max_local_cpu_size_gb": self.max_local_cpu_size_gb,
             "chunk_size": self.chunk_size,
@@ -76,7 +66,6 @@ class LMCacheConfig:
 
 
 def parse_lmcache_config(section: Mapping[str, Any], where: str) -> LMCacheConfig:
-    """Validate an ``lmcache`` section; the CPU cache size is always explicit."""
     reject_unknown_keys(section, LMCACHE_KEYS, where)
     size = require(section, "max_local_cpu_size_gb", (int, float), where)
     if not math.isfinite(size) or size <= 0:
@@ -109,16 +98,6 @@ def parse_lmcache_config(section: Mapping[str, Any], where: str) -> LMCacheConfi
 
 
 def connector_extra_config(config: LMCacheConfig) -> dict[str, Any]:
-    """The ``kv_connector_extra_config`` the connector receives.
-
-    Keys with the ``lmcache.`` prefix become LMCache engine settings. The bare
-    ``use_layerwise`` is read by vLLM itself to run CUDA graphs piecewise, and
-    ``use_native`` selects the adapter copy that ships inside vLLM.
-
-    ``save_unfull_chunk`` is set because LMCache turns it on for blending only
-    when blending comes from its own config, not from these keys. Without it
-    every save is cut to whole chunks, which drops each fact and the header.
-    """
     extra: dict[str, Any] = {
         "lmcache.chunk_size": config.chunk_size,
         "lmcache.local_cpu": True,
@@ -137,7 +116,6 @@ def connector_extra_config(config: LMCacheConfig) -> dict[str, Any]:
 
 
 def lmcache_kv_transfer_config(config: LMCacheConfig) -> dict[str, Any]:
-    """The ``kv_transfer_config`` that loads ``BlendConnector`` with these settings."""
     if os.environ.get(CONFIG_FILE_VARIABLE):
         raise RuntimeError(
             f"{CONFIG_FILE_VARIABLE} is set; an LMCache config file would override the "
@@ -152,5 +130,4 @@ def lmcache_kv_transfer_config(config: LMCacheConfig) -> dict[str, Any]:
 
 
 def engine_config_for_lmcache(engine: EngineConfig) -> EngineConfig:
-    """The arm's engine settings: LMCache's blending replaces vLLM's prefix cache."""
     return replace(engine, enable_prefix_caching=False)

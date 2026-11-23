@@ -1,5 +1,3 @@
-"""Start the judge server described by the runtime JSON, for scripts/serve_vllm.sh."""
-
 from __future__ import annotations
 
 import shlex
@@ -13,7 +11,6 @@ from benchmarks.common.vllm_server import require_local_http_endpoint, vllm_serv
 
 
 def serve(config_path: Path) -> int:
-    """Start, or with ``dry_run`` only print, the judge server command."""
     data = load_json_object(config_path)
     reject_unknown_keys(data, ("runtime_config", "dry_run"), "serve")
     dry_run = optional(data, "dry_run", bool, False, "serve")

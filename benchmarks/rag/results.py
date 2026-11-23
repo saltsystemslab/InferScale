@@ -1,5 +1,3 @@
-"""The summary.json and query_metrics.csv of a RAG run."""
-
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
@@ -196,7 +194,6 @@ def _accuracy_by_type(judged: list[Record]) -> dict[str, dict[str, Any]]:
 
 
 def _section_values(rows: list[Record], section: str, key: str) -> list[float]:
-    """The numeric values of ``key`` in ``section`` across rows; booleans count as 0 or 1."""
     values: list[float] = []
     for row in rows:
         value = _section(row, section).get(key)

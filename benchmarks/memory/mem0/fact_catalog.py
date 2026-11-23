@@ -1,10 +1,3 @@
-"""Immutable catalogs of the facts Mem0 extracted from one conversation.
-
-Timed runs replay these catalogs instead of calling the extraction LLM, so a
-catalog records the full identity of the extraction that produced it and is
-rejected when any part of that identity changes.
-"""
-
 from __future__ import annotations
 
 import importlib.metadata
@@ -111,7 +104,6 @@ def source_fields(
     speaker: str,
     role: str,
 ) -> dict[str, Any]:
-    """The metadata describing the conversation turn a fact came from."""
     return {
         "user_id": sample_id,
         "sample_id": sample_id,
@@ -148,7 +140,6 @@ def source_metadata(sample: ConversationSample, turn: Turn) -> dict[str, Any]:
 
 
 def fact_payload(fact: MemoryFact, metadata: dict[str, Any]) -> dict[str, Any]:
-    """The search hit payload every retrieval path produces for a catalog fact."""
     return {
         "memory": fact.text,
         "text": fact.text,
@@ -160,8 +151,6 @@ def fact_payload(fact: MemoryFact, metadata: dict[str, Any]) -> dict[str, Any]:
 
 
 class FactCatalogStore:
-    """Reads and writes one catalog file per conversation under an identity-keyed directory."""
-
     def __init__(
         self,
         root: str | Path,
@@ -221,7 +210,6 @@ class FactCatalogStore:
         return _facts_from_rows(payload.get("facts"), path)
 
     def _identity(self, sample: ConversationSample) -> dict[str, Any]:
-        """Everything a catalog must have been produced with to be replayed by this store."""
         return {
             "version": CATALOG_VERSION,
             "provider": self.provider,
@@ -276,7 +264,6 @@ def _facts_from_rows(rows: Any, path: Path) -> tuple[MemoryFact, ...]:
 
 
 def make_memory_fact(text: str, sample: ConversationSample, turn: Turn) -> MemoryFact:
-    """A fact with a stable id derived from the conversation, source turn, and text."""
     normalized_text = " ".join(str(text).split())
     if not normalized_text:
         raise ValueError("Mem0 fact text must not be empty.")

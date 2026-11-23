@@ -1,5 +1,3 @@
-"""Byte-count conversions used in memory statistics."""
-
 from __future__ import annotations
 
 

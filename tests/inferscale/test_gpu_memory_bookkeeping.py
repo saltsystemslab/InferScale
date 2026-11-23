@@ -14,8 +14,6 @@ from inferscale.v1.kv.memory_store import GPUMemoryStore
 
 
 class FakeTensor:
-    """Duck-typed stand-in for a torch tensor pinned to one device."""
-
     def __init__(self, nbytes: int, device: str = "cuda:0") -> None:
         self.nbytes = nbytes
         self.device = device

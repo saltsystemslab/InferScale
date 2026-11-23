@@ -1,5 +1,3 @@
-"""LoCoMo samples and the per-sample Mem0 stores the throughput conditions retrieve from."""
-
 from __future__ import annotations
 
 import time
@@ -32,14 +30,6 @@ ResultT = TypeVar("ResultT")
 
 @dataclass(frozen=True)
 class StoreSearch(Generic[ResultT]):
-    """One query's retrieval and its timing.
-
-    ``result`` is the backend's answer: search hits for prompt injection, or a
-    device search result whose IDs stay on the GPU for the KV lookup.
-    ``elapsed_s`` covers query embedding plus search; ``search_s`` is the
-    vector store's own search time.
-    """
-
     result: ResultT
     elapsed_s: float
     search_s: float
@@ -47,8 +37,6 @@ class StoreSearch(Generic[ResultT]):
 
 @dataclass(slots=True)
 class SampleStores:
-    """One Mem0 store per sample, keyed by sample id, with how long each took to build."""
-
     memories: dict[str, Any] = field(default_factory=dict)
     build_time_s: dict[str, float] = field(default_factory=dict)
 
@@ -56,7 +44,6 @@ class SampleStores:
         return self.memories[sample_id]
 
     def setup_time_for_users(self, samples: Sequence[ConversationSample], num_users: int) -> float:
-        """Build time of the stores the first ``num_users`` users retrieve from."""
         used = samples_for_users(samples, num_users)
         return sum(self.build_time_s[sample.sample_id] for sample in used)
 
@@ -67,7 +54,6 @@ class SampleStores:
 
 
 def require_embedding_access(config: ThroughputConfig, condition: str) -> None:
-    """Every condition embeds queries live, which needs a key or a local endpoint."""
     if not config.embedding_api_key and not config.embedding_base_url:
         raise RuntimeError(
             f"{condition} requires OPENAI_API_KEY or inferscale.embedding.base_url in the run JSON."
@@ -104,7 +90,6 @@ def prepare_sample_stores(
     store_root: Path,
     facts_by_sample: dict[str, tuple[MemoryFact, ...]],
 ) -> SampleStores:
-    """Build one store per sample, timing each; a failure closes the stores built so far."""
     stores = SampleStores()
     try:
         for sample in samples:
@@ -129,7 +114,6 @@ def build_user_store(
     store_root: Path,
     facts: tuple[MemoryFact, ...],
 ) -> Any:
-    """Replay a sample's fact catalog into a fresh store on the given vector backend."""
     memory = create_mem0_memory(
         Mem0Settings(
             store_root=store_root,
@@ -155,11 +139,6 @@ def build_user_store(
 
 
 def search_store(memory: Any, query: str, *, top_k: int) -> StoreSearch[list[SearchHit]]:
-    """Embed the query and search the store.
-
-    Hits stay best-first; the shared prompt builder reverses them exactly once
-    when it lays out the injected memory.
-    """
     search = _vector_store_method(memory, "search")
     started = time.perf_counter()
     hits = list(search(query=query, vectors=embed_mem0_query(memory, query), top_k=top_k))
@@ -167,7 +146,6 @@ def search_store(memory: Any, query: str, *, top_k: int) -> StoreSearch[list[Sea
 
 
 def search_store_for_kv(memory: Any, query: str, *, top_k: int) -> StoreSearch[DeviceSearchResult]:
-    """Embed the query once and keep the retrieved Jasper IDs on the GPU for the KV lookup."""
     search_device = _vector_store_method(
         memory,
         "search_device",
@@ -207,12 +185,6 @@ def _last_search_s(memory: Any) -> float:
 
 @contextmanager
 def _cached_fact_embeddings(config: ThroughputConfig, memory: Any) -> Iterator[None]:
-    """Serve fact embeddings from the shared cache while the catalog is replayed.
-
-    The cache is free and offline after the preembed stage. The live embedder
-    is restored afterwards so query-time retrieval measures live embedding
-    latency rather than cache reads.
-    """
     live = memory_embedder(memory)
     if not config.embedding_cache_enabled:
         yield

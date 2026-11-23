@@ -1,5 +1,3 @@
-"""The RAG prompt: the dataset's scaffold around the passages, and the templated question."""
-
 from __future__ import annotations
 
 from typing import Any
@@ -23,10 +21,6 @@ def extract_rag_scaffold_token_ids(
     system_prompt: str,
     block_size: int = 16,
 ) -> ScaffoldTokens:
-    """Chat-templated scaffold split around the passages placeholder.
-
-    The system prompt is dataset-specific (RagPromptProfile.system_prompt).
-    """
     return build_scaffold_tokens(
         tokenizer,
         system_prompt=system_prompt,
@@ -67,10 +61,6 @@ def require_memory_within_budget(
     top_k: int,
     chunk_size: int,
 ) -> None:
-    """Fail on an over-budget composition, naming the settings to lower.
-
-    Retrieved chunks are never dropped silently.
-    """
     if memory_token_count <= memory_token_budget:
         return
     raise RuntimeError(

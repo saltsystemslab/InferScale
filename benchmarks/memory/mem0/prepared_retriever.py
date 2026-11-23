@@ -1,5 +1,3 @@
-"""Retrieval through Mem0's own search over a store built from an immutable fact catalog."""
-
 from __future__ import annotations
 
 import math
@@ -25,7 +23,6 @@ class PreparedMem0Retriever:
         return self.built.memory
 
     def search(self, query: str, *, top_k: int) -> tuple[list[SearchHit], RetrievalMetrics]:
-        """Mem0's search results as catalog-backed hits, best first."""
         if top_k < 1:
             raise ValueError("top_k must be >= 1.")
         embed_ms_before = self.built.embed_time_ms

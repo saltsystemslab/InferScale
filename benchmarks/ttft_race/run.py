@@ -1,4 +1,13 @@
-"""Command line of the TTFT race: measure one side, or replay several timelines as a GIF.
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+from benchmarks.ttft_race.gif import load_timelines, render_gif
+from benchmarks.ttft_race.measure import DEFAULT_CONFIG, SIDES, measure_side
+
+DESCRIPTION = """\
+Command line of the TTFT race: measure one side, or replay several timelines as a GIF.
 
 Measure each side on its own, so nothing shares a GPU, then replay one question:
 
@@ -7,14 +16,6 @@ Measure each side on its own, so nothing shares a GPU, then replay one question:
   python -m benchmarks.ttft_race.run measure --mode inferscale --out inferscale.json
   python -m benchmarks.ttft_race.run gif inferscale.json mem0.json lmcache.json --out ttft_race.gif
 """
-
-from __future__ import annotations
-
-import argparse
-from pathlib import Path
-
-from benchmarks.ttft_race.gif import load_timelines, render_gif
-from benchmarks.ttft_race.measure import DEFAULT_CONFIG, SIDES, measure_side
 
 
 def main() -> None:
@@ -28,7 +29,7 @@ def main() -> None:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+        description=DESCRIPTION, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     commands = parser.add_subparsers(dest="command", required=True)
     measure = commands.add_parser("measure", help="time one side and write its timeline")

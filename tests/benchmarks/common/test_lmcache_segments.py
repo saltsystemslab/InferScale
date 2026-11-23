@@ -23,7 +23,6 @@ def _scaffold() -> ScaffoldTokens:
 
 
 def _split(token_ids: list[int], separator: list[int]) -> list[list[int]]:
-    """The segments between separator occurrences, the way LMCache splits a prompt."""
     segments: list[list[int]] = []
     start = index = 0
     width = len(separator)

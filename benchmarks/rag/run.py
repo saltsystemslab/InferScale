@@ -1,5 +1,3 @@
-"""Entry point of one RAG benchmark stage, as the launcher's job runs it."""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -15,7 +13,6 @@ GIB = 1024**3
 
 
 def main(config_path: Path, *, runtime_path: Path | None = None, stage: str = "run") -> None:
-    """Execute one RAG benchmark stage using the selected JSON files."""
     runtime = load_runtime_config(runtime_path)
     config = load_rag_config(config_path, runtime=runtime, stage=stage)
     runtime.apply_environment()

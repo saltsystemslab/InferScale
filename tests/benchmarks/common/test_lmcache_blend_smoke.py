@@ -1,10 +1,3 @@
-"""GPU smoke test of the LMCache CacheBlend arm against the real vLLM and LMCache.
-
-Run on the pod with ``RUN_LMCACHE_INTEGRATION=1``: it starts a small engine with
-``BlendConnector``, warms two facts, and checks that a blend prompt matches
-exactly the prefix the layout predicts and still answers from the facts.
-"""
-
 from __future__ import annotations
 
 import os

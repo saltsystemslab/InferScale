@@ -1,5 +1,3 @@
-"""Which LoCoMo question each simulated user asks, and the prompt a request sends."""
-
 from __future__ import annotations
 
 import random
@@ -28,11 +26,6 @@ def build_locomo_requests(
     requests_per_user: int,
     seed: int,
 ) -> list[LocomoRequest]:
-    """Assign each user a LoCoMo conversation round-robin and draw its questions.
-
-    Question selection is seeded per user, so replicas of the same conversation
-    ask different questions while runs stay deterministic.
-    """
     if not samples:
         raise ValueError("At least one LoCoMo sample is required.")
     if num_users <= 0:
@@ -69,7 +62,6 @@ def sample_for_user(samples: Sequence[ConversationSample], user_index: int) -> C
 def samples_for_users(
     samples: Sequence[ConversationSample], num_users: int
 ) -> list[ConversationSample]:
-    """The distinct samples the first ``num_users`` users retrieve from, in user order."""
     return [sample_for_user(samples, index) for index in range(min(num_users, len(samples)))]
 
 
@@ -95,7 +87,6 @@ def request_question_answer(request: LocomoRequest) -> QuestionAnswer:
 def request_prompt_token_ids(
     tokenizer: Any, memory_token_ids: list[int], request: LocomoRequest
 ) -> list[int]:
-    """The prompt a request sends: the memory stream followed by its question."""
     prompt = build_kv_equivalence_prompt_token_ids(
         tokenizer, memory_token_ids, request_question_answer(request)
     )
@@ -103,5 +94,4 @@ def request_prompt_token_ids(
 
 
 def is_progress_step(done: int, total: int) -> bool:
-    """Log every tenth user and the last one."""
     return done % PROGRESS_LOG_EVERY_USERS == 0 or done == total

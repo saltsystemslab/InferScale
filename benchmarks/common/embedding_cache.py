@@ -1,11 +1,3 @@
-"""Content-addressed disk cache in front of an embedding model.
-
-Every embedding the benchmarks need is computed once by the preembed stage and
-written here, so timed runs read vectors from disk and never call the remote
-embedding service. In read mode a missing or corrupt entry is an error rather
-than a silent recomputation.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -24,19 +16,10 @@ DEFAULT_PURPOSE = "default"
 
 
 class CachedEmbeddingMissingError(RuntimeError):
-    """Read mode found no usable cached vector for an input."""
+    pass
 
 
 class CachedEmbedder:
-    """Wrap an embedder so repeated inputs are served from ``cache_dir``.
-
-    The wrapped embedder is either a Mem0 embedder (``embed(text, memory_action)``
-    and ``embed_batch(texts, memory_action)``) or the library's ``Embedder``
-    (``embed_documents`` and ``embed_query``). Cache keys include the purpose,
-    ``"add"`` for stored text and ``"search"`` for queries, so one cache serves
-    both the Mem0 path and the library's retriever.
-    """
-
     DOCUMENT_PURPOSE = "add"
     QUERY_PURPOSE = "search"
 
@@ -119,7 +102,6 @@ class CachedEmbedder:
         return array
 
     def _plan_batch(self, texts: list[str], memory_action: str) -> _BatchPlan:
-        """Resolve cache hits and group the misses by unique input, in first-seen order."""
         plan = _BatchPlan(vectors=[None] * len(texts))
         loaded: dict[Path, np.ndarray] = {}
         for index, text in enumerate(texts):
@@ -159,7 +141,6 @@ class CachedEmbedder:
                 plan.vectors[index] = array
 
     def _load_cached(self, path: Path) -> np.ndarray | None:
-        """The cached vector, or None when absent; corrupt files are replaced in write mode."""
         if not path.exists():
             return None
         try:
@@ -199,8 +180,6 @@ class _BatchPlan:
 
 
 class _Mem0EmbedderCalls:
-    """Call shape of a Mem0 embedder: the memory action is passed positionally."""
-
     def __init__(self, wrapped: Any) -> None:
         self._wrapped = wrapped
 
@@ -212,8 +191,6 @@ class _Mem0EmbedderCalls:
 
 
 class _LibraryEmbedderCalls:
-    """Call shape of the library's ``Embedder`` protocol, which has no memory action."""
-
     def __init__(self, wrapped: Any) -> None:
         self._wrapped = wrapped
 
@@ -225,8 +202,6 @@ class _LibraryEmbedderCalls:
 
 
 def _wrapped_calls(wrapped: Any) -> _Mem0EmbedderCalls | _LibraryEmbedderCalls:
-    # The two embedder families have no common base class, so the call shape is
-    # chosen once here, by the method the wrapped object provides.
     if hasattr(wrapped, "embed_documents"):
         return _LibraryEmbedderCalls(wrapped)
     return _Mem0EmbedderCalls(wrapped)

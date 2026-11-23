@@ -1,5 +1,3 @@
-"""Public data types of the InferScale v1 API."""
-
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
@@ -11,15 +9,6 @@ VECTOR_DISTANCE = "ip"
 
 @dataclass(slots=True, frozen=True)
 class Chunk:
-    """One unit of context to precompute.
-
-    ``token_ids`` are the source of truth for the KV encode when given;
-    otherwise ``text`` plus the configured separator is tokenized.
-    ``InferScaleConfig.context_window`` selects preceding chunks as an
-    encoding-only prefix; only this chunk's KV is retained.
-    ``payload`` is stored in the vector index next to the embedding.
-    """
-
     id: str
     text: str
     token_ids: Sequence[int] | None = None
@@ -28,8 +17,6 @@ class Chunk:
 
 @dataclass(slots=True, frozen=True)
 class EncodingPlan:
-    """Token-level plan for one forward pass: context prefix plus target."""
-
     chunk_id: str
     target_token_ids: list[int]
     context_token_ids: list[int]
@@ -43,14 +30,6 @@ class EncodingPlan:
 
 @dataclass(slots=True)
 class KVChunk:
-    """Pre-RoPE KV of one chunk.
-
-    ``kv_by_layer`` maps the vLLM attention layer name
-    (``model.layers.{i}.self_attn.attn``) to a ``[2, tokens, kv_heads, head_dim]``
-    tensor holding the pre-rotation keys and the values, or to a lazy view once
-    a chunk store owns the tensors.
-    """
-
     chunk_id: str
     token_ids: list[int]
     kv_by_layer: dict[str, Any]
@@ -90,8 +69,6 @@ class PromptTokens:
 
 @dataclass(slots=True)
 class ComposedMemory:
-    """Position-correct KV of one answer's memory, ready for the connector."""
-
     kv_by_layer: dict[str, Any]
     token_ids: list[int]
     num_tokens: int
@@ -109,8 +86,6 @@ class SearchMetrics:
 
 @dataclass(slots=True, frozen=True)
 class DeviceSearchResult:
-    """One search's stable IDs and distances, kept on the GPU by either index."""
-
     stable_ids: Any
     distances: Any
     metrics: SearchMetrics
@@ -155,8 +130,6 @@ class PrecomputeStats:
 
 @dataclass(slots=True, frozen=True)
 class ChunkInfo:
-    """Metadata of a precomputed chunk; tensors are never exposed."""
-
     id: str
     text: str
     token_ids: list[int]

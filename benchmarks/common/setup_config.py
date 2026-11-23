@@ -1,5 +1,3 @@
-"""Installation settings from ``configs/setup.json``, exported for scripts/setup_remote.sh."""
-
 from __future__ import annotations
 
 import shlex
@@ -33,7 +31,6 @@ DEFAULT_JASPER_VECTORS_PER_SEGMENT_LOG2 = 12
 
 
 def setup_shell_exports(config_path: Path) -> str:
-    """Quoted ``export`` lines for the setup script's inputs."""
     data = load_json_object(config_path)
     reject_unknown_keys(data, SETUP_KEYS, "setup")
     root = project_root()
@@ -56,7 +53,6 @@ def setup_shell_exports(config_path: Path) -> str:
 
 
 def _segment_size_log2(data: dict) -> int:
-    """Validate the exponent of Jasper's compile-time vectors-per-segment constant."""
     value = optional(
         data,
         "jasper_vectors_per_segment_log2",

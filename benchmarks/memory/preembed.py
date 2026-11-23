@@ -1,9 +1,3 @@
-"""The preembed stage: build every sample's Mem0 fact catalog and warm the embedding caches.
-
-Samples are processed by a thread pool because each one is bound by calls to
-the extraction LLM and the embedding endpoint.
-"""
-
 from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
@@ -78,13 +72,6 @@ def preembed_questions(memory: Any, sample: ConversationSample) -> int:
 
 
 def preembed_question_entities(memory: Any, sample: ConversationSample) -> int:
-    """Cache the query-entity embeddings Mem0's hybrid search needs.
-
-    Mem0's search extracts entities from the query and embeds them for entity
-    boosts; a read-mode cache miss there is silently swallowed by Mem0 and the
-    boost is dropped, changing the ranking. The dedup mirrors Mem0's (first 8
-    entities, normalized-unique) so the cache keys match search-time lookups.
-    """
     embedder = memory_embedder(memory)
     normalize = getattr(memory, "_normalize_entity_text", None)
     if not callable(normalize):
@@ -114,7 +101,6 @@ def _require_unique_sample_ids(samples: list[ConversationSample]) -> None:
 def _run_sample_workers(
     config: MemoryRunConfig, samples: list[ConversationSample], worker_count: int
 ) -> list[dict[str, int]]:
-    """Preembed every sample on the pool; results come back in sample order."""
     if not samples:
         return []
     results: list[dict[str, int] | None] = [None] * len(samples)

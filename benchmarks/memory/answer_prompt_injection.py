@@ -1,9 +1,3 @@
-"""Answer LoCoMo questions with retrieved Mem0 facts injected as prompt text.
-
-The baseline sends exactly the token stream KV injection would compose, so
-the two backends differ only in whether vLLM recomputes the memory prefix.
-"""
-
 from __future__ import annotations
 
 import time
@@ -24,8 +18,6 @@ from .prompting import build_memory_prompt_token_ids, build_memory_query
 
 
 class PromptInjectionAnswerClient:
-    """In-process vLLM answer client for same-token prompt injection."""
-
     def __init__(self, config: MemoryRunConfig) -> None:
         force_vllm_inprocess_mode()
         self.config = config

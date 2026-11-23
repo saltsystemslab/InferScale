@@ -1,30 +1,3 @@
-"""vLLM's LMCache connector, adapted for in-process CacheBlend measurements.
-
-``BlendConnector`` is loaded by module path (``kv_connector_module_path``), so
-it carries a name vLLM has not registered. It changes four things about the
-connector it subclasses: the blender is created on first use instead of at
-construction, because vLLM builds the connector before the model is loaded
-(LMCache issue 4131); CUDA graphs always run piecewise, because blending is
-layerwise; LMCache sees each request's token ids as a plain list, because its
-blending lookup sends them to the lookup server with msgpack, which cannot
-encode vLLM's read-only ``ConstantList``; and each request's matched token
-count and load time are recorded for the benchmark (see ``load_stats``).
-
-The blender needs five more adjustments for LMCache 0.4.4 on vLLM 0.19. Three
-backport LMCache 0.4.7: ``vllm.attention.Attention``, which vLLM moved, is
-aliased; the sparse FlashInfer backend, which needs functions this FlashInfer
-lacks and is never used here, is stubbed; and the model regains
-``get_input_embeddings``, which vLLM renamed. vLLM's Mistral model runs on
-LMCache's Llama model, since it subclasses vLLM's Llama. Cached keys move to
-their new positions with the model's own RoPE, because LMCache rebuilds RoPE
-without scaling and would move Llama 3.1's keys with the wrong frequencies.
-
-Finally, unpinning a cached object that is already unpinned does nothing.
-LMCache 0.4.4's layerwise retrieval unpins every object it loads, and the
-lookup that pinned them unpins them again, which LMCache answers with a warning
-per object and layer inside the timed prefill.
-"""
-
 from __future__ import annotations
 
 import importlib
@@ -53,8 +26,6 @@ __all__ = [
 
 
 class DeferredBlender:
-    """Stands in for ``LMCBlender`` until the model exists, then forwards to it."""
-
     def __init__(self, vllm_config: Any) -> None:
         self._vllm_config = vllm_config
         self._blender: Any | None = None
@@ -99,11 +70,6 @@ class DeferredBlender:
 
 
 def _alias_vllm_attention() -> None:
-    """Make ``vllm.attention.Attention`` importable for LMCache's attention backends.
-
-    vLLM 0.19 moved the class to ``vllm.model_executor.layers.attention``;
-    LMCache 0.4.7 falls back to that path the same way.
-    """
     try:
         importlib.import_module("vllm.attention")
     except ModuleNotFoundError:
@@ -120,13 +86,6 @@ class _UnavailableSparseBackend:
 
 
 def _stub_sparse_flashinfer_backend() -> None:
-    """Keep LMCache's sparse FlashInfer backend from breaking its FlashAttention one.
-
-    LMCache 0.4.4 imports both backends together, and the sparse one needs
-    FlashInfer functions that vLLM 0.19's FlashInfer lacks. Blending here runs on
-    FlashAttention and never enables sparse attention; LMCache 0.4.7 imports each
-    backend only when it is used.
-    """
     name = "lmcache.v1.compute.attention.flash_infer_sparse"
     try:
         importlib.import_module(name)
@@ -137,22 +96,11 @@ def _stub_sparse_flashinfer_backend() -> None:
 
 
 def _alias_input_embeddings(vllm_model: Any) -> None:
-    """Give the model the ``get_input_embeddings`` LMCache 0.4.4 embeds tokens with.
-
-    vLLM 0.18 renamed it to ``embed_input_ids``; LMCache 0.4.7 tries both names.
-    """
     if not hasattr(vllm_model, "get_input_embeddings"):
         vllm_model.get_input_embeddings = vllm_model.embed_input_ids
 
 
 def _blend_mistral_as_llama() -> None:
-    """Let LMCache blend Mistral, which vLLM serves with a subclass of its Llama model.
-
-    LMCache 0.4.4 picks its layerwise model by exact class name and knows only
-    Llama, Qwen2 and Qwen3. vLLM's ``MistralForCausalLM`` subclasses
-    ``LlamaForCausalLM`` and keeps its layer attributes, so LMCache's Llama
-    model runs it.
-    """
     from lmcache.v1.compute.blend import blender as blender_module
     from lmcache.v1.compute.models.llama import LMCLlamaModel
 
@@ -170,12 +118,6 @@ def _blend_mistral_as_llama() -> None:
 
 
 def _move_keys_with_model_rope(layerwise_model: Any, vllm_model: Any) -> None:
-    """Move cached keys to their positions in the prompt with the model's own RoPE.
-
-    LMCache 0.4.4 rebuilds the RoPE for this from the base frequency alone, so it
-    would move Llama 3.1's keys, which its scaled RoPE encoded, with the wrong
-    frequencies. The model's rotary embedding holds the table that encoded them.
-    """
     from lmcache.v1.compute.positional_encoding import FusedRope
 
     rotary_emb = vllm_model.model.layers[0].self_attn.rotary_emb
@@ -185,8 +127,6 @@ def _move_keys_with_model_rope(layerwise_model: Any, vllm_model: Any) -> None:
 
 
 class _ListTokenRequest:
-    """A vLLM request whose ``all_token_ids`` is a plain list; the rest is the request's."""
-
     def __init__(self, request: Any) -> None:
         self._request = request
 
@@ -199,18 +139,11 @@ class _ListTokenRequest:
 
 
 def seed_deferred_blender(vllm_config: Any) -> None:
-    """Make ``LMCBlenderBuilder.get_or_create`` return a deferred blender for this engine."""
     if ENGINE_NAME not in LMCBlenderBuilder._blenders:
         LMCBlenderBuilder._blenders[ENGINE_NAME] = DeferredBlender(vllm_config)
 
 
 def _skip_repeated_unpin() -> None:
-    """Make unpinning a cached object that is already unpinned a no-op.
-
-    LMCache 0.4.4 would take the pin count below zero, log a warning, and reset
-    it to zero; it would also free the object a second time if nothing else
-    held it. Skipping the call keeps the count and the memory as they were.
-    """
     from lmcache.v1.memory_management import TensorMemoryObj
 
     unpin = TensorMemoryObj.unpin
@@ -237,7 +170,6 @@ class BlendConnector(LMCacheConnectorV1):
         return True
 
     def get_num_new_matched_tokens(self, request: Any, num_computed_tokens: int) -> Any:
-        # LMCache 0.4.4 passes all_token_ids unchanged to the blending lookup.
         result = super().get_num_new_matched_tokens(_ListTokenRequest(request), num_computed_tokens)
         matched = result[0] if isinstance(result, tuple) else result
         if matched is not None:

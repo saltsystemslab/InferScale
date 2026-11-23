@@ -1,5 +1,3 @@
-"""A local qdrant-client vector store with the same interface as JasperIndex."""
-
 from __future__ import annotations
 
 import time
@@ -17,8 +15,6 @@ FILTER_OPERATORS = {"eq", "in", "ne"}
 
 
 class QdrantVectorStore:
-    """Vectors and payloads in an on-disk Qdrant collection, searched by inner product."""
-
     _ID_PAYLOAD_KEY = "__locomo_bench_id"
     _UUID_NAMESPACE = uuid.UUID("5c6ab2ac-d6ef-4e8f-97a7-85d8c528a0b1")
 
@@ -213,7 +209,6 @@ class QdrantVectorStore:
         self._dim = dim
 
     def _native_filter(self, filters: dict[str, Any] | None) -> Any | None:
-        """The filters as a Qdrant filter, or None when a clause has no Qdrant equivalent."""
         if not filters:
             return None
         models = _qdrant_models()
@@ -288,7 +283,6 @@ def _qdrant_models() -> Any:
 
 
 def _field_conditions(models: Any, key: str, expected: Any) -> tuple[list[Any], list[Any]] | None:
-    """Qdrant conditions (must, must_not) for one filter clause, or None if untranslatable."""
     if not isinstance(expected, dict):
         match = _match_value(models, expected)
         return ([models.FieldCondition(key=key, match=match)], []) if match is not None else None

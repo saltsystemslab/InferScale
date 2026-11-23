@@ -1,12 +1,3 @@
-"""Prompt scaffold and query tokens around an injected KV memory.
-
-The prompt the engine sees is ``header + chunks (or empty text) + footer +
-query``. The header and footer come from the chat template of one system
-message; the footer is padded at the token level with newline tokens so the
-block-aligned KV prefix always covers every injected chunk token and only
-footer padding can fall into the recomputed tail.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -27,12 +18,6 @@ def build_scaffold_tokens(
     block_size: int = DEFAULT_BLOCK_SIZE,
     placeholder: str = SCAFFOLD_PLACEHOLDER,
 ) -> ScaffoldTokens:
-    """Chat-templated scaffold split around the context placeholder.
-
-    The footer is padded at the token level with newline tokens to at least
-    ``block_size - 1`` tokens. Text-level padding cannot guarantee that: chat
-    templates trim message content and BPE tokenizers merge whitespace runs.
-    """
     if block_size < 1:
         raise ValueError("block_size must be >= 1.")
     if not system_prompt:
@@ -56,7 +41,6 @@ def build_scaffold_tokens(
 def _templated_system_prompt(
     tokenizer: Any, system_prompt: str, placeholder: str
 ) -> tuple[str, str]:
-    """Render one system message through the chat template and split it at the placeholder."""
     if callable(getattr(tokenizer, "apply_chat_template", None)):
         templated = apply_chat_template_non_thinking(
             tokenizer,
@@ -91,7 +75,6 @@ def _padded_footer(tokenizer: Any, footer_text: str, block_size: int) -> list[in
 def build_memory_token_ids(
     scaffold: ScaffoldTokens, ordered_chunk_token_ids: Sequence[Sequence[int]]
 ) -> list[int]:
-    """Token ids of the memory section as the prompt lays it out."""
     token_ids = list(scaffold.header_token_ids)
     if ordered_chunk_token_ids:
         for chunk_token_ids in ordered_chunk_token_ids:
@@ -141,7 +124,6 @@ def memory_token_budget(
 
 
 def require_memory_within_budget(memory_token_count: int, memory_token_budget: int) -> None:
-    """Fail on an over-budget composition; retrieved chunks are never dropped silently."""
     if memory_token_count <= memory_token_budget:
         return
     raise RuntimeError(
@@ -154,11 +136,6 @@ def require_memory_within_budget(memory_token_count: int, memory_token_budget: i
 def block_aligned_prefix(
     memory_token_count: int, footer_token_count: int, block_size: int
 ) -> tuple[int, int]:
-    """Split the memory into the block-aligned injected prefix and the recomputed tail.
-
-    Every injected chunk token must sit inside the aligned prefix; only footer
-    padding may fall into the tail the engine recomputes.
-    """
     if block_size < 1:
         raise ValueError("block_size must be >= 1.")
     loaded_memory_tokens = (memory_token_count // block_size) * block_size
@@ -175,7 +152,6 @@ def block_aligned_prefix(
 def require_identical_token_ids(
     precomputed_token_ids: list[int], live_token_ids: list[int]
 ) -> None:
-    """Injected token ids must match what the live tokenizer would produce."""
     if precomputed_token_ids == live_token_ids:
         return
     mismatch_index = next(
@@ -222,11 +198,6 @@ def tokenize_messages(tokenizer: Any, messages: list[dict[str, str]]) -> list[in
 def apply_chat_template_non_thinking(
     tokenizer: Any, messages: list[dict[str, str]], **kwargs: Any
 ) -> Any:
-    """Apply the chat template with reasoning disabled where the template supports it.
-
-    Qwen3 templates take ``enable_thinking``; other tokenizers reject the
-    unknown keyword with a TypeError, in which case the plain call is used.
-    """
     try:
         return tokenizer.apply_chat_template(messages, enable_thinking=False, **kwargs)
     except TypeError as exc:

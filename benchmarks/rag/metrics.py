@@ -1,5 +1,3 @@
-"""String and retrieval metrics of one RAG answer against its gold references."""
-
 from __future__ import annotations
 
 import re
@@ -88,12 +86,6 @@ def predicted_insufficient(prediction: str) -> bool:
 
 
 def answer_metrics(prediction: str, gold_answers: Sequence[str] | str) -> dict[str, Any]:
-    """String metrics against one or more reference answers.
-
-    Follows the official QASPER convention: F1 (with its precision/recall) is
-    the best over references, and exact/substring match count if any reference
-    matches. Single-reference datasets pass a one-element sequence.
-    """
     if isinstance(gold_answers, str):
         gold_answers = (gold_answers,)
     golds = [str(gold) for gold in gold_answers]
@@ -121,11 +113,6 @@ def retrieval_metrics_for_query(
     hits: Sequence[SearchHit],
     chunk_text_by_id: Mapping[str, str],
 ) -> dict[str, Any] | None:
-    """Doc- and fact-level retrieval quality against the gold evidence.
-
-    Returns None for null queries, which have no evidence and are excluded
-    from retrieval aggregates by design.
-    """
     if not query.evidence:
         return None
 

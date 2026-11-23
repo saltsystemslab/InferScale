@@ -1,20 +1,3 @@
-"""Per-chunk disk cache of pre-encoded RAG KV, keyed by everything an encode depends on.
-
-One file per chunk keeps the precompute pass resumable per chunk; the RoPE
-tables and the prompt scaffold chunks share one file per block size. The
-cache is the precompute artifact only: at answer time the whole corpus KV is
-loaded once into host RAM (cpu_chunk_store.py) and nothing is read from disk
-per query.
-
-Cache identity lives in the directory key (model, dtype, chunk size, context
-window, max position, corpus fingerprint) and is checked again against every
-payload's meta and the exact chunk token ids on load, so a stale cache can
-never silently inject wrong content.
-
-torch is imported only through the library payload helpers, so the key and
-validation helpers stay importable and testable without torch.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
@@ -43,8 +26,6 @@ SCAFFOLD_SLOTS = ("header", "empty_passages", "footer")
 
 @dataclass(slots=True, frozen=True)
 class RagChunkCacheKey:
-    """The settings a cached encode depends on; they name the directory and stamp every payload."""
-
     dataset: str
     model: str
     dtype: str
@@ -77,7 +58,6 @@ class RagChunkCacheKey:
         )
 
     def meta(self) -> dict[str, Any]:
-        """The identity stored in, and validated against, every payload."""
         return {
             "dataset": self.dataset,
             "model": self.model,
@@ -97,8 +77,6 @@ class RagChunkCacheKey:
 
 @dataclass(slots=True, frozen=True)
 class RagChunkCache:
-    """One cache directory and the identity every payload in it must carry."""
-
     key: RagChunkCacheKey
     directory: Path
 
@@ -125,7 +103,6 @@ class RagChunkCache:
         return [chunk_id for chunk_id in chunk_ids if not self.chunk_path(chunk_id).exists()]
 
     def require_complete(self, chunks: Sequence[RagChunk]) -> None:
-        """Fail with the precompute settings when any chunk file is absent."""
         missing = self.missing_chunk_ids(chunk.chunk_id for chunk in chunks)
         if not missing:
             return
@@ -150,7 +127,6 @@ class RagChunkCache:
         )
 
     def total_bytes(self) -> int:
-        """Bytes of the chunk and tables files on disk."""
         chunks_dir = self.directory / "chunks"
         chunk_files = chunks_dir.glob("*.pt") if chunks_dir.exists() else ()
         tables_files = self.directory.glob("tables-scaffold-*.pt")
@@ -163,7 +139,6 @@ def chunk_payload_is_valid(
     expected_meta: Mapping[str, Any],
     expected_token_ids: Sequence[int],
 ) -> bool:
-    """Structural validation of a chunk payload, shared by load and tests."""
     if not payload_header_matches(
         payload, version=RAG_CHUNK_CACHE_VERSION, expected_meta=expected_meta
     ):
@@ -205,7 +180,6 @@ def load_chunk(
     expected_token_ids: Sequence[int],
     device: str = "cpu",
 ) -> KVChunk | None:
-    """The cached chunk, or None on any miss or mismatch."""
     payload = load_torch_payload(path)
     if payload is None:
         return None
@@ -220,8 +194,6 @@ def load_chunk(
 
 @dataclass(slots=True)
 class CachedRagScaffold:
-    """The RoPE tables and the encoded prompt scaffold chunks of one cache."""
-
     cos_table: Any
     sin_table: Any
     scaffold_chunks: dict[str, KVChunk]
@@ -278,7 +250,6 @@ def rag_scaffold_chunks_match(
     scaffold_chunks: Mapping[str, KVChunk | None],
     scaffold: Any,
 ) -> bool:
-    """Cached scaffold chunk token ids must equal the live tokenizer's scaffold."""
     expected = {
         "header": list(scaffold.header_token_ids),
         "empty_passages": list(scaffold.empty_token_ids),

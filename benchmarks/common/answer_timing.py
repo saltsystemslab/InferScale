@@ -1,11 +1,3 @@
-"""Latency metrics for one generated answer, shared by every benchmark answer client.
-
-Bookkeeping that runs between the request and generation, such as verifying
-token parity or handing a composed KV memory to the connector, is timed by
-the client and passed as ``excluded_ms`` so it is not charged to serving
-latency.
-"""
-
 from __future__ import annotations
 
 from typing import Any
@@ -22,14 +14,6 @@ def generation_latency_metrics(
     engine_ttft_key: str,
     excluded_ms: float = 0.0,
 ) -> dict[str, float]:
-    """Timing metrics for an answer whose generation produced ``output``.
-
-    ``request_started`` is when the answer client received the question and
-    ``query_started_at``, when given, is when the retrieval that preceded it
-    started. The engine's own time to first token is reported under
-    ``engine_ttft_key`` because KV injection and prompt injection record it
-    under different names.
-    """
     generate_started = output.started_at
     finished = output.finished_at
     ttft_ms = output.ttft_ms
@@ -50,7 +34,6 @@ def generation_latency_metrics(
 
 
 def retrieval_latency_metrics(retrieval: RetrievalMetrics) -> dict[str, Any]:
-    """The retrieval timings of one question, plus the backend that served it when known."""
     metrics: dict[str, Any] = {
         "query_embedding_time_ms": retrieval.embedding_time_ms,
         "vector_db_query_time_ms": retrieval.search_time_ms,

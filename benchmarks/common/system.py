@@ -1,5 +1,3 @@
-"""Host metadata recorded with every result: platform, package versions, GPUs."""
-
 from __future__ import annotations
 
 import importlib.metadata
@@ -80,7 +78,6 @@ def _jasper_commit() -> str | None:
 
 
 def available_host_memory_bytes() -> int | None:
-    """Host RAM the kernel reports as available, or an estimate from the physical total."""
     try:
         available = parse_mem_available_bytes(Path("/proc/meminfo").read_text(encoding="ascii"))
     except OSError:
@@ -92,7 +89,6 @@ def available_host_memory_bytes() -> int | None:
 
 
 def total_host_memory_bytes() -> int | None:
-    """Physical host RAM, or None where the platform does not report it."""
     try:
         page_size = os.sysconf("SC_PAGE_SIZE")
         page_count = os.sysconf("SC_PHYS_PAGES")
@@ -104,7 +100,6 @@ def total_host_memory_bytes() -> int | None:
 
 
 def parse_mem_available_bytes(meminfo_text: str) -> int | None:
-    """The MemAvailable line of /proc/meminfo in bytes, or None when absent or malformed."""
     for line in meminfo_text.splitlines():
         if line.startswith("MemAvailable:"):
             parts = line.split()

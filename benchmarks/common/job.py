@@ -1,5 +1,3 @@
-"""Internal process boundary for benchmark jobs supplied as JSON on stdin."""
-
 from __future__ import annotations
 
 import json

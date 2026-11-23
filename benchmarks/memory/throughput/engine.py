@@ -1,5 +1,3 @@
-"""vLLM engine lifecycle, warmup, and batch measurement for the throughput worker."""
-
 from __future__ import annotations
 
 import random
@@ -25,8 +23,6 @@ class StartedEngine:
 
 @dataclass(frozen=True, slots=True)
 class KVWarmup:
-    """One warmup prompt whose prefix is a registered memory, with its routed sampling params."""
-
     prompt: dict[str, list[int]]
     sampling_params: Any
 
@@ -37,7 +33,6 @@ def start_llm(
     kv_transfer_config: dict[str, Any] | None = None,
     engine: EngineConfig | None = None,
 ) -> StartedEngine:
-    """Start the engine; ``engine`` lets a condition adjust the run's engine settings."""
     from inferscale.v1.serving.vllm import force_vllm_inprocess_mode, vllm_engine_kwargs
 
     # Every condition measures the same in-process V1 engine; otherwise QPS
@@ -70,7 +65,6 @@ def prepare_batch(
     *,
     kv_warmup: KVWarmup | None = None,
 ) -> None:
-    """Check the batch fits the engine and warm the engine up for it."""
     validate_prompt_lengths(config, prompts)
     warm_up(
         llm, prompts, sampling_params, config.warmup_batches, seed=config.seed, kv_warmup=kv_warmup
@@ -86,16 +80,6 @@ def warm_up(
     seed: int,
     kv_warmup: KVWarmup | None = None,
 ) -> None:
-    """Warm up with random tokens so no real prompt lands in a cache.
-
-    With vLLM's prefix cache or an external KV cache in place, warming up with
-    the measured prompts would let the measured batch hit a cache (inflated
-    QPS) and, worse, let a cache satisfy memory prefixes so the connector
-    never injects KV.
-    Warmup only needs to exercise kernels, allocator, and scheduler; token
-    identity is irrelevant. ``kv_warmup`` carries explicit memory routing so
-    the injection path warms too.
-    """
     if batches > 0 and prompts:
         vocab_size = tokenizer_vocab_size(llm.get_tokenizer())
         warmup_prompts = build_warmup_prompts(prompts, vocab_size=vocab_size, seed=seed)
@@ -122,7 +106,6 @@ def tokenizer_vocab_size(tokenizer: Any) -> int:
 def sampling_params_with_memory_user_ids(
     sampling_params: Any, memory_user_ids: list[str]
 ) -> list[Any]:
-    """Clone the base params once per request, routing each to its memory."""
     routed: list[Any] = []
     for memory_user_id in memory_user_ids:
         request_params = _clone_sampling_params(sampling_params)
@@ -144,14 +127,6 @@ def _clone_sampling_params(sampling_params: Any) -> Any:
 def build_kv_warmup_prompt(
     memory_token_ids: list[int], *, vocab_size: int, seed: int
 ) -> dict[str, list[int]]:
-    """One warmup prompt whose prefix is a registered memory.
-
-    Random warmup prompts match no memory, so without this the connector's
-    match and inject path (scatter kernels, staging) would first run inside
-    the measured batch. The prompt must be strictly longer than the memory
-    for the match to fire; the tail is seeded-random so it shares nothing
-    with real queries.
-    """
     if vocab_size < 1:
         raise ValueError("vocab_size must be >= 1 to build the KV warmup prompt.")
     rng = random.Random(seed)

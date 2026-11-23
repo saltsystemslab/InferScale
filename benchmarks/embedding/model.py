@@ -1,5 +1,3 @@
-"""A local Qwen embedding model: left padding, last-token pooling, L2 normalization."""
-
 from __future__ import annotations
 
 import time

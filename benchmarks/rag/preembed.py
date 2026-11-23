@@ -1,5 +1,3 @@
-"""The preembed stage: warm the embedding cache for every corpus chunk and every query."""
-
 from __future__ import annotations
 
 from typing import Any
@@ -16,11 +14,6 @@ PREEMBEDDING_FILE = "preembedding.json"
 
 
 def preembed_rag_embeddings(config: RagBenchConfig) -> dict[str, Any]:
-    """Embed every chunk and query once; later stages read the cache and never call the API.
-
-    Chunk texts are decoded from the answer model's token ids, so preembedding
-    is per answer model; the cache itself is content-addressed and shared.
-    """
     corpus = load_rag_corpus(config)
     logger.info(
         "Preembedding dataset={} model={} docs={} chunks={} queries={} cache_dir={}",

@@ -1,5 +1,3 @@
-"""Build the library's ``InferScaleConfig`` from a benchmark JSON ``inferscale`` section."""
-
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -18,7 +16,6 @@ def inferscale_section(
     context_window: int,
     where: str,
 ) -> Any:
-    """Validate the section and fill in the model, retrieval depth, and window from the run."""
     from inferscale.v1 import InferScaleConfig
 
     section = dict(section_of(data, "inferscale", where))

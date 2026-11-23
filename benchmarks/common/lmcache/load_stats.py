@@ -1,12 +1,3 @@
-"""Per-request accounting of what LMCache matched and how long its loads took.
-
-LMCache's own statistics are drained by a background thread every few
-seconds, so the connector records the figures the benchmark needs itself: the
-matched token count the scheduler-side lookup returned for each request, and
-the time the worker spent loading and blending. The engine runs in-process,
-so an answer client reads a snapshot right after its request.
-"""
-
 from __future__ import annotations
 
 import threading
@@ -21,7 +12,6 @@ class BlendLoadStats:
         self._load_time_ms = 0.0
 
     def record_match(self, request_id: str, matched_tokens: int) -> None:
-        """Keep the largest count per request; a preempted request is looked up again."""
         with self._lock:
             key = str(request_id)
             self._matched_tokens[key] = max(self._matched_tokens.get(key, 0), int(matched_tokens))

@@ -1,5 +1,3 @@
-"""Entry point of the throughput benchmark, invoked by the launcher job."""
-
 from __future__ import annotations
 
 from pathlib import Path

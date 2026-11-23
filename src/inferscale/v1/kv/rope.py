@@ -1,13 +1,3 @@
-"""Capture of pre-rotation keys from a Hugging Face forward pass, and RoPE math.
-
-Hugging Face applies rotary position embedding inside each attention layer
-through the module-level ``apply_rotary_pos_emb`` of the model family. The
-encoder needs the keys from before that rotation so a chunk's KV can be
-rotated at its final position inside a composed memory, so the capture
-patches that function in every supported family for the duration of one
-forward pass and records the key it was handed per layer.
-"""
-
 from __future__ import annotations
 
 import contextlib
@@ -26,8 +16,6 @@ _ROPE_MODULES = (
 
 @dataclass(slots=True)
 class RoPECapture:
-    """Pre-rotation key tensors in layer order for one forward pass."""
-
     keys: list[Any] = field(default_factory=list)
 
 
@@ -43,7 +31,6 @@ def _capturing(original: Any, capture: RoPECapture) -> Any:
 
 @contextlib.contextmanager
 def capture_pre_rope() -> Iterator[RoPECapture]:
-    """Capture pre-RoPE K tensors during one Hugging Face model forward pass."""
     capture = RoPECapture()
     patched: list[tuple[Any, Any]] = []
     for module_path in _ROPE_MODULES:
@@ -70,7 +57,6 @@ def capture_pre_rope() -> Iterator[RoPECapture]:
 
 
 def extract_cos_sin_from_model(model: Any, positions: Any, head_dim: int) -> tuple[Any, Any]:
-    """Pull RoPE cos and sin tables for ``positions`` from a loaded model."""
     import torch
 
     rotary = _find_rotary_embedding(model)
@@ -82,7 +68,6 @@ def extract_cos_sin_from_model(model: Any, positions: Any, head_dim: int) -> tup
 
 
 def _find_rotary_embedding(model: Any) -> Any:
-    """The shared rotary module, or the first layer's own one in older families."""
     try:
         return model.model.rotary_emb
     except AttributeError:
@@ -102,7 +87,6 @@ def _module_device(rotary: Any, model: Any) -> Any:
 
 
 def rotate_pre_rope_k(k_pre: Any, cos: Any, sin: Any) -> Any:
-    """Apply RoPE to a pre-rotation K tensor."""
     if cos.dim() == 3:
         cos = cos.squeeze(0)
     if sin.dim() == 3:

@@ -1,10 +1,3 @@
-"""The precompute-kv stage: fill the KV chunk cache before the benchmark runs.
-
-One model and context window per invocation. Requires the Mem0 fact catalogs
-from the extract-facts stage; needs no vLLM server because the encoder runs
-in-process.
-"""
-
 from __future__ import annotations
 
 import time

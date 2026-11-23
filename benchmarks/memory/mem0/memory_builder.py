@@ -1,10 +1,3 @@
-"""Build one conversation's Mem0 memory: extract a fact catalog, or replay a saved one.
-
-The preembed stage runs the builder in write mode, which calls the extraction
-LLM and writes the catalog. Every timed stage runs it in read mode, which
-replays the catalog so the LLM is never on the measured path.
-"""
-
 from __future__ import annotations
 
 import shutil
@@ -49,7 +42,6 @@ def fact_catalog_store_for(config: MemoryRunConfig) -> FactCatalogStore:
 
 
 def missing_fact_catalogs(config: MemoryRunConfig) -> list[tuple[str, Path]]:
-    """Sample ids and catalog paths that do not exist for this config's catalog identity."""
     store = fact_catalog_store_for(config)
     samples = load_locomo(config.dataset_path, max_samples=config.max_samples)
     return [
@@ -90,7 +82,6 @@ class SampleMemoryBuilder:
     def build_memory(
         self, sample: ConversationSample, *, finalize_index: bool = True
     ) -> BuiltMemory:
-        """Extract the catalog in write mode; replay the saved catalog otherwise."""
         if self.memory_llm_cache_mode == "write":
             return self._extract(sample)
         return self._replay(sample, finalize_index=finalize_index)
@@ -187,7 +178,6 @@ class SampleMemoryBuilder:
     def _create_memory(
         self, store_root: Path, vector_config: VectorStoreConfig
     ) -> tuple[Any, CachedEmbedder | TimedEmbedder]:
-        """A fresh memory with the embedder wrapper installed and both stores emptied."""
         memory = create_mem0_memory(
             Mem0Settings(
                 store_root=store_root,

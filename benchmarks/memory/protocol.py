@@ -1,10 +1,3 @@
-"""Fixed vocabulary and protocol constants of the memory benchmark.
-
-Everything here is recorded into every run's ``config.json`` so results
-remain comparable: the upstream scorer the benchmark reproduces, the Mem0
-extraction settings, and the prompt protocols.
-"""
-
 from __future__ import annotations
 
 from typing import Any

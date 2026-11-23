@@ -1,5 +1,3 @@
-"""The answer model's tokenizer, resolved the way the engine resolves it."""
-
 from __future__ import annotations
 
 from typing import Any
@@ -8,15 +6,6 @@ from loguru import logger
 
 
 def load_rag_tokenizer(model: str, *, allow_transformers_fallback: bool = False) -> Any:
-    """Load the answer model's tokenizer through vLLM's resolver.
-
-    Chunk token ids must be byte-identical to what the vLLM engine sees (the
-    KV connector matches injected chunks as a prompt prefix), so every stage
-    that produces token ids uses the same resolver as the engine. The
-    transformers AutoTokenizer fallback exists only for the estimate stage on
-    hosts without vLLM; it may tokenize differently (notably for Mistral) and
-    must never feed the embedding, KV, or answer stages.
-    """
     try:
         from inferscale.v1.kv.encoder import load_encoder_tokenizer
     except ModuleNotFoundError as exc:  # pragma: no cover - import environment specific

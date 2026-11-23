@@ -1,12 +1,3 @@
-"""The one Mem0 internal the extraction protocol patches: the prompt's observation date.
-
-Mem0's ``add`` builds the extraction prompt without a timestamp, so the
-prompt would carry today's date for every turn of a conversation recorded
-years ago. The benchmark wraps the prompt builder once per process and reads
-the source turn's date from a context variable, so concurrent extraction
-threads each see their own turn's date.
-"""
-
 from __future__ import annotations
 
 import importlib
@@ -53,5 +44,4 @@ OBSERVATION_DATE = _ObservationDatePatch()
 
 
 def mem0_observation_date(created_at: str) -> Any:
-    """Within the block, Mem0 extraction prompts carry ``created_at`` as their observation date."""
     return OBSERVATION_DATE.active(created_at)

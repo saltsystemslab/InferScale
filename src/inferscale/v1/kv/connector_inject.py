@@ -1,5 +1,3 @@
-"""Scatter of a composed memory's KV into vLLM's paged KV cache."""
-
 from __future__ import annotations
 
 from typing import Any
@@ -18,7 +16,6 @@ logger = init_logger(__name__)
 def inject_load(
     memory: UserMemory, load: MemoryLoadMeta, forward_context: Any, attn_metadata: Any
 ) -> None:
-    """Scatter one load's memory tokens into every attention layer's KV cache."""
     # Probe one layer for the device; the pinned-host view waits on a layer's
     # copy event on first access, so touch exactly one.
     first_layer = next(iter(memory.kv_by_layer), None)
@@ -100,7 +97,6 @@ def inject_layer(
 def scatter_mla(
     dst_kv_cache_layer: torch.Tensor, src_kv_cache: torch.Tensor, slot_mapping: torch.Tensor
 ) -> None:
-    """MLA caches are flat per slot: one latent row per token, no K/V split."""
     pages = dst_kv_cache_layer.shape[0]
     page_size = dst_kv_cache_layer.shape[1]
     dst_flat = dst_kv_cache_layer.reshape(pages * page_size, -1)
@@ -110,7 +106,6 @@ def scatter_mla(
 
 
 def kv_split_dim(dst_shape: Any, layer_name: str) -> int:
-    """Axis along which the paged cache separates keys from values."""
     shape_0, shape_1 = dst_shape[0], dst_shape[1]
     if shape_1 == 2 and shape_0 != 2:
         return 1
@@ -131,7 +126,6 @@ def kv_split_dim(dst_shape: Any, layer_name: str) -> int:
 def match_tail_shape(
     src_k: torch.Tensor, src_v: torch.Tensor, dst_tail: tuple[int, ...], layer_name: str
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Reshape ``[tokens, heads, head_dim]`` sources to a cache that flattens the tail."""
     src_tail = tuple(src_k.shape[1:])
     if dst_tail == src_tail:
         return src_k, src_v

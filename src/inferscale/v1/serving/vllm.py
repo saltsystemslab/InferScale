@@ -1,5 +1,3 @@
-"""In-process vLLM engine: construction kwargs, KV connector wiring, timing."""
-
 from __future__ import annotations
 
 import gc
@@ -60,12 +58,6 @@ def build_kv_transfer_config(
 
 
 def force_vllm_inprocess_mode() -> None:
-    """Force vLLM V1 offline LLM execution into this process.
-
-    Composed memories are registered in this process, so the connector must
-    run here too. Every serving path uses the same mode so measurements
-    compare the same engine execution path.
-    """
     clear_vllm_cli_env()
     current = os.environ.get("VLLM_ENABLE_V1_MULTIPROCESSING")
     if _is_truthy(current):
@@ -82,7 +74,6 @@ def force_vllm_inprocess_mode() -> None:
 
 
 def clear_vllm_cli_env() -> None:
-    """Drop the vllm CLI shell conveniences that vLLM rejects as unknown settings."""
     for name in VLLM_CLI_ENV_VARIABLES:
         os.environ.pop(name, None)
 
@@ -119,12 +110,6 @@ def empty_cuda_cache(*, collect_ipc: bool = False) -> None:
 
 
 def require_engine_ttft_ms(output: Any) -> float:
-    """Return the engine-reported TTFT, refusing to run without real metrics.
-
-    TTFT is a headline metric; fabricating it from wall-clock probes or
-    reporting it as missing would silently corrupt comparisons between runs,
-    so an engine build that does not populate RequestOutput.metrics fails.
-    """
     ttft_ms = request_ttft_ms(output)
     if ttft_ms is None:
         raise RuntimeError(
@@ -136,7 +121,6 @@ def require_engine_ttft_ms(output: Any) -> float:
 
 
 def request_ttft_ms(output: Any) -> float | None:
-    """Time to first token from RequestOutput.metrics, whichever fields the build fills."""
     metrics = getattr(output, "metrics", None)
     if metrics is None:
         return None
@@ -163,8 +147,6 @@ class GenerationOutput:
 
 
 class VLLMEngine:
-    """One in-process vLLM engine, optionally with the memory KV connector."""
-
     def __init__(self, model: str, dtype: str, config: EngineConfig) -> None:
         self._model = model
         self._dtype = dtype
@@ -185,13 +167,11 @@ class VLLMEngine:
 
     @property
     def llm(self) -> Any:
-        """The vLLM ``LLM`` itself, for clients that warm a cache or reach the model."""
         if self._llm is None:
             raise RuntimeError("VLLMEngine.start() must be called before using the engine.")
         return self._llm
 
     def start(self, *, kv_transfer_config: Mapping[str, Any] | None = None) -> float:
-        """Construct the engine; returns the startup time in seconds."""
         if self._llm is not None:
             return 0.0
         force_vllm_inprocess_mode()

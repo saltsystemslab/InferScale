@@ -1,5 +1,3 @@
-"""Chat completion clients for the judge and extraction endpoints."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -26,8 +24,6 @@ class ChatClient(Protocol):
 
 
 class OpenAICompatibleChatClient:
-    """A chat client for any server that speaks the OpenAI chat completions API, such as vLLM."""
-
     def __init__(self, *, base_url: str, api_key: str, model: str) -> None:
         try:
             from openai import OpenAI
@@ -67,11 +63,6 @@ class OpenAICompatibleChatClient:
 
 
 def _normalize_message_content(content: Any) -> str:
-    """One plain string from the response content shapes the API allows.
-
-    None becomes the empty string and a list of content blocks is concatenated
-    without separators.
-    """
     if content is None:
         return ""
     if isinstance(content, str):
@@ -82,7 +73,6 @@ def _normalize_message_content(content: Any) -> str:
 
 
 def _content_part_text(item: Any) -> str:
-    """The text of one content block: a string, a dict with text or content, or an object."""
     if isinstance(item, str):
         return item
     if isinstance(item, dict):
@@ -94,7 +84,6 @@ def _content_part_text(item: Any) -> str:
 
 
 def _raise_context_limit_error(exc: Exception) -> None:
-    """Replace a server-side context overflow with advice on the judge server setting."""
     text = str(exc).lower()
     context_terms = ("context", "prompt", "token", "sequence")
     limit_terms = ("too long", "maximum", "max", "limit", "length")

@@ -1,9 +1,3 @@
-"""Token-vs-latency and token-vs-accuracy plots of a memory run.
-
-pandas and matplotlib are optional: without them the CSV reports are still
-written and the plots are skipped with a warning.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -129,7 +123,6 @@ def _write_accuracy_plot(
 def _latency_points(
     rows: Iterable[dict[str, Any]], y_column: str
 ) -> tuple[list[tuple[float, float]], int]:
-    """(tokens, latency) pairs, and how many rows had the latency but no token count."""
     points = []
     missing_x_count = 0
     for row in rows:

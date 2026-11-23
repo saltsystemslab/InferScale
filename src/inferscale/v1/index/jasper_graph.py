@@ -1,5 +1,3 @@
-"""Jasper graph construction and the GPU memory accounting around it."""
-
 from __future__ import annotations
 
 import gc
@@ -22,8 +20,6 @@ _VECTOR_ELEMENT_BYTES = 2
 
 @dataclass(slots=True, frozen=True)
 class GraphBuild:
-    """A built graph, the fp16 matrix it searches, and the memory it took."""
-
     graph: Any
     vectors_gpu: Any
     memory_stats: dict[str, int | float | None]
@@ -41,12 +37,6 @@ def empty_memory_stats() -> dict[str, int | float | None]:
 def build_graph(
     vectors: np.ndarray, *, n_neighbors: int, alpha: float, workspace_budget: str
 ) -> GraphBuild:
-    """Build the graph on CUDA and keep the fp16 matrix resident next to it.
-
-    jasper has no brute-force API, so the matrix stays on the GPU for the
-    exact searches (full-store requests and partial-filter fallbacks); the
-    allocated-delta statistic includes it.
-    """
     try:
         import jasper
         import torch
@@ -89,7 +79,6 @@ def build_graph(
 
 
 def serialized_bytes(*, vector_count: int, dim: int, n_neighbors: int) -> int:
-    """Size of the graph in jasperpy's serialized layout."""
     if vector_count <= 0 or dim <= 0:
         return 0
     bytes_per_node = (

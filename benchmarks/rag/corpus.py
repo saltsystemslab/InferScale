@@ -1,5 +1,3 @@
-"""Load a dataset and chunk its documents the way every RAG stage must see them."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -15,8 +13,6 @@ from benchmarks.rag.tokenizer import load_rag_tokenizer
 
 @dataclass
 class RagCorpus:
-    """A dataset's documents and queries, the documents chunked by the answer model's tokenizer."""
-
     spec: RagDatasetSpec
     docs: list[RagDocument]
     queries: list[RagQuery]
@@ -47,12 +43,6 @@ class RagCorpus:
 def load_rag_corpus(
     config: RagBenchConfig, *, allow_transformers_fallback: bool = False
 ) -> RagCorpus:
-    """Load and chunk the configured dataset.
-
-    The transformers tokenizer fallback is only for the estimate stage on
-    hosts without vLLM; every other stage needs the engine's own tokenizer so
-    chunk token ids match what the engine sees.
-    """
     spec = get_dataset(config.dataset_name)
     docs, queries = spec.load(config.data_dir)
     tokenizer = load_rag_tokenizer(

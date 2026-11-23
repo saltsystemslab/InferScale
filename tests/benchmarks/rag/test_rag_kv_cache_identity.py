@@ -149,7 +149,6 @@ def _save_test_chunk(cache: RagChunkCache, chunk: RagChunk) -> int:
 
 @pytest.fixture
 def gpu_map_constructor(monkeypatch):
-    """Mock the CUDA map boundary for CPU payload storage protocol tests."""
     chunk_map = Mock(spec=GPUChunkMap)
     chunk_map.device = "cuda:2"
     chunk_map.nbytes = 48

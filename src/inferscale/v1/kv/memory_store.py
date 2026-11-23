@@ -1,12 +1,3 @@
-"""In-process GPU KV store for composed memories and the GPU-resident corpus.
-
-Each entry is a ``UserMemory``: per-layer KV tensors plus the token ids they
-encode. The connector registers composed request memories here and reads
-them back during injection. The ``gpu`` chunk store keeps the corpus here as
-well, resolved through a ChunkLookup so serving never looks chunks up by
-string on the host.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -23,16 +14,12 @@ logger = logging.getLogger(__name__)
 
 @dataclass(slots=True)
 class UserMemory:
-    """Per-layer KV tensors of one registered memory and the tokens they encode."""
-
     kv_by_layer: dict[str, Any]
     num_tokens: int
     token_ids: list[int] | None = None
 
 
 class GPUMemoryStore:
-    """Thread-safe process-local store for GPU-resident KV tensors."""
-
     # Entries are already on the GPU: there is nothing to stage and no
     # transfers to meter. CpuPinnedMemoryStore overrides these members.
     num_staging_slots = 0
@@ -78,7 +65,6 @@ class GPUMemoryStore:
             return self._memories.get(user_id)
 
     def peek_user_memory(self, user_id: str) -> UserMemory | None:
-        """Metadata read; identical to get_user_memory for GPU-resident entries."""
         return self.get_user_memory(user_id)
 
     def remove_user_memory(self, user_id: str) -> bool:
@@ -112,7 +98,6 @@ class GPUMemoryStore:
     # Corpus access: every path below resolves IDs through the GPU lookup.
 
     def finalize_packed(self) -> None:
-        """Entries stay as individual tensors; nothing to pack."""
         return
 
     def finalize_chunk_lookup(self) -> None:

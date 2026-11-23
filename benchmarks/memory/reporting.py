@@ -1,5 +1,3 @@
-"""Per-query and per-sample CSV reports of a memory run."""
-
 from __future__ import annotations
 
 import csv
@@ -94,7 +92,6 @@ ACCURACY_BIN_COLUMNS = [
 
 
 def write_query_reports(run_dir: str | Path, records: Iterable[dict[str, Any]]) -> None:
-    """Write per-query token metrics, binned accuracy, and the token-vs-latency plots."""
     run_path = Path(run_dir)
     rows = query_metric_rows(records)
     write_csv(run_path / "query_metrics.csv", rows, QUERY_METRICS_COLUMNS)
@@ -123,7 +120,6 @@ def query_metric_rows(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]
 def accuracy_bin_rows(
     rows: Iterable[dict[str, Any]], *, max_bins: int = 10
 ) -> list[dict[str, Any]]:
-    """Judged rows bucketed by prompt tokens into up to ``max_bins`` equal-count bins."""
     judged = [
         row
         for row in rows

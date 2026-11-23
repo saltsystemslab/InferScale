@@ -6,7 +6,6 @@ import sys
 
 
 def test_public_api_imports_without_gpu_stacks() -> None:
-    """The v1 package must import with torch, vllm, jasper, and openai unavailable."""
     code = (
         "import sys\n"
         "for name in ('torch', 'vllm', 'jasper', 'openai', 'transformers'):\n"

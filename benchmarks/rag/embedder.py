@@ -1,5 +1,3 @@
-"""The cached OpenAI embedder every RAG stage shares."""
-
 from __future__ import annotations
 
 from typing import Literal

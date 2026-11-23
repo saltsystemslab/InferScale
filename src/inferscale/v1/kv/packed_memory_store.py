@@ -1,11 +1,3 @@
-"""GPU chunk store with one packed slab per layer for device-side selection.
-
-Finalization concatenates every chunk's KV along the token axis, one slab per
-layer, and replaces the per-chunk tensors with views into those slabs. The
-ordinary lookup path keeps working through the views while Jasper results can
-gather their chunks on the GPU without materializing IDs on the host.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -19,8 +11,6 @@ logger = logging.getLogger(__name__)
 
 
 class PackedGPUMemoryStore(GPUMemoryStore):
-    """GPU chunk store that packs the corpus at finalization."""
-
     def __init__(self, device: str = "cuda:0") -> None:
         super().__init__(device=device)
         self._packed = False
@@ -46,7 +36,6 @@ class PackedGPUMemoryStore(GPUMemoryStore):
         )
 
     def finalize_packed(self) -> None:
-        """Freeze registration and build one packed token slab per KV layer."""
         with self._lock:
             if self._packed:
                 return
@@ -77,13 +66,11 @@ class PackedGPUMemoryStore(GPUMemoryStore):
         )
 
     def build_device_row_map(self, stable_id_items: Iterable[tuple[int, str]]) -> Any:
-        """CUDA stable-ID to packed-row map, valid while the corpus is immutable."""
         with self._lock:
             self._require_packed_locked()
             return self._lookup_locked().bind_stable_ids(stable_id_items)
 
     def select_device_ids(self, stable_ids: Any, id_to_row: Any, *, reverse: bool) -> UserMemory:
-        """Gather variable-length chunks without materializing Jasper IDs on the host."""
         with self._lock:
             self._require_packed_locked()
             rows = self._lookup_locked().device_rows(stable_ids, id_to_row, reverse=reverse)
@@ -157,8 +144,6 @@ class PackedGPUMemoryStore(GPUMemoryStore):
 
 
 class _PackedSelectionLayerView:
-    """Dict-like view that gathers a selected layer from the slabs on access."""
-
     def __init__(
         self, store: PackedGPUMemoryStore, layer_names: tuple[str, ...], source_indices: Any
     ) -> None:
@@ -228,11 +213,6 @@ def _pack_layers(
     offsets: list[int],
     lengths: list[int],
 ) -> dict[str, Any]:
-    """Concatenate each layer across chunks, releasing per-chunk tensors as it goes.
-
-    If a later layer fails to allocate, the layers already packed are handed
-    back to the chunks as slab views so no payload is lost.
-    """
     import torch
 
     packed: dict[str, Any] = {}
@@ -256,7 +236,6 @@ def _restore_views(
     offsets: list[int],
     lengths: list[int],
 ) -> None:
-    """Point each chunk's packed layers at slab views; unpacked layers stay as they are."""
     for memory, offset, length in zip(memories, offsets, lengths):
         memory.kv_by_layer = {
             layer_name: (
@@ -271,7 +250,6 @@ def _restore_views(
 def _index_tensors(
     memories: list[UserMemory], offsets: list[int], lengths: list[int], device: str
 ) -> tuple[Any, Any, Any]:
-    """Flat token ids plus per-chunk offsets and lengths, as CUDA tensors."""
     import torch
 
     flat_token_ids = [token_id for memory in memories for token_id in (memory.token_ids or ())]
@@ -283,7 +261,6 @@ def _index_tensors(
 
 
 def _gather_source_indices(rows: Any, offsets: Any, lengths: Any, max_tokens: int) -> Any:
-    """Flat slab positions of the selected rows' tokens, in row order."""
     import torch
 
     selected_offsets = offsets.index_select(0, rows)

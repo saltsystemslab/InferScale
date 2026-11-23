@@ -1,5 +1,3 @@
-"""Entry point of one memory benchmark stage, as the launcher's job runs it."""
-
 from __future__ import annotations
 
 import sys
@@ -13,7 +11,6 @@ from benchmarks.memory.config import MemoryRunConfig, load_memory_config
 
 
 def main(config_path: Path, *, runtime_path: Path | None = None, stage: str = "run") -> None:
-    """Execute one memory benchmark stage using the selected JSON files."""
     runtime = load_runtime_config(runtime_path)
     config = load_memory_config(config_path, runtime, stage=stage)
     # The stage modules import Mem0, which reads the runtime's environment

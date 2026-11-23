@@ -1,5 +1,3 @@
-"""The precompute-kv stage: encode every corpus chunk once into the per-chunk disk cache."""
-
 from __future__ import annotations
 
 from typing import Any
@@ -30,10 +28,6 @@ EMPTY_CACHE_EVERY = 25
 
 
 def precompute_rag_kv(config: RagBenchConfig) -> dict[str, Any]:
-    """Encode the chunks whose files are absent; interrupt and rerun freely.
-
-    One invocation covers one (model, chunk_size, context_window) setting.
-    """
     corpus = load_rag_corpus(config)
     cache = RagChunkCache.for_config(config, corpus.docs)
     cache.directory.mkdir(parents=True, exist_ok=True)

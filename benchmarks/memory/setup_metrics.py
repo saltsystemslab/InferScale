@@ -1,5 +1,3 @@
-"""Per-sample setup metrics: one row per conversation describing how its memory was built."""
-
 from __future__ import annotations
 
 from typing import Any
@@ -84,7 +82,6 @@ LMCACHE_WARMUP_SETUP_KEYS = tuple(
 def empty_setup_row(
     config: MemoryRunConfig, sample: ConversationSample, question_count: int
 ) -> dict[str, Any]:
-    """A setup row with every column present; metrics are filled in as setup proceeds."""
     row: dict[str, Any] = dict.fromkeys(SAMPLE_SETUP_COLUMNS)
     row.update(
         run_id=config.run_id,

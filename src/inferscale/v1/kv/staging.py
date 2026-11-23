@@ -1,5 +1,3 @@
-"""GPU staging buffers for one memory streamed from pinned host memory."""
-
 from __future__ import annotations
 
 import time
@@ -9,15 +7,6 @@ from typing import Any
 
 
 class LayerKVView:
-    """Dict-like view over per-layer staging tensors that waits per layer.
-
-    First access to a layer waits on that layer's H2D copy event (timing any
-    blocking wait into ``stall_ms``), makes the compute stream wait on the
-    event, and registers the tensor on the compute stream so the allocator
-    cannot reuse it until in-flight consumers finish. ``values()`` and
-    ``items()`` are lazy so iterating never syncs every layer at once.
-    """
-
     def __init__(
         self,
         gpu_tensors: dict[str, Any],
@@ -73,8 +62,6 @@ class LayerKVView:
 
 @dataclass(slots=True)
 class StagingSlot:
-    """One memory's staged GPU buffers plus everything released with them."""
-
     gpu_tensors: dict[str, Any]
     start_event: Any
     end_event: Any

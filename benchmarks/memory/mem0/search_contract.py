@@ -1,5 +1,3 @@
-"""Checks every vector backend's search results must pass before the benchmark uses them."""
-
 from __future__ import annotations
 
 import numpy as np
@@ -46,7 +44,6 @@ def require_inner_product(distance: str) -> None:
 
 
 def first_vector(vectors: np.ndarray | list[float] | list[list[float]]) -> np.ndarray:
-    """The query vector Mem0 passed, which it wraps in a list for single queries."""
     array = np.asarray(vectors, dtype=np.float32)
     if array.ndim == 1:
         return array

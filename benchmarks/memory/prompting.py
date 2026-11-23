@@ -1,11 +1,3 @@
-"""LoCoMo prompt layout: the memory scaffold, rendered facts, and the question turn.
-
-KV injection and prompt injection build byte-identical token streams from the
-same pieces: a scaffold (system prompt header, an empty-memory marker when
-nothing was retrieved, footer), the retrieved facts in reverse rank order,
-and the question as the final chat turn.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -40,16 +32,12 @@ EMPTY_MEMORY_TEXT = "(No relevant memories found)\n"
 
 @dataclass(slots=True, frozen=True)
 class MemoryPromptTokens:
-    """The memory rendered as prompt text, with the plan that accounts for it."""
-
     token_ids: list[int]
     fact_plan: MemoryFactPlan
 
 
 @dataclass(slots=True, frozen=True)
 class MemoryQuery:
-    """The question side of one answer: scaffold, question tokens, and the memory budget."""
-
     scaffold: ScaffoldTokens
     query_tokens: QueryTokens
     memory_token_budget: int
@@ -57,14 +45,11 @@ class MemoryQuery:
 
 @dataclass(slots=True, frozen=True)
 class SelectedMemoryFacts:
-    """The retrieved facts of one answer: unique in hit order, laid out best fact last."""
-
     retrieved: list[RetrievedFact]
     selected: list[RetrievedFact]
     token_ids: dict[str, list[int]]
 
     def ordered_token_ids(self) -> list[list[int]]:
-        """Each selected fact's token ids in layout order."""
         return [self.token_ids[fact.memory_id] for fact in self.selected]
 
 
@@ -80,7 +65,6 @@ def format_memory_fact(fact: RetrievedFact) -> str:
 
 
 def select_memory_facts(tokenizer: Any, hits: Sequence[SearchHit]) -> SelectedMemoryFacts:
-    """Deduplicate the hits, order them best fact last, and tokenize each fact once."""
     retrieved = unique_memory_facts(hits)
     selected = list(reversed(retrieved))
     token_ids = {
@@ -110,7 +94,6 @@ def build_memory_prompt_token_ids(
     memory_scaffold: ScaffoldTokens | None = None,
     render_context_turns: bool = False,
 ) -> MemoryPromptTokens:
-    """The memory as prompt text; ``None`` for the budget means the memory is not bounded."""
     facts = select_memory_facts(tokenizer, hits)
     retrieved_facts = facts.retrieved
     selected_facts = facts.selected
@@ -190,7 +173,6 @@ def build_memory_query(
     max_model_len: int,
     max_answer_tokens: int,
 ) -> MemoryQuery:
-    """The scaffold, question tokens, and memory budget both answer clients start from."""
     scaffold = extract_memory_scaffold_token_ids(tokenizer, block_size=block_size)
     query_tokens = build_query_tokens_for_memory(tokenizer, scaffold.header_token_ids, qa)
     budget = memory_token_budget_for(
@@ -205,7 +187,6 @@ def build_memory_query(
 def build_kv_equivalence_prompt_token_ids(
     tokenizer: Any, memory_token_ids: list[int], qa: QuestionAnswer
 ) -> PromptTokens:
-    """The full prompt a prompt-injection request sends for the given memory tokens."""
     query_tokens = build_query_tokens_for_memory(tokenizer, memory_token_ids, qa)
     return build_prompt_tokens(memory_token_ids, query_tokens)
 
@@ -224,7 +205,6 @@ def _facts_with_context_stream(
     fact_token_ids: dict[str, list[int]],
     context_window: int,
 ) -> _MemoryStream:
-    """Each fact preceded by its context turns; a turn is rendered once, before its first fact."""
     turn_token_cache: dict[str, list[int]] = {}
     token_ids: list[int] = []
     context_turn_ids: list[str] = []

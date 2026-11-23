@@ -2,15 +2,6 @@
 # requires-python = ">=3.10"
 # dependencies = ["pymupdf==1.28.2"]
 # ///
-"""Export the paper's diagrams from its arXiv source as SVGs for the docs site.
-
-The site shows each diagram as it appears in the paper, without the "NOVEL"
-tags and dark orange side bars that mark the paper's contributions, and with
-the overview's query box drawn plain. Run it again after a new arXiv version
-by updating ARXIV_SOURCE:
-
-    uv run docs/scripts/paper_figures.py
-"""
 
 from __future__ import annotations
 
@@ -75,11 +66,6 @@ def figure_svg(pdf: bytes) -> str:
 
 
 def fit_to_content(page: pymupdf.Page, margin: float = 1.0) -> None:
-    """Grow the page box over anything drawn past it.
-
-    LaTeX draws a figure's overflow, so the paper shows titles that poke above
-    the page box; an SVG viewBox would clip them.
-    """
     content = page.rect
     for drawing in page.get_drawings():
         content |= drawing["rect"]
@@ -91,7 +77,6 @@ def fit_to_content(page: pymupdf.Page, margin: float = 1.0) -> None:
 
 
 def remove_tags(page: pymupdf.Page) -> None:
-    """Delete each tag's word and the pill drawn behind it, keeping the box it sits on."""
     words = page.search_for(TAG)
     if not words:
         return
@@ -111,7 +96,6 @@ def remove_tags(page: pymupdf.Page) -> None:
 
 
 def remove_bars(page: pymupdf.Page) -> None:
-    """Delete the bar along each contribution box's left edge, keeping the box and its label."""
     bars = find_bars(page)
     if not bars:
         return
@@ -128,7 +112,6 @@ def remove_bars(page: pymupdf.Page) -> None:
 
 
 def find_bars(page: pymupdf.Page) -> list[pymupdf.Rect]:
-    """Return the rect of each shape filled with the bar color."""
     return [
         drawing["rect"]
         for drawing in page.get_drawings()
@@ -137,7 +120,6 @@ def find_bars(page: pymupdf.Page) -> list[pymupdf.Rect]:
 
 
 def recolor(svg: str, swaps: dict[str, str]) -> str:
-    """Replace each color attribute, which must occur exactly once in the figure."""
     for old, new in swaps.items():
         count = svg.count(old)
         if count != 1:

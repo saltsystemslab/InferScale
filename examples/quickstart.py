@@ -1,11 +1,3 @@
-"""Precompute a handful of context chunks, then answer a question with KV injection.
-
-Every chunk's KV is encoded once; at query time the retrieved
-chunks are composed and injected into vLLM's KV cache instead of being
-re-read as prompt text. Each target uses up to two preceding chunks as an
-encoding prefix.
-"""
-
 from inferscale.v1 import Chunk, InferScale, InferScaleConfig
 
 CONTEXT = [

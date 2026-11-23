@@ -1,11 +1,3 @@
-"""Operations on a live Mem0 ``Memory`` the benchmark built: its stores, embedder, and lifetime.
-
-These functions are the only places the benchmark reaches into Mem0's object
-model. Mem0 keeps the primary vector store in ``vector_store``, its LLM in
-``llm``, its embedder in ``embedding_model``, and creates the entity store on
-first use through the ``entity_store`` property backed by ``_entity_store``.
-"""
-
 from __future__ import annotations
 
 import time
@@ -20,8 +12,6 @@ from benchmarks.memory.mem0.llm_cache import CachedMemoryLLM
 
 
 class TimedEmbedder:
-    """Pass-through wrapper that records embedding time when the cache is disabled."""
-
     def __init__(self, wrapped: Any) -> None:
         self._wrapped = wrapped
         self.embed_time_ms = 0.0
@@ -46,8 +36,6 @@ class TimedEmbedder:
 
 @dataclass(slots=True)
 class BuiltMemory:
-    """A Mem0 memory holding one conversation's facts, with the wrappers installed on it."""
-
     memory: Any
     facts: tuple[MemoryFact, ...]
     metrics: dict[str, Any]
@@ -103,7 +91,6 @@ def memory_embedder(memory: Any) -> Any:
 
 
 def embed_mem0_query(memory: Any, query: str) -> Any:
-    """Embed a query the way Mem0's search does, as a vector for the vector store."""
     embedder = memory.embedding_model
     if isinstance(embedder, CachedEmbedder):
         return embedder.embed_array(query, CachedEmbedder.QUERY_PURPOSE)
@@ -111,7 +98,6 @@ def embed_mem0_query(memory: Any, query: str) -> Any:
 
 
 def reset_memory_stores(memory: Any) -> None:
-    """Empty both stores; reading ``entity_store`` creates it, which can fail on its own."""
     memory.vector_store.reset()
     try:
         entity_store = memory.entity_store
@@ -137,7 +123,6 @@ def vector_store_memory_stats(memory: Any) -> dict[str, Any]:
 
 
 def added_memory_texts(result: Any) -> list[str]:
-    """The fact texts in a Mem0 ``add`` result."""
     return [
         text
         for text in (str(row.get("memory") or "").strip() for row in _result_rows(result))

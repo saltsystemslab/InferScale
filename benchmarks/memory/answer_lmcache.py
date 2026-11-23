@@ -1,13 +1,3 @@
-"""Answer LoCoMo questions with retrieved Mem0 facts served through LMCache CacheBlend.
-
-The facts reach the model as prompt text, like the prompt-injection baseline,
-but every fact's KV was stored in LMCache's CPU cache when the sample was
-prepared, and LMCache's blender reuses it at the fact's position in the
-prompt instead of recomputing it. The facts sit between LMCache's separator
-tokens so each one is a cache segment of its own, and vLLM's own prefix cache
-stays off because LMCache replaces it for this arm.
-"""
-
 from __future__ import annotations
 
 import time
@@ -49,8 +39,6 @@ WARM_BATCH_SIZE = 256
 
 
 class LMCacheBlendAnswerClient:
-    """In-process vLLM answer client whose fact KV is served by LMCache CacheBlend."""
-
     def __init__(self, config: MemoryRunConfig) -> None:
         force_vllm_inprocess_mode()
         self.config = config
@@ -91,11 +79,6 @@ class LMCacheBlendAnswerClient:
     def warm_sample_memory(
         self, sample: ConversationSample, facts: list[SearchHit]
     ) -> dict[str, Any]:
-        """Store the scaffold header and every catalog fact in LMCache, from an empty cache.
-
-        Each fact is prefilled alone, exactly as InferScale encodes it at ``w=0``,
-        so a question's prompt finds every retrieved fact as a cached segment.
-        """
         tokenizer, separator = self._started()
         clear_cache()
         scaffold = extract_memory_scaffold_token_ids(

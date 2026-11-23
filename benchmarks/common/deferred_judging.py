@@ -1,5 +1,3 @@
-"""Judge the unjudged records of a saved run, saving progress after every verdict."""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -25,14 +23,6 @@ def judge_pending_records(
     save: SaveRecords,
     label: RecordLabel,
 ) -> tuple[dict[str, Any], int]:
-    """Judge every unjudged record (every record when ``rejudge``) in place.
-
-    ``save(records, final)`` persists the records and returns the run summary.
-    It runs after every verdict, so an interrupted judge stage resumes where it
-    stopped, and once more with ``final=True`` when every record is judged.
-    A failed judge request is recorded on its record, saved, and re-raised.
-    Returns the final summary and the number of records judged by this call.
-    """
     judged_now = 0
     for row_number, record in enumerate(records, start=1):
         if not rejudge and is_judged(record):

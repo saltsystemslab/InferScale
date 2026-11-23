@@ -1,13 +1,3 @@
-"""GPU-resident resolution of chunk IDs to rows of a frozen corpus snapshot.
-
-Both chunk stores keep their payloads in a dict keyed by chunk ID, but
-serving never looks a chunk up by string on the host. A ChunkLookup takes a
-snapshot of the store's entries at finalization, loads their IDs into a
-GPUChunkMap, and resolves string IDs or Jasper stable IDs to rows on CUDA.
-Row maps bound through ``bind_stable_ids`` are tracked by weak reference so
-a map built for an earlier snapshot is rejected after the corpus changes.
-"""
-
 from __future__ import annotations
 
 import weakref
@@ -20,12 +10,10 @@ Entry = TypeVar("Entry")
 
 
 class DeviceChunkSelectionError(RuntimeError):
-    """A device result cannot be mapped safely to corpus chunk rows."""
+    pass
 
 
 class ChunkLookup(Generic[Entry]):
-    """Chunk IDs of one corpus snapshot, resolvable to entries on CUDA."""
-
     def __init__(self, entries: Iterable[tuple[str, Entry]], *, device: str) -> None:
         self.entries: tuple[tuple[str, Entry], ...] = tuple(entries)
         self._map = GPUChunkMap([chunk_id for chunk_id, _ in self.entries], device=device)
@@ -40,18 +28,15 @@ class ChunkLookup(Generic[Entry]):
         return self._map.nbytes
 
     def resolve(self, chunk_ids: Sequence[str]) -> list[tuple[str, Entry]]:
-        """Entries for the requested IDs, in request order."""
         rows = self._map.lookup(chunk_ids).detach().cpu().tolist()
         return [self.entries[row] for row in rows]
 
     def bind_stable_ids(self, stable_id_items: Iterable[tuple[int, str]]) -> Any:
-        """CUDA row map from contiguous Jasper stable IDs, valid for this snapshot."""
         rows = self._map.stable_id_row_map(stable_id_items)
         self._row_maps[id(rows)] = weakref.ref(rows)
         return rows
 
     def device_rows(self, stable_ids: Any, id_to_row: Any, *, reverse: bool) -> Any:
-        """Validated CUDA rows for a device search result."""
         binding = self._row_maps.get(id(id_to_row))
         if binding is None or binding() is not id_to_row:
             raise DeviceChunkSelectionError("The KV row map is not bound to the current corpus.")
@@ -77,7 +62,6 @@ class ChunkLookup(Generic[Entry]):
 def device_chunk_rows(
     stable_ids: Any, id_to_row: Any, *, device: Any, num_rows: int, reverse: bool
 ) -> Any:
-    """Resolve a Jasper result using CUDA tensors, rejecting unsafe selections."""
     import torch
 
     expected_device = torch.device(device)

@@ -1,5 +1,3 @@
-"""Benchmark a local Qwen embedding model on the facts of one Mem0 fact catalog directory."""
-
 from __future__ import annotations
 
 import argparse
@@ -26,7 +24,6 @@ REPORT_SCHEMA_VERSION = 1
 
 
 def distribution(values: list[float]) -> dict[str, float]:
-    """Mean and the reported percentiles of a sample."""
     ordered = sorted(values)
     summary = {"mean": statistics.mean(ordered)}
     for name, fraction in LATENCY_PERCENTILES:
@@ -44,7 +41,6 @@ def measure(
     repeats: int,
     clock: Callable[[], float] = time.perf_counter,
 ) -> dict[str, Any]:
-    """Time every batch of ``texts`` ``repeats`` times after ``warmup`` untimed batches."""
     if not texts or len(texts) != len(lengths):
         raise ValueError("Expected nonempty texts with matching token lengths")
     if min(batch_size, warmup, repeats) < 1:

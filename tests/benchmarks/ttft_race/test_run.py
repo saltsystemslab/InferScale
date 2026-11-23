@@ -165,13 +165,11 @@ def test_stream_spaces_words_evenly_between_the_first_token_and_the_end() -> Non
 
 
 def _timelines(tmp_path: Path, **mem0_changes: Any) -> tuple[Path, Path]:
-    """Three questions whose speedups over Mem0 are 2x, 8x, and 4x."""
     fast, base, _ = _three_timelines(tmp_path, **mem0_changes)
     return fast, base
 
 
 def _three_timelines(tmp_path: Path, **mem0_changes: Any) -> tuple[Path, Path, Path]:
-    """The Mem0 race plus an LMCache side whose speedups are 1.5x, 2x, and 2x."""
     questions = ["First?", "Second?", "Third?"]
 
     def side(mode: str, window: int, timings: list[tuple[float, float]]) -> dict[str, Any]:
@@ -318,7 +316,6 @@ def test_gif_refuses_swapped_or_mismatched_timelines(
 
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
-    """A repository skeleton whose configured interpreter prints its arguments."""
     target = tmp_path / "repo $(printf keep-literal)"
     shutil.copytree(ROOT / "scripts", target / "scripts")
     for name in (

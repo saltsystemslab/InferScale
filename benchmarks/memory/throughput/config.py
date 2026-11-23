@@ -1,12 +1,3 @@
-"""Settings of one throughput run, flattened from the authored JSON and the runtime layout.
-
-A run is authored as a JSON file under configs/memory/throughput whose
-``inferscale`` section is the library configuration. The runner writes the
-flattened settings to ``config.json`` in the run directory, and every worker
-subprocess restores them from there so each measurement uses exactly the
-settings of the run.
-"""
-
 from __future__ import annotations
 
 import math
@@ -195,7 +186,6 @@ class ThroughputConfig:
         )
 
     def to_jsonable(self) -> dict[str, Any]:
-        """The snapshot written to the run directory; the API key is never written out."""
         data = asdict(self)
         for name in PATH_FIELDS:
             data[name] = str(data[name])
@@ -208,7 +198,6 @@ class ThroughputConfig:
 
     @classmethod
     def from_json_file(cls, path: str | Path) -> ThroughputConfig:
-        """Restore the flattened snapshot the runner wrote, not an authored run file."""
         where = "throughput worker snapshot"
         data = load_json_object(path)
         reject_unknown_keys(data, FIELD_NAMES, where)
@@ -227,7 +216,6 @@ class ThroughputConfig:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any], *, runtime: RuntimeConfig) -> ThroughputConfig:
-        """Build a run from authored JSON or a materialized sweep cell."""
         where = BENCHMARK_NAME
         reject_unknown_keys(data, RUN_KEYS, where)
         benchmark = optional(data, "benchmark", str, where, where)
@@ -271,7 +259,6 @@ def condition_vector_backend(condition: str) -> str:
 
 
 def lmcache_config(config: ThroughputConfig) -> LMCacheConfig:
-    """The run's LMCache settings; the arm never runs without an explicit cache size."""
     if config.lmcache_max_local_cpu_size_gb is None:
         raise ConfigError(
             f"{BENCHMARK_NAME}.lmcache.max_local_cpu_size_gb is required for the "
@@ -288,7 +275,6 @@ def lmcache_config(config: ThroughputConfig) -> LMCacheConfig:
 
 
 def jasper_effective_beam_width(config: ThroughputConfig) -> int:
-    """Jasper searches at least top_k wide so every retrieved fact is a candidate."""
     return max(config.jasper_beam_width, config.top_k)
 
 
@@ -301,12 +287,10 @@ def default_run_id(model_label: str) -> str:
 
 
 def load_throughput_config(path: str | Path, runtime: RuntimeConfig) -> ThroughputConfig:
-    """Load benchmark settings from JSON and storage and model defaults from the runtime JSON."""
     return ThroughputConfig.from_dict(load_json_object(path), runtime=runtime)
 
 
 def _run_settings(data: Mapping[str, Any], where: str) -> dict[str, Any]:
-    """The workload and cache switches authored at the top level of the run JSON."""
     return {
         "conditions": str_list(data, "conditions", where, default=DEFAULT_CONDITIONS),
         "user_counts": int_list(data, "user_counts", where, default=DEFAULT_USER_COUNTS),
@@ -333,7 +317,6 @@ def _library_config(
     run: Mapping[str, Any],
     where: str,
 ) -> Any:
-    """The validated ``inferscale`` section, with the parts the protocol fixes rejected."""
     library = inferscale_section(
         data,
         model=runtime.resolve_model(model_name),
@@ -362,7 +345,6 @@ def _library_config(
 
 
 def _library_fields(library: Any) -> dict[str, Any]:
-    """The flattened engine, KV, embedding, and index settings of the library section."""
     return {
         "kv_gpu_memory_utilization": library.engine.gpu_memory_utilization,
         "kv_max_model_len": library.engine.max_model_len,
@@ -386,7 +368,6 @@ def _library_fields(library: Any) -> dict[str, Any]:
 def _lmcache_settings(
     data: Mapping[str, Any], conditions: tuple[str, ...], sweeps: Mapping[str, Any], where: str
 ) -> LMCacheConfig | None:
-    """The lmcache section, required as soon as a condition list names the LMCache arm."""
     if data.get("lmcache") is not None:
         return parse_lmcache_config(section_of(data, "lmcache", where), f"{where}.lmcache")
     sweep_conditions = [
@@ -398,7 +379,6 @@ def _lmcache_settings(
 
 
 def _lmcache_fields(lmcache: LMCacheConfig | None) -> dict[str, Any]:
-    """The flattened lmcache settings, or nothing so the fields keep their defaults."""
     if lmcache is None:
         return {}
     return {
@@ -479,7 +459,6 @@ _POSITIVE_NUMBER_FIELDS = ("kv_gpu_memory_utilization", "jasper_alpha")
 
 
 def _validate_config(config: ThroughputConfig) -> None:
-    """Check field types and ranges; snapshots restored from JSON arrive untyped."""
     where = BENCHMARK_NAME
     _validate_field_types(asdict(config), where)
     if config.kv_gpu_memory_utilization >= 1:

@@ -1,10 +1,3 @@
-"""Result rows of the throughput benchmark and the CSV, JSON, and Markdown reports built from them.
-
-``ThroughputResultRow`` is the schema: its fields, in order, are the CSV columns
-of every condition file and of the merged file, and their types drive how rows
-read back from CSV are parsed.
-"""
-
 from __future__ import annotations
 
 import csv
@@ -109,11 +102,6 @@ def build_result_row(
     total_input_tokens: int,
     total_output_tokens: int,
 ) -> dict[str, Any]:
-    """One measured user count as a result row; QPS counts only the generation time.
-
-    ``prefix_caching`` records the engine's prefix cache setting when a
-    condition runs with something other than the run's own setting.
-    """
     total_requests = num_users * config.requests_per_user
     if generation_time_s <= 0:
         raise RuntimeError("Measured benchmark time must be greater than zero.")
@@ -161,7 +149,6 @@ def build_result_row(
 
 
 def validate_result_row(row: Mapping[str, Any]) -> dict[str, Any]:
-    """A row with every column present, parsed to the schema's types."""
     condition = str(row.get("condition"))
     if condition not in ALL_CONDITIONS:
         raise ValueError(f"Unknown throughput condition: {condition}")
@@ -169,7 +156,6 @@ def validate_result_row(row: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _coerce_row(row: Mapping[str, Any]) -> dict[str, Any]:
-    """Parse a row read from CSV or JSON into the typed values of the schema."""
     missing = [column for column in RESULT_COLUMNS if column not in row]
     if missing:
         raise ValueError("Throughput result is missing columns: " + ", ".join(missing))
@@ -194,7 +180,6 @@ def read_existing_results(run_dir: str | Path) -> list[dict[str, Any]]:
 def merge_result_rows(
     existing: Iterable[dict[str, Any]], replacements: Iterable[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """Later rows replace earlier ones with the same condition and user count."""
     by_key: dict[tuple[str, int], dict[str, Any]] = {}
     for row in [*existing, *replacements]:
         normalized = validate_result_row(row)

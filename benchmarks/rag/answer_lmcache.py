@@ -1,12 +1,3 @@
-"""The LMCache CacheBlend baseline: retrieved passages served from LMCache's segment cache.
-
-Every corpus chunk's KV is stored once in LMCache's pinned-CPU cache when the
-engine starts, each chunk alone, the way the KV arm precomputes every chunk.
-A query lays the retrieved chunks between separator tokens; LMCache's blender
-reuses their KV at the new positions and recomputes a fraction of the tokens,
-so vLLM prefills only the footer and the question.
-"""
-
 from __future__ import annotations
 
 import time
@@ -134,7 +125,6 @@ class RagLMCacheBlendAnswerClient(RagEngineClient):
         return lmcache_kv_transfer_config(self.config.lmcache_settings())
 
     def _after_start(self) -> None:
-        """Register the model, check the separator, then store every chunk's KV once."""
         settings = self.config.lmcache_settings()
         register_model(self._engine.llm)
         separator = lmcache_separator()

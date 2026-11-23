@@ -1,12 +1,3 @@
-"""Jasper graph index over chunk embeddings, with exact fallbacks.
-
-Beam search over the graph is the fast path. Requests that need every vector
-(full-store top-k, partial payload filters) and beam results that come back
-short or padded fall back to exact inner-product scoring, on the GPU when the
-fp16 matrix is resident and on the host otherwise, so retrieval is complete
-for every caller.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -39,12 +30,6 @@ class JasperIndexConfig:
 
 
 class JasperIndex:
-    """In-memory vector index with Jasper GPU search.
-
-    Rows are kept in insertion order; a row's position is the stable ID that
-    Jasper assigns when the graph is built from the same matrix.
-    """
-
     def __init__(self, config: JasperIndexConfig | None = None) -> None:
         self.config = config if config is not None else JasperIndexConfig()
         self._rows: list[tuple[str, dict[str, Any]]] = []
@@ -144,11 +129,6 @@ class JasperIndex:
         top_k: int,
         filters: dict[str, Any] | None = None,
     ) -> DeviceSearchResult | None:
-        """Complete results whose IDs and distances stay on the GPU.
-
-        ``None`` means the SearchHit path is required: before finalization,
-        without a resident matrix, or when a payload filter would reject rows.
-        """
         if not self.vector_count:
             return None
         query = self._query(query_vector)
@@ -170,13 +150,11 @@ class JasperIndex:
         )
 
     def materialize_device_result(self, result: DeviceSearchResult) -> list[SearchHit]:
-        """SearchHits for a device result, for bookkeeping outside the KV fast path."""
         return self._hits_for(
             result.stable_ids.detach().cpu().tolist(), result.distances.detach().cpu().tolist()
         )
 
     def stable_id_items(self) -> tuple[tuple[int, str], ...]:
-        """Bindings from Jasper stable IDs (row order) to chunk IDs."""
         if not self._finalized:
             raise RuntimeError("Jasper stable IDs are unavailable before finalization.")
         return tuple((ordinal, item_id) for ordinal, (item_id, _) in enumerate(self._rows))
@@ -265,7 +243,6 @@ class JasperIndex:
     def _search_candidates(
         self, query: np.ndarray, candidate_k: int, beam_width: int
     ) -> tuple[list[SearchHit], float]:
-        """Beam search when the graph can answer completely, exact scoring otherwise."""
         beam_ready = self._finalized and self._graph is not None
         # Beam search does not guarantee reaching every vertex, so a request for
         # the whole store must use exact scoring to stay complete.
@@ -365,7 +342,6 @@ class JasperIndex:
         return hits, (time.perf_counter() - started) * 1000
 
     def _hits_for(self, ordinals: Iterable[Any], distances: Iterable[Any]) -> list[SearchHit]:
-        """Hits in the given order; ordinals index the rows of this index."""
         hits: list[SearchHit] = []
         for ordinal, raw_distance in zip(ordinals, distances):
             ordinal = int(ordinal)
@@ -400,7 +376,6 @@ def _ranked(hits: list[SearchHit]) -> list[SearchHit]:
 def _device_result_is_complete(
     stable_ids: Any, distances: Any, *, expected_count: int, vector_count: int
 ) -> bool:
-    """True when every row is a distinct in-range ID with a finite distance."""
     import torch
 
     if int(stable_ids.numel()) != expected_count or int(distances.numel()) != expected_count:

@@ -1,5 +1,3 @@
-"""The JSON contract of one RAG benchmark run and its validation."""
-
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -94,9 +92,6 @@ MEMORY_BUDGET_MARGIN_TOKENS = 512
 
 @dataclass(slots=True)
 class RagBenchConfig:
-    """One run's settings. ``from_dict`` fills them from JSON and the runtime; bare construction
-    takes the plain defaults below and performs no I/O."""
-
     dataset_name: str = DEFAULT_DATASET
     data_dir: Path | None = None
     results_dir: Path = Path("results")
@@ -283,8 +278,6 @@ class RagBenchConfig:
 
 @dataclass(slots=True, frozen=True)
 class _RunPaths:
-    """The run's directories: explicit in the JSON, else the runtime layout's defaults."""
-
     data_dir: Path
     results_dir: Path
     embedding_cache_dir: Path
@@ -333,7 +326,6 @@ def _dataset_name(data: Mapping[str, Any]) -> str:
 
 
 def _library(data: Mapping[str, Any], *, model: str, top_k: int, context_window: int) -> Any:
-    """The validated ``inferscale`` section with the RAG defaults filled in."""
     raw = dict(section_of(data, "inferscale", WHERE, required=False))
     # RAG caps answers shorter than the memory benchmark and keeps the corpus KV in host RAM.
     raw["generation"] = {
@@ -356,7 +348,6 @@ def _library(data: Mapping[str, Any], *, model: str, top_k: int, context_window:
 def _lmcache(
     data: Mapping[str, Any], answer_backend: str, sweeps: Mapping[str, Any]
 ) -> LMCacheConfig | None:
-    """The lmcache section, required as soon as this run or a sweep uses the LMCache arm."""
     if data.get("lmcache") is not None:
         return parse_lmcache_config(section_of(data, "lmcache", WHERE), "rag.lmcache")
     if answer_backend == LMCACHE_BACKEND or _sweeps_use_backend(sweeps, LMCACHE_BACKEND):

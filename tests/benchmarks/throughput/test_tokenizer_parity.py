@@ -41,8 +41,6 @@ def test_tokenizer_parity_raises_for_diverging_tokenizers() -> None:
     ],
 )
 def test_encoder_loader_matches_engine_loader(model: str) -> None:
-    """Pod/cluster integration check: the encoder's tokenizer loader must
-    produce the same ids as the engine's for every benchmarked model."""
     if not os.environ.get("RUN_TOKENIZER_PARITY_INTEGRATION"):
         pytest.skip("Set RUN_TOKENIZER_PARITY_INTEGRATION=1 on a machine with vllm and HF access.")
     pytest.importorskip("vllm")

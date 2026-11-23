@@ -1,10 +1,3 @@
-"""Answer LoCoMo questions with retrieved Mem0 facts injected into vLLM's KV cache.
-
-Each sample's fact chunks are precomputed before vLLM starts. At answer time
-the retrieved chunks are composed into one memory, verified against the
-prompt-injection token stream, handed to the KV connector, and generated on.
-"""
-
 from __future__ import annotations
 
 import time
@@ -45,8 +38,6 @@ from .types import ComposedSampleMemory
 
 
 class KVAnswerClient:
-    """In-process vLLM answer client with GPU chunked-RoPE KV injection."""
-
     def __init__(self, config: MemoryRunConfig) -> None:
         force_vllm_inprocess_mode()
         self.config = config
@@ -207,13 +198,6 @@ class KVAnswerClient:
     def _compose(
         self, composer: SampleComposer, hits: list[SearchHit], query: MemoryQuery
     ) -> tuple[ComposedSampleMemory, dict[str, float]]:
-        """Compose the memory and measure the chunk staging it caused.
-
-        Chunk staging during composition is the only H2D traffic under the cpu
-        backend (the composed memory is GPU-resident and injects GPU to paged
-        cache), so this question's transfer metrics are the deltas of the
-        chunk store's counters.
-        """
         store = composer.chunk_store
         if store is None:
             raise RuntimeError("The precomputed sample has no chunk store.")
@@ -228,11 +212,6 @@ class KVAnswerClient:
         hits: list[SearchHit],
         query: MemoryQuery,
     ) -> float:
-        """Check the composed tokens equal the prompt-injection stream; returns the time taken.
-
-        The check is benchmark bookkeeping, not part of the serving path, so
-        its cost is excluded from latency.
-        """
         started = time.perf_counter()
         live_memory = build_memory_prompt_token_ids(
             self._tokenizer,
@@ -246,11 +225,6 @@ class KVAnswerClient:
         return (time.perf_counter() - started) * 1000
 
     def _register(self, composed: ComposedSampleMemory) -> float:
-        """Hand the composed memory to the connector registry; returns the time taken.
-
-        Registration is a dict insert with no transfer, timed separately and
-        excluded from latency like verification.
-        """
         started = time.perf_counter()
         register_user_memory(
             self.namespace,
@@ -282,7 +256,6 @@ def _composed_memory_metrics(
 
 
 def _transfer_metrics(before: dict[str, float], after: dict[str, float]) -> dict[str, float]:
-    """Host-to-device transfer deltas between two chunk store counter snapshots."""
     h2d_ms = float(after.get("total_h2d_latency_ms", 0.0)) - float(
         before.get("total_h2d_latency_ms", 0.0)
     )

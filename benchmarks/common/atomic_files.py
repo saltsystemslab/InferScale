@@ -1,9 +1,3 @@
-"""Atomic file writes: a temporary file beside the target, fsync, then rename.
-
-Readers of caches and result files never see a partially written file, and a
-crash leaves the previous contents in place.
-"""
-
 from __future__ import annotations
 
 import json
@@ -50,7 +44,6 @@ def atomic_write_text(path: Path, text: str) -> None:
 
 
 def atomic_write_json(path: Path, payload: Any, *, indent: int | None = None) -> None:
-    """Write JSON with sorted keys, compact when ``indent`` is None, and a trailing newline."""
     with _replacing(path, "w") as handle:
         json.dump(
             payload,

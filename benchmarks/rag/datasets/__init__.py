@@ -1,5 +1,3 @@
-"""Registry of the evaluable RAG datasets, keyed by the name the run JSON uses."""
-
 from __future__ import annotations
 
 from benchmarks.rag.data_types import RagDatasetSpec

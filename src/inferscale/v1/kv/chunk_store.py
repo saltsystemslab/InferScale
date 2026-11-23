@@ -1,17 +1,3 @@
-"""Backend-selected store for the chunk corpus.
-
-The chunk store is the home of the corpus: chunks encoded once (or loaded
-from a disk cache) and reused across requests. The ``gpu`` backend keeps the
-corpus HBM-resident (PackedGPUMemoryStore); ``cpu`` keeps it in pinned host
-RAM (CpuPinnedMemoryStore) and stages the selected chunks to the GPU per
-composition, which is where a corpus-in-DRAM system pays its PCIe cost.
-Both backends resolve text IDs through a GPU-resident KV row map.
-
-Composed request memories never enter these stores; they are ephemeral GPU
-products handed to the connector through the serving namespace registry and
-discarded after injection.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
@@ -28,7 +14,6 @@ _STAGING_HEADROOM = 4
 
 
 def build_chunk_store(backend: str, *, device: str, top_k: int, staging_slots: int = 0) -> Any:
-    """A dedicated store instance for the corpus, never a connector namespace."""
     if backend == "cpu":
         from .pinned_memory_store import CpuPinnedMemoryStore
 
@@ -45,12 +30,6 @@ def build_chunk_store(backend: str, *, device: str, top_k: int, staging_slots: i
 
 
 def register_chunks(store: Any, chunks: Mapping[str, KVChunk]) -> dict[str, KVChunk]:
-    """Move chunk KV into the store; return the metadata-only chunk map.
-
-    The metadata map keeps token ids and the context fields (everything the
-    planning consumers read) with an empty kv_by_layer; the tensors live in
-    the store until close_chunk_store.
-    """
     meta: dict[str, KVChunk] = {}
     for chunk_id, chunk in chunks.items():
         if chunk_id != chunk.chunk_id:
@@ -75,12 +54,6 @@ def register_chunks(store: Any, chunks: Mapping[str, KVChunk]) -> dict[str, KVCh
 def fetch_chunks(
     store: Any, meta: Mapping[str, KVChunk], chunk_ids: Sequence[str]
 ) -> list[KVChunk]:
-    """Stage the selected chunks and return compose-ready chunks.
-
-    On the cpu store this issues the async H2D copies; the returned chunks'
-    kv views wait per layer on first access. Call release_chunks with the
-    same ids once the composition kernels have been synchronized.
-    """
     _require_staging_capacity(store, len(chunk_ids))
     for chunk_id in chunk_ids:
         if chunk_id not in meta:
@@ -100,14 +73,12 @@ def fetch_device_chunks(
     *,
     reverse: bool = True,
 ) -> list[KVChunk]:
-    """Resolve Jasper IDs on the GPU and stage the selected chunks."""
     _require_staging_capacity(store, int(stable_ids.numel()))
     memories = store.get_device_chunk_memories(stable_ids, id_to_row, reverse=reverse)
     return _chunks_with_metadata(meta, memories)
 
 
 def fetch_device_chunk(store: Any, stable_ids: Any, id_to_row: Any) -> KVChunk:
-    """Gather reverse-ranked chunk KV and token ids from a packed GPU corpus."""
     if not isinstance(store, PackedGPUMemoryStore):
         raise RuntimeError("Device-side chunk selection requires the packed GPU chunk store.")
     memory = store.select_device_ids(stable_ids, id_to_row, reverse=True)
@@ -126,7 +97,6 @@ def release_chunks(store: Any, chunk_ids: Iterable[str]) -> None:
 
 
 def finalize_chunk_store(store: Any) -> None:
-    """Finalize the payload layout, then build the GPU map over it."""
     store.finalize_packed()
     store.finalize_chunk_lookup()
 

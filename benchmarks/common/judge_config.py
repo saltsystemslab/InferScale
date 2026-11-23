@@ -1,5 +1,3 @@
-"""The ``judge`` section of a benchmark JSON file, layered over the runtime's judge server."""
-
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -36,7 +34,6 @@ class JudgeConfig:
 
 
 def judge_config(section: Mapping[str, Any], runtime: RuntimeConfig, *, where: str) -> JudgeConfig:
-    """Parse a judge section; the model and endpoint default to the runtime's judge server."""
     reject_unknown_keys(section, JUDGE_KEYS, where)
     provider = optional(section, "provider", str, DEFAULT_JUDGE_PROVIDER, where)
     if provider not in JUDGE_PROVIDERS:

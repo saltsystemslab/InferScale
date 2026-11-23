@@ -1,10 +1,3 @@
-"""Disk cache of Mem0 extraction responses, with validated retries on the write path.
-
-Extraction runs once per model; later runs replay the cached responses so the
-LLM never influences timed measurements. Entries are keyed by the request
-Mem0 made, minus the current date it injects into every prompt.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -43,12 +36,10 @@ CACHE_ENTRY_VERSION = 1
 
 
 class CachedMemoryLLMMissingError(RuntimeError):
-    """Read mode found no usable cached response for a request."""
+    pass
 
 
 class CachedMemoryLLM:
-    """Wrap a Mem0 LLM provider so identical extraction requests replay from disk."""
-
     def __init__(
         self,
         wrapped: Any,
@@ -124,7 +115,6 @@ class CachedMemoryLLM:
         }
 
     def _load_cached(self, path: Path, validate_extraction: bool) -> Any | None:
-        """The cached response, or None when absent; corrupt entries are replaced in write mode."""
         if not path.exists():
             return None
         try:
@@ -146,14 +136,6 @@ class CachedMemoryLLM:
         args: tuple[Any, ...],
         effective_kwargs: dict[str, Any],
     ) -> str:
-        """Call the LLM until it returns a valid extraction, escalating the temperature.
-
-        The first attempt uses the baseline request. Retries raise the
-        temperature and widen top_p (Mem0 otherwise sends its 0.1 default on
-        every request) so greedy decoding cannot reproduce the same degenerate
-        response. The cache path comes from the baseline kwargs, so retries never
-        change the entry's identity.
-        """
         attempts = [effective_kwargs] + [
             {**effective_kwargs, "temperature": temperature, "top_p": MEMORY_EXTRACTION_RETRY_TOP_P}
             for temperature in MEMORY_EXTRACTION_RETRY_TEMPERATURES

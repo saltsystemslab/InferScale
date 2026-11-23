@@ -1,5 +1,3 @@
-"""The estimate stage: a CPU-only projection of corpus, chunk, embedding, and KV sizes."""
-
 from __future__ import annotations
 
 from typing import Any
@@ -31,7 +29,6 @@ DTYPE_BYTES = {
 
 
 def run_estimate(config: RagBenchConfig) -> dict[str, Any]:
-    """Project the sizes a run would need, before any GPU work."""
     corpus = load_rag_corpus(config, allow_transformers_fallback=True)
     chunk_counts = [chunk.token_count for chunk in corpus.chunks]
     kv_bytes_per_token = _kv_bytes_per_token(config)
@@ -94,7 +91,6 @@ def _scaled(bytes_per_token: int | None, tokens: int) -> int | None:
 
 
 def _encode_input_tokens(config: RagBenchConfig, corpus: RagCorpus) -> int:
-    """Tokens the precompute forward passes see: each chunk with its preceding-chunk prefix."""
     return sum(
         min(
             min(config.context_window, chunk.chunk_index) * config.chunk_size + chunk.token_count,

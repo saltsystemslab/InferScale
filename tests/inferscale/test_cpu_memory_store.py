@@ -215,8 +215,6 @@ requires_cuda = pytest.mark.skipif(
 
 @requires_cuda
 class TestCpuPinnedMemoryStoreOnGpu:
-    """Round-trip tests for the real store; these run on the GPU box only."""
-
     def _store(self, num_staging_slots: int = 2):
         from inferscale.v1.kv.pinned_memory_store import CpuPinnedMemoryStore
 

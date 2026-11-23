@@ -1,5 +1,3 @@
-"""The RAG LMCache CacheBlend arm: configuration, dispatch, warm-up, and the blend prompt."""
-
 from __future__ import annotations
 
 import json
@@ -119,7 +117,6 @@ def test_build_answer_client_dispatches_every_backend(monkeypatch) -> None:
 
 
 def _client(monkeypatch, *, bytes_per_token: int = 2, **config_overrides):
-    """A client over FakeEngine with the LMCache runtime helpers replaced by fakes."""
     engine = FakeEngine()
     engine_factory = Mock(return_value=engine)
     monkeypatch.setattr(engine_client, "VLLMEngine", engine_factory)

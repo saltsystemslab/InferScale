@@ -128,8 +128,6 @@ def test_build_clients_dispatches_the_arm_and_rejects_unknown_backends(monkeypat
 
 
 class _Runtime:
-    """Replaces the LMCache runtime helpers the client imports; records every call."""
-
     def __init__(self, monkeypatch: Any, *, matched_tokens: int | None = None) -> None:
         self.events: list[tuple[str, Any]] = []
         self.matched_tokens = matched_tokens

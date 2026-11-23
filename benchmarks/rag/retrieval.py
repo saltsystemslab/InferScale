@@ -1,5 +1,3 @@
-"""One Jasper index over the whole corpus, searched through the embedding cache."""
-
 from __future__ import annotations
 
 import time
@@ -18,14 +16,6 @@ from .data_types import RagChunk
 
 
 class CorpusRetriever:
-    """One shared Jasper GPU index over every corpus chunk.
-
-    Unlike LoCoMo's per-sample stores, the corpus is shared by all queries, so
-    the index is built once per run and searched thousands of times. The
-    read-mode embedding cache stands in for the live embedder, so answer runs
-    never call the embedding API.
-    """
-
     def __init__(
         self,
         *,

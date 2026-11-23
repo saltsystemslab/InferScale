@@ -1,5 +1,3 @@
-"""No-GPU smoke test wiring loader -> chunker -> fake retrieval -> records -> summary."""
-
 from __future__ import annotations
 
 import string

@@ -1,14 +1,3 @@
-"""The InferScale answer client: fetch, compose, and inject the cached chunk KV per query.
-
-The injection path is the memory benchmark's: composition concatenates
-pre-RoPE chunks and applies RoPE once at the new virtual positions,
-register_user_memory hands the composed memory to the namespace registry,
-and the KV connector scatters it into vLLM's paged cache by prompt-prefix
-token match. Only chunk residency differs: the corpus KV is resident in host
-RAM (cpu_chunk_store.py), loaded once from the precompute cache, because the
-full corpus does not fit GPU memory at MultiHop-RAG scale.
-"""
-
 from __future__ import annotations
 
 import time
@@ -53,8 +42,6 @@ from inferscale.v1.types import KVChunk, SearchHit
 
 @dataclass(slots=True)
 class ComposedPassages:
-    """The retrieved chunks between the scaffold header and footer, as KV parts and token ids."""
-
     parts: list[KVChunk]
     token_ids: list[int]
     fetch_ms: float
@@ -208,7 +195,6 @@ class RagKvAnswerClient(RagEngineClient):
     def _verify(
         self, scaffold: ScaffoldTokens, ordered_chunk_ids: list[str], memory_token_ids: list[int]
     ) -> float:
-        """Check the composed token ids against what the live tokenizer would produce."""
         started = time.perf_counter()
         live_token_ids = build_memory_token_ids(
             scaffold, [self._chunk_token_ids(chunk_id) for chunk_id in ordered_chunk_ids]
@@ -231,7 +217,6 @@ class RagKvAnswerClient(RagEngineClient):
 def _cached_scaffold(
     cache: RagChunkCache, config: RagBenchConfig, *, expected: ScaffoldTokens
 ) -> CachedRagScaffold:
-    """The precomputed RoPE tables and scaffold chunks, which must match the live scaffold."""
     tables_path = cache.tables_path(config.kv_block_size)
     cached = load_tables_and_scaffold(
         tables_path,

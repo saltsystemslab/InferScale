@@ -1,11 +1,3 @@
-"""The runtime JSON file and the credentials that accompany it.
-
-``configs/runtime.json`` describes the machine: storage roots, build settings,
-model aliases, the judge server, and environment variables to export. Each
-benchmark has its own JSON files under ``configs/`` that reference models by
-alias. Credentials are the one thing read from the environment (``.env``).
-"""
-
 from __future__ import annotations
 
 import os
@@ -52,8 +44,6 @@ RUNTIME_SECTIONS = (
 
 @dataclass(slots=True, frozen=True)
 class BuildConfig:
-    """Installation settings consumed by scripts/setup_remote.sh."""
-
     cuda_module: str = ""
     pytorch_index: str = "https://download.pytorch.org/whl/cu128"
     jasper_cuda_architectures: str = "native"
@@ -63,8 +53,6 @@ class BuildConfig:
 
 @dataclass(slots=True, frozen=True)
 class JudgeServerConfig:
-    """The local vLLM judge server started by scripts/serve_vllm.sh."""
-
     model: str = "google/gemma-2-9b-it"
     base_url: str = "http://127.0.0.1:8000/v1"
     api_key: str = "token-abc123"
@@ -128,14 +116,12 @@ class RuntimeConfig:
         )
 
     def resolve_model(self, name: str) -> str:
-        """Alias table lookup; Hugging Face ids and local paths pass through."""
         stripped = name.strip()
         if not stripped:
             raise ConfigError("model must be a non-empty alias, Hugging Face id, or local path.")
         return self.models.get(stripped, stripped)
 
     def model_label(self, name: str) -> str:
-        """Short run-id label: the alias when one exists, else a slug of the id's last segment."""
         stripped = name.strip()
         if stripped in self.models:
             return stripped
@@ -151,7 +137,6 @@ class RuntimeConfig:
         return judge_llm_api_key() or self.judge_server.api_key
 
     def apply_environment(self) -> None:
-        """Export cache locations and the environment block before heavy imports."""
         for key, value in self.environment.items():
             os.environ[key] = value
         self.layout.apply_environment()
@@ -190,12 +175,10 @@ def load_runtime_config(path: str | Path | None = None) -> RuntimeConfig:
 
 
 def stamp_now() -> str:
-    """UTC timestamp used to make run ids and launch folders unique."""
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
 def slug(value: str) -> str:
-    """Lowercase the value and replace every run of other characters with a dash."""
     normalized = re.sub(r"[^a-zA-Z0-9._-]+", "-", value).strip("-._").lower()
     return normalized or "model"
 

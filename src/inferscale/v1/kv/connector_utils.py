@@ -1,5 +1,3 @@
-"""Pure-python connector helpers that stay importable without torch or vllm."""
-
 from __future__ import annotations
 
 from typing import Any
@@ -20,7 +18,6 @@ def align_to_block_size(num_tokens: int, block_size: int) -> int:
 
 
 def build_slot_mapping(block_ids: list[int], block_size: int, num_tokens: int) -> list[int]:
-    """Map the first num_tokens of a paged allocation to flat KV-cache slots."""
     if block_size < 1:
         raise ValueError("block_size must be >= 1.")
     if num_tokens < 0:
@@ -38,7 +35,6 @@ def build_slot_mapping(block_ids: list[int], block_size: int, num_tokens: int) -
 
 
 def extra_config(kv_transfer_config: Any, key: str, default: Any = None) -> Any:
-    """Read a connector option; vLLM versions differ in how they expose the extras."""
     getter = getattr(kv_transfer_config, "get_from_extra_config", None)
     if callable(getter):
         return getter(key, default)
@@ -47,12 +43,6 @@ def extra_config(kv_transfer_config: Any, key: str, default: Any = None) -> Any:
 
 
 def extract_user_id(request: Any, default_user_id: str | None = None) -> str | None:
-    """The memory user id of a vLLM request, from whichever field carries it.
-
-    Callers set it on the request, on its sampling params, through the
-    sampling params extra args, or in request metadata, depending on the
-    vLLM entry point they use.
-    """
     user_id = getattr(request, "user", None)
     if user_id:
         return str(user_id)

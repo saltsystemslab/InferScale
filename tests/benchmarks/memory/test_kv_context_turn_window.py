@@ -251,9 +251,6 @@ class _DeterministicTokenizer:
 
 
 class _NewlineMergingTokenizer:
-    """Char-level tokenizer that merges up to 8 consecutive newlines per token,
-    modeling how BPE vocabularies collapse whitespace runs."""
-
     bos_token_id = None
     _MAX_MERGED_NEWLINES = 8
     _NEWLINE_RUN_TOKEN = 0x10FFFF
@@ -685,9 +682,6 @@ def test_scaffold_footer_covers_kv_tail_for_char_level_tokenizer() -> None:
 
 
 def test_scaffold_footer_pad_survives_content_trimming_template() -> None:
-    """Llama-style chat templates trim message content, deleting any text-level
-    whitespace pad; the token-level pad must still cover the KV tail."""
-
     class _TrimmingTemplateTokenizer(_NewlineMergingTokenizer):
         def apply_chat_template(self, messages: list[dict[str, str]], **_: Any) -> str:
             content = messages[0]["content"].strip()

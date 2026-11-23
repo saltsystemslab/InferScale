@@ -1,5 +1,3 @@
-"""The files a RAG run writes: predictions, the summary, and the per-query metrics table."""
-
 from __future__ import annotations
 
 from typing import Any
@@ -29,7 +27,6 @@ def write_run_outputs(
     setup_metrics: dict[str, Any],
     write_reports: bool,
 ) -> dict[str, Any]:
-    """Write predictions.jsonl and summary.json, plus query_metrics.csv when asked."""
     replace_jsonl(config.run_dir / PREDICTIONS_FILE, records)
     summary = summarize_rag_records(
         records,

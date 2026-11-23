@@ -1,10 +1,3 @@
-"""Encode one sample's fact chunks for KV injection, through the chunk cache when enabled.
-
-The HF encoder cannot share the GPU with vLLM, so every sample is encoded
-before vLLM starts. A cache hit builds the encoder from the cached RoPE tables
-and never loads the model weights.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -33,8 +26,6 @@ from .types import RetrievedFact
 
 
 class KVPrecomputeSettings(KVEncodingSettings, Protocol):
-    """The settings the precompute reads, as both benchmark configs expose them."""
-
     @property
     def cache_root(self) -> Path: ...
 
@@ -55,8 +46,6 @@ class KVPrecomputeSettings(KVEncodingSettings, Protocol):
 
 
 class SamplePrecompute:
-    """Builds the composer of each sample, encoding or loading its chunks."""
-
     def __init__(self, config: KVPrecomputeSettings) -> None:
         self.config = config
         self._encoder: ChunkedRopeEncoder | None = None
@@ -65,7 +54,6 @@ class SamplePrecompute:
     def precompute(
         self, sample: ConversationSample, facts: Sequence[SearchHit]
     ) -> tuple[SampleComposer, bool]:
-        """The sample's composer with its chunks in the store, and whether the cache served it."""
         kv_facts = unique_memory_facts(facts)
         chunk_store = self._build_chunk_store()
         key = None
@@ -78,7 +66,6 @@ class SamplePrecompute:
         return self._encode_composer(sample, facts, chunk_store, key), False
 
     def release_model(self) -> None:
-        """Drop the HF weights before vLLM starts; the tokenizer stays usable."""
         if self._encoder is not None:
             self._encoder.release_model()
 
@@ -95,7 +82,6 @@ class SamplePrecompute:
         kv_facts: list[RetrievedFact],
         chunk_store: ChunkStore,
     ) -> SampleComposer | None:
-        """A composer over the cached encode, or None when the cache misses."""
         path = key.path(self.config.cache_root)
         cached = load_sample_chunks(
             path,
@@ -141,7 +127,6 @@ class SamplePrecompute:
         chunk_store: ChunkStore,
         key: ChunkCacheKey | None,
     ) -> SampleComposer:
-        """Encode the sample's facts with the HF encoder, saving the cache when enabled."""
         encoder = self._ensure_encoder()
         composer = SampleComposer(
             encoder=encoder,
@@ -206,12 +191,6 @@ class SamplePrecompute:
         return self._encoder
 
     def _encoder_tokenizer(self) -> Any:
-        """The encoder-side tokenizer without forcing an HF weight load.
-
-        Reuses the live encoder's tokenizer when one exists; otherwise loads
-        the tokenizer standalone (memoized) so fully cached runs never touch
-        the model weights.
-        """
         if self._encoder is not None and self._encoder.tokenizer is not None:
             return self._encoder.tokenizer
         if self._standalone_tokenizer is None:

@@ -1,5 +1,3 @@
-"""Mem0 facts as the benchmark reads them back from retrieval hits."""
-
 from __future__ import annotations
 
 import hashlib
@@ -16,7 +14,6 @@ def text_hash(text: str) -> str:
 
 
 def payload_value(payload: Mapping[str, Any], keys: Sequence[str]) -> Any:
-    """The first present value among ``keys`` at the payload's top level, then in its metadata."""
     for key in keys:
         value = payload.get(key)
         if value is not None:
@@ -63,7 +60,6 @@ def memory_fact_from_hit(hit: SearchHit) -> RetrievedFact:
 
 
 def unique_memory_facts(hits: Sequence[SearchHit]) -> list[RetrievedFact]:
-    """Facts in hit order with duplicates dropped; conflicting duplicates are an error."""
     facts: list[RetrievedFact] = []
     by_id: dict[str, RetrievedFact] = {}
     for hit in hits:
@@ -78,7 +74,6 @@ def unique_memory_facts(hits: Sequence[SearchHit]) -> list[RetrievedFact]:
 
 
 def reverse_ranked_memory_facts(hits: Sequence[SearchHit]) -> list[RetrievedFact]:
-    """Unique retrieved facts with the best-ranked fact last."""
     return list(reversed(unique_memory_facts(hits)))
 
 

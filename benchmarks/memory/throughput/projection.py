@@ -1,5 +1,3 @@
-"""Pre-flight GPU and host memory projections for the kv_injection condition."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -24,8 +22,6 @@ PINNED_HOST_FRACTION = 0.9
 
 @dataclass(frozen=True, slots=True)
 class CorpusFootprint:
-    """What one sample's encoded chunks cost, the basis for projecting every request's copy."""
-
     fact_count: int
     token_count: int
     kv_bytes: int
@@ -44,19 +40,6 @@ def check_kv_gpu_projection(
     unique_sample_count: int,
     footprint: CorpusFootprint,
 ) -> None:
-    """Fail before the expensive request composition if the KV footprint cannot fit.
-
-    kv_injection composes every request before the engine starts and keeps the
-    composed memories GPU-resident in the connector registry through
-    generation under both store backends. The corpus chunk store occupies HBM
-    only under the gpu backend; under cpu it is pinned host RAM plus one
-    composition's staged working set, and it closes before the engine claims
-    its pool either way.
-
-    The check runs once the corpus is resident, so it guards the composition
-    phase, whose footprint grows with the user count; a corpus that cannot fit
-    on its own fails earlier, inside the precompute.
-    """
     if footprint.fact_count == 0 or footprint.token_count == 0:
         return
     retrieved_facts = min(config.top_k, footprint.fact_count)
@@ -94,7 +77,6 @@ def check_kv_gpu_projection(
 def check_pinned_host_projection(
     config: ThroughputConfig, *, corpus_bytes: float, num_users: int, total_requests: int
 ) -> None:
-    """Fail before precompute if the pinned corpus cannot fit in the host RAM available now."""
     del config
     available = available_host_memory_bytes()
     if available is None:

@@ -1,5 +1,3 @@
-"""Host-to-device transfer records of the pinned store and their summaries."""
-
 from __future__ import annotations
 
 import threading
@@ -9,13 +7,6 @@ from dataclasses import dataclass, field
 
 @dataclass(slots=True)
 class TransferRecord:
-    """One memory's H2D staging transfer.
-
-    ``staging_stall_ms`` is the time consumers blocked waiting for layer
-    copies, the transfer's critical-path exposure; the rest of
-    ``h2d_latency_ms`` overlapped with compute.
-    """
-
     user_id: str
     num_tokens: int
     num_bytes: int
@@ -24,14 +15,12 @@ class TransferRecord:
 
 
 def overlap_ratio(record: TransferRecord) -> float:
-    """Fraction of the transfer hidden behind compute, clamped to [0, 1]."""
     if record.h2d_latency_ms <= 0:
         return 0.0
     return max(0.0, min(1.0, 1.0 - record.staging_stall_ms / record.h2d_latency_ms))
 
 
 def percentile(sorted_values: list[float], fraction: float) -> float:
-    """Linear-interpolation percentile of an ascending list; 0 when empty."""
     if not sorted_values:
         return 0.0
     if len(sorted_values) == 1:
@@ -49,8 +38,6 @@ def _mean(values: list[float]) -> float:
 
 @dataclass
 class TransferMetrics:
-    """Transfer records of one store; totals are derived so they cannot drift."""
-
     records: deque = field(default_factory=deque)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -59,7 +46,6 @@ class TransferMetrics:
             self.records.append(record)
 
     def totals(self) -> dict[str, float]:
-        """Running totals for before-and-after attribution to one request."""
         with self.lock:
             records = list(self.records)
         return {

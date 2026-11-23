@@ -1,10 +1,3 @@
-"""Conversation context around a fact: the preceding turns, encoding plans, and memory plans.
-
-A fact is encoded with the ``context_window`` turns that precede its source
-turn as an encoding-only prefix. KV injection keeps only the fact's own
-tokens from that encode; prompt injection renders the context turns as text.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Mapping, MutableMapping, Sequence
@@ -23,7 +16,6 @@ def previous_turn_context_turns(
     source_turn_id: str,
     context_window: int,
 ) -> list[Turn]:
-    """The turns immediately before the source turn, across sessions, in chronological order."""
     if context_window < 0:
         raise ValueError("context_window must be >= 0.")
     if context_window == 0:
@@ -47,7 +39,6 @@ def context_turn_token_ids(
     turn: Turn,
     turn_token_ids: MutableMapping[str, list[int]] | None = None,
 ) -> list[int]:
-    """Tokens of one context turn, memoized in ``turn_token_ids`` when given."""
     if turn_token_ids is not None and turn.id in turn_token_ids:
         return list(turn_token_ids[turn.id])
     tokens = encode_text_no_special(tokenizer, format_memory_turn(turn))
@@ -66,7 +57,6 @@ def build_fact_context_encoding_plan(
     fact_token_ids: Mapping[str, list[int]],
     turn_token_ids: MutableMapping[str, list[int]] | None = None,
 ) -> EncodingPlan:
-    """Plan one fact's encode with its preceding conversation turns as the prefix."""
     if context_window < 0:
         raise ValueError("context_window must be >= 0.")
     if max_input_tokens < 1:
@@ -102,11 +92,6 @@ def plan_kv_memory(
     fact_token_ids: Mapping[str, list[int]],
     encoded_chunks: Mapping[str, KVChunk],
 ) -> MemoryFactPlan:
-    """The plan for a memory composed from pre-encoded chunks.
-
-    Context turns never enter the memory as tokens; the plan records which
-    turns conditioned each chunk's encode and how many prefix tokens that took.
-    """
     retrieved = _checked_facts(selected_facts, retrieved_facts, fact_token_ids)
     missing = [fact.memory_id for fact in selected_facts if fact.memory_id not in encoded_chunks]
     if missing:
@@ -141,7 +126,6 @@ def plan_prompt_memory(
     context_turn_ids: Sequence[str] = (),
     context_text_tokens: int = 0,
 ) -> MemoryFactPlan:
-    """The plan for a memory rendered as prompt text, context turns included as tokens."""
     retrieved = _checked_facts(selected_facts, retrieved_facts, fact_token_ids)
     return _plan(
         selected_facts,
@@ -179,7 +163,6 @@ def _checked_facts(
     retrieved_facts: Sequence[RetrievedFact] | None,
     fact_token_ids: Mapping[str, list[int]],
 ) -> list[RetrievedFact]:
-    """The retrieved facts, after checking they are the injected facts and all tokenized."""
     retrieved = list(selected_facts if retrieved_facts is None else retrieved_facts)
     retrieved_ids = [fact.memory_id for fact in retrieved]
     selected_ids = [fact.memory_id for fact in selected_facts]

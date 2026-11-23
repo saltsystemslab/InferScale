@@ -1,15 +1,3 @@
-"""The kv_injection throughput condition: Jasper retrieval per request with the facts' KV injected.
-
-This is the head-to-head counterpart of mem0_jasper: identical per-user stores
-and identical top-k searches on the critical path, but retrieved memories
-reach the model as composed KV tensors instead of prompt text. The condition
-runs as ordered phases: encode the corpus, build the retrieval stores, compose
-every request, free the corpus, then start vLLM and measure one batch. The
-corpus lives in the chunk store selected by ``inferscale.kv.store_backend``
-(HBM or pinned host RAM); composed request memories are GPU-resident entries
-of the connector's namespace registry until the batch finishes.
-"""
-
 from __future__ import annotations
 
 import importlib
@@ -144,7 +132,6 @@ def run_kv_injection(config: ThroughputConfig, num_users: int) -> dict[str, Any]
 
 
 def load_connector_module(config: ThroughputConfig) -> ModuleType:
-    """The KV connector module, imported up front so a missing vLLM fails before any work."""
     return importlib.import_module(config.kv_connector_module)
 
 
@@ -169,7 +156,6 @@ def measure_kv_batch(
     tokenizer: Any,
     connector: ModuleType,
 ) -> tuple[dict[str, int | float], dict[str, int]]:
-    """Warm up with explicit memory routing, then measure the batch and its KV coverage."""
     prepare_batch(
         config,
         engine.llm,

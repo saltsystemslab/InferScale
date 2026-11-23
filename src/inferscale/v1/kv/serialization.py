@@ -1,13 +1,3 @@
-"""Plain payload form of a KVChunk for disk caches.
-
-Payloads contain only dicts, lists, tuples, and tensors so they round-trip
-through ``torch.load(weights_only=True)``. The key names are part of the
-on-disk cache format and never change.
-
-torch is imported inside the functions so the key helpers stay importable
-and testable on machines without torch.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -56,7 +46,6 @@ def chunk_from_payload(chunk_id: str, payload: Mapping[str, Any], *, device: str
 
 
 def save_torch_payload(path: Path, payload: Any) -> None:
-    """Write-then-rename so an interrupted save never leaves a truncated file."""
     import torch
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -66,7 +55,6 @@ def save_torch_payload(path: Path, payload: Any) -> None:
 
 
 def load_torch_payload(path: Path) -> Any | None:
-    """Return the payload, or None when the file is missing or unreadable."""
     if not path.exists():
         return None
     import torch

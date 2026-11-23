@@ -1,5 +1,3 @@
-"""Fact extraction for one conversation: every turn is added to Mem0 with inference on."""
-
 from __future__ import annotations
 
 from typing import Any
@@ -12,7 +10,6 @@ from benchmarks.memory.mem0.memory_handles import added_memory_texts
 
 
 def extract_facts(memory: Any, sample: ConversationSample, *, embedder: Any) -> list[MemoryFact]:
-    """The deduplicated facts Mem0 infers from the conversation, each embedded once."""
     facts: list[MemoryFact] = []
     seen: set[str] = set()
     for turn in sample.turns:

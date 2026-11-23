@@ -1,23 +1,9 @@
-"""Counters that prove each measured request had its memory KV loaded.
-
-The engine runs in-process, so the driver can read these after a batch and
-check that every request generated with its memory available; a load that
-never happened would otherwise be invisible.
-"""
-
 from __future__ import annotations
 
 import threading
 
 
 class LoadStats:
-    """Thread-safe load accounting for the in-process connector.
-
-    ``requests_covered`` is the union of requests whose memory was injected
-    and requests whose memory region the native prefix cache already covered
-    (a legitimate no-load), which is what an exact coverage check needs.
-    """
-
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._requests_loaded = 0

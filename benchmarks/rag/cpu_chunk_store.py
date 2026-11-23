@@ -1,12 +1,3 @@
-"""The corpus KV resident in host RAM, addressed through a CUDA chunk map.
-
-Loaded once from the per-chunk precompute cache into pageable CPU tensors;
-composition copies the selected chunks to the GPU per query. There is no
-eviction and no answer-time disk I/O, so per-query latencies are uniform from
-the first query. Chunk ids resolve to rows on CUDA; only the selected row
-numbers return to the host to pick the CPU tensors for composition.
-"""
-
 from __future__ import annotations
 
 import time

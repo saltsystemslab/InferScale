@@ -1,5 +1,3 @@
-"""Tokenization of raw text without special tokens, shared by encoder and prompt code."""
-
 from __future__ import annotations
 
 from typing import Any

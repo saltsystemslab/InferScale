@@ -1,5 +1,3 @@
-"""Size and residency statistics of a sample's precomputed KV chunks."""
-
 from __future__ import annotations
 
 import sys
@@ -13,7 +11,6 @@ from .composer import SampleComposer
 
 
 def precompute_stats(composer: SampleComposer) -> dict[str, Any]:
-    """The setup metrics a precomputed sample reports, keyed as the result schema names them."""
     scaffold_chunks = composer.encoded_scaffold_chunks()
     fact_chunks = list(composer.chunks.values())
     chunks = [*scaffold_chunks, *fact_chunks]
@@ -62,7 +59,6 @@ def precompute_stats(composer: SampleComposer) -> dict[str, Any]:
 
 
 def _chunk_metadata_cpu_bytes(chunks_by_id: dict[str, KVChunk]) -> int:
-    """Host bytes of the chunk map and its metadata-only chunks, as Python objects."""
     total = sys.getsizeof(chunks_by_id)
     for chunk_id, chunk in chunks_by_id.items():
         total += sys.getsizeof(chunk_id)

@@ -1,21 +1,3 @@
-"""Pinned-host KV memory store streamed to the GPU over PCIe.
-
-The authoritative pre-encoded KV lives in page-locked (pinned) host memory.
-A small pool of GPU staging buffers receives async H2D copies on a dedicated
-CUDA copy stream; per-layer CUDA events let the connector's per-layer scatter
-loop start on layer k as soon as layer k's bytes have landed, overlapping
-the remaining transfers with compute.
-
-Three correctness details matter: staging tensors are registered on the
-consuming stream via ``record_stream`` (the caching allocator must not reuse
-them while scatter kernels are in flight), the layer view is lazy (no
-all-layer sync from ``values()`` or ``items()``), and the compute stream is
-resolved at use time instead of captured at construction.
-
-torch is imported inside the class so this module stays importable on
-machines without torch.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -36,8 +18,6 @@ logger = logging.getLogger(__name__)
 
 @dataclass(slots=True)
 class HostUserMemory:
-    """Pinned-host storage for one memory's pre-encoded KV."""
-
     kv_by_layer_host: dict[str, Any]
     num_tokens: int
     token_ids: list[int] | None
@@ -45,14 +25,6 @@ class HostUserMemory:
 
 
 class CpuPinnedMemoryStore:
-    """GPUMemoryStore-compatible store backed by pinned host memory.
-
-    ``get_user_memory`` hands out a ``UserMemory`` whose ``kv_by_layer`` is a
-    ``LayerKVView`` over GPU staging buffers. Call ``prefetch_user_to_gpu``
-    before the per-layer loop for overlap and ``release_staging`` after the
-    request so the slot returns to the pool and the transfer is recorded.
-    """
-
     def __init__(
         self, device: str = "cuda:0", num_staging_slots: int = DEFAULT_KV_STAGING_SLOTS
     ) -> None:
@@ -136,11 +108,6 @@ class CpuPinnedMemoryStore:
     # Read path
 
     def peek_user_memory(self, user_id: str) -> UserMemory | None:
-        """Metadata-only read (token ids and count) that stages nothing.
-
-        Prefix matching on the scheduler side must use this; get_user_memory
-        is the load-path accessor and stages the full payload.
-        """
         with self._lock:
             host_memory = self._host.get(user_id)
         if host_memory is None:
@@ -157,11 +124,6 @@ class CpuPinnedMemoryStore:
         return self._staged_memory(user_id, host_memory)
 
     def prefetch_user_to_gpu(self, user_id: str) -> bool:
-        """Issue async H2D copies for every layer on the copy stream.
-
-        Returns True if the memory is staged afterwards (including when it
-        already was) and False if the user has no stored memory.
-        """
         with self._lock:
             host_memory = self._host.get(user_id)
         if host_memory is None:
@@ -169,7 +131,6 @@ class CpuPinnedMemoryStore:
         return self._prefetch_host_memory(user_id, host_memory)
 
     def release_staging(self, user_id: str) -> None:
-        """Free the user's staging slot and record the transfer's metrics."""
         with self._lock:
             slot = self._slots.pop(user_id, None)
             host_memory = self._host.get(user_id)
@@ -189,7 +150,6 @@ class CpuPinnedMemoryStore:
     # Corpus access through the GPU lookup
 
     def finalize_packed(self) -> None:
-        """Payloads stay as per-chunk pinned buffers; nothing to pack."""
         return
 
     def finalize_chunk_lookup(self) -> None:
@@ -271,7 +231,6 @@ class CpuPinnedMemoryStore:
         )
 
     def _prefetch_host_memory(self, user_id: str, host_memory: HostUserMemory) -> bool:
-        """Stage an already resolved payload without consulting the ID map."""
         torch = self._torch
         with self._lock:
             if user_id in self._slots:

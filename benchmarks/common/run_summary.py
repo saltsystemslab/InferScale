@@ -1,5 +1,3 @@
-"""The envelope of a run's summary.json, shared by the memory and RAG benchmarks."""
-
 from __future__ import annotations
 
 from typing import Any
@@ -27,7 +25,6 @@ def summary_envelope(
     system_metadata: dict[str, Any],
     **sections: Any,
 ) -> dict[str, Any]:
-    """Counts, metrics, saved config, and host metadata; ``sections`` adds benchmark keys."""
     judged = judged_records(records)
     return {
         "run_id": run_id,

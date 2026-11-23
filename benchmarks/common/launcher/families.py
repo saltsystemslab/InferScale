@@ -1,17 +1,28 @@
-"""The benchmark families a launch plan can name and how each one expands into runs."""
-
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from benchmarks.common.config import RuntimeConfig
 from benchmarks.common.launcher import memory_family, rag_family, throughput_family
 
-ExpandRuns = Callable[[dict[str, Any], dict[str, Any], RuntimeConfig, str, str, str], list[dict]]
+
+class ExpandRuns(Protocol):
+    def __call__(
+        self,
+        authored: dict[str, Any],
+        *,
+        config_path: str,
+        runtime: RuntimeConfig,
+        stage: str,
+        stamp: str,
+        sweep_name: str | None,
+    ) -> list[dict[str, Any]]: ...
+
+
 ValidateRun = Callable[[dict[str, Any], RuntimeConfig, str], None]
-PinPaths = Callable[[dict[str, Any], RuntimeConfig], None]
+PinToRuntime = Callable[[dict[str, Any], RuntimeConfig], None]
 
 
 @dataclass(slots=True, frozen=True)
@@ -21,7 +32,7 @@ class BenchmarkFamily:
     stages: frozenset[str]
     expand: ExpandRuns
     validate_run: ValidateRun
-    pin_resolved_paths: PinPaths
+    pin_to_runtime: PinToRuntime
 
 
 FAMILIES: dict[str, BenchmarkFamily] = {
@@ -33,7 +44,7 @@ FAMILIES: dict[str, BenchmarkFamily] = {
         ),
         expand=memory_family.expand,
         validate_run=memory_family.validate_run,
-        pin_resolved_paths=memory_family.pin_resolved_paths,
+        pin_to_runtime=memory_family.pin_to_runtime,
     ),
     "throughput": BenchmarkFamily(
         name="throughput",
@@ -41,7 +52,7 @@ FAMILIES: dict[str, BenchmarkFamily] = {
         stages=frozenset({"run"}),
         expand=throughput_family.expand,
         validate_run=throughput_family.validate_run,
-        pin_resolved_paths=throughput_family.pin_resolved_paths,
+        pin_to_runtime=throughput_family.pin_to_runtime,
     ),
     "rag": BenchmarkFamily(
         name="rag",
@@ -49,15 +60,14 @@ FAMILIES: dict[str, BenchmarkFamily] = {
         stages=frozenset({"run", "judge", "prepare", "estimate", "preembed", "precompute-kv"}),
         expand=rag_family.expand,
         validate_run=rag_family.validate_run,
-        pin_resolved_paths=rag_family.pin_resolved_paths,
+        pin_to_runtime=rag_family.pin_to_runtime,
     ),
 }
 
 
-def family_of_config(data: dict[str, Any]) -> str:
-    """The family whose configs carry this ``benchmark`` value, or the empty string."""
-    benchmark = data.get("benchmark")
+def family_of_config(config: dict[str, Any]) -> str | None:
+    benchmark = config.get("benchmark")
     for family in FAMILIES.values():
         if family.benchmark == benchmark:
             return family.name
-    return ""
+    return None

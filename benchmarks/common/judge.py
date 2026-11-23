@@ -1,5 +1,3 @@
-"""LLM-as-judge plumbing shared by the benchmarks: verdict payloads, parsing, client."""
-
 from __future__ import annotations
 
 import json
@@ -65,7 +63,6 @@ def format_accuracy(value: Any) -> str:
 
 
 def build_judge_client(config: JudgeConfig) -> ChatClient | None:
-    """The chat client for the configured judge, or None when judging is disabled."""
     if config.provider == "none":
         return None
     if config.provider == "vllm":
@@ -86,13 +83,11 @@ def judge_with(
     max_tokens: int,
     metadata: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """One deterministic verdict for ``messages``, as a judge payload."""
     verdict = client.chat(list(messages), max_tokens=max_tokens, temperature=0.0, top_p=1.0)
     return judge_payload(verdict.content, metadata)
 
 
 def parse_judge_response(text: str) -> tuple[bool | None, str]:
-    """A verdict and, when the text is not a verdict, the stripped text as the reason."""
     stripped = text.strip()
     parsed = _parse_json_verdict(stripped)
     if parsed is not None:

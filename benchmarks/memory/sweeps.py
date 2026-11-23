@@ -1,5 +1,3 @@
-"""Sweep grids declared in a memory benchmark JSON file and the run cells they expand to."""
-
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
@@ -53,8 +51,6 @@ def sweeps_use_backend(sweeps: Iterable[MemorySweep], answer_backend: str) -> bo
 
 @dataclass(slots=True, frozen=True)
 class MemoryCell:
-    """One (variant, top_k, context_window) point of a sweep."""
-
     variant: str
     answer_backend: str
     vector_backend: str
@@ -71,7 +67,6 @@ class MemoryCell:
         )
 
     def materialize(self, data: Mapping[str, Any]) -> dict[str, Any]:
-        """One run's JSON: the grid's file with this cell's axes written in."""
         result = deepcopy(dict(data))
         result.update(
             answer_backend=self.answer_backend,
@@ -110,7 +105,6 @@ def sweep_dict(sweep: MemorySweep) -> dict[str, Any]:
 
 
 def sweep_cells(sweep: MemorySweep) -> list[MemoryCell]:
-    """Expand a sweep in the order top_k, variant, context_window."""
     return [
         MemoryCell(
             variant=variant.name,
@@ -128,7 +122,6 @@ def sweep_cells(sweep: MemorySweep) -> list[MemoryCell]:
 
 
 def kv_context_windows(sweeps: Iterable[MemorySweep], base_window: int) -> tuple[int, ...]:
-    """Every context window a KV injection variant encodes, for the precompute-kv stage."""
     windows = {base_window}
     for sweep in sweeps:
         for variant in sweep.variants:

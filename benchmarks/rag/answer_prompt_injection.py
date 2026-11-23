@@ -1,5 +1,3 @@
-"""The prompt-injection baseline: the same chunk token ids rendered as prompt text."""
-
 from __future__ import annotations
 
 import time

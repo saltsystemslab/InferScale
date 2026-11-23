@@ -1,12 +1,3 @@
-"""Pre-RoPE chunk encoding and position-correct composition.
-
-Chunks are encoded once with a Hugging Face forward pass that captures the
-keys before rotary embedding is applied and keeps the values as computed.
-Composition concatenates the selected chunks and applies RoPE once at their
-new contiguous positions, so a chunk's KV is valid at any position in any
-composed memory.
-"""
-
 from __future__ import annotations
 
 import gc
@@ -50,8 +41,6 @@ def attention_layer_name(index: int) -> str:
 
 
 class ChunkedRopeEncoder:
-    """Hugging Face pre-RoPE encoder shared while precomputing chunks."""
-
     def __init__(self, *, model: str, dtype: str, device: str, max_position: int) -> None:
         import torch
 
@@ -84,11 +73,6 @@ class ChunkedRopeEncoder:
         cos_table: Any,
         sin_table: Any,
     ) -> ChunkedRopeEncoder:
-        """Encoder in the released state, built from cached RoPE tables.
-
-        compose works and encode fails exactly as they do after
-        release_model, so cache hits never load the model weights.
-        """
         encoder = cls.__new__(cls)
         encoder._init_state(
             model=model,
@@ -133,7 +117,6 @@ class ChunkedRopeEncoder:
         return KVChunk(chunk_id=chunk_id, token_ids=list(token_ids), kv_by_layer=kv_by_layer)
 
     def encode_plan(self, plan: EncodingPlan) -> KVChunk:
-        """Encode context plus target and keep only the target span's KV."""
         kv_by_layer = self._encode_span(
             plan.input_token_ids, slice_start=plan.slice_start, slice_end=plan.slice_end
         )
@@ -148,7 +131,6 @@ class ChunkedRopeEncoder:
         )
 
     def compose(self, chunks: list[KVChunk]) -> dict[str, Any]:
-        """Compose pre-RoPE chunks into position-correct GPU KV tensors."""
         if not chunks:
             raise ValueError("At least one encoded chunk is required.")
         return _compose_encoded_chunks(
@@ -160,7 +142,6 @@ class ChunkedRopeEncoder:
         )
 
     def release_model(self) -> None:
-        """Unload the model weights while keeping the RoPE tables available."""
         self.hf_model = None
         self.tokenizer = None
         _free_cuda_memory()
@@ -202,8 +183,6 @@ TOKENIZER_PARITY_PROBE_TEXT = (
 
 
 def require_tokenizer_parity(encoder_probe_token_ids: list[int], engine_tokenizer: Any) -> None:
-    """The connector matches chunk ids as a prompt prefix, so the encoder and
-    engine tokenizers must produce identical ids."""
     engine_probe_token_ids = encode_text_no_special(engine_tokenizer, TOKENIZER_PARITY_PROBE_TEXT)
     if encoder_probe_token_ids == engine_probe_token_ids:
         return
@@ -279,7 +258,6 @@ def _encode_token_chunk_pre_rope(
 
 
 def _post_rope_values(past_key_values: Any) -> list[Any]:
-    """Value tensors per layer; the cache object's layout depends on the transformers version."""
     if hasattr(past_key_values, "layers"):
         return [layer.values for layer in past_key_values.layers]
     if hasattr(past_key_values, "key_cache"):
@@ -288,7 +266,6 @@ def _post_rope_values(past_key_values: Any) -> list[Any]:
 
 
 def _slice_tokens(tensor: Any, start: int, end: int) -> Any:
-    """``[1, heads, tokens, head_dim]`` to a contiguous ``[tokens, heads, head_dim]`` span."""
     return tensor.squeeze(0)[:, start:end, :].transpose(0, 1).contiguous()
 
 
@@ -308,15 +285,6 @@ def _free_cuda_memory() -> None:
 
 
 def load_encoder_tokenizer(model: str) -> Any:
-    """Load the encoder-side tokenizer without touching model weights.
-
-    Chunk token ids must be byte-identical to the ids the vLLM engine sees
-    (the connector matches registered chunks as a prompt prefix), so load
-    the tokenizer through vLLM's resolver rather than AutoTokenizer. With
-    transformers>=4.56 plus mistral_common installed, AutoTokenizer resolves
-    Mistral models to MistralCommonTokenizer while the engine uses the HF
-    fast tokenizer, and the two encode differently from the first token.
-    """
     from vllm.transformers_utils.tokenizer import get_tokenizer
 
     tokenizer = get_tokenizer(model)

@@ -1,5 +1,3 @@
-"""The ``vllm serve`` command line for the local servers the benchmarks start."""
-
 from __future__ import annotations
 
 from urllib.parse import SplitResult, urlsplit
@@ -10,7 +8,6 @@ LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
 def require_local_http_endpoint(url: str, *, where: str) -> SplitResult:
-    """Parse a base URL that must point at a plain HTTP server on this machine."""
     endpoint = urlsplit(url)
     if endpoint.scheme != "http" or endpoint.hostname not in LOCAL_HOSTS:
         raise ConfigError(

@@ -1,5 +1,3 @@
-"""Torch-free fakes for exercising the inferscale.v1 building blocks."""
-
 from __future__ import annotations
 
 from typing import Any
@@ -12,13 +10,6 @@ from inferscale.v1.types import EncodingPlan, KVChunk, SearchHit, SearchMetrics
 
 
 class FakeChunkStore(GPUMemoryStore):
-    """Instrument the corpus lookup contract without allocating CUDA tensors.
-
-    This fake deliberately rejects the old single-ID access path, so library
-    tests detect a regression to registry lookup during corpus fetching.
-    It does not simulate or validate GPU execution.
-    """
-
     def __init__(self) -> None:
         super().__init__(device="cpu")
         self.lookup_finalized = False
@@ -43,8 +34,6 @@ class FakeChunkStore(GPUMemoryStore):
 
 
 class FakeTokenizer:
-    """Character tokenizer with a chat template that wraps message content."""
-
     bos_token_id = 1
 
     def encode(self, text: str, add_special_tokens: bool = True) -> list[int]:
@@ -71,8 +60,6 @@ class FakeTokenizer:
 
 
 class FakeTensor:
-    """Minimal tensor stand-in: numpy data plus the device methods the stores call."""
-
     def __init__(self, array: np.ndarray, device: str = "cpu") -> None:
         self.array = np.asarray(array, dtype=np.float32)
         self.device = device
@@ -95,8 +82,6 @@ class FakeTensor:
 
 
 class FakeEncoder:
-    """Produces per-token fake KV so composition is a plain concatenation."""
-
     layers = ("model.layers.0.self_attn.attn", "model.layers.1.self_attn.attn")
 
     def __init__(self, *, model: str, dtype: str, device: str, max_position: int) -> None:
@@ -231,8 +216,6 @@ class FakeIndex:
 
 
 class FakeLLM:
-    """Records the calls a client makes on the raw vLLM engine beside ``generate``."""
-
     def __init__(self) -> None:
         self.applied: list[Any] = []
         self.batches: list[tuple[list[list[int]], Any]] = []

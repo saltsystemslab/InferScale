@@ -1,5 +1,3 @@
-"""LLM-as-judge for RAG answers: one prompt over one or more references, and record judging."""
-
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -21,11 +19,6 @@ def build_rag_judge_messages(
     gold_answers: Sequence[str] | str,
     predicted_answer: str,
 ) -> list[dict[str, str]]:
-    """Judge prompt over one or more reference answers.
-
-    Datasets with several independent annotations (QASPER) list every
-    reference; the prediction is correct if it matches any one of them.
-    """
     if isinstance(gold_answers, str):
         gold_answers = (gold_answers,)
     references = [str(gold).strip() for gold in gold_answers if str(gold).strip()] or [""]
@@ -83,7 +76,6 @@ def judge_rag_record(
     judge_client: ChatClient,
     record: dict[str, Any],
 ) -> dict[str, Any]:
-    """Judge a saved prediction record from its own question and reference answers."""
     gold_answers = record.get("gold_answers")
     if not isinstance(gold_answers, list) or not gold_answers:
         raise RuntimeError(f"Prediction record {record_label(record)} has no gold_answers.")

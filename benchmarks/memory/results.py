@@ -1,5 +1,3 @@
-"""The summary.json of a memory run: accuracy, latency summaries, and setup summaries."""
-
 from __future__ import annotations
 
 from collections.abc import Iterable

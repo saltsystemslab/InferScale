@@ -1,5 +1,3 @@
-"""OpenAI embeddings client."""
-
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -9,12 +7,6 @@ DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 
 
 class OpenAIEmbedder:
-    """Embeds documents and queries with the OpenAI embeddings API.
-
-    The API key comes from the OpenAI SDK's environment lookup
-    (``OPENAI_API_KEY``) unless passed explicitly.
-    """
-
     def __init__(
         self,
         *,

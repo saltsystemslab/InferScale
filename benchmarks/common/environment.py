@@ -1,9 +1,3 @@
-"""Shell exports derived from the runtime JSON, used by scripts/environment.sh.
-
-The scripts source ``.env`` for credentials and then evaluate these exports, so
-paths and build settings always come from ``configs/runtime.json``.
-"""
-
 from __future__ import annotations
 
 import re
@@ -20,7 +14,6 @@ ENVIRONMENT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 def runtime_path_for_config(config_path: Path) -> Path | None:
-    """The runtime JSON a workflow file selects: its own, else its saved manifest's, else None."""
     source = load_json_object(config_path)
     runtime = _configured_path(source, "runtime_config", str(config_path))
     if runtime is not None:
@@ -41,7 +34,6 @@ def _configured_path(source: Mapping[str, Any], key: str, where: str) -> Path | 
 
 
 def runtime_shell_exports(runtime: RuntimeConfig, *, prepare: bool = False) -> str:
-    """Quoted ``export`` lines for every value the shell scripts take from the runtime JSON."""
     if prepare:
         runtime.layout.create_directories()
     values = dict(runtime.environment)

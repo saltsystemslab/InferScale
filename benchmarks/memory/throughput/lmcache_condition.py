@@ -1,23 +1,3 @@
-"""The lmcache_blend throughput condition: retrieved Mem0 facts served through LMCache CacheBlend.
-
-The condition retrieves like mem0_qdrant and sends the same prompt with
-LMCache's separator between the facts, so each fact's KV, stored once by a
-warm-up, is blended into the prefill instead of recomputed. Result rows reuse
-the schema's KV columns with these meanings:
-
-- ``kv_store_backend`` is ``lmcache-cpu``: the facts' KV lives in LMCache's pinned CPU cache.
-- ``kv_store_host_mb`` is that cache's usage after the fact warm-up.
-- ``kv_precompute_time_s`` is the fact warm-up time, excluded from QPS.
-- ``kv_h2d_bytes`` is the KV LMCache matched during the measured batch, and
-  ``kv_h2d_avg_ms`` its load-plus-blend time per request.
-- ``kv_requests_loaded`` counts requests whose header and retrieved facts were
-  all served from the cache; the condition fails unless that is every request.
-- ``kv_prefix_caching`` is 0: vLLM's own prefix cache is off for this arm.
-
-Every request also stores its unique footer-plus-question tail, which is
-CacheBlend's genuine serving cost and stays inside the measured time.
-"""
-
 from __future__ import annotations
 
 import shutil
@@ -109,8 +89,6 @@ class _BlendContext:
 
 @dataclass(frozen=True, slots=True)
 class FactCacheWarmup:
-    """What priming LMCache with the facts cost and left resident."""
-
     time_s: float
     stored_tokens: int
     cpu_cache_bytes: int | None
@@ -194,7 +172,6 @@ def catalog_warm_up_prompts(
     catalogs: Iterable[Sequence[MemoryFact]],
     separator: Sequence[int],
 ) -> list[list[int]]:
-    """The scaffold header and every catalog fact, tokenized exactly as the prompts lay them out."""
     chunks = [
         token_ids
         for facts in catalogs
@@ -291,7 +268,6 @@ def _measure(
 def prime_fact_cache(
     llm: Any, prompts: Sequence[Sequence[int]], *, bytes_per_token: int
 ) -> FactCacheWarmup:
-    """Empty LMCache, then store the header and every fact as its own segment."""
     clear_cache()
     stats = warm_prompts(llm, prompts, batch_size=WARM_BATCH_SIZE)
     usage = cpu_cache_usage_bytes()
@@ -302,7 +278,6 @@ def prime_fact_cache(
 
 
 def require_fact_cache_resident(usage_bytes: int | None, *, expected_bytes: int) -> None:
-    """After the warm-up the cache must hold the facts; a near-empty cache stored nothing."""
     if usage_bytes is None or expected_bytes <= 0:
         return
     if usage_bytes < MIN_RESIDENT_FRACTION * expected_bytes:
@@ -314,11 +289,6 @@ def require_fact_cache_resident(usage_bytes: int | None, *, expected_bytes: int)
 
 
 def count_covered_requests(matched_by_request: Mapping[str, int], expected: Sequence[int]) -> int:
-    """Requests whose matched prefix covered the header and every retrieved fact.
-
-    vLLM numbers the requests of one ``generate`` call consecutively, so the
-    recorded request ids in numeric order line up with the batch's prompts.
-    """
     if len(matched_by_request) != len(expected):
         raise RuntimeError(
             f"LMCache recorded {len(matched_by_request)} requests for a batch of "

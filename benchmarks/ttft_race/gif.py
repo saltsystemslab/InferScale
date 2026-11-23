@@ -1,10 +1,3 @@
-"""Replay one question of several timelines as a GIF: every answer on one shared clock.
-
-The clock starts when the engine receives the request. Each panel shows its
-side's first-token time and then its answer, word by word. The InferScale
-timeline comes first; every other timeline is a baseline it is compared with.
-"""
-
 from __future__ import annotations
 
 import json
@@ -48,8 +41,6 @@ STYLES: dict[str, tuple[str, Color]] = {
 
 @dataclass(frozen=True)
 class Layout:
-    """Pixel geometry of the frame: one panel per column under a title row, above a footer."""
-
     columns: int = 2
     height: int = 480
     margin: int = 28
@@ -96,8 +87,6 @@ class Fonts:
 
 @dataclass(frozen=True)
 class Panel:
-    """One side of the race: its label, accent color, measured row, and timed words."""
-
     name: str
     accent: Color
     row: Row
@@ -106,8 +95,6 @@ class Panel:
 
 @dataclass(frozen=True)
 class Race:
-    """Everything a frame needs that does not change between frames."""
-
     panels: tuple[Panel, ...]
     banner: str
     asked: str
@@ -124,7 +111,6 @@ class Race:
 
 
 def load_timelines(paths: Sequence[Path]) -> list[Timeline]:
-    """The InferScale timeline followed by its baselines, all over the same questions."""
     if len(paths) < 2:
         sys.exit("Pass the InferScale timeline and at least one baseline timeline.")
     timelines = [json.loads(Path(path).read_text()) for path in paths]
@@ -143,11 +129,6 @@ def load_timelines(paths: Sequence[Path]) -> list[Timeline]:
 
 
 def stream(row: Row) -> list[Event]:
-    """(ms since the request, word) pairs for one answer.
-
-    The engine generates offline, so only the first token and the finished
-    answer are timed; the words in between are spaced evenly.
-    """
     words = re.findall(r"\S+\s*", row["answer"])
     gap = (row["total_ms"] - row["ttft_ms"]) / max(1, len(words) - 1)
     return [(row["ttft_ms"] + gap * index, word) for index, word in enumerate(words)]
@@ -160,11 +141,6 @@ def render_gif(
     question: int | None = None,
     slowdown: float = 20.0,
 ) -> int:
-    """Write the GIF for one question and return its index.
-
-    The default question is the median speedup over the first baseline, so the
-    replay is representative rather than the best case.
-    """
     try:
         from PIL import Image
     except ImportError:
@@ -202,7 +178,6 @@ def label(timeline: Timeline) -> str:
 
 
 def load_font(size: int, bold: bool = False, mono: bool = True) -> Any:
-    """DejaVu Sans or Sans Mono (installed, or bundled with matplotlib), then a macOS face."""
     from PIL import ImageFont
 
     dejavu = f"DejaVuSans{'Mono' if mono else ''}{'-Bold' if bold else ''}.ttf"
@@ -249,7 +224,6 @@ def _choose_question(speedups: list[float], requested: int | None) -> int:
 def _print_speedups(
     timelines: Sequence[Timeline], speedups: list[list[float]], chosen: int
 ) -> None:
-    """One first-token column per side and one speedup column per baseline."""
     widths = [max(11, len(label(timeline))) for timeline in timelines]
     header = "  ".join(f"{label(timeline):>{width}}" for timeline, width in zip(timelines, widths))
     columns = "  ".join(f"{'speedup':>7}" for _ in speedups)
@@ -297,7 +271,6 @@ def _panel_name(timeline: Timeline) -> str:
 
 
 def _verdict(baselines: Sequence[tuple[str, float]]) -> str:
-    """How much sooner InferScale's first token came than each baseline's."""
     if len(baselines) == 1:
         return "InferScale: first token " + _sooner_or_later(baselines[0][1])
     return "InferScale: first token " + ", ".join(
@@ -310,7 +283,6 @@ def _sooner_or_later(speedup: float) -> str:
 
 
 def _shortened_question(question: str, layout: Layout, fonts: Fonts, banner: str) -> str:
-    """The question shares the title row, so it is cut to stay clear of the banner."""
     asked = "LoCoMo question: " + question
     room = layout.width - 2 * layout.margin - 32 - fonts.title.getlength(banner)
     while fonts.note.getlength(asked) > room:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from importlib.metadata import version
 
-from inferscale.v1.embedding.local import last_token_embeddings
+from inferscale.v1.embedding.local import inference_dtype_name, last_token_embeddings
 
 TOKENIZE_BATCH_SIZE = 256
 UNIT_LENGTH_TOLERANCE = 1e-4
@@ -24,12 +24,10 @@ class QwenEmbedder:
             if self.device.index is None:
                 self.device = torch.device("cuda", torch.cuda.current_device())
             torch.cuda.set_device(self.device)
-        resolved_dtype = self._default_dtype() if dtype == "auto" else dtype
+        resolved_dtype = inference_dtype_name(self.device) if dtype == "auto" else dtype
         self.max_length = max_length
         load_started = time.perf_counter()
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            model, revision=revision, padding_side="left"
-        )
+        self.tokenizer = AutoTokenizer.from_pretrained(model, revision=revision)
         self.model = (
             AutoModel.from_pretrained(
                 model,
@@ -96,8 +94,3 @@ class QwenEmbedder:
         if self.device.type == "cuda":
             return self.torch.cuda.max_memory_allocated(self.device)
         return None
-
-    def _default_dtype(self) -> str:
-        if self.device.type != "cuda":
-            return "float32"
-        return "bfloat16" if self.torch.cuda.is_bf16_supported() else "float16"

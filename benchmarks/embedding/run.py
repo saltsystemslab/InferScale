@@ -16,8 +16,8 @@ from benchmarks.common.atomic_files import atomic_write_text
 from benchmarks.common.logging import configure_logging
 from benchmarks.common.stats import percentile
 from benchmarks.embedding.corpus import load_corpus
+from inferscale.v1.embedding.local import DEFAULT_EMBEDDING_MODEL
 
-DEFAULT_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 QWEN3_EMBEDDING_MAX_LENGTH = 32768
 DEFAULT_BATCH_SIZES = (1, 8, 32, 64, 128)
 LATENCY_PERCENTILES = (("p50", 0.5), ("p95", 0.95), ("p99", 0.99))
@@ -126,7 +126,9 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
     if args.max_length > QWEN3_EMBEDDING_MAX_LENGTH:
-        parser.error(f"--max-length must be <= {QWEN3_EMBEDDING_MAX_LENGTH} for {DEFAULT_MODEL}")
+        parser.error(
+            f"--max-length must be <= {QWEN3_EMBEDDING_MAX_LENGTH} for {DEFAULT_EMBEDDING_MODEL}"
+        )
     texts, corpus_manifest = load_corpus(args.catalog_dir, seed=args.seed, max_facts=args.max_facts)
     if args.inspect:
         logger.info(json.dumps(corpus_manifest, indent=2))
@@ -167,7 +169,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--inspect", action="store_true", help="Inspect corpus without loading a model"
     )
-    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--model", default=DEFAULT_EMBEDDING_MODEL)
     parser.add_argument("--revision", default="main")
     parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda")
     parser.add_argument(

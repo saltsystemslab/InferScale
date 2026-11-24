@@ -18,16 +18,19 @@ class WordTokenizer:
     def __init__(self) -> None:
         self.batch_sizes: list[int] = []
 
-    def __call__(self, texts: list[str], **options: Any) -> Any:
+    def __call__(self, texts: list[str], *, padding_side: str, **options: Any) -> Any:
         self.batch_sizes.append(len(texts))
         rows = [[sum(word.encode()) % VOCABULARY_SIZE for word in text.split()] for text in texts]
         width = max(map(len, rows))
+
+        def padded(values: list[int]) -> list[int]:
+            padding = [0] * (width - len(values))
+            return padding + values if padding_side == "left" else values + padding
+
         return transformers.BatchEncoding(
             {
-                "input_ids": torch.tensor([[0] * (width - len(row)) + row for row in rows]),
-                "attention_mask": torch.tensor(
-                    [[0] * (width - len(row)) + [1] * len(row) for row in rows]
-                ),
+                "input_ids": torch.tensor([padded(row) for row in rows]),
+                "attention_mask": torch.tensor([padded([1] * len(row)) for row in rows]),
             }
         )
 
@@ -63,7 +66,7 @@ def test_documents_and_queries_get_the_same_unit_vectors_whatever_the_batch(
     batched = torch.tensor(embedder.embed_documents(TEXTS))
     one_at_a_time = torch.tensor([embedder.embed_query(text) for text in TEXTS])
 
-    assert embedder.dimensions == HIDDEN_SIZE
+    assert embedder.dim == HIDDEN_SIZE
     assert batched.shape == (len(TEXTS), HIDDEN_SIZE)
     assert torch.allclose(batched, one_at_a_time, atol=1e-5)
     assert torch.allclose(batched.norm(dim=1), torch.ones(len(TEXTS)), atol=1e-4)

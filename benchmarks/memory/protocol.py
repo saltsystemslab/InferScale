@@ -5,6 +5,10 @@ from typing import Any
 LMCACHE_BACKEND = "lmcache-blend"
 PROMPT_INJECTION_BACKEND = "prompt-injection"
 ANSWER_BACKENDS = ("kv-injection", PROMPT_INJECTION_BACKEND, LMCACHE_BACKEND)
+WHY_BACKEND_TAKES_NO_CONTEXT_WINDOW = {
+    LMCACHE_BACKEND: "stores each fact alone",
+    PROMPT_INJECTION_BACKEND: "sends only the retrieved facts",
+}
 VECTOR_BACKENDS = ("jasper", "qdrant")
 KV_STORE_BACKENDS = ("gpu", "cpu")
 

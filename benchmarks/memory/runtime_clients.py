@@ -10,7 +10,7 @@ from benchmarks.common.judge import build_judge_client
 from benchmarks.common.vector_types import SearchHit
 from benchmarks.memory.config import MemoryRunConfig
 from benchmarks.memory.data import ConversationSample, QuestionAnswer
-from benchmarks.memory.protocol import LMCACHE_BACKEND
+from benchmarks.memory.protocol import LMCACHE_BACKEND, PROMPT_INJECTION_BACKEND
 
 
 class AnswerClient(Protocol):
@@ -72,7 +72,7 @@ def _build_answer_client(config: MemoryRunConfig) -> AnswerClient:
         from benchmarks.memory.answer_kv import KVAnswerClient
 
         return KVAnswerClient(config)
-    if config.answer_backend == "prompt-injection":
+    if config.answer_backend == PROMPT_INJECTION_BACKEND:
         from benchmarks.memory.answer_prompt_injection import PromptInjectionAnswerClient
 
         return PromptInjectionAnswerClient(config)

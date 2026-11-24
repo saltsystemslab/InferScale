@@ -21,24 +21,16 @@ class LocalEmbedder:
 
         if batch_size < 1:
             raise ValueError("batch_size must be >= 1.")
-        self._model_name = model
         self._batch_size = batch_size
         self._one_batch_at_a_time = threading.Lock()
         target_device = torch.device(device)
-        self._tokenizer = AutoTokenizer.from_pretrained(model, padding_side="left")
-        self._model = (
-            AutoModel.from_pretrained(model, torch_dtype=_inference_dtype(torch, target_device))
-            .to(target_device)
-            .eval()
-        )
+        dtype = getattr(torch, inference_dtype_name(target_device))
+        self._tokenizer = AutoTokenizer.from_pretrained(model)
+        self._model = AutoModel.from_pretrained(model, torch_dtype=dtype).to(target_device).eval()
         self.embed_query(WARMUP_TEXT)
 
     @property
-    def model(self) -> str:
-        return self._model_name
-
-    @property
-    def dimensions(self) -> int:
+    def dim(self) -> int:
         return int(self._model.config.hidden_size)
 
     def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:
@@ -63,6 +55,7 @@ def last_token_embeddings(tokenizer: Any, model: Any, texts: list[str]) -> Any:
         inputs = tokenizer(
             texts,
             padding=True,
+            padding_side="left",
             truncation=True,
             max_length=model.config.max_position_embeddings,
             return_tensors="pt",
@@ -71,7 +64,9 @@ def last_token_embeddings(tokenizer: Any, model: Any, texts: list[str]) -> Any:
         return torch.nn.functional.normalize(hidden[:, -1].float(), p=2, dim=1).cpu()
 
 
-def _inference_dtype(torch: Any, device: Any) -> Any:
+def inference_dtype_name(device: Any) -> str:
+    import torch
+
     if device.type != "cuda":
-        return torch.float32
-    return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        return "float32"
+    return "bfloat16" if torch.cuda.is_bf16_supported() else "float16"

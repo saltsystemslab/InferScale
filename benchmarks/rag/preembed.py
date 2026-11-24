@@ -25,11 +25,7 @@ def preembed_rag_embeddings(config: RagBenchConfig) -> dict[str, Any]:
     )
     embedder = build_cached_embedder(config, mode="write")
     _embed_in_batches(
-        embedder,
-        [chunk.text for chunk in corpus.chunks],
-        purpose=CachedEmbedder.DOCUMENT_PURPOSE,
-        batch_size=config.embed_batch_size,
-        label="chunks",
+        embedder, [chunk.text for chunk in corpus.chunks], batch_size=config.embed_batch_size
     )
     summary = {
         "run_id": config.run_id,
@@ -51,16 +47,8 @@ def preembed_rag_embeddings(config: RagBenchConfig) -> dict[str, Any]:
     return summary
 
 
-def _embed_in_batches(
-    embedder: CachedEmbedder,
-    texts: list[str],
-    *,
-    purpose: str,
-    batch_size: int,
-    label: str,
-) -> None:
+def _embed_in_batches(embedder: CachedEmbedder, texts: list[str], *, batch_size: int) -> None:
     for batch_start in range(0, len(texts), batch_size):
-        batch = texts[batch_start : batch_start + batch_size]
-        embedder.embed_batch(batch, memory_action=purpose)
+        embedder.embed_documents(texts[batch_start : batch_start + batch_size])
         embedded_count = min(batch_start + batch_size, len(texts))
-        logger.info("Embedded {}/{} {} (purpose={})", embedded_count, len(texts), label, purpose)
+        logger.info("Embedded {}/{} chunks", embedded_count, len(texts))

@@ -36,16 +36,6 @@ def facts_by_source_turn(facts: Sequence[RetrievedFact]) -> dict[str, list[Retri
     return grouped
 
 
-def previous_turn_context_facts(
-    sample: ConversationSample,
-    target: RetrievedFact,
-    facts_by_turn: Mapping[str, Sequence[RetrievedFact]],
-    context_window: int,
-) -> list[RetrievedFact]:
-    context_turns = previous_turn_context_turns(sample, target.source_turn_id, context_window)
-    return [fact for turn in context_turns for fact in facts_by_turn.get(turn.id, ())]
-
-
 def build_fact_context_encoding_plan(
     target: RetrievedFact,
     sample: ConversationSample,
@@ -67,7 +57,8 @@ def build_fact_context_encoding_plan(
             f"Mem0 fact {target.memory_id} has {len(target_token_ids)} tokens, "
             f"exceeding kv_max_position={max_input_tokens} without context."
         )
-    context_facts = previous_turn_context_facts(sample, target, facts_by_turn, context_window)
+    context_turns = previous_turn_context_turns(sample, target.source_turn_id, context_window)
+    context_facts = [fact for turn in context_turns for fact in facts_by_turn.get(turn.id, ())]
     return build_encoding_plan(
         target.memory_id,
         target_token_ids,

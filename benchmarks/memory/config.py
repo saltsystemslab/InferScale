@@ -35,6 +35,7 @@ from .protocol import (
     PROMPT_INJECTION_BACKEND,
     PROTOCOL_STAMP,
     VECTOR_BACKENDS,
+    WHY_BACKEND_TAKES_NO_CONTEXT_WINDOW,
 )
 from .sweeps import (
     MemoryCell,
@@ -443,15 +444,11 @@ def _check_backend_requirements(
             f"{where}: answer_backend {PROMPT_INJECTION_BACKEND} requires "
             "inferscale.engine.enable_prefix_caching."
         )
-    if answer_backend == LMCACHE_BACKEND and context_window != 0:
+    no_window_reason = WHY_BACKEND_TAKES_NO_CONTEXT_WINDOW.get(answer_backend)
+    if no_window_reason and context_window != 0:
         raise ConfigError(
-            f"{where}: answer_backend {LMCACHE_BACKEND} stores each fact alone, so "
+            f"{where}: answer_backend {answer_backend} {no_window_reason}, so "
             "context_window must be 0."
-        )
-    if answer_backend == PROMPT_INJECTION_BACKEND and context_window != 0:
-        raise ConfigError(
-            f"{where}: answer_backend {PROMPT_INJECTION_BACKEND} sends only the retrieved "
-            "facts, so context_window must be 0."
         )
 
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -34,7 +36,6 @@ class CachedEmbedder:
         if mode not in {"read", "write"}:
             raise ValueError(f"Unsupported embedding cache mode: {mode}")
         self._wrapped = wrapped
-        self._calls = _wrapped_calls(wrapped)
         self.cache_dir = Path(cache_dir) / safe_path_part(model)
         self.model = model
         self.mode = mode
@@ -48,39 +49,33 @@ class CachedEmbedder:
         return getattr(self._wrapped, name)
 
     def embed_documents(self, texts: Any) -> list[list[float]]:
-        return self.embed_batch(texts, self.DOCUMENT_PURPOSE)
+        with self._timed():
+            vectors = self._embed_texts(
+                _text_list(texts), self.DOCUMENT_PURPOSE, self._wrapped.embed_documents
+            )
+            return [vector.tolist() for vector in vectors]
 
     def embed_query(self, text: str) -> np.ndarray:
-        return self.embed_array(text, self.QUERY_PURPOSE)
+        with self._timed():
+            return _float32(self._wrapped.embed_query(_require_text(text)))
 
     def embed(self, text: str, memory_action: str | None = None) -> list[float]:
-        return self.embed_array(text, memory_action).tolist()
-
-    def embed_array(self, text: str, memory_action: str | None = None) -> np.ndarray:
-        started = time.perf_counter()
-        try:
-            checked_text = _require_text(text)
-            if memory_action == self.QUERY_PURPOSE:
-                return _float32(self._calls.embed_one(checked_text, memory_action))
-            return self._embed_document(checked_text, memory_action)
-        finally:
-            self.embed_time_ms += (time.perf_counter() - started) * 1000
+        with self._timed():
+            vectors = self._embed_texts(
+                [_require_text(text)],
+                memory_action,
+                lambda live_texts: [self._wrapped.embed(live_texts[0], memory_action)],
+            )
+            return vectors[0].tolist()
 
     def embed_batch(self, texts: Any, memory_action: str = DOCUMENT_PURPOSE) -> list[list[float]]:
-        started = time.perf_counter()
-        try:
-            text_list = _text_list(texts)
-            if not text_list:
-                return []
-            if memory_action == self.QUERY_PURPOSE:
-                live_vectors = self._calls.embed_many(text_list, memory_action)
-                return [_float32(vector).tolist() for vector in live_vectors]
-            plan = self._plan_batch(text_list, memory_action)
-            if plan.missing_texts:
-                self._fetch_missing(plan, memory_action)
-            return [vector.tolist() for vector in plan.vectors]
-        finally:
-            self.embed_time_ms += (time.perf_counter() - started) * 1000
+        with self._timed():
+            vectors = self._embed_texts(
+                _text_list(texts),
+                memory_action,
+                lambda live_texts: self._wrapped.embed_batch(live_texts, memory_action),
+            )
+            return [vector.tolist() for vector in vectors]
 
     def stats(self) -> dict[str, Any]:
         return {
@@ -91,19 +86,30 @@ class CachedEmbedder:
             "misses": self.misses,
         }
 
-    def _embed_document(self, text: str, memory_action: str | None) -> np.ndarray:
-        cache_path = self._cache_path(text, memory_action)
-        cached = self._load_cached(cache_path)
-        if cached is not None:
-            self.hits += 1
-            return cached
-        self.misses += 1
-        self._require_write_mode(memory_action)
-        vector = _float32(self._calls.embed_one(text, memory_action))
-        atomic_write_npy(cache_path, vector)
-        return vector
+    @contextmanager
+    def _timed(self) -> Iterator[None]:
+        started = time.perf_counter()
+        try:
+            yield
+        finally:
+            self.embed_time_ms += (time.perf_counter() - started) * 1000
 
-    def _plan_batch(self, texts: list[str], memory_action: str) -> _BatchPlan:
+    def _embed_texts(
+        self,
+        texts: list[str],
+        memory_action: str | None,
+        embed_live: Callable[[list[str]], Any],
+    ) -> list[np.ndarray]:
+        if not texts:
+            return []
+        if memory_action == self.QUERY_PURPOSE:
+            return [_float32(vector) for vector in embed_live(texts)]
+        plan = self._plan_batch(texts, memory_action)
+        if plan.missing_texts:
+            self._fetch_missing(plan, embed_live)
+        return plan.vectors
+
+    def _plan_batch(self, texts: list[str], memory_action: str | None) -> _BatchPlan:
         plan = _BatchPlan(vectors=[None] * len(texts))
         loaded_by_path: dict[Path, np.ndarray] = {}
         for position, text in enumerate(texts):
@@ -129,8 +135,8 @@ class CachedEmbedder:
             plan.positions_by_path[cache_path] = [position]
         return plan
 
-    def _fetch_missing(self, plan: _BatchPlan, memory_action: str) -> None:
-        raw_vectors = self._calls.embed_many(plan.missing_texts, memory_action)
+    def _fetch_missing(self, plan: _BatchPlan, embed_live: Callable[[list[str]], Any]) -> None:
+        raw_vectors = list(embed_live(plan.missing_texts))
         if len(raw_vectors) != len(plan.missing_texts):
             raise ValueError(
                 f"Wrapped embed_batch() returned {len(raw_vectors)} embeddings for "
@@ -179,38 +185,6 @@ class _BatchPlan:
     missing_texts: list[str] = field(default_factory=list)
     missing_paths: list[Path] = field(default_factory=list)
     positions_by_path: dict[Path, list[int]] = field(default_factory=dict)
-
-
-class _Mem0EmbedderCalls:
-    def __init__(self, wrapped: Any) -> None:
-        self._wrapped = wrapped
-
-    def embed_one(self, text: str, memory_action: str | None) -> Any:
-        return self._wrapped.embed(text, memory_action)
-
-    def embed_many(self, texts: list[str], memory_action: str) -> list[Any]:
-        return list(self._wrapped.embed_batch(texts, memory_action))
-
-
-class _LibraryEmbedderCalls:
-    def __init__(self, wrapped: Any) -> None:
-        self._wrapped = wrapped
-
-    def embed_one(self, text: str, memory_action: str | None) -> Any:
-        if memory_action == CachedEmbedder.QUERY_PURPOSE:
-            return self._wrapped.embed_query(text)
-        return self._wrapped.embed_documents([text])[0]
-
-    def embed_many(self, texts: list[str], memory_action: str) -> list[Any]:
-        if memory_action == CachedEmbedder.QUERY_PURPOSE:
-            return [self._wrapped.embed_query(text) for text in texts]
-        return list(self._wrapped.embed_documents(texts))
-
-
-def _wrapped_calls(wrapped: Any) -> _Mem0EmbedderCalls | _LibraryEmbedderCalls:
-    if hasattr(wrapped, "embed_documents"):
-        return _LibraryEmbedderCalls(wrapped)
-    return _Mem0EmbedderCalls(wrapped)
 
 
 def _float32(vector: Any) -> np.ndarray:

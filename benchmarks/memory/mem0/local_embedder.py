@@ -23,7 +23,7 @@ class Mem0LocalEmbedder(EmbeddingBase):
         super().__init__(config)
         device = self.config.model_kwargs["device"]
         self._embedder = shared_local_embedder(self.config.model, device)
-        self.config.embedding_dims = self._embedder.dimensions
+        self.config.embedding_dims = self._embedder.dim
 
     def embed(self, text: str, memory_action: str | None = None) -> list[float]:
         return self._embedder.embed_documents([text])[0]

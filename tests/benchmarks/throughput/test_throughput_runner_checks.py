@@ -106,10 +106,9 @@ def test_resumed_run_may_change_a_setting_that_leaves_the_measured_workload_alon
 ) -> None:
     install_modules(monkeypatch)
     FakeWorkers(monkeypatch)
-    first_settings = {"memory_llm_base_url": "http://localhost:9000/v1"}
-    run_throughput(runnable_config(tmp_path, **first_settings))
+    run_throughput(runnable_config(tmp_path))
 
-    resumed = run_throughput(runnable_config(tmp_path, **first_settings, **changed_setting))
+    resumed = run_throughput(runnable_config(tmp_path, **changed_setting))
 
     assert resumed["row_count"] >= 2
 

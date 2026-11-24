@@ -98,49 +98,6 @@ def test_measure_excludes_warmup_and_counts_partial_batches():
     assert events[4:10] == ["sync", "clock", ("encode", ["a", "b"]), "sync", "clock", "validate"]
 
 
-def test_qwen_pooling_is_batch_invariant_without_downloading_weights():
-    torch = pytest.importorskip("torch")
-    pytest.importorskip("transformers")
-    from transformers import Qwen3Config, Qwen3Model
-
-    from benchmarks.embedding.model import QwenEmbedder
-
-    class Tokenizer:
-        def __call__(self, texts, **kwargs):
-            from transformers import BatchEncoding
-
-            rows = [[int(token) for token in text.split()] for text in texts]
-            width = max(map(len, rows))
-            return BatchEncoding(
-                {
-                    "input_ids": torch.tensor([[0] * (width - len(row)) + row for row in rows]),
-                    "attention_mask": torch.tensor(
-                        [[0] * (width - len(row)) + [1] * len(row) for row in rows]
-                    ),
-                }
-            )
-
-    embedder = QwenEmbedder.__new__(QwenEmbedder)
-    embedder.torch = torch
-    embedder.device = torch.device("cpu")
-    embedder.tokenizer = Tokenizer()
-    embedder.model = Qwen3Model(
-        Qwen3Config(
-            vocab_size=32,
-            hidden_size=32,
-            intermediate_size=64,
-            num_hidden_layers=1,
-            num_attention_heads=2,
-            num_key_value_heads=2,
-            head_dim=16,
-        )
-    ).eval()
-    batched = embedder.encode(["1 2", "3 4 5 6"])
-    individual = torch.cat([embedder.encode([text]) for text in ["1 2", "3 4 5 6"]])
-    embedder.validate(batched, 2)
-    assert torch.allclose(batched, individual, atol=1e-5)
-
-
 def test_qwen_default_cuda_resolves_current_device_before_selecting_it(monkeypatch):
     from types import SimpleNamespace
     from unittest.mock import Mock

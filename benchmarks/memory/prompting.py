@@ -8,6 +8,7 @@ from inferscale.v1.kv.prompt import (
     PromptTokens,
     QueryTokens,
     ScaffoldTokens,
+    build_memory_token_ids,
     build_prompt_tokens,
     build_query_tokens,
     build_scaffold_tokens,
@@ -86,13 +87,13 @@ def build_memory_prompt_token_ids(
 ) -> MemoryPromptTokens:
     facts = select_memory_facts(tokenizer, hits)
     scaffold = memory_scaffold or extract_memory_scaffold_token_ids(tokenizer)
+    token_ids = build_memory_token_ids(scaffold, facts.ordered_token_ids())
     heading_token_ids = [] if facts.selected else scaffold.empty_token_ids
     scaffold_token_count = (
         len(scaffold.header_token_ids) + len(heading_token_ids) + len(scaffold.footer_token_ids)
     )
-    fact_stream = [token for token_ids in facts.ordered_token_ids() for token in token_ids]
     if memory_token_budget is None:
-        memory_token_budget = scaffold_token_count + len(fact_stream)
+        memory_token_budget = len(token_ids)
     fact_plan = plan_prompt_memory(
         facts.selected,
         retrieved_facts=facts.retrieved,
@@ -100,12 +101,6 @@ def build_memory_prompt_token_ids(
         scaffold_token_count=scaffold_token_count,
         fact_token_ids=facts.token_ids,
     )
-    token_ids = [
-        *scaffold.header_token_ids,
-        *heading_token_ids,
-        *fact_stream,
-        *scaffold.footer_token_ids,
-    ]
     if len(token_ids) != fact_plan.memory_tokens:
         raise AssertionError("Planned memory token count does not match the rendered memory.")
     return MemoryPromptTokens(token_ids=token_ids, fact_plan=fact_plan)

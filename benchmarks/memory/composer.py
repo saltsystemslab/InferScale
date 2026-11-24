@@ -64,7 +64,6 @@ class SampleComposer:
         self._fact_token_ids: dict[str, list[int]] = {}
         self._facts: list[RetrievedFact] = []
         self._facts_by_id: dict[str, RetrievedFact] = {}
-        self._facts_by_turn: dict[str, list[RetrievedFact]] = {}
         self._sample: ConversationSample | None = None
 
     @classmethod
@@ -142,8 +141,17 @@ class SampleComposer:
             sample.sample_id,
             self.context_window,
         )
+        facts_by_turn = facts_by_source_turn(self._facts)
         for fact in self._facts:
-            self.chunks[fact.memory_id] = self._encode_fact_chunk(sample, fact)
+            plan = build_fact_context_encoding_plan(
+                fact,
+                sample,
+                context_window=self.context_window,
+                max_input_tokens=self.max_position,
+                fact_token_ids=self._fact_token_ids,
+                facts_by_turn=facts_by_turn,
+            )
+            self.chunks[fact.memory_id] = self.encoder.encode_plan(plan)
         logger.info(
             "Pre-RoPE encoded {} chunks for sample_id={}", len(self.chunks), sample.sample_id
         )
@@ -200,7 +208,6 @@ class SampleComposer:
         self._fact_token_ids = {}
         self._facts = []
         self._facts_by_id = {}
-        self._facts_by_turn = {}
         self._sample = None
         empty_cuda_cache()
 
@@ -208,22 +215,10 @@ class SampleComposer:
         self._sample = sample
         self._facts = unique_memory_facts(facts)
         self._facts_by_id = {fact.memory_id: fact for fact in self._facts}
-        self._facts_by_turn = facts_by_source_turn(self._facts)
         self._fact_token_ids = {
             fact.memory_id: encode_text_no_special(self.encoder.tokenizer, format_memory_fact(fact))
             for fact in self._facts
         }
-
-    def _encode_fact_chunk(self, sample: ConversationSample, fact: RetrievedFact) -> KVChunk:
-        plan = build_fact_context_encoding_plan(
-            fact,
-            sample,
-            context_window=self.context_window,
-            max_input_tokens=self.max_position,
-            fact_token_ids=self._fact_token_ids,
-            facts_by_turn=self._facts_by_turn,
-        )
-        return self.encoder.encode_plan(plan)
 
     def _encoded_scaffold(self) -> tuple[KVChunk, KVChunk, KVChunk]:
         if self._sample is None:

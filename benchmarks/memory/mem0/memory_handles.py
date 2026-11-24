@@ -91,10 +91,7 @@ def memory_embedder(memory: Any) -> Any:
 
 
 def embed_mem0_query(memory: Any, query: str) -> Any:
-    embedder = memory.embedding_model
-    if isinstance(embedder, CachedEmbedder):
-        return embedder.embed_array(query, CachedEmbedder.QUERY_PURPOSE)
-    return embedder.embed(query, CachedEmbedder.QUERY_PURPOSE)
+    return memory.embedding_model.embed(query, CachedEmbedder.QUERY_PURPOSE)
 
 
 def reset_memory_stores(memory: Any) -> None:

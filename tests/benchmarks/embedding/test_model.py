@@ -84,11 +84,7 @@ def test_gpu_load_time_ends_after_the_device_has_finished_its_work(
     assert journal == [
         ("device selected", "cuda:1"),
         "clock read",
-        (
-            "tokenizer loaded",
-            "Qwen/Qwen3-Embedding-0.6B",
-            {"revision": "main", "padding_side": "left"},
-        ),
+        ("tokenizer loaded", "Qwen/Qwen3-Embedding-0.6B", {"revision": "main"}),
         (
             "model loaded",
             "Qwen/Qwen3-Embedding-0.6B",

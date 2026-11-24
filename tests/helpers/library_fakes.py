@@ -133,7 +133,6 @@ class FakeEncoder:
 
 class FakeEmbedder:
     dim = 8
-    dimensions = dim
 
     def __init__(self) -> None:
         self.document_calls: list[list[str]] = []

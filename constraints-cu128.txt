@@ -4,6 +4,10 @@ torchaudio==2.10.0
 vllm==0.19.1
 transformers==4.56.0
 accelerate==1.14.0
+# mistral_common 1.13 imports huggingface_hub 1.x modules, while transformers 4.56.0
+# keeps huggingface_hub below 1.0, so the Mistral tokenizer fails to load.
+mistral_common==1.12.0
+huggingface_hub<1.0
 lmcache==0.4.4
 # LMCache depends on nixl. Later releases ship nixl_ep, which vLLM 0.19.1 imports
 # at every engine start whenever it is installed, and its builds skip torch 2.10.

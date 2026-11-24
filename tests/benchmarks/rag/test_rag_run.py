@@ -31,7 +31,6 @@ from benchmarks.rag.run import main
             {
                 "cache": {"cache_dir": "cache", "hits": 1, "misses": 0},
                 "chunk_embedding_count": 1,
-                "query_embedding_count": 1,
             },
         ),
         (

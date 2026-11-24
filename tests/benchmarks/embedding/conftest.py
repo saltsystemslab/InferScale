@@ -32,10 +32,10 @@ def _write_catalog(
     path: Path, sample_id: Any = "sample-1", texts: Any = ("A fact.",), **changes: Any
 ) -> Path:
     catalog = {
-        "version": 5,
+        "version": 6,
         "sample_id": sample_id,
         "model": "extractor",
-        "embedding_model": "text-embedding-3-small",
+        "embedding_model": "Qwen/Qwen3-Embedding-0.6B",
         "facts": [
             {"id": str(index), "sample_id": sample_id, "text": text}
             for index, text in enumerate(texts)

@@ -53,7 +53,7 @@ def prompt_section(prompt, title):
 
 
 @pytest.fixture
-def new_mem0(monkeypatch, tmp_path):
+def new_mem0(monkeypatch, tmp_path, local_embedder):
     pytest.importorskip("en_core_web_sm")
     monkeypatch.setenv("MEM0_DIR", str(tmp_path / "mem0-home"))
     monkeypatch.setenv("MEM0_TELEMETRY", "false")
@@ -64,9 +64,8 @@ def new_mem0(monkeypatch, tmp_path):
             Mem0Settings(
                 store_root=tmp_path / store_name,
                 vector_config=VectorStoreConfig(backend="qdrant"),
-                embedding_model="text-embedding-3-small",
-                embedding_api_key="test-key",
-                embedding_base_url=None,
+                embedding_model="Qwen/Qwen3-Embedding-0.6B",
+                embedding_device="cpu",
                 memory_llm_model="Qwen/Qwen2.5-7B-Instruct",
             )
         )

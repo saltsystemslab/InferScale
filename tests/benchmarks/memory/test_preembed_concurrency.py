@@ -76,8 +76,6 @@ def test_preembed_runs_samples_concurrently_and_aggregates_metrics(
 
     monkeypatch.setattr(preembed, "load_locomo", lambda *args, **kwargs: samples)
     monkeypatch.setattr(preembed, "SampleMemoryBuilder", FakeMemoryBuilder)
-    monkeypatch.setattr(preembed, "preembed_questions", lambda memory, sample: 2)
-    monkeypatch.setattr(preembed, "preembed_question_entities", lambda memory, sample: 3)
     config = make_memory_config(
         results_dir=tmp_path / "results",
         run_id="concurrent-preembed",
@@ -91,8 +89,6 @@ def test_preembed_runs_samples_concurrently_and_aggregates_metrics(
     assert summary["sample_count"] == 3
     assert summary["preembed_workers"] == 2
     assert summary["inferred_memory_count"] == 3
-    assert summary["question_embedding_count"] == 6
-    assert summary["entity_embedding_count"] == 9
     assert summary["cache"] == {
         "mode": "write",
         "cache_dir": str(config.embedding_cache_dir),

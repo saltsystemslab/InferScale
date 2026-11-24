@@ -1,22 +1,16 @@
 from __future__ import annotations
 
-from benchmarks.common.embedding_cache import CachedEmbedder
+from benchmarks.rag.corpus import load_rag_corpus
 from benchmarks.rag.preembed import preembed_rag_embeddings
 
 
-def test_preembed_caches_under_the_purposes_of_memory_runs_so_both_share_one_cache(
-    multihop_config, embedding_api, monkeypatch
+def test_preembed_caches_the_chunks_and_leaves_the_queries_to_be_embedded_live(
+    multihop_config, embedded_batches
 ):
-    purposes: list[str] = []
-    embed_batch = CachedEmbedder.embed_batch
+    config = multihop_config(embed_batch_size=100)
 
-    def embed_batch_recording_its_purpose(self, texts, memory_action):
-        purposes.append(memory_action)
-        return embed_batch(self, texts, memory_action)
+    summary = preembed_rag_embeddings(config)
 
-    monkeypatch.setattr(CachedEmbedder, "embed_batch", embed_batch_recording_its_purpose)
-
-    preembed_rag_embeddings(multihop_config(embed_batch_size=100))
-
-    assert purposes == ["add", "search"]
-    assert purposes == [CachedEmbedder.DOCUMENT_PURPOSE, CachedEmbedder.QUERY_PURPOSE]
+    chunk_texts = [chunk.text for chunk in load_rag_corpus(config).chunks]
+    assert embedded_batches == [chunk_texts]
+    assert summary["chunk_embedding_count"] == summary["cache"]["misses"] == len(chunk_texts)

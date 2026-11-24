@@ -149,7 +149,7 @@ def test_saved_chunks_hold_the_facts_encoded_after_their_context_and_the_prompt_
         "Alice likes drink 1.\n", add_special_tokens=False
     )
     assert cached.fact_chunks["s1-fact-0"].context_ids == ()
-    assert cached.fact_chunks["s1-fact-1"].context_ids == ("s1:session_1:0",)
+    assert cached.fact_chunks["s1-fact-1"].context_ids == ("s1-fact-0",)
     assert {slot: chunk.token_ids for slot, chunk in cached.scaffold_chunks.items()} == {
         "header": scaffold.header_token_ids,
         "empty_memory": scaffold.empty_token_ids,

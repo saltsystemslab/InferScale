@@ -7,7 +7,7 @@ from dataclasses import replace
 from typing import Any
 
 from .config import InferScaleConfig
-from .embedding.openai import OpenAIEmbedder
+from .embedding.local import LocalEmbedder
 from .index.jasper import JasperIndex
 from .index.matmul import MatmulIndex
 from .kv.chunk_store import build_chunk_store, chunk_nbytes
@@ -401,7 +401,11 @@ def _build_chunk_store(config: InferScaleConfig) -> ChunkStore:
 
 
 def _build_embedder(config: InferScaleConfig) -> Embedder:
-    return OpenAIEmbedder(model=config.embedding.model, base_url=config.embedding.base_url)
+    return LocalEmbedder(
+        model=config.embedding.model,
+        device=config.kv.device,
+        batch_size=config.embedding.batch_size,
+    )
 
 
 def _build_index(config: InferScaleConfig) -> VectorIndex:

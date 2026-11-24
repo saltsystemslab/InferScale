@@ -38,7 +38,6 @@ class KVRun:
                 "run_id": "kv-phases",
                 "user_counts": (2,),
                 "requests_per_user": 1,
-                "embedding_api_key": "key",
                 **settings,
             },
         )

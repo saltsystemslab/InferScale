@@ -10,6 +10,7 @@ from benchmarks.common.clients import ChatClient
 from benchmarks.common.files import JsonlWriter, write_json
 from benchmarks.common.judge import format_accuracy, skipped_judge_payload
 from benchmarks.common.paths import RUN_CONFIG_FILE
+from benchmarks.common.run_summary import median_latency_text
 from benchmarks.common.system import collect_system_metadata
 from benchmarks.rag.config import LMCACHE_BACKEND, RagBenchConfig
 from benchmarks.rag.corpus import RagCorpus, load_rag_corpus
@@ -89,6 +90,7 @@ def run_answer(config: RagBenchConfig) -> dict[str, Any]:
         format_accuracy(summary["metrics"].get("exact_match")),
         format_accuracy(summary["metrics"].get("f1")),
     )
+    logger.info("Median latency run_id={} {}", config.run_id, median_latency_text(summary))
     return summary
 
 

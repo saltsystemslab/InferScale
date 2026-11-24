@@ -44,8 +44,7 @@
       "beam_width": 64
     },
     "embedding": {
-      "model": "text-embedding-3-small",
-      "base_url": null
+      "model": "Qwen/Qwen3-Embedding-0.6B"
     }
   },
   "mem0": {

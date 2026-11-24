@@ -1,3 +1,3 @@
-from .openai import OpenAIEmbedder
+from .local import LocalEmbedder
 
-__all__ = ["OpenAIEmbedder"]
+__all__ = ["LocalEmbedder"]

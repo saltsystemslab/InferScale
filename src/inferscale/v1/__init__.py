@@ -7,7 +7,7 @@ from .config import (
     KVConfig,
     PromptConfig,
 )
-from .embedding.openai import OpenAIEmbedder
+from .embedding.local import LocalEmbedder
 from .index.jasper import MAX_JASPER_BEAM_WIDTH, JasperIndex, JasperIndexConfig
 from .index.matmul import MatmulIndex
 from .kv.corpus import KVCorpus
@@ -53,9 +53,9 @@ __all__ = [
     "KVChunk",
     "KVConfig",
     "KVCorpus",
+    "LocalEmbedder",
     "MatmulIndex",
     "MemoryStore",
-    "OpenAIEmbedder",
     "PrecomputeStats",
     "PromptConfig",
     "PromptTokens",

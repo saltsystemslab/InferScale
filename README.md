@@ -27,7 +27,6 @@ cp .env.example .env
 
 Set the credentials in `.env`:
 
-- `OPENAI_API_KEY=...` for `text-embedding-3-small` embeddings
 - `HF_TOKEN=...` if the answer model is gated
 
 Then review `configs/runtime.json`.

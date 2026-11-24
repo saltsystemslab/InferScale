@@ -16,13 +16,15 @@ def vector_for(text: str) -> list[float]:
 class LibraryEmbedder:
     def __init__(self) -> None:
         self.document_batches: list[list[str]] = []
+        self.queries: list[str] = []
 
     def embed_documents(self, texts):
         self.document_batches.append(list(texts))
         return [vector_for(text) for text in texts]
 
     def embed_query(self, text):
-        pytest.fail("The cache embeds a query as a one-document batch.")
+        self.queries.append(text)
+        return vector_for(text)
 
 
 class Mem0Embedder:
@@ -36,20 +38,22 @@ class Mem0Embedder:
         return [vector_for(text) for text in texts]
 
 
-def test_library_embedder_only_receives_the_document_batches_that_are_not_cached(tmp_path: Path):
+def test_documents_come_from_the_cache_while_every_query_is_embedded_live(tmp_path: Path):
     wrapped = LibraryEmbedder()
-    cached = CachedEmbedder(wrapped, cache_dir=tmp_path, model="model")
+    CachedEmbedder(wrapped, cache_dir=tmp_path, model="model").embed_documents(["a", "bb", "a"])
+    offline = CachedEmbedder(wrapped, cache_dir=tmp_path, model="model", mode="read")
 
-    query_vector = cached.embed_query("question")
-    document_vectors = cached.embed_documents(["a", "bb", "a"])
-    repeated_query_vector = cached.embed_query("question")
+    document_vectors = offline.embed_documents(["a", "bb", "a"])
+    query_vector = offline.embed_query("question")
+    repeated_query_vector = offline.embed_query("question")
 
+    assert document_vectors == [[1.0, 1.0], [2.0, 1.0], [1.0, 1.0]]
     assert isinstance(query_vector, np.ndarray)
     assert (query_vector.dtype, query_vector.tolist()) == (np.float32, [8.0, 1.0])
-    assert document_vectors == [[1.0, 1.0], [2.0, 1.0], [1.0, 1.0]]
     assert repeated_query_vector.tolist() == [8.0, 1.0]
-    assert wrapped.document_batches == [["question"], ["a", "bb"]]
-    assert (cached.hits, cached.misses) == (1, 4)
+    assert wrapped.document_batches == [["a", "bb"]]
+    assert wrapped.queries == ["question", "question"]
+    assert (offline.hits, offline.misses) == (3, 0)
 
 
 def test_cache_exposes_the_provider_attributes_that_mem0_reads(tmp_path: Path):

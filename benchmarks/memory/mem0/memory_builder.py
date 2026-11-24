@@ -36,7 +36,6 @@ def fact_catalog_store_for(config: MemoryRunConfig) -> FactCatalogStore:
         model=config.memory_llm_model,
         endpoint=config.memory_llm_base_url,
         embedding_model=config.embedding_model,
-        embedding_endpoint=config.embedding_base_url,
         temperature=MEMORY_LLM_TEMPERATURE,
     )
 
@@ -180,8 +179,7 @@ class SampleMemoryBuilder:
                 store_root=store_root,
                 vector_config=vector_config,
                 embedding_model=self.config.embedding_model,
-                embedding_api_key=self.config.embedding_api_key,
-                embedding_base_url=self.config.embedding_base_url,
+                embedding_device=self.config.kv_device,
                 memory_llm_provider=self.config.memory_llm_provider,
                 memory_llm_model=self.config.memory_llm_model,
                 memory_llm_api_key=self.config.memory_llm_api_key,
@@ -202,7 +200,6 @@ class SampleMemoryBuilder:
             cache_dir=self.config.embedding_cache_dir,
             model=self.config.embedding_model,
             mode=self.embedding_cache_mode,
-            endpoint=self.config.embedding_base_url,
         )
         logger.info(
             "Embedding cache enabled mode={} dir={}",

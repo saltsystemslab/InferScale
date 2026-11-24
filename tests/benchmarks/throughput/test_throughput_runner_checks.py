@@ -14,8 +14,6 @@ from benchmarks.memory.throughput.config import ThroughputConfig
 from benchmarks.memory.throughput.reporting import build_result_row, read_existing_results
 from benchmarks.memory.throughput.runner import run_throughput
 
-WORKER_KEY_VARIABLE = "LOCOMO_THROUGHPUT_EMBEDDING_API_KEY"
-
 
 def runnable_config(tmp_path: Path, **overrides: Any) -> ThroughputConfig:
     settings: dict[str, Any] = {
@@ -23,7 +21,6 @@ def runnable_config(tmp_path: Path, **overrides: Any) -> ThroughputConfig:
         "conditions": ("mem0_qdrant",),
         "user_counts": (2, 3),
         "dataset_path": tmp_path / "locomo10.json",
-        "embedding_api_key": "test-key",
         **overrides,
     }
     config = make_throughput_config(tmp_path, **settings)
@@ -60,38 +57,18 @@ def measured_rows(config: ThroughputConfig, condition: str, user_counts: Any) ->
 class FakeWorkers:
     def __init__(self, monkeypatch: pytest.MonkeyPatch, *, failing_job_number: int | None = None):
         self.jobs: list[dict[str, Any]] = []
-        self.environments: list[dict[str, str]] = []
         self.failing_job_number = failing_job_number
         monkeypatch.setattr(runner, "collect_system_metadata", lambda: {"platform": "test"})
         monkeypatch.setattr(runner.subprocess, "run", self.run)
         monkeypatch.setattr(worker, "configure_logging", lambda level: None)
         monkeypatch.setattr(worker, "run_condition", measured_rows)
 
-    def run(self, command, *, input, text, check, cwd, env):
+    def run(self, command, *, input, text, check, cwd):
         job = json.loads(input)
         self.jobs.append(job)
-        self.environments.append(env)
         if len(self.jobs) == self.failing_job_number:
             raise subprocess.CalledProcessError(1, command)
         worker.main(job)
-
-
-def test_embedding_key_reaches_workers_through_the_environment_and_never_the_snapshot(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.delenv(WORKER_KEY_VARIABLE, raising=False)
-    config = runnable_config(tmp_path, embedding_api_key="secret-value")
-    install_modules(monkeypatch)
-    workers = FakeWorkers(monkeypatch)
-
-    run_throughput(config)
-
-    assert [environment[WORKER_KEY_VARIABLE] for environment in workers.environments] == [
-        "secret-value"
-    ]
-    saved_snapshot = (config.run_dir / "config.json").read_text(encoding="utf-8")
-    assert "secret-value" not in saved_snapshot
-    assert json.loads(saved_snapshot)["embedding_api_key"] == "<redacted>"
 
 
 def test_rows_are_saved_after_every_worker_so_an_interrupted_run_keeps_them(
@@ -117,7 +94,6 @@ def test_rows_are_saved_after_every_worker_so_an_interrupted_run_keeps_them(
     "changed_setting",
     [
         pytest.param({"conditions": ("mem0_jasper",)}, id="conditions can be added later"),
-        pytest.param({"embedding_api_key": None}, id="the key is redacted in the snapshot"),
         pytest.param(
             {"local_store_dir": Path("/another/scratch")},
             id="the scratch store path can move between hosts",
@@ -130,7 +106,7 @@ def test_resumed_run_may_change_a_setting_that_leaves_the_measured_workload_alon
 ) -> None:
     install_modules(monkeypatch)
     FakeWorkers(monkeypatch)
-    first_settings = {"embedding_base_url": "http://localhost:9000/v1"}
+    first_settings = {"memory_llm_base_url": "http://localhost:9000/v1"}
     run_throughput(runnable_config(tmp_path, **first_settings))
 
     resumed = run_throughput(runnable_config(tmp_path, **first_settings, **changed_setting))

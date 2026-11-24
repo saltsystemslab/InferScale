@@ -3,7 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 LMCACHE_BACKEND = "lmcache-blend"
-ANSWER_BACKENDS = ("kv-injection", "prompt-injection", LMCACHE_BACKEND)
+PROMPT_INJECTION_BACKEND = "prompt-injection"
+ANSWER_BACKENDS = ("kv-injection", PROMPT_INJECTION_BACKEND, LMCACHE_BACKEND)
 VECTOR_BACKENDS = ("jasper", "qdrant")
 KV_STORE_BACKENDS = ("gpu", "cpu")
 
@@ -29,13 +30,13 @@ MEMORY_EXTRACTION_MAX_TEXT_CHARS = 600
 MEMORY_EXTRACTION_RETRY_TEMPERATURES = (0.2, 0.5)
 MEMORY_EXTRACTION_RETRY_TOP_P = 1.0
 MEMORY_INGESTION_PROTOCOL = "locomo-mem0-v3-chunk1-session-date-bounded-json-v2"
-FACT_CATALOG_FORMAT_VERSION = 5
+FACT_CATALOG_FORMAT_VERSION = 6
 ANSWER_PROMPT_PROTOCOL = "reverse-ranked-memory-block-safe-v1"
 JUDGE_PROMPT_PROTOCOL = "memory-benchmarks-json-jscore-v1"
 
 MEMORY_UNIT = "mem0-fact"
 CONTEXT_WINDOW_UNIT = "turns"
-CONTEXT_WINDOW_SEMANTICS = "encoding-prefix-discard-v1"
+CONTEXT_WINDOW_SEMANTICS = "previous-turn-facts-prefix-discard-v1"
 
 PROTOCOL_STAMP: dict[str, Any] = {
     "memory_unit": MEMORY_UNIT,

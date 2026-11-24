@@ -66,7 +66,7 @@ def test_runtime_json_controls_paths_and_exported_environment(
     monkeypatch.setenv("HF_HOME", "/ignored/huggingface")
     monkeypatch.setenv("MEM0_DIR", "/ignored/mem0")
     monkeypatch.setenv("VLLM_NO_USAGE_STATS", "0")
-    monkeypatch.setenv("OPENAI_API_KEY", "environment-secret")
+    monkeypatch.setenv("HF_TOKEN", "environment-secret")
     runtime = RuntimeConfig.from_dict(
         {
             "storage": {"runtime_root": str(tmp_path)},
@@ -81,4 +81,4 @@ def test_runtime_json_controls_paths_and_exported_environment(
     assert os.environ["HF_HOME"] == str(tmp_path / ".cache" / "huggingface")
     assert os.environ["MEM0_DIR"] == str(tmp_path / ".cache" / "mem0")
     assert os.environ["VLLM_NO_USAGE_STATS"] == "1"
-    assert os.environ["OPENAI_API_KEY"] == "environment-secret"
+    assert os.environ["HF_TOKEN"] == "environment-secret"

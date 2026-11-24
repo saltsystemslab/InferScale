@@ -65,9 +65,8 @@ def _preembed(config: RagBenchConfig) -> None:
     embedding_cache = summary["cache"]
     logger.info("materialized RAG embeddings in {}", embedding_cache["cache_dir"])
     logger.info(
-        "chunks={} queries={} cache_hits={} cache_misses={}",
+        "chunks={} cache_hits={} cache_misses={}",
         summary["chunk_embedding_count"],
-        summary["query_embedding_count"],
         embedding_cache["hits"],
         embedding_cache["misses"],
     )

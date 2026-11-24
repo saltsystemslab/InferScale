@@ -31,7 +31,7 @@ class Mem0JasperVectorStore(VectorStoreBase):
         *,
         path: str | Path,
         collection_name: str = "memories",
-        embedding_model_dims: int | None = 1536,
+        embedding_model_dims: int | None = None,
         backend: str = "jasper",
         distance: str = VECTOR_DISTANCE,
         n_neighbors: int = 64,

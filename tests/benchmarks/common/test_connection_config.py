@@ -28,7 +28,7 @@ LEGACY_ENVIRONMENT = (
 
 @pytest.fixture(autouse=True)
 def clear_connection_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in (*ROLE_ENVIRONMENT, *LEGACY_ENVIRONMENT, "OPENAI_API_KEY", "OPENAI_BASE_URL"):
+    for name in (*ROLE_ENVIRONMENT, *LEGACY_ENVIRONMENT):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -69,7 +69,6 @@ def test_legacy_names_do_not_configure_connections(
     assert config.judge.api_key == "runtime-judge-token"
     assert config.memory_llm_base_url == "http://localhost:8000/v1"
     assert config.memory_llm_api_key is None
-    assert config.embedding_api_key is None
 
 
 @pytest.mark.parametrize("blank_environment", (False, True))
@@ -133,31 +132,28 @@ def test_json_connections_are_used_without_environment_overrides(
     assert config.memory_llm_base_url == "https://json-extraction.example/v1"
 
 
-@pytest.mark.parametrize("role", ("embedding", "judge", "extraction"))
+@pytest.mark.parametrize("role", ("judge", "extraction"))
 def test_credentials_and_endpoints_are_isolated_by_role(
     monkeypatch: pytest.MonkeyPatch,
     runtime: RuntimeConfig,
     memory_data: dict[str, Any],
     role: str,
 ) -> None:
-    prefix = {"embedding": "OPENAI", "judge": "JUDGE_LLM", "extraction": "EXTRACTION_LLM"}[role]
+    prefix = {"judge": "JUDGE_LLM", "extraction": "EXTRACTION_LLM"}[role]
     monkeypatch.setenv(f"{prefix}_API_KEY", f"{role}-token")
     monkeypatch.setenv(f"{prefix}_BASE_URL", f"https://{role}.example/v1")
     config = MemoryRunConfig.from_dict(memory_data, runtime=runtime)
 
-    assert config.embedding_api_key == ("embedding-token" if role == "embedding" else None)
     assert config.judge.api_key == ("judge-token" if role == "judge" else "runtime-judge-token")
     assert config.memory_llm_api_key == ("extraction-token" if role == "extraction" else None)
     assert config.judge.base_url == runtime.judge_server.base_url
     assert config.memory_llm_base_url == "http://localhost:8000/v1"
-    assert config.embedding_base_url is None
 
 
 def test_serialized_connections_redact_all_credentials(
     monkeypatch: pytest.MonkeyPatch, runtime: RuntimeConfig, memory_data: dict[str, Any]
 ) -> None:
     secrets = {
-        "OPENAI_API_KEY": "private-embedding-token",
         "JUDGE_LLM_API_KEY": "private-judge-token",
         "EXTRACTION_LLM_API_KEY": "private-extraction-token",
     }
@@ -166,7 +162,6 @@ def test_serialized_connections_redact_all_credentials(
     config = MemoryRunConfig.from_dict(memory_data, runtime=runtime)
     serialized = config.to_jsonable()
 
-    assert serialized["embedding_api_key"] == "<redacted>"
     assert serialized["judge"]["api_key"] == "<redacted>"
     assert serialized["memory_llm_api_key"] == "<redacted>"
     assert all(secret not in json.dumps(serialized) for secret in secrets.values())
@@ -230,35 +225,23 @@ def test_nested_json_types_are_validated_before_construction(
         MemoryRunConfig.from_dict(memory_data, runtime=runtime)
 
 
-def test_default_embedding_endpoint_cannot_be_replaced_by_sdk_environment(monkeypatch) -> None:
-    import sys
-    from types import SimpleNamespace
-
+def test_mem0_embeds_with_the_local_model_and_extracts_at_the_default_endpoint(monkeypatch) -> None:
     from benchmarks.common.vector_types import VectorStoreConfig
     from benchmarks.memory.mem0.provider import Mem0Settings, build_mem0_config
-    from inferscale.v1.embedding.openai import DEFAULT_OPENAI_BASE_URL, OpenAIEmbedder
 
-    captured = {}
-
-    def client(**kwargs):
-        captured.update(kwargs)
-        return SimpleNamespace()
-
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://environment.example/v1")
     monkeypatch.setenv("VLLM_BASE_URL", "https://environment-extraction.example/v1")
-    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=client))
-    OpenAIEmbedder(model="embedding", api_key="test-key")
-    assert captured["base_url"] == DEFAULT_OPENAI_BASE_URL
     config = build_mem0_config(
         Mem0Settings(
             store_root=Path("unused"),
             vector_config=VectorStoreConfig(backend="jasper"),
-            embedding_model="embedding",
-            embedding_api_key="test-key",
-            embedding_base_url=None,
+            embedding_model="Qwen/Qwen3-Embedding-0.6B",
+            embedding_device="cuda:0",
             memory_llm_model="answer-model",
             memory_llm_base_url=None,
         )
     )
-    assert config["embedder"]["config"]["openai_base_url"] == DEFAULT_OPENAI_BASE_URL
+    assert config["embedder"] == {
+        "provider": "huggingface",
+        "config": {"model": "Qwen/Qwen3-Embedding-0.6B", "model_kwargs": {"device": "cuda:0"}},
+    }
     assert config["llm"]["config"]["vllm_base_url"] == "http://localhost:8000/v1"

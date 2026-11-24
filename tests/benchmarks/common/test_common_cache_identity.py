@@ -22,31 +22,12 @@ class CountingEmbedder:
         return [float(len(text)), 0.5]
 
 
-@pytest.mark.parametrize(
-    "endpoint,purpose,text,cache_file",
-    [
-        (
-            None,
-            "add",
-            "text",
-            "m/endpoint-f578047bcc76d86f/"
-            "33c0761cac820ca6c49d360afc460766e9aab3b3307eeaf703ff6e1677c1d076.npy",
-        ),
-        (
-            None,
-            "search",
-            "text",
-            "m/endpoint-f578047bcc76d86f/"
-            "b04521cb0a0dfacfedcab2d800c0604819926b02df1fb437b6746c84c5b9f89d.npy",
-        ),
-    ],
-)
-def test_cached_embedding_files_of_existing_caches_stay_valid(
-    tmp_path, endpoint, purpose, text, cache_file
-):
-    cached = CachedEmbedder(CountingEmbedder(), cache_dir=tmp_path, model="m", endpoint=endpoint)
+def test_cached_embedding_files_of_existing_caches_stay_valid(tmp_path):
+    cached = CachedEmbedder(CountingEmbedder(), cache_dir=tmp_path, model="m")
 
-    cached.embed(text, purpose)
+    cached.embed("text", "add")
 
     cache_files = [path for path in tmp_path.rglob("*") if path.is_file()]
-    assert cache_files == [tmp_path / cache_file]
+    assert cache_files == [
+        tmp_path / "m/32d5d899202522539cdf5b9f4c13109a007c526c3aa8c238814a149d93cd46ba.npy"
+    ]

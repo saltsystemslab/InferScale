@@ -1,6 +1,6 @@
 # Fact embedding benchmark
 
-Measure local Qwen3-Embedding-0.6B latency and throughput on the Mem0 facts that the memory benchmarks embedded with OpenAI.
+Measure the latency and throughput of Qwen3-Embedding-0.6B, the model every benchmark retrieves with, on the Mem0 facts of the memory benchmark.
 
 ## Setup and corpus selection
 
@@ -16,7 +16,7 @@ The fact catalogs live under the configured cache root, `${BENCHMARK_CACHE_ROOT}
 find "${BENCHMARK_CACHE_ROOT}/mem0-inference/fact-catalogs" -type f -name '*.json' -exec dirname {} \; | sort -u
 ```
 
-Choose one leaf directory matching the extraction model, endpoint, and OpenAI embedding configuration of the memory run being compared.
+Choose one leaf directory matching the extraction model, endpoint, and embedding model of the memory run being compared.
 
 ```bash
 CATALOG_DIR=/path/to/the/selected/catalog/leaf

@@ -16,12 +16,11 @@ PREEMBEDDING_FILE = "preembedding.json"
 def preembed_rag_embeddings(config: RagBenchConfig) -> dict[str, Any]:
     corpus = load_rag_corpus(config)
     logger.info(
-        "Preembedding dataset={} model={} docs={} chunks={} queries={} cache_dir={}",
+        "Preembedding dataset={} model={} docs={} chunks={} cache_dir={}",
         config.dataset_name,
         config.model,
         len(corpus.docs),
         len(corpus.chunks),
-        len(corpus.queries),
         config.embedding_cache_dir,
     )
     embedder = build_cached_embedder(config, mode="write")
@@ -32,29 +31,20 @@ def preembed_rag_embeddings(config: RagBenchConfig) -> dict[str, Any]:
         batch_size=config.embed_batch_size,
         label="chunks",
     )
-    _embed_in_batches(
-        embedder,
-        [query.question for query in corpus.queries],
-        purpose=CachedEmbedder.QUERY_PURPOSE,
-        batch_size=config.embed_batch_size,
-        label="queries",
-    )
     summary = {
         "run_id": config.run_id,
         "mode": "rag-preembed",
         "dataset": config.dataset_name,
         "doc_count": len(corpus.docs),
         "chunk_embedding_count": len(corpus.chunks),
-        "query_embedding_count": len(corpus.queries),
         "cache": embedder.stats(),
         "config": config.to_jsonable(),
     }
     config.run_dir.mkdir(parents=True, exist_ok=True)
     write_json(config.run_dir / PREEMBEDDING_FILE, summary)
     logger.info(
-        "Preembedded chunks={} queries={} cache_hits={} cache_misses={}",
+        "Preembedded chunks={} cache_hits={} cache_misses={}",
         len(corpus.chunks),
-        len(corpus.queries),
         embedder.hits,
         embedder.misses,
     )

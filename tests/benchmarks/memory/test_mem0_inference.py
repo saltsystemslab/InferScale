@@ -128,8 +128,7 @@ def test_mem0_config_uses_explicit_memory_llm_settings(tmp_path: Path) -> None:
             store_root=tmp_path,
             vector_config=VectorStoreConfig(backend="qdrant"),
             embedding_model="embedding-model",
-            embedding_api_key="embedding-secret",
-            embedding_base_url="https://embeddings.example/v1",
+            embedding_device="cpu",
             memory_llm_provider="vllm",
             memory_llm_model="Qwen/Qwen2.5-7B-Instruct",
             memory_llm_api_key="memory-secret",
@@ -302,7 +301,7 @@ def test_fact_catalog_hits_promote_stable_source_metadata() -> None:
     assert hit.payload["metadata"]["fact_id"] == "fact-1"
 
 
-def test_fact_catalog_identity_includes_mem0_embedding_and_endpoints(tmp_path: Path) -> None:
+def test_fact_catalog_identity_includes_the_extraction_endpoint(tmp_path: Path) -> None:
     sample = _sample()
     fact = MemoryFact(
         id="fact-1",
@@ -323,7 +322,6 @@ def test_fact_catalog_identity_includes_mem0_embedding_and_endpoints(tmp_path: P
         model="Qwen/Qwen2.5-7B-Instruct",
         endpoint="https://memory.example/v1",
         embedding_model="embedding-model",
-        embedding_endpoint="https://embedding.example/v1",
         mem0_version="2.0.11",
     )
     store.write(sample, [fact])
@@ -335,7 +333,6 @@ def test_fact_catalog_identity_includes_mem0_embedding_and_endpoints(tmp_path: P
         model="Qwen/Qwen2.5-7B-Instruct",
         endpoint="https://other.example/v1",
         embedding_model="embedding-model",
-        embedding_endpoint="https://embedding.example/v1",
         mem0_version="2.0.11",
     )
     assert different_endpoint.path_for(sample) != store.path_for(sample)
@@ -365,14 +362,13 @@ def test_fact_catalog_identity_requires_current_inner_product_and_temperature(
         model="Qwen/Qwen2.5-7B-Instruct",
         endpoint="https://memory.example/v1",
         embedding_model="embedding-model",
-        embedding_endpoint="https://embedding.example/v1",
         mem0_version="2.0.11",
     )
     baseline = FactCatalogStore(tmp_path, **store_kwargs)
     baseline.write(sample, [fact])
 
     payload = json.loads(baseline.path_for(sample).read_text(encoding="utf-8"))
-    assert payload["version"] == 5
+    assert payload["version"] == 6
     assert payload["vector_distance"] == VECTOR_DISTANCE
     assert payload["memory_extraction_response_protocol"] == MEMORY_EXTRACTION_RESPONSE_PROTOCOL
     assert payload["memory_extraction_max_model_len"] == MEMORY_EXTRACTION_MAX_MODEL_LEN
@@ -569,6 +565,7 @@ def test_sample_builder_aborts_without_catalog_when_extraction_json_is_invalid(
 def test_mem0_2_inference_persists_turn_metadata_through_custom_adapter(
     monkeypatch: Any,
     tmp_path: Path,
+    local_embedder: Any,
 ) -> None:
     monkeypatch.setenv("MEM0_DIR", str(tmp_path / "mem0-global"))
     monkeypatch.setenv("MEM0_TELEMETRY", "false")
@@ -576,9 +573,8 @@ def test_mem0_2_inference_persists_turn_metadata_through_custom_adapter(
         Mem0Settings(
             store_root=tmp_path / "store",
             vector_config=VectorStoreConfig(backend="qdrant"),
-            embedding_model="text-embedding-3-small",
-            embedding_api_key="test-key",
-            embedding_base_url=None,
+            embedding_model="Qwen/Qwen3-Embedding-0.6B",
+            embedding_device="cpu",
             memory_llm_provider="vllm",
             memory_llm_model="Qwen/Qwen2.5-7B-Instruct",
             memory_llm_api_key="test-key",

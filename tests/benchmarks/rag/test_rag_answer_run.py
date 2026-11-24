@@ -17,7 +17,7 @@ SYSTEM_METADATA = {"platform": "test host"}
 
 @pytest.fixture
 def prompt_injection_run(
-    multihop_config, embedding_api, jasper_indexes, engine, ticking_clock, monkeypatch
+    multihop_config, embedded_batches, jasper_indexes, engine, ticking_clock, monkeypatch
 ):
     monkeypatch.setattr(answer_run, "collect_system_metadata", lambda: SYSTEM_METADATA)
     ticking_clock(answer_run)

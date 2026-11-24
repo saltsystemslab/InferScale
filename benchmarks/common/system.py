@@ -9,7 +9,16 @@ from typing import Any
 
 from benchmarks.common.paths import project_root
 
-PACKAGES = ("torch", "vllm", "lmcache", "mem0ai", "openai", "jasper", "qdrant-client")
+PACKAGES = (
+    "torch",
+    "transformers",
+    "vllm",
+    "lmcache",
+    "mem0ai",
+    "openai",
+    "jasper",
+    "qdrant-client",
+)
 NVIDIA_SMI_QUERY = [
     "nvidia-smi",
     "--query-gpu=name,driver_version,memory.total",

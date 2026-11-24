@@ -91,7 +91,7 @@ def _patch_compose_path(monkeypatch, *, canonical, registered, released) -> None
     monkeypatch.setattr(
         kv_requests,
         "build_memory_prompt_token_ids",
-        lambda tokenizer, sample, hits, **kwargs: SimpleNamespace(token_ids=canonical),
+        lambda tokenizer, hits, **kwargs: SimpleNamespace(token_ids=canonical),
     )
     monkeypatch.setattr(
         kv_requests,
@@ -261,7 +261,7 @@ def test_measure_kv_batch_routes_requests_and_checks_coverage(tmp_path: Path) ->
 
 
 def test_run_kv_injection_requires_a_cuda_device(tmp_path: Path) -> None:
-    config = make_throughput_config(tmp_path, kv_device="cpu", embedding_api_key="key")
+    config = make_throughput_config(tmp_path, kv_device="cpu")
 
     with pytest.raises(RuntimeError, match="cuda:0"):
         kv_condition.run_kv_injection(config, 1)
@@ -271,7 +271,7 @@ def test_run_kv_injection_frees_the_corpus_before_the_engine_starts(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     config = make_throughput_config(
-        tmp_path, run_id="kv-test", user_counts=(2,), requests_per_user=1, embedding_api_key="key"
+        tmp_path, run_id="kv-test", user_counts=(2,), requests_per_user=1
     )
     events: list[str] = []
     corpus = SimpleNamespace(

@@ -144,9 +144,7 @@ def _prompt_building_ms(sample: ConversationSample) -> float:
             max_model_len=32768,
             max_answer_tokens=16,
         )
-        build_memory_prompt_token_ids(
-            tokenizer, sample, _hits(), memory_scaffold=query.scaffold, render_context_turns=True
-        )
+        build_memory_prompt_token_ids(tokenizer, _hits(), memory_scaffold=query.scaffold)
 
     return _tokenizing_ms(build_prompt)
 
@@ -160,12 +158,11 @@ def _answer(client: PromptInjectionAnswerClient, sample: ConversationSample, **o
     )
 
 
-@pytest.mark.parametrize("context_window", [0, 1])
-def test_prompt_renders_each_fact_after_its_context_turns(
-    engine: Engine, context_window: int
+def test_prompt_holds_the_retrieved_facts_between_the_scaffold_and_the_question(
+    engine: Engine,
 ) -> None:
     sample = _sample()
-    client = _client(context_window=context_window)
+    client = _client()
     client.start_llm()
     client.prepare_sample(sample)
 
@@ -182,12 +179,9 @@ def test_prompt_renders_each_fact_after_its_context_turns(
     )
     memory = build_memory_prompt_token_ids(
         tokenizer,
-        sample,
         _hits(),
-        context_window=context_window,
         memory_token_budget=query.memory_token_budget,
         memory_scaffold=query.scaffold,
-        render_context_turns=True,
     )
     assert engine.prompts == [[*memory.token_ids, *query.query_tokens.token_ids]]
     assert engine.sampling == [(64, 0.5, 0.9)]
@@ -199,9 +193,7 @@ def test_prompt_renders_each_fact_after_its_context_turns(
     assert metrics["kv_query_bos_stripped"] == 0
     assert metrics["kv_selected_fact_ids"] == ["fact-1", "fact-0"]
     assert metrics["kv_block_size"] == 16
-    assert metrics["kv_context_window"] == context_window
-    assert metrics["memory_context_turn_count"] == context_window
-    assert metrics["memory_context_text_tokens"] == memory.fact_plan.context_text_tokens
+    assert metrics["kv_context_window"] == 0
     assert metrics["memory_token_budget"] == query.memory_token_budget
     assert sorted(metrics) == [
         "answer_generate_time_ms",
@@ -216,9 +208,6 @@ def test_prompt_renders_each_fact_after_its_context_turns(
         "memory_context_encoding_tokens_max",
         "memory_context_encoding_tokens_total",
         "memory_context_encoding_truncated_tokens",
-        "memory_context_text_tokens",
-        "memory_context_turn_count",
-        "memory_context_turn_ids",
         "memory_context_window",
         "memory_injected_fact_ids",
         "memory_retrieved_fact_ids",

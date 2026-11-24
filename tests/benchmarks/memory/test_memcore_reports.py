@@ -175,12 +175,9 @@ def test_query_metrics_csv_columns_are_pinned():
         "memory_retrieved_fact_ids",
         "memory_retrieved_fact_text_hashes",
         "memory_injected_fact_ids",
-        "memory_context_turn_ids",
-        "memory_context_turn_count",
         "memory_context_encoding_tokens_total",
         "memory_context_encoding_tokens_max",
         "memory_context_encoding_truncated_tokens",
-        "memory_context_text_tokens",
         "memory_token_budget",
         "kv_block_size",
         "kv_loaded_memory_tokens",
@@ -270,10 +267,9 @@ def test_every_numeric_and_list_metric_column_is_read_from_the_metric_of_the_sam
 
     assert {column: row[column] for column in numbers} == numbers
     assert {column: row[column] for column in lists} == lists
-    assert len(numbers) == 18
+    assert len(numbers) == 16
     assert list(lists) == [
         "memory_retrieved_fact_ids",
         "memory_retrieved_fact_text_hashes",
         "memory_injected_fact_ids",
-        "memory_context_turn_ids",
     ]

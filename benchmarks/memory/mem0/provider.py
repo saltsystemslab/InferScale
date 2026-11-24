@@ -18,11 +18,12 @@ from benchmarks.memory.protocol import (
     MEMORY_EXTRACTION_MAX_TOKENS,
     MEMORY_LLM_TEMPERATURE,
 )
-from inferscale.v1.embedding.openai import DEFAULT_OPENAI_BASE_URL
 
 JASPER_PROVIDER = "jasper"
 JASPER_ADAPTER_CLASS = "benchmarks.memory.mem0.adapter.Mem0JasperVectorStore"
 JASPER_CONFIG_MODULE = "mem0.configs.vector_stores.jasper"
+LOCAL_EMBEDDER_PROVIDER = "huggingface"
+LOCAL_EMBEDDER_CLASS = "benchmarks.memory.mem0.local_embedder.Mem0LocalEmbedder"
 VECTOR_BACKENDS = ("jasper", "qdrant")
 
 _registration_lock = threading.Lock()
@@ -33,8 +34,7 @@ class Mem0Settings:
     store_root: Path
     vector_config: VectorStoreConfig
     embedding_model: str
-    embedding_api_key: str | None
-    embedding_base_url: str | None
+    embedding_device: str
     memory_llm_model: str
     memory_llm_provider: str = "vllm"
     memory_llm_api_key: str | None = None
@@ -48,6 +48,7 @@ def create_mem0_memory(settings: Mem0Settings) -> Any:
             f"This benchmark requires mem0ai=={MEM0AI_VERSION}, found {installed_version}."
         )
     register_mem0_jasper_provider()
+    register_mem0_local_embedder()
     from mem0 import Memory
 
     settings.store_root.mkdir(parents=True, exist_ok=True)
@@ -65,10 +66,8 @@ def build_mem0_config(settings: Mem0Settings) -> dict[str, Any]:
 
     embedder_config: dict[str, Any] = {
         "model": settings.embedding_model,
-        "openai_base_url": settings.embedding_base_url or DEFAULT_OPENAI_BASE_URL,
+        "model_kwargs": {"device": settings.embedding_device},
     }
-    if settings.embedding_api_key:
-        embedder_config["api_key"] = settings.embedding_api_key
     memory_llm_config: dict[str, Any] = {
         "model": memory_llm_model,
         "temperature": MEMORY_LLM_TEMPERATURE,
@@ -92,7 +91,7 @@ def build_mem0_config(settings: Mem0Settings) -> dict[str, Any]:
                 "beam_width": vector_config.beam_width,
             },
         },
-        "embedder": {"provider": "openai", "config": embedder_config},
+        "embedder": {"provider": LOCAL_EMBEDDER_PROVIDER, "config": embedder_config},
         "llm": {"provider": settings.memory_llm_provider, "config": memory_llm_config},
         "history_db_path": str(settings.store_root / "history.sqlite"),
     }
@@ -109,13 +108,20 @@ def register_mem0_jasper_provider() -> None:
         provider_table.default[JASPER_PROVIDER] = "JasperConfig"
 
 
+def register_mem0_local_embedder() -> None:
+    from mem0.utils.factory import EmbedderFactory
+
+    with _registration_lock:
+        EmbedderFactory.provider_to_class[LOCAL_EMBEDDER_PROVIDER] = LOCAL_EMBEDDER_CLASS
+
+
 def install_jasper_config_module() -> None:
     from pydantic import BaseModel, ConfigDict, Field
 
     class JasperConfig(BaseModel):
         collection_name: str = Field("memories", description="Name of the collection")
         embedding_model_dims: int | None = Field(
-            1536, description="Dimensions of the embedding model"
+            None, description="Dimensions of the embedding model"
         )
         path: str = Field(
             default_factory=lambda: str(mem0_dir_from_environment()),

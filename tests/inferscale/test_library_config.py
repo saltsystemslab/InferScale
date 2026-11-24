@@ -26,7 +26,7 @@ def test_defaults_match_the_serving_contract() -> None:
     assert config.kv.store_backend == "gpu"
     assert config.kv.max_position == 32768
     assert config.index.beam_width == 64
-    assert config.embedding.model == "text-embedding-3-small"
+    assert config.embedding.model == "Qwen/Qwen3-Embedding-0.6B"
     assert config.context_window == 0
     assert config.vector_backend == "exact"
     assert config.to_dict()["context_window"] == 0

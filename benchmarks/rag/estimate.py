@@ -52,7 +52,7 @@ def run_estimate(config: RagBenchConfig) -> dict[str, Any]:
         "chunk_tokens_min": min(chunk_token_counts),
         "chunk_tokens_max": max(chunk_token_counts),
         "chunks_per_doc_max": _chunks_per_doc_max(corpus.chunks),
-        "embedding_texts": len(corpus.chunks) + len(corpus.queries),
+        "embedding_texts": len(corpus.chunks),
         "kv_bytes_per_token": kv_bytes_per_token,
         "projected_kv_cache_bytes": _kv_bytes(kv_bytes_per_token, corpus.total_tokens),
         "per_query_fetch_bytes": _kv_bytes(kv_bytes_per_token, config.top_k * config.chunk_size),

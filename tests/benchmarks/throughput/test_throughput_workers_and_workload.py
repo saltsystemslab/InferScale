@@ -28,7 +28,6 @@ class Mem0Run:
                 "run_id": "mem0-phases",
                 "user_counts": (1, 2),
                 "requests_per_user": 1,
-                "embedding_api_key": "test-key",
                 **settings,
             },
         )
@@ -71,8 +70,8 @@ class Mem0Run:
         self.events.append(("search", memory, query, top_k))
         return StoreSearch(["hit"], 0.5, 0.125)
 
-    def build_memory(self, tokenizer, sample, hits, **options):
-        self.events.append(("memory prompt", tokenizer, sample.sample_id, hits, options))
+    def build_memory(self, tokenizer, hits, **options):
+        self.events.append(("memory prompt", tokenizer, hits, options))
         return SimpleNamespace(token_ids=[1, 2])
 
     def measure(self, llm, prompts, sampling_params):

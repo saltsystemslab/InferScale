@@ -139,7 +139,6 @@ class LMCacheBlendAnswerClient:
         fact_plan = plan_prompt_memory(
             facts.selected,
             retrieved_facts=facts.retrieved,
-            context_window=0,
             memory_token_budget=query.memory_token_budget,
             scaffold_token_count=layout.scaffold_tokens,
             fact_token_ids=facts.token_ids,

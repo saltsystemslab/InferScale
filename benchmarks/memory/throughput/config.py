@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-import os
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
@@ -11,7 +10,6 @@ from benchmarks.common.config import (
     DEFAULT_EXTRACTION_LLM_BASE_URL,
     ConfigError,
     RuntimeConfig,
-    embedding_api_key,
     load_json_object,
     slug,
     stamp_now,
@@ -37,6 +35,7 @@ from benchmarks.common.lmcache.config import (
     parse_lmcache_config,
 )
 from inferscale.v1.config import KV_DTYPES, EngineConfig
+from inferscale.v1.embedding.local import DEFAULT_EMBEDDING_MODEL
 from inferscale.v1.index.jasper import MAX_JASPER_BEAM_WIDTH
 from inferscale.v1.kv.connector_utils import (
     DEFAULT_KV_STAGING_SLOTS,
@@ -66,8 +65,6 @@ DEFAULT_CONTEXT_WINDOW = 50
 DEFAULT_SEED = 42
 DEFAULT_LOG_LEVEL = "INFO"
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
-REDACTED_API_KEY = "<redacted>"
-WORKER_API_KEY_VARIABLE = "LOCOMO_THROUGHPUT_EMBEDDING_API_KEY"
 PATH_FIELDS = (
     "results_dir",
     "cache_root",
@@ -132,9 +129,7 @@ class ThroughputConfig:
     kv_store_backend: str = DEFAULT_KV_STORE_BACKEND
     kv_staging_slots: int = DEFAULT_KV_STAGING_SLOTS
     kv_chunk_cache_enabled: bool = True
-    embedding_model: str = "text-embedding-3-small"
-    embedding_api_key: str | None = None
-    embedding_base_url: str | None = None
+    embedding_model: str = DEFAULT_EMBEDDING_MODEL
     embedding_cache_enabled: bool = True
     memory_llm_provider: str = "vllm"
     memory_llm_model: str | None = None
@@ -184,8 +179,6 @@ class ThroughputConfig:
         settings["conditions"] = list(self.conditions)
         settings["user_counts"] = list(self.user_counts)
         settings["lmcache_blend_check_layers"] = list(self.lmcache_blend_check_layers)
-        if settings["embedding_api_key"]:
-            settings["embedding_api_key"] = REDACTED_API_KEY
         return settings
 
     @classmethod
@@ -202,10 +195,6 @@ class ThroughputConfig:
         snapshot["lmcache_blend_check_layers"] = int_list(
             snapshot, "lmcache_blend_check_layers", where
         )
-        if snapshot.get("embedding_api_key") == REDACTED_API_KEY:
-            snapshot["embedding_api_key"] = (
-                os.environ.get(WORKER_API_KEY_VARIABLE) or embedding_api_key()
-            )
         return cls(**snapshot)
 
     @classmethod
@@ -237,7 +226,6 @@ class ThroughputConfig:
             memory_llm_cache_dir=layout.memory_llm_cache_dir,
             local_store_dir=layout.local_store_dir,
             dataset_path=expand_path(dataset_path, root=runtime.root),
-            embedding_api_key=embedding_api_key(),
             memory_llm_base_url=_extraction_endpoint(data, where),
             **run,
             **_library_fields(library),
@@ -355,7 +343,6 @@ def _library_fields(library: Any) -> dict[str, Any]:
         "kv_store_backend": library.kv.store_backend,
         "kv_staging_slots": library.kv.staging_slots,
         "embedding_model": library.embedding.model,
-        "embedding_base_url": library.embedding.base_url,
         "jasper_n_neighbors": library.index.n_neighbors,
         "jasper_alpha": library.index.alpha,
         "jasper_workspace_budget": library.index.workspace_budget,
@@ -452,7 +439,7 @@ _TEXT_FIELDS = (
     "lmcache_blend_special_str",
     "lmcache_adapter",
 )
-_OPTIONAL_TEXT_FIELDS = ("embedding_api_key", "embedding_base_url", "memory_llm_base_url")
+_OPTIONAL_TEXT_FIELDS = ("memory_llm_base_url",)
 _POSITIVE_NUMBER_FIELDS = ("kv_gpu_memory_utilization", "jasper_alpha")
 
 

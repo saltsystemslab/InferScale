@@ -477,7 +477,6 @@ def test_answer_hands_the_composed_memory_to_the_connector_only_while_generating
     )
     memory = build_memory_prompt_token_ids(
         tokenizer,
-        sample,
         hits,
         memory_token_budget=query.memory_token_budget,
         memory_scaffold=query.scaffold,
@@ -567,9 +566,7 @@ def test_answer_times_composition_verification_and_registration_separately(
     scaffold = extract_memory_scaffold_token_ids(FakeTokenizer(), block_size=16)
     compose_ms = FETCH_CHUNKS_MS + COMPOSE_MS
     verify_ms = _tokenizing_ms(
-        lambda tokenizer: build_memory_prompt_token_ids(
-            tokenizer, sample, hits, memory_scaffold=scaffold
-        )
+        lambda tokenizer: build_memory_prompt_token_ids(tokenizer, hits, memory_scaffold=scaffold)
     )
     register_ms = len(LAYERS) * REGISTER_LAYER_MS
     before_generation_ms = _query_building_ms(sample) + compose_ms + verify_ms + register_ms
@@ -708,7 +705,7 @@ def test_chunk_cache_is_written_on_a_miss_and_read_by_the_next_run(harness: Harn
     [cache_file] = harness.cache_files()
     assert cache_file.parent == (
         harness.tmp_path
-        / ".cache/kv-chunks/v2/meta-llama__Llama-3.1-8B-Instruct/bfloat16-w0-p4096-b16"
+        / ".cache/kv-chunks/v3/meta-llama__Llama-3.1-8B-Instruct/bfloat16-w0-p4096-b16"
     )
     assert (missed["kv_chunk_cache_hit"], hit["kv_chunk_cache_hit"]) == (0, 1)
     assert [save["path"] for save in harness.saves] == [cache_file]

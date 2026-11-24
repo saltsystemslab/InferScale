@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -17,7 +16,6 @@ from benchmarks.common.paths import RUN_CONFIG_FILE, project_root
 from benchmarks.common.system import collect_system_metadata
 from benchmarks.memory.throughput.config import (
     LMCACHE_CONDITION,
-    WORKER_API_KEY_VARIABLE,
     ThroughputConfig,
     lmcache_config,
     user_counts_text,
@@ -29,9 +27,7 @@ from benchmarks.memory.throughput.reporting import (
     write_reports,
 )
 
-VOLATILE_CONFIG_KEYS = frozenset(
-    {"conditions", "embedding_api_key", "local_store_dir", "log_level"}
-)
+VOLATILE_CONFIG_KEYS = frozenset({"conditions", "local_store_dir", "log_level"})
 REQUIRED_MODULES = {"vllm", "mem0"}
 CONDITION_MODULES = {
     "kv_injection": ("torch", "transformers", "jasper"),
@@ -124,7 +120,6 @@ def _run_worker(config: ThroughputConfig, spec: WorkerSpec) -> None:
         text=True,
         check=True,
         cwd=project_root(),
-        env=_worker_environment(config),
     )
 
 
@@ -151,7 +146,6 @@ def _validate_runtime_requirements(config: ThroughputConfig) -> None:
     _require_runtime_modules(config)
     _require_dataset(config)
     _require_fact_catalogs(config)
-    _require_embedding_access(config)
 
 
 def _require_lmcache_settings(config: ThroughputConfig) -> None:
@@ -189,14 +183,6 @@ def _require_fact_catalogs(config: ThroughputConfig) -> None:
         )
 
 
-def _require_embedding_access(config: ThroughputConfig) -> None:
-    if not config.embedding_api_key and not config.embedding_base_url:
-        raise RuntimeError(
-            "Every throughput condition embeds queries live; set OPENAI_API_KEY or "
-            "inferscale.embedding.base_url in the run JSON."
-        )
-
-
 def _validate_existing_config(config: ThroughputConfig) -> None:
     snapshot_path = _config_snapshot_path(config)
     if not snapshot_path.exists():
@@ -217,10 +203,3 @@ def _validate_existing_config(config: ThroughputConfig) -> None:
                 f"Run directory {config.run_dir} already contains a different {key}. "
                 "Set a new run_id in the run JSON."
             )
-
-
-def _worker_environment(config: ThroughputConfig) -> dict[str, str]:
-    environment = dict(os.environ)
-    if config.embedding_api_key:
-        environment[WORKER_API_KEY_VARIABLE] = config.embedding_api_key
-    return environment

@@ -9,7 +9,6 @@ from benchmarks.common.config import (
     REDACTED,
     ConfigError,
     RuntimeConfig,
-    embedding_api_key,
     load_json_object,
     load_runtime_config,
     stamp_now,
@@ -74,7 +73,7 @@ RUN_KEYS = (
 LIBRARY_SECTIONS = ("engine", "kv", "index", "embedding", "generation")
 SWEEP_KEYS = ("top_k", "answer_backends")
 PATH_KEYS = ("data_dir", "results_dir", "embedding_cache_dir", "kv_chunk_cache_root")
-SECRET_KEYS = ("judge_api_key", "embedding_api_key")
+SECRET_KEYS = ("judge_api_key",)
 
 DEFAULT_DATASET = "multihoprag"
 DEFAULT_MODEL = "llama"
@@ -110,8 +109,6 @@ class RagBenchConfig:
     judge_api_key: str | None = None
 
     embedding_model: str = DEFAULT_EMBEDDING_MODEL
-    embedding_base_url: str | None = None
-    embedding_api_key: str | None = None
     embedding_cache_enabled: bool = True
     embedding_cache_dir: Path | None = None
     embed_batch_size: int = DEFAULT_EMBED_BATCH_SIZE
@@ -240,8 +237,6 @@ class RagBenchConfig:
             judge_base_url=judge.base_url,
             judge_api_key=judge.api_key,
             embedding_model=library.embedding.model,
-            embedding_base_url=library.embedding.base_url,
-            embedding_api_key=embedding_api_key(),
             embedding_cache_enabled=optional(data, "embedding_cache_enabled", bool, True, WHERE),
             embedding_cache_dir=paths.embedding_cache_dir,
             embed_batch_size=optional(

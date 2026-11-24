@@ -60,7 +60,6 @@ class BlendRun:
                 "user_counts": (1, 2),
                 "requests_per_user": 1,
                 "warmup_batches": 1,
-                "embedding_api_key": "test-key",
                 "lmcache_max_local_cpu_size_gb": 1.0,
                 **settings,
             },

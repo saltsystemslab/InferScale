@@ -22,7 +22,7 @@ from inferscale.v1.serving.vllm import empty_cuda_cache
 from inferscale.v1.types import KVChunk, SearchHit
 
 from .chunk_cache import CachedSampleEncode
-from .context import build_fact_context_encoding_plan, plan_kv_memory
+from .context import build_fact_context_encoding_plan, facts_by_source_turn, plan_kv_memory
 from .data import ConversationSample
 from .facts import reverse_ranked_memory_facts, unique_memory_facts
 from .prompting import extract_memory_scaffold_token_ids, format_memory_fact
@@ -62,9 +62,9 @@ class SampleComposer:
         self._stored_chunk_bytes = 0
         self._stored_chunk_layers = 0
         self._fact_token_ids: dict[str, list[int]] = {}
-        self._turn_token_ids: dict[str, list[int]] = {}
         self._facts: list[RetrievedFact] = []
         self._facts_by_id: dict[str, RetrievedFact] = {}
+        self._facts_by_turn: dict[str, list[RetrievedFact]] = {}
         self._sample: ConversationSample | None = None
 
     @classmethod
@@ -198,9 +198,9 @@ class SampleComposer:
         self.empty_memory_chunk = None
         self.footer_chunk = None
         self._fact_token_ids = {}
-        self._turn_token_ids = {}
         self._facts = []
         self._facts_by_id = {}
+        self._facts_by_turn = {}
         self._sample = None
         empty_cuda_cache()
 
@@ -208,6 +208,7 @@ class SampleComposer:
         self._sample = sample
         self._facts = unique_memory_facts(facts)
         self._facts_by_id = {fact.memory_id: fact for fact in self._facts}
+        self._facts_by_turn = facts_by_source_turn(self._facts)
         self._fact_token_ids = {
             fact.memory_id: encode_text_no_special(self.encoder.tokenizer, format_memory_fact(fact))
             for fact in self._facts
@@ -217,11 +218,10 @@ class SampleComposer:
         plan = build_fact_context_encoding_plan(
             fact,
             sample,
-            tokenizer=self.encoder.tokenizer,
             context_window=self.context_window,
             max_input_tokens=self.max_position,
             fact_token_ids=self._fact_token_ids,
-            turn_token_ids=self._turn_token_ids,
+            facts_by_turn=self._facts_by_turn,
         )
         return self.encoder.encode_plan(plan)
 

@@ -52,7 +52,6 @@ from benchmarks.memory.throughput.stores import (
     fact_catalog_store,
     load_samples,
     prepare_sample_stores,
-    require_embedding_access,
     search_store,
 )
 from benchmarks.memory.throughput.workload import (
@@ -95,7 +94,6 @@ def run_lmcache_blend(
     config: ThroughputConfig, user_counts: tuple[int, ...]
 ) -> list[dict[str, Any]]:
     lmcache = lmcache_config(config)
-    require_embedding_access(config, CONDITION)
     samples = load_samples(config)
     catalog_store = fact_catalog_store(config)
     max_users = max(user_counts)

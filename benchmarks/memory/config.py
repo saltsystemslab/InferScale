@@ -11,7 +11,6 @@ from benchmarks.common.config import (
     REDACTED,
     ConfigError,
     RuntimeConfig,
-    embedding_api_key,
     extraction_llm_api_key,
     load_json_object,
     stamp_now,
@@ -30,7 +29,13 @@ from inferscale.v1.config import EngineConfig, InferScaleConfig
 from inferscale.v1.index.jasper import MAX_JASPER_BEAM_WIDTH
 
 from .extraction_config import ExtractionConfig, extraction_dict, parse_extraction_config
-from .protocol import ANSWER_BACKENDS, LMCACHE_BACKEND, PROTOCOL_STAMP, VECTOR_BACKENDS
+from .protocol import (
+    ANSWER_BACKENDS,
+    LMCACHE_BACKEND,
+    PROMPT_INJECTION_BACKEND,
+    PROTOCOL_STAMP,
+    VECTOR_BACKENDS,
+)
 from .sweeps import (
     MemoryCell,
     MemorySweep,
@@ -101,7 +106,6 @@ class MemoryRunConfig:
     memory_llm_provider: str = "vllm"
     memory_llm_base_url: str | None = DEFAULT_EXTRACTION_LLM_BASE_URL
     memory_llm_api_key: str | None = None
-    embedding_api_key: str | None = None
     extraction: ExtractionConfig = field(default_factory=ExtractionConfig)
     sweeps: dict[str, MemorySweep] = field(default_factory=dict)
     lmcache: LMCacheConfig | None = None
@@ -183,10 +187,6 @@ class MemoryRunConfig:
     @property
     def embedding_model(self) -> str:
         return self.inferscale.embedding.model
-
-    @property
-    def embedding_base_url(self) -> str | None:
-        return self.inferscale.embedding.base_url
 
     @property
     def temperature(self) -> float:
@@ -279,7 +279,6 @@ class MemoryRunConfig:
             "memory_llm_base_url": self.memory_llm_base_url,
             "memory_llm_api_key": REDACTED if self.memory_llm_api_key else None,
             "memory_llm_cache_dir": str(self.memory_llm_cache_dir),
-            "embedding_api_key": REDACTED if self.embedding_api_key else None,
             "inferscale": self.inferscale.to_dict(),
             "judge": self.judge.to_jsonable(),
             "with_evidence": self.with_evidence,
@@ -352,7 +351,6 @@ class MemoryRunConfig:
             rejudge=optional(settings, "rejudge", bool, False, where),
             memory_llm_base_url=_extraction_endpoint(settings, extraction, where),
             memory_llm_api_key=extraction_llm_api_key(),
-            embedding_api_key=embedding_api_key(),
             extraction=extraction,
             sweeps=sweeps,
             lmcache=_lmcache_settings(settings, answer_backend, sweeps, where),
@@ -440,15 +438,20 @@ def _check_backend_requirements(
             f"{where}: effective Jasper beam width must be <= {MAX_JASPER_BEAM_WIDTH}; "
             f"got max({beam_width}, {top_k})."
         )
-    if answer_backend == "prompt-injection" and not inferscale.engine.enable_prefix_caching:
+    if answer_backend == PROMPT_INJECTION_BACKEND and not inferscale.engine.enable_prefix_caching:
         raise ConfigError(
-            f"{where}: answer_backend prompt-injection requires "
+            f"{where}: answer_backend {PROMPT_INJECTION_BACKEND} requires "
             "inferscale.engine.enable_prefix_caching."
         )
     if answer_backend == LMCACHE_BACKEND and context_window != 0:
         raise ConfigError(
             f"{where}: answer_backend {LMCACHE_BACKEND} stores each fact alone, so "
             "context_window must be 0."
+        )
+    if answer_backend == PROMPT_INJECTION_BACKEND and context_window != 0:
+        raise ConfigError(
+            f"{where}: answer_backend {PROMPT_INJECTION_BACKEND} sends only the retrieved "
+            "facts, so context_window must be 0."
         )
 
 

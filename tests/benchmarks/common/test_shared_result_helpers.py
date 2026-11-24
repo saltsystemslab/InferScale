@@ -4,7 +4,8 @@ from benchmarks.common.answer_timing import retrieval_latency_metrics
 from benchmarks.common.cache_keys import payload_header_matches
 from benchmarks.common.clients import ChatResult
 from benchmarks.common.judge import judge_with
-from benchmarks.common.run_summary import summary_envelope
+from benchmarks.common.run_summary import median_latency_text, summary_envelope
+from benchmarks.common.stats import numeric_summary
 from inferscale.v1.types import RetrievalMetrics
 
 
@@ -103,3 +104,14 @@ def test_payload_header_matches_checks_version_and_every_identity_value() -> Non
     assert not payload_header_matches(payload, version=2, expected_meta={"model": "other"})
     assert not payload_header_matches({"version": 2, "meta": None}, version=2, expected_meta={})
     assert not payload_header_matches("not a payload", version=2, expected_meta={})
+
+
+def test_reported_latency_is_the_median_so_one_stalled_request_does_not_move_it() -> None:
+    metrics = {
+        "time_to_first_token_ms": numeric_summary([16.0, 17.0, 90.0]),
+        "query_to_first_token_ms": numeric_summary([]),
+    }
+
+    assert median_latency_text({"metrics": metrics}) == (
+        "time_to_first_token_ms=17.0 query_to_first_token_ms=n/a"
+    )

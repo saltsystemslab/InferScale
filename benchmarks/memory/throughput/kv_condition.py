@@ -32,7 +32,6 @@ from benchmarks.memory.throughput.stores import (
     fact_catalog_store,
     load_samples,
     prepare_sample_stores,
-    require_embedding_access,
 )
 from benchmarks.memory.throughput.workload import (
     build_locomo_requests,
@@ -200,7 +199,6 @@ def _require_kv_settings(config: ThroughputConfig) -> None:
             "The connector namespace registry is GPU-resident; "
             "set inferscale.kv.device to cuda:0 in the run JSON."
         )
-    require_embedding_access(config, CONDITION)
 
 
 def _result_row(

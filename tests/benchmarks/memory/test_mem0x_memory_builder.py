@@ -12,7 +12,6 @@ from benchmarks.memory.mem0 import memory_builder
 from benchmarks.memory.mem0.fact_catalog import FactCatalogStore
 from benchmarks.memory.mem0.memory_builder import SampleMemoryBuilder
 from benchmarks.memory.mem0.provider import create_mem0_memory
-from benchmarks.memory.preembed import preembed_question_entities, preembed_questions
 
 CREATE_SECONDS = 2.0
 ADD_SECONDS = 3.0
@@ -253,7 +252,6 @@ class RealMem0WithScriptedModels:
         pytest.importorskip("en_core_web_sm")
         monkeypatch.setenv("MEM0_DIR", str(tmp_path / "mem0-home"))
         monkeypatch.setenv("MEM0_TELEMETRY", "false")
-        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
         self.quote = quote
         self.llms = []
         self.embedders = []
@@ -273,16 +271,14 @@ def preembed(config, sample):
         sample, finalize_index=False
     )
     try:
-        preembed_questions(built.memory, sample)
-        preembed_question_entities(built.memory, sample)
         return built.facts, built.metrics
     finally:
         built.close()
 
 
 @pytest.mark.parametrize("vector_backend", ["qdrant", "jasper"])
-def test_catalog_extracted_by_mem0_replays_from_read_only_caches_and_is_searchable(
-    monkeypatch, tmp_path, vector_backend
+def test_catalog_extracted_by_mem0_replays_from_the_cache_and_embeds_only_the_query_live(
+    monkeypatch, tmp_path, local_embedder, vector_backend
 ):
     mem0 = RealMem0WithScriptedModels(monkeypatch, tmp_path)
     config = run_config(tmp_path, vector_backend=vector_backend, embedding_cache_enabled=True)
@@ -310,11 +306,13 @@ def test_catalog_extracted_by_mem0_replays_from_read_only_caches_and_is_searchab
     assert metrics["memory_fact_catalog_loaded"] == 1
     assert retriever.built.embedding_cache_stats()["misses"] == 0
     assert mem0.llms[1].prompts == []
-    assert mem0.embedders[1].embedded == []
+    embedded_live = mem0.embedders[1].embedded
+    assert embedded_live[0] == (QUESTION, "search")
+    assert {purpose for _, purpose in embedded_live} == {"search"}
 
 
 def test_final_fact_text_that_mem0_stored_but_never_embedded_is_embedded_for_replay(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, local_embedder
 ):
     mem0 = RealMem0WithScriptedModels(monkeypatch, tmp_path, quote=UNTIDY_QUOTE)
     config = run_config(tmp_path, embedding_cache_enabled=True)
@@ -334,12 +332,13 @@ def test_final_fact_text_that_mem0_stored_but_never_embedded_is_embedded_for_rep
         cache_dir=config.embedding_cache_dir,
         model=config.embedding_model,
         mode="read",
-        endpoint=config.embedding_base_url,
     )
     assert read_only_cache.embed(final_text, "add") == pytest.approx(bag_of_words(final_text))
 
 
-def test_repeated_extraction_by_mem0_sees_no_messages_of_the_earlier_one(monkeypatch, tmp_path):
+def test_repeated_extraction_by_mem0_sees_no_messages_of_the_earlier_one(
+    monkeypatch, tmp_path, local_embedder
+):
     mem0 = RealMem0WithScriptedModels(monkeypatch, tmp_path)
     config = run_config(tmp_path, embedding_cache_enabled=True)
     sample = conversation()

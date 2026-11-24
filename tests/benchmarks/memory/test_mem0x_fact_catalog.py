@@ -12,7 +12,7 @@ TEA_FACT_ID = "c8b971a6-1a31-5ecb-ab2c-feabada9bd4c"
 CATALOG_FOLDER = (
     "fact-catalogs/mem0-2.0.11/vllm/Qwen_Qwen2.5-7B-Instruct/bounded-json-schema-v1"
     "/context-16384/tokens-4096/facts-5/text-600/endpoint-cbff7260a780c934"
-    "/text-embedding-3-small/endpoint-f578047bcc76d86f"
+    "/Qwen_Qwen3-Embedding-0.6B"
 )
 
 
@@ -54,8 +54,7 @@ def catalog_store(root, **changes):
         "provider": "vllm",
         "model": "Qwen/Qwen2.5-7B-Instruct",
         "endpoint": "http://localhost:8000/v1",
-        "embedding_model": "text-embedding-3-small",
-        "embedding_endpoint": None,
+        "embedding_model": "Qwen/Qwen3-Embedding-0.6B",
         "mem0_version": "2.0.11",
     }
     return FactCatalogStore(root, **{**settings, **changes})
@@ -109,14 +108,13 @@ def test_catalog_folder_names_everything_that_shaped_the_extraction(tmp_path):
     )
 
 
-def test_catalog_format_version_5_is_exactly_this_payload_and_these_fact_fields(tmp_path):
+def test_catalog_format_version_6_is_exactly_this_payload_and_these_fact_fields(tmp_path):
     catalog_path = catalog_store(tmp_path).write(conversation(), [tea_fact()])
 
     catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
 
-    assert catalog["version"] == 5
+    assert catalog["version"] == 6
     assert sorted(catalog) == [
-        "embedding_endpoint",
         "embedding_model",
         "endpoint",
         "facts",
@@ -171,13 +169,13 @@ def test_catalog_of_another_format_version_is_rejected_before_anything_else(tmp_
     catalog_path = store.write(sample, [tea_fact()])
 
     def downgrade(catalog):
-        catalog["version"] = 4
+        catalog["version"] = 5
         catalog["model"] = "other"
         catalog["facts"] = "not a list"
 
     rewrite_catalog(catalog_path, downgrade)
 
-    with pytest.raises(RuntimeError, match="identity mismatch for version .* expected=5 actual=4"):
+    with pytest.raises(RuntimeError, match="identity mismatch for version .* expected=6 actual=5"):
         store.load(sample)
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Literal
 
 from benchmarks.common.embedding_cache import CachedEmbedder
-from inferscale.v1.embedding.openai import OpenAIEmbedder
+from inferscale.v1.embedding.local import LocalEmbedder
 
 from .config import RagBenchConfig
 
@@ -14,18 +14,16 @@ def build_cached_embedder(
 ) -> CachedEmbedder:
     if not config.embedding_cache_enabled or config.embedding_cache_dir is None:
         raise RuntimeError(
-            "The RAG benchmark always runs through the embedding cache (read mode keeps "
-            "answer runs offline and deterministic); keep the embedding cache enabled and "
-            "configured."
+            "The RAG benchmark always reads chunk embeddings from the embedding cache; keep "
+            "the embedding cache enabled and configured."
         )
     return CachedEmbedder(
-        OpenAIEmbedder(
+        LocalEmbedder(
             model=config.embedding_model,
-            base_url=config.embedding_base_url,
-            api_key=config.embedding_api_key,
+            device=config.kv_device,
+            batch_size=config.embed_batch_size,
         ),
         cache_dir=config.embedding_cache_dir,
         model=config.embedding_model,
         mode=mode,
-        endpoint=config.embedding_base_url,
     )

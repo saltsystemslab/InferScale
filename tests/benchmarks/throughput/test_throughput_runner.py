@@ -125,7 +125,7 @@ def test_runner_sends_json_to_isolated_workers_and_collects_results(
     )
     jobs = []
 
-    def run(command, *, input, text, check, cwd, env):
+    def run(command, *, input, text, check, cwd):
         assert command == [sys.executable, "-m", "benchmarks.memory.throughput.worker"]
         assert text is check is True
         assert Path(cwd).is_dir()

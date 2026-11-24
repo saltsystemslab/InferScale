@@ -90,7 +90,6 @@ def test_saved_config_lists_the_settings_then_the_protocol_stamp():
         "memory_llm_base_url",
         "memory_llm_api_key",
         "memory_llm_cache_dir",
-        "embedding_api_key",
         "inferscale",
         "judge",
         "with_evidence",

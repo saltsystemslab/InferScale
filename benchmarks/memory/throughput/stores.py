@@ -54,13 +54,6 @@ class SampleStores:
         self.memories.clear()
 
 
-def require_embedding_access(config: ThroughputConfig, condition: str) -> None:
-    if not config.embedding_api_key and not config.embedding_base_url:
-        raise RuntimeError(
-            f"{condition} requires OPENAI_API_KEY or inferscale.embedding.base_url in the run JSON."
-        )
-
-
 def load_samples(config: ThroughputConfig) -> list[ConversationSample]:
     samples = load_locomo(config.dataset_path)
     if not samples:
@@ -75,7 +68,6 @@ def fact_catalog_store(config: ThroughputConfig) -> FactCatalogStore:
         model=config.memory_llm_model,
         endpoint=config.memory_llm_base_url,
         embedding_model=config.embedding_model,
-        embedding_endpoint=config.embedding_base_url,
         temperature=MEMORY_LLM_TEMPERATURE,
     )
 
@@ -117,8 +109,7 @@ def build_user_store(
             store_root=store_root,
             vector_config=_vector_config(config, backend),
             embedding_model=config.embedding_model,
-            embedding_api_key=config.embedding_api_key or "not-needed",
-            embedding_base_url=config.embedding_base_url,
+            embedding_device=config.kv_device,
             memory_llm_provider=config.memory_llm_provider,
             memory_llm_model=config.memory_llm_model,
             memory_llm_base_url=config.memory_llm_base_url,
@@ -186,7 +177,6 @@ def _cached_fact_embeddings(config: ThroughputConfig, memory: Any) -> Iterator[N
         cache_dir=config.embedding_cache_dir,
         model=config.embedding_model,
         mode="write",
-        endpoint=config.embedding_base_url,
     )
     install_embedder(memory, cached_embedder)
     try:

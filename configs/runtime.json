@@ -38,6 +38,7 @@
     "no_proxy": "localhost,127.0.0.1,::1",
     "VLLM_USE_FLASHINFER_SAMPLER": "0",
     "VLLM_NO_USAGE_STATS": "1",
-    "MEM0_TELEMETRY": "false"
+    "MEM0_TELEMETRY": "false",
+    "OPENBLAS_NUM_THREADS": "1"
   }
 }

@@ -137,7 +137,7 @@ class KVAnswerClient:
             max_answer_tokens=max_tokens,
         )
         composed, transfer_metrics = self._compose(composer, hits, query)
-        verify_ms = self._verify_against_prompt(composed, sample, hits, query)
+        verify_ms = self._verify_against_prompt(composed, hits, query)
         store_write_ms = self._register(composed)
         try:
             prompt = build_prompt_tokens(list(composed.token_ids), query.query_tokens)
@@ -203,18 +203,12 @@ class KVAnswerClient:
         return composed, _transfer_metrics(totals_before, store.transfer_totals())
 
     def _verify_against_prompt(
-        self,
-        composed: ComposedSampleMemory,
-        sample: ConversationSample,
-        hits: list[SearchHit],
-        query: MemoryQuery,
+        self, composed: ComposedSampleMemory, hits: list[SearchHit], query: MemoryQuery
     ) -> float:
         started = time.perf_counter()
         live_memory = build_memory_prompt_token_ids(
             self._tokenizer,
-            sample,
             hits,
-            context_window=self.config.context_window,
             memory_token_budget=query.memory_token_budget,
             memory_scaffold=query.scaffold,
         )

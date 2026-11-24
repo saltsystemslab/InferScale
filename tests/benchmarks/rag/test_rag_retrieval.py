@@ -9,7 +9,7 @@ from benchmarks.rag.retrieval import CorpusRetriever
 
 
 @pytest.fixture
-def preembedded(multihop_config, embedding_api):
+def preembedded(multihop_config, embedded_batches):
     config = multihop_config()
     preembed_rag_embeddings(config)
     return config, load_rag_corpus(config)

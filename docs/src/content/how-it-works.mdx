@@ -31,7 +31,7 @@ It plugs into vLLM through the KV-connector interface, so it needs neither engin
   width={901}
   height={571}
   alt="Architecture diagram. Offline, Mem0 extracts facts from a LoCoMo conversation; each fact gets a retrieval embedding in the Jasper GPU vector store and a context-window encoding stored as pre-RoPE K and raw V in the HBM KV fact store, joined by a fact-ID map. At serving time, seven numbered steps embed the query, search Jasper, map the hits to fact ids, fetch their KV, apply chunked RoPE, scatter-copy the KV into vLLM's paged cache, and run paged attention to decode the response."
-  caption={<>InferScale architecture. Offline, each extracted fact is encoded twice under a shared fact id: a retrieval embedding in the GPU vector store, and a pre-RoPE key/value tensor from the answer model, computed with a window of <i>w</i> preceding turns. At serving time, the top-<i>k</i> retrieved facts are resolved to their KV, positioned by chunked RoPE, and scatter-copied into the paged cache ahead of the query.</>}
+  caption={<>InferScale architecture. Offline, each extracted fact is encoded twice under a shared fact id: a retrieval embedding in the GPU vector store, and a pre-RoPE key/value tensor from the answer model, computed behind the facts from the <i>w</i> preceding turns. At serving time, the top-<i>k</i> retrieved facts are resolved to their KV, positioned by chunked RoPE, and scatter-copied into the paged cache ahead of the query.</>}
 />
 
 For a given query:
@@ -54,7 +54,8 @@ When a request arrives, it concatenates the retrieved facts and applies RoPE onc
 ### Context-window encoding
 
 Encoding facts individually loses the cross-fact context that a joint prefill would provide.
-InferScale encodes each fact together with up to *w* preceding chunks, such as earlier conversation turns, and caches only the target fact's KV.
+InferScale encodes each fact behind a window of preceding chunks and caches only the target fact's KV.
+In the memory benchmark the window is the facts extracted from the *w* conversation turns before the fact's source turn.
 The window is used only while precomputing, so it does not add to inference latency.
 
 <Figure

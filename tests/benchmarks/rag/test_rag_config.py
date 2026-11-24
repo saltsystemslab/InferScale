@@ -64,11 +64,7 @@ def test_nested_json_populates_downstream_settings(custom_runtime) -> None:
         "inferscale": {
             "engine": {"max_model_len": 65536, "gpu_memory_utilization": 0.5},
             "kv": {"max_position": 65536, "device": "cuda:2"},
-            "embedding": {
-                "model": "custom/embedding",
-                "base_url": "http://embedding/v1",
-                "batch_size": 20,
-            },
+            "embedding": {"model": "custom/embedding", "batch_size": 20},
             "index": {"beam_width": 32, "n_neighbors": 48},
             "generation": {"max_tokens": 90, "temperature": 0.3, "top_p": 0.9},
         },
@@ -84,7 +80,6 @@ def test_nested_json_populates_downstream_settings(custom_runtime) -> None:
     assert config.kv_gpu_memory_utilization == 0.5
     assert config.kv_device == "cuda:2"
     assert config.embedding_model == "custom/embedding"
-    assert config.embedding_base_url == "http://embedding/v1"
     assert config.embed_batch_size == 20
     assert config.jasper_beam_width == 32
     assert config.jasper_n_neighbors == 48
@@ -103,15 +98,13 @@ def test_model_alias_resolves_once(tmp_path) -> None:
     assert RagBenchConfig.from_dict({"model": "answer"}, runtime=runtime).model == "actual-model"
 
 
-def test_to_jsonable_redacts_secrets_and_stringifies_paths(custom_runtime, monkeypatch) -> None:
-    monkeypatch.setenv("OPENAI_API_KEY", "embedding-secret")
+def test_to_jsonable_redacts_secrets_and_stringifies_paths(custom_runtime) -> None:
     config = RagBenchConfig.from_dict(
         {"results_dir": "output", "kv_chunk_cache_root": "cache", "run_id": "abc"},
         runtime=custom_runtime,
     )
     data = config.to_jsonable()
 
-    assert data["embedding_api_key"] == "<redacted>"
     assert data["judge_api_key"] == "<redacted>"
     assert data["results_dir"] == str(custom_runtime.root / "output")
     assert data["kv_chunk_cache_root"] == str(custom_runtime.root / "cache")
@@ -232,10 +225,7 @@ def test_json_settings_ignore_environment_but_credentials_remain(
         "RAG_MODEL": "environment/model",
         "RAG_TOP_K": "99",
         "RAG_LOG_LEVEL": "ERROR",
-        "OPENAI_BASE_URL": "http://environment-embedding/v1",
-        "OPENAI_EMBEDDING_MODEL": "environment/embedding",
         "JUDGE_LLM_API_KEY": "environment-judge-key",
-        "OPENAI_API_KEY": "environment-embedding-key",
     }.items():
         monkeypatch.setenv(name, value)
     config = RagBenchConfig.from_dict(
@@ -246,9 +236,7 @@ def test_json_settings_ignore_environment_but_credentials_remain(
     assert config.judge_base_url == "http://json-judge/v1"
     assert config.judge_model == "custom/judge-model"
     assert config.judge_api_key == "environment-judge-key"
-    assert config.embedding_model == "text-embedding-3-small"
-    assert config.embedding_base_url is None
-    assert config.embedding_api_key == "environment-embedding-key"
+    assert config.embedding_model == "Qwen/Qwen3-Embedding-0.6B"
     assert config.log_level == "INFO"
 
 

@@ -8,10 +8,10 @@ from benchmarks.embedding.run import measure
 
 def catalog(path, sample="sample-1", texts=(" A fact. ", "Repeated", "Repeated"), **metadata):
     payload = {
-        "version": 5,
+        "version": 6,
         "sample_id": sample,
         "model": "extractor",
-        "embedding_model": "text-embedding-3-small",
+        "embedding_model": "Qwen/Qwen3-Embedding-0.6B",
         **metadata,
         "facts": [
             {"id": str(i), "sample_id": sample, "text": text} for i, text in enumerate(texts)
@@ -38,7 +38,7 @@ def test_corpus_preserves_exact_text_and_duplicates_with_stable_selection(tmp_pa
     [
         ({"sample": "sample-1"}, "duplicate sample_id"),
         ({"sample": "sample-2", "model": "different"}, "Mixed"),
-        ({"sample": "sample-2", "version": 4}, "version 5"),
+        ({"sample": "sample-2", "version": 5}, "version 6"),
         ({"sample": "sample-2", "texts": [""]}, "Invalid fact text"),
     ],
 )

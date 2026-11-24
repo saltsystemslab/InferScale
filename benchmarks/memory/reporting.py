@@ -32,12 +32,9 @@ QUERY_METRICS_COLUMNS = [
     "memory_retrieved_fact_ids",
     "memory_retrieved_fact_text_hashes",
     "memory_injected_fact_ids",
-    "memory_context_turn_ids",
-    "memory_context_turn_count",
     "memory_context_encoding_tokens_total",
     "memory_context_encoding_tokens_max",
     "memory_context_encoding_truncated_tokens",
-    "memory_context_text_tokens",
     "memory_token_budget",
     "kv_block_size",
     "kv_loaded_memory_tokens",
@@ -57,11 +54,9 @@ QUERY_METRICS_COLUMNS = [
 RECORD_COLUMNS = ("run_id", "mode", "sample_id", "question_id", "category")
 NUMERIC_METRIC_COLUMNS = (
     "jasper_effective_beam_width",
-    "memory_context_turn_count",
     "memory_context_encoding_tokens_total",
     "memory_context_encoding_tokens_max",
     "memory_context_encoding_truncated_tokens",
-    "memory_context_text_tokens",
     "memory_token_budget",
     "kv_block_size",
     "kv_loaded_memory_tokens",
@@ -79,7 +74,6 @@ LIST_METRIC_COLUMNS = (
     "memory_retrieved_fact_ids",
     "memory_retrieved_fact_text_hashes",
     "memory_injected_fact_ids",
-    "memory_context_turn_ids",
 )
 
 ACCURACY_BIN_COLUMNS = [

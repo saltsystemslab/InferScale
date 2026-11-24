@@ -22,13 +22,11 @@ class MemoryFactPlan:
     retrieved_fact_ids: tuple[str, ...]
     retrieved_fact_text_hashes: tuple[str, ...]
     injected_fact_ids: tuple[str, ...]
-    context_turn_ids: tuple[str, ...]
     context_encoding_tokens_total: int
     context_encoding_tokens_max: int
     context_encoding_truncated_tokens: int
     scaffold_tokens: int
     fact_tokens: int
-    context_text_tokens: int
     memory_tokens: int
     memory_token_budget: int
 

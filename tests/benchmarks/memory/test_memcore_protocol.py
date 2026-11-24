@@ -36,5 +36,5 @@ def test_protocol_stamp_records_every_protocol_setting_in_order():
         ("answer_prompt_protocol", "reverse-ranked-memory-block-safe-v1"),
         ("judge_prompt_protocol", "memory-benchmarks-json-jscore-v1"),
         ("context_window_unit", "turns"),
-        ("context_window_semantics", "encoding-prefix-discard-v1"),
+        ("context_window_semantics", "previous-turn-facts-prefix-discard-v1"),
     ]

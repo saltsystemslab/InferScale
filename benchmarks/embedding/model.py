@@ -3,6 +3,8 @@ from __future__ import annotations
 import time
 from importlib.metadata import version
 
+from inferscale.v1.embedding.local import last_token_embeddings
+
 TOKENIZE_BATCH_SIZE = 256
 UNIT_LENGTH_TOLERANCE = 1e-4
 
@@ -74,12 +76,7 @@ class QwenEmbedder:
             self.torch.cuda.synchronize(self.device)
 
     def encode(self, texts: list[str]):
-        with self.torch.inference_mode():
-            inputs = self.tokenizer(texts, padding=True, truncation=False, return_tensors="pt")
-            inputs = inputs.to(self.device)
-            hidden = self.model(**inputs, use_cache=False).last_hidden_state
-            embeddings = self.torch.nn.functional.normalize(hidden[:, -1].float(), p=2, dim=1)
-            return embeddings.cpu()
+        return last_token_embeddings(self.tokenizer, self.model, texts)
 
     def validate(self, embeddings, count: int) -> None:
         if embeddings.shape != (count, self.model.config.hidden_size):

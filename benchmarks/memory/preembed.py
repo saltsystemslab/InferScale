@@ -1,26 +1,20 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from typing import Any
 
 from loguru import logger
 
-from benchmarks.common.embedding_cache import CachedEmbedder
 from benchmarks.common.files import write_json
 from benchmarks.common.paths import RUN_CONFIG_FILE
 from benchmarks.memory.config import MemoryRunConfig
 from benchmarks.memory.data import ConversationSample, load_locomo
 from benchmarks.memory.mem0.memory_builder import SampleMemoryBuilder
-from benchmarks.memory.mem0.memory_handles import memory_embedder
 
 PREEMBEDDING_FILE = "preembedding.json"
 CACHE_MODE = "write"
-MEM0_QUERY_ENTITY_LIMIT = 8
 COUNTERS = (
     "turn_count",
-    "question_count",
-    "entity_embedding_count",
     "cache_hits",
     "cache_misses",
     "inferred_memory_count",
@@ -54,52 +48,17 @@ def preembed_locomo_embeddings(config: MemoryRunConfig) -> dict[str, Any]:
     summary = _summary(config, samples, worker_count, totals)
     write_json(config.run_dir / PREEMBEDDING_FILE, summary)
     logger.info(
-        "Preembedded embeddings samples={} turns={} inferred_memories={} questions={} "
-        "query_entities={} cache_hits={} cache_misses={} inference_cache_hits={} "
-        "inference_cache_misses={}",
+        "Preembedded embeddings samples={} turns={} inferred_memories={} "
+        "cache_hits={} cache_misses={} inference_cache_hits={} inference_cache_misses={}",
         len(samples),
         totals["turn_count"],
         totals["inferred_memory_count"],
-        totals["question_count"],
-        totals["entity_embedding_count"],
         totals["cache_hits"],
         totals["cache_misses"],
         totals["inference_cache_hits"],
         totals["inference_cache_misses"],
     )
     return summary
-
-
-def preembed_questions(memory: Any, sample: ConversationSample) -> int:
-    embedder = memory_embedder(memory)
-    for qa in sample.qa:
-        embedder.embed(qa.question, CachedEmbedder.QUERY_PURPOSE)
-    return len(sample.qa)
-
-
-def preembed_question_entities(memory: Any, sample: ConversationSample) -> int:
-    embedder = memory_embedder(memory)
-    normalize = getattr(memory, "_normalize_entity_text", None)
-    if not callable(normalize):
-        raise RuntimeError("Mem0 memory has no _normalize_entity_text; cannot mirror entity dedup.")
-    embedded_count = 0
-    for qa in sample.qa:
-        entity_texts = _unique_entity_texts(qa.question, normalize)
-        if entity_texts:
-            embedder.embed_batch(entity_texts, CachedEmbedder.QUERY_PURPOSE)
-            embedded_count += len(entity_texts)
-    return embedded_count
-
-
-def _unique_entity_texts(question: str, normalize: Callable[[str], str]) -> list[str]:
-    seen_normalized: set[str] = set()
-    entity_texts: list[str] = []
-    for _, entity_text in _extract_query_entities(question)[:MEM0_QUERY_ENTITY_LIMIT]:
-        normalized = normalize(entity_text)
-        if normalized and normalized not in seen_normalized:
-            seen_normalized.add(normalized)
-            entity_texts.append(entity_text)
-    return entity_texts
 
 
 def _require_unique_sample_ids(samples: list[ConversationSample]) -> None:
@@ -141,18 +100,15 @@ def _preembed_sample(
     config: MemoryRunConfig, sample: ConversationSample, sample_number: int, sample_count: int
 ) -> dict[str, int]:
     logger.info(
-        "Preembedding sample {}/{} sample_id={} turns={} questions={}",
+        "Preembedding sample {}/{} sample_id={} turns={}",
         sample_number,
         sample_count,
         sample.sample_id,
         len(sample.turns),
-        len(sample.qa),
     )
     memory_builder = SampleMemoryBuilder(config, embedding_cache_mode=CACHE_MODE)
     built = memory_builder.build_memory(sample, finalize_index=False)
     try:
-        question_count = preembed_questions(built.memory, sample)
-        entity_embedding_count = preembed_question_entities(built.memory, sample)
         built.log_cache_stats(sample.sample_id)
         cache_hits, cache_misses = _cache_counts(built.embedding_cache_stats())
         inference_hits, inference_misses = _cache_counts(built.llm_cache_stats())
@@ -161,8 +117,6 @@ def _preembed_sample(
         )
         return {
             "turn_count": len(sample.turns),
-            "question_count": question_count,
-            "entity_embedding_count": entity_embedding_count,
             "cache_hits": cache_hits,
             "cache_misses": cache_misses,
             "inferred_memory_count": int(built.metrics.get("memory_inferred_record_count") or 0),
@@ -196,8 +150,6 @@ def _summary(
         "preembed_workers": worker_count,
         "turn_embedding_count": totals["turn_count"],
         "inferred_memory_count": totals["inferred_memory_count"],
-        "question_embedding_count": totals["question_count"],
-        "entity_embedding_count": totals["entity_embedding_count"],
         "cache": {
             "mode": CACHE_MODE,
             "cache_dir": str(config.embedding_cache_dir),
@@ -214,9 +166,3 @@ def _summary(
         },
         "config": config.to_jsonable(),
     }
-
-
-def _extract_query_entities(question: str) -> list[tuple[str, str]]:
-    from mem0.utils.entity_extraction import extract_entities
-
-    return extract_entities(question)

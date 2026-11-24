@@ -126,8 +126,6 @@ def test_query_metrics_expose_backend_neutral_memory_audit_fields(tmp_path: Path
             "memory_retrieved_fact_ids": ["fact-2", "fact-4"],
             "memory_retrieved_fact_text_hashes": ["sha256:two", "sha256:four"],
             "memory_injected_fact_ids": ["fact-4", "fact-2"],
-            "memory_context_turn_ids": ["turn-1", "turn-3"],
-            "memory_context_turn_count": 2,
             "memory_context_encoding_tokens_total": 81,
             "memory_context_encoding_tokens_max": 43,
             "memory_context_encoding_truncated_tokens": 0,
@@ -149,8 +147,6 @@ def test_query_metrics_expose_backend_neutral_memory_audit_fields(tmp_path: Path
     assert row["memory_retrieved_fact_ids"] == ["fact-2", "fact-4"]
     assert row["memory_retrieved_fact_text_hashes"] == ["sha256:two", "sha256:four"]
     assert row["memory_injected_fact_ids"] == ["fact-4", "fact-2"]
-    assert row["memory_context_turn_ids"] == ["turn-1", "turn-3"]
-    assert row["memory_context_turn_count"] == 2
     assert row["memory_context_encoding_tokens_total"] == 81
     assert row["memory_context_encoding_tokens_max"] == 43
     assert row["memory_context_encoding_truncated_tokens"] == 0
@@ -197,7 +193,6 @@ def test_summary_aggregates_backend_neutral_memory_audit_metrics() -> None:
         _record(
             {
                 "memory_context_window": 2,
-                "memory_context_turn_count": 2,
                 "memory_context_encoding_tokens_total": 41,
                 "memory_context_encoding_tokens_max": 23,
                 "memory_context_encoding_truncated_tokens": 0,
@@ -207,7 +202,6 @@ def test_summary_aggregates_backend_neutral_memory_audit_metrics() -> None:
         _record(
             {
                 "memory_context_window": 2,
-                "memory_context_turn_count": 2,
                 "memory_context_encoding_tokens_total": 55,
                 "memory_context_encoding_tokens_max": 29,
                 "memory_context_encoding_truncated_tokens": 4,
@@ -226,7 +220,6 @@ def test_summary_aggregates_backend_neutral_memory_audit_metrics() -> None:
     metrics = summary["metrics"]
 
     assert metrics["memory_context_window"]["avg"] == 2
-    assert metrics["memory_context_turn_count"]["avg"] == 2
     assert metrics["memory_context_encoding_tokens_total"]["avg"] == 48
     assert metrics["memory_context_encoding_tokens_max"]["max"] == 29
     assert metrics["memory_context_encoding_truncated_tokens"]["avg"] == 2

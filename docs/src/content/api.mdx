@@ -61,7 +61,7 @@ The `InferScale` engine has two phases: precompute all of the context, then call
 
 <Definitions>
   <Definition term="dtype" default='"bfloat16"'>KV dtype: `bfloat16`, `float16`, or `float32`.</Definition>
-  <Definition term="device" default='"cuda:0"'>Device for encoding, the chunk store, and exact search.</Definition>
+  <Definition term="device" default='"cuda:0"'>Device for encoding, the chunk store, the embedding model, and exact search.</Definition>
   <Definition term="max_position" default="32768">Largest position a chunk encoding or composed memory may reach.</Definition>
   <Definition term="store_backend" default='"gpu"'>Keeps chunk KV on the GPU, or offloads it to pinned host memory with `"cpu"`.</Definition>
   <Definition term="staging_slots" default="4">Minimum GPU staging buffers for the CPU store, raised to cover `top_k`.</Definition>
@@ -81,9 +81,8 @@ These settings apply when `vector_backend` is `"jasper"`.
 #### `embedding`
 
 <Definitions>
-  <Definition term="model" default='"text-embedding-3-small"'>Embedding model; the API key comes from `OPENAI_API_KEY`.</Definition>
-  <Definition term="base_url" default="null">Optional OpenAI-compatible endpoint.</Definition>
-  <Definition term="batch_size" default="128">Texts per embedding request.</Definition>
+  <Definition term="model" default='"Qwen/Qwen3-Embedding-0.6B"'>Hugging Face embedding model; the last token's hidden state is the embedding.</Definition>
+  <Definition term="batch_size" default="128">Texts per embedding batch.</Definition>
 </Definitions>
 
 #### `prompt`

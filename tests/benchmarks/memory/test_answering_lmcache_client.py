@@ -240,9 +240,9 @@ def test_memory_budget_counts_the_separators_between_the_facts(lmcache: Runtime)
         _answer(one_token_short, sample, _hits(1))
 
     assert str(error.value) == (
-        "Memory scaffold, context turns, and retrieved Mem0 facts cannot fit within the memory "
-        f"token budget: required={with_both_separators} budget={with_both_separators - 1} "
-        f"scaffold={scaffold_tokens + 2 * separator_tokens} context=0 facts={fact_tokens}."
+        "Memory scaffold and retrieved Mem0 facts cannot fit within the memory token "
+        f"budget: required={with_both_separators} budget={with_both_separators - 1} "
+        f"scaffold={scaffold_tokens + 2 * separator_tokens} facts={fact_tokens}."
     )
 
 

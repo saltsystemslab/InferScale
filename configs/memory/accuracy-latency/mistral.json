@@ -36,8 +36,7 @@
       "beam_width": 64
     },
     "embedding": {
-      "model": "text-embedding-3-small",
-      "base_url": null,
+      "model": "Qwen/Qwen3-Embedding-0.6B",
       "batch_size": 128
     },
     "generation": {
@@ -72,7 +71,7 @@
   },
   "sweeps": {
     "standard": {
-      "top_k": [5, 10, 20, 50],
+      "top_k": [5, 10, 20, 50, 100, 200, 400],
       "variants": [
         {"name": "kv", "answer_backend": "kv-injection", "vector_backend": "jasper", "kv_store_backend": "gpu", "context_window": [0, 5, 20, 50]},
         {"name": "prompt-injection", "answer_backend": "prompt-injection", "vector_backend": "qdrant", "kv_store_backend": "gpu", "context_window": [0]}

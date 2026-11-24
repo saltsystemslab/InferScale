@@ -12,7 +12,7 @@ from benchmarks.memory.composer import SampleComposer
 from benchmarks.memory.composer_stats import precompute_stats
 from benchmarks.memory.context import (
     build_fact_context_encoding_plan,
-    format_memory_turn,
+    facts_by_source_turn,
     memory_context_metrics,
     plan_kv_memory,
     plan_prompt_memory,
@@ -30,8 +30,8 @@ from benchmarks.memory.prompting import (
     build_memory_prompt_token_ids,
     build_query_tokens_for_memory,
     extract_memory_scaffold_token_ids,
-    format_memory_fact,
 )
+from benchmarks.memory.types import RetrievedFact
 from inferscale.v1.kv.prompt import build_prompt_tokens, require_identical_token_ids
 from inferscale.v1.kv.tokenization import encode_text_no_special
 from inferscale.v1.serving.vllm import vllm_engine_kwargs
@@ -143,52 +143,61 @@ def test_conflicting_duplicate_fact_ids_are_rejected() -> None:
         unique_memory_facts([_hit("same", "first", 1), _hit("same", "different", 1)])
 
 
-def test_window_selects_immediately_preceding_turns_across_sessions() -> None:
+CATALOG_FACT_TOKEN_IDS = {
+    "oldest": [10, 11],
+    "older-a": [20, 21],
+    "older-b": [22, 23],
+    "sibling": [30, 31],
+    "target": [32, 33],
+    "later": [40, 41],
+}
+
+
+def _catalog() -> list[RetrievedFact]:
+    return unique_memory_facts(
+        [
+            _hit("oldest", "oldest", 1),
+            _hit("older-a", "older a", 2),
+            _hit("older-b", "older b", 2),
+            _hit("sibling", "sibling", 3),
+            _hit("target", "target", 3),
+            _hit("later", "later", 4),
+        ]
+    )
+
+
+def _encoding_plan(
+    fact_id: str, *, context_window: int, max_input_tokens: int = 10_000
+) -> EncodingPlan:
+    catalog = _catalog()
+    return build_fact_context_encoding_plan(
+        next(fact for fact in catalog if fact.memory_id == fact_id),
+        _sample(),
+        context_window=context_window,
+        max_input_tokens=max_input_tokens,
+        fact_token_ids=CATALOG_FACT_TOKEN_IDS,
+        facts_by_turn=facts_by_source_turn(catalog),
+    )
+
+
+def test_fact_is_encoded_behind_the_facts_of_its_previous_turns_in_catalog_order() -> None:
+    plan = _encoding_plan("target", context_window=1)
+
+    assert plan.context_ids == ("older-a", "older-b")
+    assert plan.context_token_ids == [20, 21, 22, 23]
+    assert plan.input_token_ids == [20, 21, 22, 23, 32, 33]
+    assert (plan.slice_start, plan.slice_end) == (4, 6)
+
+
+def test_window_larger_than_the_conversation_start_uses_the_turns_that_exist() -> None:
     sample = _sample()
-    target = memory_fact_from_hit(_hit("target", "target", 3))
-    tokenizer = _DeterministicTokenizer()
-    expected_context = [
-        token_id
-        for turn in (sample.turns[0], sample.turns[1])
-        for token_id in encode_text_no_special(tokenizer, format_memory_turn(turn))
-    ]
 
-    plan = build_fact_context_encoding_plan(
-        target,
-        sample,
-        tokenizer=tokenizer,
-        context_window=2,
-        max_input_tokens=10_000,
-        fact_token_ids={"target": [30, 31]},
-    )
+    assert previous_turn_context_turns(sample, sample.turns[0].id, 3) == []
+    first = _encoding_plan("oldest", context_window=3)
+    third = _encoding_plan("target", context_window=3)
 
-    assert plan.context_token_ids == expected_context
-    assert plan.input_token_ids == expected_context + [30, 31]
-    assert (plan.slice_start, plan.slice_end) == (
-        len(expected_context),
-        len(expected_context) + 2,
-    )
-    assert plan.context_ids == (sample.turns[0].id, sample.turns[1].id)
-
-
-def test_window_excludes_source_turn_and_uses_available_prefix_at_start() -> None:
-    sample = _sample()
-    first = memory_fact_from_hit(_hit("first", "first", 1))
-    tokenizer = _DeterministicTokenizer()
-
-    assert previous_turn_context_turns(sample, first.source_turn_id, 3) == []
-    plan = build_fact_context_encoding_plan(
-        first,
-        sample,
-        tokenizer=tokenizer,
-        context_window=3,
-        max_input_tokens=10_000,
-        fact_token_ids={"first": [10]},
-    )
-
-    assert plan.context_token_ids == []
-    assert plan.context_ids == ()
-    assert plan.input_token_ids == [10]
+    assert (first.context_ids, first.input_token_ids) == ((), [10, 11])
+    assert third.context_ids == ("oldest", "older-a", "older-b")
 
 
 def test_zero_window_returns_no_context_and_negative_raises() -> None:
@@ -202,45 +211,19 @@ def test_zero_window_returns_no_context_and_negative_raises() -> None:
 
 
 def test_context_overflow_truncates_oldest_tokens_and_never_target() -> None:
-    sample = _sample()
-    target = memory_fact_from_hit(_hit("target", "target", 3))
-    tokenizer = _DeterministicTokenizer()
-    full_context = [
-        token_id
-        for turn in (sample.turns[0], sample.turns[1])
-        for token_id in encode_text_no_special(tokenizer, format_memory_turn(turn))
-    ]
-    max_input_tokens = len(full_context) - 3 + 2  # force a 3-token overflow
+    plan = _encoding_plan("target", context_window=2, max_input_tokens=5)
 
-    plan = build_fact_context_encoding_plan(
-        target,
-        sample,
-        tokenizer=tokenizer,
-        context_window=2,
-        max_input_tokens=max_input_tokens,
-        fact_token_ids={"target": [30, 31]},
-    )
-
-    assert plan.raw_context_tokens == len(full_context)
+    assert plan.raw_context_tokens == 6
     assert plan.context_truncated_tokens == 3
-    assert plan.context_token_ids == full_context[3:]
-    assert plan.target_token_ids == [30, 31]
-    assert plan.input_token_ids == full_context[3:] + [30, 31]
-    assert plan.slice_start == len(full_context) - 3
+    assert plan.context_token_ids == [21, 22, 23]
+    assert plan.target_token_ids == [32, 33]
+    assert plan.input_token_ids == [21, 22, 23, 32, 33]
+    assert plan.slice_start == 3
 
 
 def test_target_fact_larger_than_encoding_limit_fails() -> None:
-    target = memory_fact_from_hit(_hit("target", "target", 1))
-
     with pytest.raises(RuntimeError, match="without context"):
-        build_fact_context_encoding_plan(
-            target,
-            _sample(),
-            tokenizer=_DeterministicTokenizer(),
-            context_window=5,
-            max_input_tokens=1,
-            fact_token_ids={"target": [1, 2]},
-        )
+        _encoding_plan("target", context_window=5, max_input_tokens=1)
 
 
 class _DeterministicTokenizer:
@@ -392,9 +375,7 @@ def test_w0_prompt_injection_and_kv_use_identical_header_fact_footer_question_to
     header_text = "".join(chr(token_id) for token_id in scaffold.header_token_ids)
     prompted = build_memory_prompt_token_ids(
         encoder.tokenizer,
-        sample,
         catalog,
-        context_window=0,
         memory_token_budget=10_000,
         memory_scaffold=scaffold,
     )
@@ -450,7 +431,6 @@ def test_w_greater_than_zero_discards_prefix_tokens_from_visible_chunk(
 def test_empty_results_render_upstream_marker_and_compose_scaffold_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    sample = _sample()
     composer, encoder = _fake_composer(
         monkeypatch,
         context_window=0,
@@ -461,7 +441,6 @@ def test_empty_results_render_upstream_marker_and_compose_scaffold_only(
     scaffold = extract_memory_scaffold_token_ids(encoder.tokenizer)
     prompted = build_memory_prompt_token_ids(
         encoder.tokenizer,
-        sample,
         [],
         memory_token_budget=10_000,
         memory_scaffold=scaffold,
@@ -478,12 +457,9 @@ def test_empty_results_render_upstream_marker_and_compose_scaffold_only(
         "memory_retrieved_fact_ids": [],
         "memory_retrieved_fact_text_hashes": [],
         "memory_injected_fact_ids": [],
-        "memory_context_turn_ids": [],
-        "memory_context_turn_count": 0,
         "memory_context_encoding_tokens_total": 0,
         "memory_context_encoding_tokens_max": 0,
         "memory_context_encoding_truncated_tokens": 0,
-        "memory_context_text_tokens": 0,
         "memory_token_budget": 10_000,
     }
 
@@ -494,7 +470,7 @@ def test_fact_metrics_report_selected_context_encoding() -> None:
         chunk_id="target",
         token_ids=[30],
         kv_by_layer={},
-        context_ids=("sample-1:session_1:0", "sample-1:session_2:0"),
+        context_ids=("older-a", "older-b"),
         context_prefix_tokens=5,
         raw_context_prefix_tokens=8,
         context_prefix_truncated_tokens=3,
@@ -513,12 +489,9 @@ def test_fact_metrics_report_selected_context_encoding() -> None:
         "memory_retrieved_fact_ids": ["target"],
         "memory_retrieved_fact_text_hashes": [selected[0].text_hash],
         "memory_injected_fact_ids": ["target"],
-        "memory_context_turn_ids": ["sample-1:session_1:0", "sample-1:session_2:0"],
-        "memory_context_turn_count": 2,
         "memory_context_encoding_tokens_total": 5,
         "memory_context_encoding_tokens_max": 5,
         "memory_context_encoding_truncated_tokens": 3,
-        "memory_context_text_tokens": 0,
         "memory_token_budget": 10,
     }
 
@@ -529,7 +502,6 @@ def test_visible_memory_budget_never_drops_retrieved_facts() -> None:
     with pytest.raises(RuntimeError, match="retrieved Mem0 facts cannot fit"):
         plan_prompt_memory(
             selected,
-            context_window=0,
             memory_token_budget=2,
             scaffold_token_count=2,
             fact_token_ids={"target": [30]},
@@ -570,59 +542,7 @@ def test_live_vllm_memory_tokens_must_match_precomputed_hf_tokens() -> None:
         require_identical_token_ids([1, 2, 3], [1, 9, 3])
 
 
-def test_prompt_injection_renders_deduplicated_context_turns_before_their_facts() -> None:
-    sample = _sample()
-    tokenizer = _DeterministicTokenizer()
-    scaffold = extract_memory_scaffold_token_ids(tokenizer)
-    # Both facts come from session 3 turn 0 and session 4 turn 0; with a
-    # 2-turn window their contexts overlap on session 2/3 turns.
-    hits = [
-        _hit("late", "Late fact.", 4, rank=1),
-        _hit("early", "Early fact.", 3, rank=2),
-    ]
-
-    prompted = build_memory_prompt_token_ids(
-        tokenizer,
-        sample,
-        hits,
-        context_window=2,
-        memory_token_budget=10_000,
-        memory_scaffold=scaffold,
-        render_context_turns=True,
-    )
-
-    turn_tokens = {
-        turn.id: encode_text_no_special(tokenizer, format_memory_turn(turn))
-        for turn in sample.turns
-    }
-    fact_tokens = {
-        fact.memory_id: encode_text_no_special(tokenizer, format_memory_fact(fact))
-        for fact in reverse_ranked_memory_facts(hits)
-    }
-    # Facts remain reverse-ranked. Context turns stay chronological within
-    # each fact's window and are rendered only on their first occurrence.
-    expected_stream = (
-        turn_tokens[sample.turns[0].id]
-        + turn_tokens[sample.turns[1].id]
-        + fact_tokens["early"]
-        + turn_tokens[sample.turns[2].id]
-        + fact_tokens["late"]
-    )
-    expected = list(scaffold.header_token_ids) + expected_stream + list(scaffold.footer_token_ids)
-
-    assert prompted.token_ids == expected
-    assert prompted.fact_plan.context_turn_ids == (
-        sample.turns[0].id,
-        sample.turns[1].id,
-        sample.turns[2].id,
-    )
-    assert prompted.fact_plan.context_text_tokens == sum(
-        len(turn_tokens[sample.turns[index].id]) for index in range(3)
-    )
-    assert prompted.fact_plan.memory_tokens == len(expected)
-
-
-def test_prompt_injection_without_context_rendering_matches_kv_fact_only_tokens(
+def test_kv_memory_encoded_behind_a_window_shows_the_same_tokens_as_the_prompt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     catalog = [
@@ -634,35 +554,19 @@ def test_prompt_injection_without_context_rendering_matches_kv_fact_only_tokens(
         context_window=1,
         catalog=catalog,
     )
-    sample = _sample()
     scaffold = extract_memory_scaffold_token_ids(encoder.tokenizer)
 
     composed = composer.compose(catalog, memory_token_budget=10_000)
-    fact_only = build_memory_prompt_token_ids(
+    prompted = build_memory_prompt_token_ids(
         encoder.tokenizer,
-        sample,
         catalog,
-        context_window=1,
         memory_token_budget=10_000,
         memory_scaffold=scaffold,
-    )
-    with_context = build_memory_prompt_token_ids(
-        encoder.tokenizer,
-        sample,
-        catalog,
-        context_window=1,
-        memory_token_budget=10_000,
-        memory_scaffold=scaffold,
-        render_context_turns=True,
     )
 
-    # The KV verification path (render_context_turns=False) stays token-identical
-    # to the composed KV memory at any window; the prompt-injection answer path renders
-    # the context turns and is deliberately longer.
-    assert composed.token_ids == fact_only.token_ids
-    assert len(with_context.token_ids) > len(fact_only.token_ids)
-    assert with_context.fact_plan.context_text_tokens > 0
-    assert fact_only.fact_plan.context_text_tokens == 0
+    assert composed.token_ids == prompted.token_ids
+    assert composed.fact_plan.context_encoding_tokens_total > 0
+    assert prompted.fact_plan.context_encoding_tokens_total == 0
 
 
 def test_scaffold_footer_covers_kv_tail_despite_newline_merging() -> None:

@@ -78,10 +78,7 @@ class CorpusRetriever:
     def search(self, question: str, *, top_k: int) -> tuple[list[SearchHit], RetrievalMetrics]:
         if not self._built:
             raise RuntimeError("CorpusRetriever.build() must run before search().")
-        try:
-            return self._retriever.search(question, top_k=top_k)
-        except CachedEmbeddingMissingError as exc:
-            raise CachedEmbeddingMissingError(self._preembed_hint(exc)) from exc
+        return self._retriever.search(question, top_k=top_k)
 
     def close(self) -> None:
         self._retriever.close()

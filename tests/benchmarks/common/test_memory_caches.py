@@ -221,29 +221,6 @@ def test_cached_memory_llm_replays_canonical_requests_and_delegates_attributes(
     }
 
 
-def test_cached_embedder_isolated_by_normalized_endpoint(tmp_path: Path) -> None:
-    cache_dir = tmp_path / "embeddings"
-    first = CachedEmbedder(
-        RecordingEmbedder(),
-        cache_dir=cache_dir,
-        model="model",
-        mode="write",
-        endpoint="HTTPS://EXAMPLE.COM/v1/",
-    )
-    second = CachedEmbedder(
-        RecordingEmbedder(),
-        cache_dir=cache_dir,
-        model="model",
-        mode="write",
-        endpoint="https://other.example/v1",
-    )
-
-    assert first.embed("same text", "add") == _vector_for("same text")
-    assert second.embed("same text", "add") == _vector_for("same text")
-    assert first.cache_dir != second.cache_dir
-    assert first.endpoint == "https://example.com/v1"
-
-
 def test_cached_memory_llm_read_mode_fails_on_missing_or_corrupt_entries_without_fallback(
     tmp_path: Path,
 ) -> None:

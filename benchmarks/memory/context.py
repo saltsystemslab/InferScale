@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, MutableMapping, Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from inferscale.v1.kv.plan import build_encoding_plan
-from inferscale.v1.kv.tokenization import encode_text_no_special
 from inferscale.v1.types import EncodingPlan, KVChunk
 
-from .data import ConversationSample, Turn, format_turn_for_memory
+from .data import ConversationSample, Turn
 from .types import MemoryFactPlan, RetrievedFact
 
 
@@ -30,32 +29,31 @@ def previous_turn_context_turns(
     return sample.turns[max(0, target_index - context_window) : target_index]
 
 
-def format_memory_turn(turn: Turn) -> str:
-    return format_turn_for_memory(turn).strip() + "\n"
+def facts_by_source_turn(facts: Sequence[RetrievedFact]) -> dict[str, list[RetrievedFact]]:
+    grouped: dict[str, list[RetrievedFact]] = {}
+    for fact in facts:
+        grouped.setdefault(fact.source_turn_id, []).append(fact)
+    return grouped
 
 
-def context_turn_token_ids(
-    tokenizer: Any,
-    turn: Turn,
-    turn_token_ids: MutableMapping[str, list[int]] | None = None,
-) -> list[int]:
-    if turn_token_ids is not None and turn.id in turn_token_ids:
-        return list(turn_token_ids[turn.id])
-    tokens = encode_text_no_special(tokenizer, format_memory_turn(turn))
-    if turn_token_ids is not None:
-        turn_token_ids[turn.id] = list(tokens)
-    return tokens
+def previous_turn_context_facts(
+    sample: ConversationSample,
+    target: RetrievedFact,
+    facts_by_turn: Mapping[str, Sequence[RetrievedFact]],
+    context_window: int,
+) -> list[RetrievedFact]:
+    context_turns = previous_turn_context_turns(sample, target.source_turn_id, context_window)
+    return [fact for turn in context_turns for fact in facts_by_turn.get(turn.id, ())]
 
 
 def build_fact_context_encoding_plan(
     target: RetrievedFact,
     sample: ConversationSample,
     *,
-    tokenizer: Any,
     context_window: int,
     max_input_tokens: int,
     fact_token_ids: Mapping[str, list[int]],
-    turn_token_ids: MutableMapping[str, list[int]] | None = None,
+    facts_by_turn: Mapping[str, Sequence[RetrievedFact]],
 ) -> EncodingPlan:
     if context_window < 0:
         raise ValueError("context_window must be >= 0.")
@@ -69,15 +67,14 @@ def build_fact_context_encoding_plan(
             f"Mem0 fact {target.memory_id} has {len(target_token_ids)} tokens, "
             f"exceeding kv_max_position={max_input_tokens} without context."
         )
-    context_turns = previous_turn_context_turns(sample, target.source_turn_id, context_window)
-    context_token_ids: list[int] = []
-    for turn in context_turns:
-        context_token_ids.extend(context_turn_token_ids(tokenizer, turn, turn_token_ids))
+    context_facts = previous_turn_context_facts(sample, target, facts_by_turn, context_window)
     return build_encoding_plan(
         target.memory_id,
         target_token_ids,
-        context_token_ids=context_token_ids,
-        context_ids=tuple(turn.id for turn in context_turns),
+        context_token_ids=[
+            token for fact in context_facts for token in fact_token_ids[fact.memory_id]
+        ],
+        context_ids=tuple(fact.memory_id for fact in context_facts),
         max_input_tokens=max_input_tokens,
     )
 
@@ -105,13 +102,11 @@ def plan_kv_memory(
         memory_token_budget=memory_token_budget,
         scaffold_token_count=scaffold_token_count,
         fact_token_ids=fact_token_ids,
-        context_turn_ids=[turn_id for chunk in chunks for turn_id in chunk.context_ids],
         context_encoding_tokens_total=sum(prefix_token_counts),
         context_encoding_tokens_max=max(prefix_token_counts, default=0),
         context_encoding_truncated_tokens=sum(
             chunk.context_prefix_truncated_tokens for chunk in chunks
         ),
-        context_text_tokens=0,
     )
 
 
@@ -119,26 +114,21 @@ def plan_prompt_memory(
     selected_facts: Sequence[RetrievedFact],
     *,
     retrieved_facts: Sequence[RetrievedFact] | None = None,
-    context_window: int,
     memory_token_budget: int,
     scaffold_token_count: int,
     fact_token_ids: Mapping[str, list[int]],
-    context_turn_ids: Sequence[str] = (),
-    context_text_tokens: int = 0,
 ) -> MemoryFactPlan:
     retrieved = _checked_retrieved_facts(selected_facts, retrieved_facts, fact_token_ids)
     return _fact_plan(
         selected_facts,
         retrieved,
-        context_window=context_window,
+        context_window=0,
         memory_token_budget=memory_token_budget,
         scaffold_token_count=scaffold_token_count,
         fact_token_ids=fact_token_ids,
-        context_turn_ids=list(context_turn_ids),
         context_encoding_tokens_total=0,
         context_encoding_tokens_max=0,
         context_encoding_truncated_tokens=0,
-        context_text_tokens=context_text_tokens,
     )
 
 
@@ -148,12 +138,9 @@ def memory_context_metrics(plan: MemoryFactPlan) -> dict[str, Any]:
         "memory_retrieved_fact_ids": list(plan.retrieved_fact_ids),
         "memory_retrieved_fact_text_hashes": list(plan.retrieved_fact_text_hashes),
         "memory_injected_fact_ids": list(plan.injected_fact_ids),
-        "memory_context_turn_ids": list(plan.context_turn_ids),
-        "memory_context_turn_count": len(plan.context_turn_ids),
         "memory_context_encoding_tokens_total": plan.context_encoding_tokens_total,
         "memory_context_encoding_tokens_max": plan.context_encoding_tokens_max,
         "memory_context_encoding_truncated_tokens": plan.context_encoding_truncated_tokens,
-        "memory_context_text_tokens": plan.context_text_tokens,
         "memory_token_budget": plan.memory_token_budget,
     }
 
@@ -182,11 +169,9 @@ def _fact_plan(
     memory_token_budget: int,
     scaffold_token_count: int,
     fact_token_ids: Mapping[str, list[int]],
-    context_turn_ids: list[str],
     context_encoding_tokens_total: int,
     context_encoding_tokens_max: int,
     context_encoding_truncated_tokens: int,
-    context_text_tokens: int,
 ) -> MemoryFactPlan:
     if context_window < 0:
         raise ValueError("context_window must be >= 0.")
@@ -195,25 +180,23 @@ def _fact_plan(
     if scaffold_token_count < 0:
         raise ValueError("scaffold_token_count must be >= 0.")
     fact_tokens = sum(len(fact_token_ids[fact.memory_id]) for fact in selected_facts)
-    memory_tokens = scaffold_token_count + context_text_tokens + fact_tokens
+    memory_tokens = scaffold_token_count + fact_tokens
     if memory_tokens > memory_token_budget:
         raise RuntimeError(
-            "Memory scaffold, context turns, and retrieved Mem0 facts cannot fit within "
-            f"the memory token budget: required={memory_tokens} budget={memory_token_budget} "
-            f"scaffold={scaffold_token_count} context={context_text_tokens} facts={fact_tokens}."
+            "Memory scaffold and retrieved Mem0 facts cannot fit within the memory token "
+            f"budget: required={memory_tokens} budget={memory_token_budget} "
+            f"scaffold={scaffold_token_count} facts={fact_tokens}."
         )
     return MemoryFactPlan(
         context_window=context_window,
         retrieved_fact_ids=tuple(fact.memory_id for fact in retrieved_facts),
         retrieved_fact_text_hashes=tuple(fact.text_hash for fact in retrieved_facts),
         injected_fact_ids=tuple(fact.memory_id for fact in selected_facts),
-        context_turn_ids=tuple(dict.fromkeys(turn_id for turn_id in context_turn_ids if turn_id)),
         context_encoding_tokens_total=context_encoding_tokens_total,
         context_encoding_tokens_max=context_encoding_tokens_max,
         context_encoding_truncated_tokens=context_encoding_truncated_tokens,
         scaffold_tokens=scaffold_token_count,
         fact_tokens=fact_tokens,
-        context_text_tokens=context_text_tokens,
         memory_tokens=memory_tokens,
         memory_token_budget=memory_token_budget,
     )

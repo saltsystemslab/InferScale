@@ -145,7 +145,7 @@ def test_fresh_throughput_and_memory_configs_share_extraction_endpoint(
     assert config.memory_llm_base_url == "http://localhost:8000/v1"
 
 
-def test_json_controls_settings_and_environment_only_supplies_credentials(
+def test_json_controls_settings_and_the_environment_is_ignored(
     tmp_path: Path, runtime: RuntimeConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     for key, value in {
@@ -155,11 +155,8 @@ def test_json_controls_settings_and_environment_only_supplies_credentials(
         "LOCOMO_KV_STORE_BACKEND": "cpu",
         "LOCOMO_KV_ENABLE_PREFIX_CACHING": "0",
         "LOCOMO_LOG_LEVEL": "DEBUG",
-        "OPENAI_EMBEDDING_MODEL": "other-embedding",
-        "OPENAI_BASE_URL": "https://environment.example/v1",
         "EXTRACTION_LLM_BASE_URL": "https://environment.example/v1",
         "LOCOMO_JASPER_DEVICE_KV_SELECTION": "0",
-        "OPENAI_API_KEY": "secret-value",
     }.items():
         monkeypatch.setenv(key, value)
     config = _config(
@@ -168,9 +165,7 @@ def test_json_controls_settings_and_environment_only_supplies_credentials(
         model="llama",
         user_counts=[2, 3],
         log_level="WARNING",
-        inferscale={
-            "embedding": {"model": "json-embedding", "base_url": "https://embedding.example/v1"},
-        },
+        inferscale={"embedding": {"model": "json-embedding"}},
         mem0={"llm_base_url": "https://extraction.example/v1"},
     )
 
@@ -181,10 +176,7 @@ def test_json_controls_settings_and_environment_only_supplies_credentials(
     assert config.kv_enable_prefix_caching is True
     assert config.log_level == "WARNING"
     assert config.embedding_model == "json-embedding"
-    assert config.embedding_base_url == "https://embedding.example/v1"
     assert config.memory_llm_base_url == "https://extraction.example/v1"
-    assert config.embedding_api_key == "secret-value"
-    assert "secret-value" not in json.dumps(config.to_jsonable())
 
 
 @pytest.mark.parametrize("endpoint", [None, "http://localhost:9000/v1"])
@@ -274,21 +266,13 @@ def test_lmcache_blend_requires_the_lmcache_section(
     assert lmcache_config(config).max_local_cpu_size_gb == 16.0
 
 
-def test_worker_config_restores_redacted_api_key_from_environment(
-    tmp_path: Path, runtime: RuntimeConfig, monkeypatch: pytest.MonkeyPatch
+def test_worker_restores_the_config_from_its_snapshot(
+    tmp_path: Path, runtime: RuntimeConfig
 ) -> None:
-    monkeypatch.setenv("OPENAI_API_KEY", "secret-value")
     config = _config(tmp_path, runtime, conditions=["mem0_qdrant"], user_counts=[2])
     path = _write(tmp_path, config.to_jsonable(), "snapshot.json")
-    monkeypatch.delenv("OPENAI_API_KEY")
-    monkeypatch.setenv("LOCOMO_THROUGHPUT_EMBEDDING_API_KEY", "secret-value")
 
-    restored = ThroughputConfig.from_json_file(path)
-    assert restored.embedding_api_key == "secret-value"
-    assert restored.user_counts == (2,)
-    assert restored.dataset_path == config.dataset_path
-    assert restored.memory_llm_cache_dir == config.memory_llm_cache_dir
-    assert "secret-value" not in path.read_text(encoding="utf-8")
+    assert ThroughputConfig.from_json_file(path) == config
 
 
 def test_cpu_payload_store_context_and_prefix_cache_round_trip(

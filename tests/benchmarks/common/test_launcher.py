@@ -33,7 +33,7 @@ def announced_jobs(log_messages):
 @pytest.mark.parametrize(
     "name,count",
     [
-        ("memory", 80),
+        ("memory", 140),
         ("memory-cpu", 64),
         ("memory-lmcache", 4),
         ("throughput", 4),
@@ -64,7 +64,7 @@ def test_authored_sweeps_expand_to_complete_unique_grids(runtime, name, count):
     if name == "rag-lmcache":
         assert all(run["answer_backend"] == "lmcache-blend" for run in runs)
     if name == "memory":
-        assert {run["top_k"] for run in runs} == {5, 10, 20, 50}
+        assert {run["top_k"] for run in runs} == {5, 10, 20, 50, 100, 200, 400}
         assert {run["context_window"] for run in runs} == {0, 5, 20, 50}
         assert all(
             "-prompt-injection-mem0-" in run["run_id"]

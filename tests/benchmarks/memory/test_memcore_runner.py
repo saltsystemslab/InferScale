@@ -126,6 +126,10 @@ def test_benchmark_writes_the_run_folder_and_returns_its_summary(
             f"results_dir={config.run_dir}",
         ),
         ("INFO", "Finished benchmark run_id=run questions=2 judged=1 accuracy=1.0000"),
+        (
+            "INFO",
+            "Median latency run_id=run time_to_first_token_ms=n/a query_to_first_token_ms=n/a",
+        ),
         ("INFO", "Category 1 (multi-hop) accuracy=1.0000 (1/1)"),
         ("INFO", f"Wrote results to {config.run_dir}"),
     ]

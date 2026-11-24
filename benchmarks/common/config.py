@@ -26,7 +26,6 @@ from benchmarks.common.paths import (
     resolve_layout,
 )
 
-OPENAI_API_KEY_ENV = "OPENAI_API_KEY"
 JUDGE_LLM_API_KEY_ENV = "JUDGE_LLM_API_KEY"
 EXTRACTION_LLM_API_KEY_ENV = "EXTRACTION_LLM_API_KEY"
 DEFAULT_EXTRACTION_LLM_BASE_URL = "http://localhost:8000/v1"
@@ -186,10 +185,6 @@ def stamp_now() -> str:
 def slug(value: str) -> str:
     normalized = re.sub(r"[^a-zA-Z0-9._-]+", "-", value).strip("-._").lower()
     return normalized or "model"
-
-
-def embedding_api_key() -> str | None:
-    return os.environ.get(OPENAI_API_KEY_ENV) or None
 
 
 def judge_llm_api_key() -> str | None:

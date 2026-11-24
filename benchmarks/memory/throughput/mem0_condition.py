@@ -32,7 +32,6 @@ from benchmarks.memory.throughput.stores import (
     fact_catalog_store,
     load_samples,
     prepare_sample_stores,
-    require_embedding_access,
     search_store,
 )
 from benchmarks.memory.throughput.workload import (
@@ -57,7 +56,6 @@ class _ConditionContext:
 def run_mem0(
     config: ThroughputConfig, user_counts: tuple[int, ...], *, condition: str, backend: str
 ) -> list[dict[str, Any]]:
-    require_embedding_access(config, condition)
     samples = load_samples(config)
     catalog_store = fact_catalog_store(config)
     max_users = max(user_counts)
@@ -114,7 +112,7 @@ def _prepare_request(
     search = search_store(memory, request.query, top_k=context.config.top_k)
     started = time.perf_counter()
     memory_prompt = build_memory_prompt_token_ids(
-        context.tokenizer, sample, search.result, context_window=0, memory_scaffold=context.scaffold
+        context.tokenizer, search.result, memory_scaffold=context.scaffold
     )
     prompt_token_ids = request_prompt_token_ids(context.tokenizer, memory_prompt.token_ids, request)
     return PreparedRequest(

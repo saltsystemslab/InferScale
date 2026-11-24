@@ -72,12 +72,9 @@ class PromptInjectionAnswerClient:
         )
         memory = build_memory_prompt_token_ids(
             self._tokenizer,
-            sample,
             hits,
-            context_window=self.config.context_window,
             memory_token_budget=query.memory_token_budget,
             memory_scaffold=query.scaffold,
-            render_context_turns=True,
         )
         prompt = build_prompt_tokens(memory.token_ids, query.query_tokens)
         output = self._engine.generate(

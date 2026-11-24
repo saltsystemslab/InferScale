@@ -44,9 +44,9 @@ export function Hero() {
         GPU-native KV injection for personalized LLM serving
       </p>
       <p className="mt-6 max-w-2xl leading-7">
-        InferScale precomputes KV cache, retrieves the relevant facts
-        on the GPU, and injects KV straight into vLLM's paged cache. Time-to-First-Token (TTFT)
-        remains low even for large retrieval budgets, enabling high-throughput, low-latency LLM inference.
+        InferScale precomputes KV cache, retrieves the relevant facts on the GPU, and injects KV
+        straight into vLLM's paged cache. Time-to-First-Token (TTFT) remains low even for large
+        retrieval budgets, enabling high-throughput, low-latency LLM inference.
       </p>
       <div className="mt-8 flex flex-wrap gap-2.5">
         <a

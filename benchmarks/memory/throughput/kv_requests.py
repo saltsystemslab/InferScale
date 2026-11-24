@@ -129,9 +129,7 @@ def compose_request(
     search = _search(retrieval.memory, request.query, context.config.top_k, timings)
     kv_by_layer, memory_token_ids = _compose_memory(context, sample, search.result, timings)
     _register(context.namespace, memory_user_id, kv_by_layer, memory_token_ids, timings)
-    _verify_token_equivalence(
-        context, retrieval.memory, sample, search.result, memory_token_ids, timings
-    )
+    _verify_token_equivalence(context, retrieval.memory, search.result, memory_token_ids, timings)
     started = time.perf_counter()
     prompt_token_ids = request_prompt_token_ids(context.corpus.tokenizer, memory_token_ids, request)
     timings.prompt_build_s += time.perf_counter() - started
@@ -204,7 +202,6 @@ def _register(
 def _verify_token_equivalence(
     context: RequestContext,
     memory: Any,
-    sample: ConversationSample,
     device_result: DeviceSearchResult,
     memory_token_ids: list[int],
     timings: RequestTimings,
@@ -212,11 +209,7 @@ def _verify_token_equivalence(
     started = time.perf_counter()
     hits = materialize_store_device_result(memory, device_result)
     prompt_injection_memory = build_memory_prompt_token_ids(
-        context.corpus.tokenizer,
-        sample,
-        hits,
-        context_window=0,
-        memory_scaffold=context.scaffold,
+        context.corpus.tokenizer, hits, memory_scaffold=context.scaffold
     )
     require_identical_token_ids(memory_token_ids, prompt_injection_memory.token_ids)
     timings.verify_s += time.perf_counter() - started

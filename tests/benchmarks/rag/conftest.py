@@ -69,16 +69,16 @@ def multihop_config(tmp_path, runtime, corpus_tokenizer) -> Callable[..., RagBen
 
 
 @pytest.fixture
-def embedding_api(monkeypatch) -> list[list[str]]:
-    embedded_batches: list[list[str]] = []
+def embedded_batches(monkeypatch) -> list[list[str]]:
+    batches: list[list[str]] = []
 
-    class EmbeddingApi(FakeEmbedder):
+    class RecordingEmbedder(FakeEmbedder):
         def __init__(self, **_: Any) -> None:
             super().__init__()
-            self.document_calls = embedded_batches
+            self.document_calls = batches
 
-    monkeypatch.setattr(embedder, "OpenAIEmbedder", EmbeddingApi)
-    return embedded_batches
+    monkeypatch.setattr(embedder, "LocalEmbedder", RecordingEmbedder)
+    return batches
 
 
 class JasperIndexDouble(FakeIndex):

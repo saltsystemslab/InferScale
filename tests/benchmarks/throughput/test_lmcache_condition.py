@@ -68,7 +68,6 @@ class _Harness:
             "user_counts": (1, 2),
             "requests_per_user": 1,
             "warmup_batches": 1,
-            "embedding_api_key": "test-key",
             "lmcache_max_local_cpu_size_gb": 1.0,
             **overrides,
         }
@@ -215,11 +214,7 @@ def test_blend_prompt_is_the_mem0_prompt_plus_separators(
     scaffold = extract_memory_scaffold_token_ids(tokenizer, block_size=harness.config.kv_block_size)
     request = LocomoRequest(user_index=0, sample_id="sample-0", question_id="q0", query="query 0")
     mem0_memory = build_memory_prompt_token_ids(
-        tokenizer,
-        SimpleNamespace(sample_id="sample-0"),
-        CATALOG,
-        context_window=0,
-        memory_scaffold=scaffold,
+        tokenizer, CATALOG, memory_scaffold=scaffold
     ).token_ids
     mem0_prompt = request_prompt_token_ids(tokenizer, mem0_memory, request)
 
@@ -245,7 +240,7 @@ def _without(token_ids: list[int], separator: list[int]) -> list[int]:
 def test_run_lmcache_blend_requires_the_lmcache_settings_before_starting(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    config = make_throughput_config(tmp_path, embedding_api_key="test-key")
+    config = make_throughput_config(tmp_path)
     monkeypatch.setattr(
         lmcache_condition, "start_llm", lambda *args, **kwargs: pytest.fail("engine started")
     )

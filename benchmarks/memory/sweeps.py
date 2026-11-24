@@ -13,7 +13,13 @@ from benchmarks.common.json_fields import (
     require,
 )
 
-from .protocol import ANSWER_BACKENDS, KV_STORE_BACKENDS, LMCACHE_BACKEND, VECTOR_BACKENDS
+from .protocol import (
+    ANSWER_BACKENDS,
+    KV_STORE_BACKENDS,
+    LMCACHE_BACKEND,
+    PROMPT_INJECTION_BACKEND,
+    VECTOR_BACKENDS,
+)
 
 SWEEP_KEYS = ("top_k", "variants")
 VARIANT_KEYS = (
@@ -177,6 +183,11 @@ def _parse_variant(authored_variant: Any, where: str) -> SweepVariant:
     if answer_backend == LMCACHE_BACKEND and context_windows != (0,):
         raise ConfigError(
             f"{where}: {LMCACHE_BACKEND} stores each fact alone, so context_window must be [0]."
+        )
+    if answer_backend == PROMPT_INJECTION_BACKEND and context_windows != (0,):
+        raise ConfigError(
+            f"{where}: {PROMPT_INJECTION_BACKEND} sends only the retrieved facts, so "
+            "context_window must be [0]."
         )
     return SweepVariant(
         name=require(authored_variant, "name", str, where),

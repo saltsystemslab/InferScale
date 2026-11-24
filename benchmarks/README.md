@@ -2,7 +2,7 @@
 
 This directory runs the memory and RAG benchmarks on InferScale using Llama-3.1-8B-Instruct, Mistral-7B-Instruct-v0.3, Qwen2.5-7B-Instruct, and Qwen3-14B.
 
-- `kv-injection`: retrieved Mem0 facts are encoded with chunked RoPE, then injected directly into the KV cache
+- `kv-injection`: each Mem0 fact is encoded with chunked RoPE behind the facts from the `w` conversation turns before its source turn, and the KV of the retrieved facts is injected directly into the KV cache
 - `prompt-injection`: retrieved Mem0 facts are injected as prompt text
 - `lmcache-blend`: retrieved Mem0 facts are served through LMCache CacheBlend, which reuses each fact's cached KV at its position in the prompt and recomputes a fraction of the tokens
 

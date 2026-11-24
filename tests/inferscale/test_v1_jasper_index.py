@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from inferscale.v1.index.jasper import JasperIndex
+from inferscale.v1.index.jasper import MAX_JASPER_BEAM_WIDTH, JasperIndex
 
 VECTORS = [[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [1.0, 1.0, 0.0], [-1.0, 0.0, 1.0]]
 PAYLOADS = [{"group": "keep"}, {"group": "drop"}, {"group": "keep"}, {"group": "keep"}]
@@ -129,3 +129,22 @@ def test_whole_store_request_is_scored_exactly_because_beam_search_may_skip_vert
     assert beam_searches == [(3, 64)]
     assert ids_of(part_of_the_store) == IDS_BY_SCORE[:3]
     assert ids_of(whole_store) == IDS_BY_SCORE
+
+
+def test_request_wider_than_the_widest_beam_is_scored_exactly(monkeypatch) -> None:
+    row_count = MAX_JASPER_BEAM_WIDTH + 2
+    index = JasperIndex()
+    index.add_many(
+        [[float(row), 1.0] for row in range(row_count)],
+        [{} for _ in range(row_count)],
+        [str(row) for row in range(row_count)],
+    )
+    monkeypatch.setattr(index, "_build_jasper_graph", ResidentGraph)
+    index.finalize()
+    beam_searches = record_beam_searches(index, monkeypatch)
+
+    index.search([1.0, 0.0], top_k=MAX_JASPER_BEAM_WIDTH)
+    wider_than_any_beam, _ = index.search([1.0, 0.0], top_k=MAX_JASPER_BEAM_WIDTH + 1)
+
+    assert beam_searches == [(MAX_JASPER_BEAM_WIDTH, MAX_JASPER_BEAM_WIDTH)]
+    assert ids_of(wider_than_any_beam) == [str(row) for row in range(row_count - 1, 0, -1)]

@@ -68,7 +68,6 @@ def catalog_store(root: Path, **identity: Any) -> FactCatalogStore:
         model="model",
         endpoint="http://localhost:8000/v1",
         embedding_model="embedding-model",
-        embedding_endpoint=None,
         mem0_version="2.0.11",
         **identity,
     )

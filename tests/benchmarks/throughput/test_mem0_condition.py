@@ -21,7 +21,6 @@ def test_run_mem0_attributes_each_request_to_every_applicable_batch(
         run_id="batch-attribution-test",
         user_counts=(1, 2, 3),
         requests_per_user=2,
-        embedding_api_key="test-key",
     )
     samples = [SimpleNamespace(sample_id=f"sample-{index}") for index in range(2)]
     requests = [

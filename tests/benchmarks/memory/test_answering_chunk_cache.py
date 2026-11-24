@@ -88,7 +88,7 @@ def test_cache_file_is_addressed_by_model_encoding_settings_sample_and_facts() -
 
     key = ChunkCacheKey.from_config(settings, sample, facts)
 
-    assert CHUNK_CACHE_VERSION == 2
+    assert CHUNK_CACHE_VERSION == 3
     assert facts_fingerprint(facts) == expected_facts_fingerprint
     assert facts_fingerprint([]) == hashlib.sha256(b"").hexdigest()[:20]
     assert key == ChunkCacheKey(
@@ -101,7 +101,7 @@ def test_cache_file_is_addressed_by_model_encoding_settings_sample_and_facts() -
         sample_fingerprint=sample_fingerprint(sample),
         facts_fingerprint=expected_facts_fingerprint,
     )
-    directory = Path("/cache/kv-chunks/v2/Qwen__Qwen3-14B/bfloat16-w50-p32768-b1")
+    directory = Path("/cache/kv-chunks/v3/Qwen__Qwen3-14B/bfloat16-w50-p32768-b1")
     assert key.directory("/cache") == directory
     assert key.path(Path("/cache")) == (
         directory / f"conv-1-{sample_fingerprint(sample)}-{expected_facts_fingerprint}.pt"

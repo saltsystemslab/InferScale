@@ -247,7 +247,7 @@ class JasperIndex:
         self, query: np.ndarray, candidate_k: int, beam_width: int
     ) -> tuple[list[SearchHit], float]:
         beam_ready = self._finalized and self._graph is not None
-        if beam_ready and candidate_k < self.vector_count:
+        if beam_ready and self._beam_search_can_serve(candidate_k, beam_width):
             hits, search_time_ms = self._search_jasper(query, candidate_k, beam_width=beam_width)
             if len(hits) >= candidate_k:
                 return hits, search_time_ms
@@ -265,7 +265,7 @@ class JasperIndex:
     def _device_candidates(
         self, query: np.ndarray, top_k: int, beam_width: int
     ) -> tuple[Any, Any, float]:
-        if top_k >= self.vector_count:
+        if not self._beam_search_can_serve(top_k, beam_width):
             return self._search_exact_gpu_device(query, top_k)
         stable_ids, distances, search_time_ms = self._search_jasper_device(
             query, top_k, beam_width=beam_width
@@ -280,6 +280,9 @@ class JasperIndex:
         )
         exact_ids, exact_distances, exact_time_ms = self._search_exact_gpu_device(query, top_k)
         return exact_ids, exact_distances, search_time_ms + exact_time_ms
+
+    def _beam_search_can_serve(self, top_k: int, beam_width: int) -> bool:
+        return top_k < self.vector_count and beam_width <= MAX_JASPER_BEAM_WIDTH
 
     def _search_jasper(
         self, query: np.ndarray, top_k: int, *, beam_width: int

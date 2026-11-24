@@ -158,7 +158,6 @@ class FactCatalogStore:
         model: str,
         endpoint: str | None,
         embedding_model: str,
-        embedding_endpoint: str | None,
         mem0_version: str | None = None,
         temperature: float = 0.0,
     ) -> None:
@@ -167,7 +166,6 @@ class FactCatalogStore:
         self.model = model.strip()
         self.endpoint = normalize_endpoint(endpoint)
         self.embedding_model = embedding_model.strip()
-        self.embedding_endpoint = normalize_endpoint(embedding_endpoint)
         self.mem0_version = mem0_version or importlib.metadata.version("mem0ai")
         self.temperature = float(temperature)
         self.catalog_dir = (
@@ -183,7 +181,6 @@ class FactCatalogStore:
             / f"text-{MEMORY_EXTRACTION_MAX_TEXT_CHARS}"
             / endpoint_cache_key(self.endpoint)
             / safe_path_part(self.embedding_model)
-            / endpoint_cache_key(self.embedding_endpoint)
         )
 
     def path_for(self, sample: ConversationSample) -> Path:
@@ -224,7 +221,6 @@ class FactCatalogStore:
             "vector_distance": VECTOR_DISTANCE,
             "ingestion_protocol": MEMORY_INGESTION_PROTOCOL,
             "embedding_model": self.embedding_model,
-            "embedding_endpoint": self.embedding_endpoint,
             "sample_id": sample.sample_id,
             "sample_fingerprint": sample_fingerprint(sample),
         }

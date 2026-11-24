@@ -115,11 +115,9 @@ def test_saved_records_of_the_unscored_adversarial_category_are_still_summarized
 def test_optional_query_metrics_are_summarized_under_their_pinned_names_in_order():
     optional_metrics = [
         "memory_context_window",
-        "memory_context_turn_count",
         "memory_context_encoding_tokens_total",
         "memory_context_encoding_tokens_max",
         "memory_context_encoding_truncated_tokens",
-        "memory_context_text_tokens",
         "memory_token_budget",
         "kv_memory_tokens",
         "kv_compose_time_ms",

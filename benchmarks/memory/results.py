@@ -10,11 +10,9 @@ from benchmarks.memory.setup_metrics import SETUP_METRIC_COLUMNS
 
 MEMORY_AUDIT_NUMERIC_METRIC_KEYS = (
     "memory_context_window",
-    "memory_context_turn_count",
     "memory_context_encoding_tokens_total",
     "memory_context_encoding_tokens_max",
     "memory_context_encoding_truncated_tokens",
-    "memory_context_text_tokens",
     "memory_token_budget",
 )
 

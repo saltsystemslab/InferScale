@@ -53,8 +53,7 @@ def test_mem0_pydantic_config_retains_backend_and_enforces_inner_product(tmp_pat
             store_root=tmp_path,
             vector_config=VectorStoreConfig(backend="qdrant"),
             embedding_model="embedding-model",
-            embedding_api_key=None,
-            embedding_base_url=None,
+            embedding_device="cpu",
             memory_llm_model="answer/model",
         )
     )
@@ -602,7 +601,9 @@ def test_effective_beam_expands_to_top_k_and_is_recorded(monkeypatch: pytest.Mon
     assert config.context_window == 0
     assert config.to_jsonable()["context_window_unit"] == "turns"
     assert config.jasper_effective_beam_width == 100
-    assert config.to_jsonable()["context_window_semantics"] == "encoding-prefix-discard-v1"
+    assert (
+        config.to_jsonable()["context_window_semantics"] == "previous-turn-facts-prefix-discard-v1"
+    )
     assert config.to_jsonable()["memory_unit"] == "mem0-fact"
     assert config.to_jsonable()["mem0_infer"] is True
     assert config.to_jsonable()["jasper_effective_beam_width"] == 100
@@ -618,13 +619,11 @@ def test_qdrant_has_no_effective_jasper_beam() -> None:
     assert vector_store_config(config).beam_width == 64
 
 
-def test_nonzero_turn_context_is_accepted_for_prompt_injection_backend() -> None:
-    config = make_memory_config(
-        answer_backend="prompt-injection", vector_backend="qdrant", context_window=1
-    )
-
-    assert config.context_window == 1
-    assert config.answer_backend == "prompt-injection"
+def test_prompt_injection_sends_only_the_retrieved_facts_so_it_takes_no_context_window() -> None:
+    with pytest.raises(ConfigError, match="prompt-injection .* context_window must be 0"):
+        make_memory_config(
+            answer_backend="prompt-injection", vector_backend="qdrant", context_window=1
+        )
 
 
 def test_negative_context_window_remains_rejected() -> None:

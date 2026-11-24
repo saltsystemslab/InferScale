@@ -39,7 +39,7 @@ def test_manifest_fingerprints_every_catalog_and_the_selected_texts(
         ),
         (
             "catalog_identity",
-            {"version": 5, "model": "extractor", "embedding_model": "text-embedding-3-small"},
+            {"version": 6, "model": "extractor", "embedding_model": "Qwen/Qwen3-Embedding-0.6B"},
         ),
         ("seed", 7),
         ("available_facts", 4),
@@ -88,9 +88,9 @@ def test_catalogs_may_differ_only_in_their_facts_and_sample_keys(
     _, manifest = load_corpus(tmp_path)
 
     assert manifest["catalog_identity"] == {
-        "version": 5,
+        "version": 6,
         "model": "extractor",
-        "embedding_model": "text-embedding-3-small",
+        "embedding_model": "Qwen/Qwen3-Embedding-0.6B",
     }
 
     write_catalog(tmp_path / "c.json", "sample-c", ["c"], extraction_prompt="another")

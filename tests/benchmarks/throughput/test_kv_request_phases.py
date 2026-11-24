@@ -106,8 +106,8 @@ class Phases:
         self.events.append(("materialize", memory, device_result))
         return ["hit"]
 
-    def build_prompt_injection_memory(self, tokenizer, sample, hits, **options):
-        self.events.append(("prompt_injection_memory", tokenizer, sample, hits, options))
+    def build_prompt_injection_memory(self, tokenizer, hits, **options):
+        self.events.append(("prompt_injection_memory", tokenizer, hits, options))
         return SimpleNamespace(token_ids=MEMORY_TOKENS)
 
     def request_prompt(self, tokenizer, memory_token_ids, locomo_request):
@@ -164,13 +164,7 @@ def test_request_runs_its_phases_in_order_and_times_every_one_of_them(
         "clock",
         "clock",
         ("materialize", MEMORY, DEVICE_RESULT),
-        (
-            "prompt_injection_memory",
-            TOKENIZER,
-            SAMPLE,
-            ["hit"],
-            {"context_window": 0, "memory_scaffold": SCAFFOLD},
-        ),
+        ("prompt_injection_memory", TOKENIZER, ["hit"], {"memory_scaffold": SCAFFOLD}),
         "clock",
         "clock",
         ("request_prompt", TOKENIZER, MEMORY_TOKENS, request(0)),

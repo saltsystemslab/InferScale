@@ -8,6 +8,7 @@ from benchmarks.common.deferred_judging import judge_pending_records
 from benchmarks.common.files import read_json_or_default, read_jsonl, replace_jsonl, write_json
 from benchmarks.common.judge import failed_judge_payload, format_accuracy
 from benchmarks.common.paths import RUN_CONFIG_FILE
+from benchmarks.common.run_summary import median_latency_text
 from benchmarks.common.system import collect_system_metadata
 from benchmarks.memory.config import MemoryRunConfig
 from benchmarks.memory.judging import judge_metadata, judge_record, record_label
@@ -59,6 +60,7 @@ def run_benchmark(config: MemoryRunConfig, clients: RuntimeClients | None = None
         summary["judged_count"],
         format_accuracy(summary.get("metrics", {}).get("accuracy")),
     )
+    logger.info("Median latency run_id={} {}", config.run_id, median_latency_text(summary))
     _log_category_accuracy(summary)
     logger.info("Wrote results to {}", config.run_dir)
     return summary

@@ -16,8 +16,8 @@ from inferscale.v1.kv.prompt import (
 from inferscale.v1.kv.tokenization import encode_text_no_special
 from inferscale.v1.types import SearchHit
 
-from .context import context_turn_token_ids, plan_prompt_memory, previous_turn_context_turns
-from .data import ConversationSample, QuestionAnswer
+from .context import plan_prompt_memory
+from .data import QuestionAnswer
 from .facts import unique_memory_facts
 from .types import MemoryFactPlan, RetrievedFact
 
@@ -53,13 +53,6 @@ class SelectedMemoryFacts:
         return [self.token_ids[fact.memory_id] for fact in self.selected]
 
 
-@dataclass(slots=True, frozen=True)
-class _MemoryStream:
-    token_ids: list[int]
-    context_turn_ids: tuple[str, ...]
-    context_text_tokens: int
-
-
 def format_memory_fact(fact: RetrievedFact) -> str:
     return fact.text.strip() + "\n"
 
@@ -86,49 +79,31 @@ def extract_memory_scaffold_token_ids(tokenizer: Any, *, block_size: int = 16) -
 
 def build_memory_prompt_token_ids(
     tokenizer: Any,
-    sample: ConversationSample,
     hits: list[SearchHit],
     *,
-    context_window: int = 0,
     memory_token_budget: int | None = None,
     memory_scaffold: ScaffoldTokens | None = None,
-    render_context_turns: bool = False,
 ) -> MemoryPromptTokens:
     facts = select_memory_facts(tokenizer, hits)
-    retrieved_facts = facts.retrieved
-    selected_facts = facts.selected
-    fact_token_ids = facts.token_ids
     scaffold = memory_scaffold or extract_memory_scaffold_token_ids(tokenizer)
-    heading_token_ids = [] if selected_facts else scaffold.empty_token_ids
+    heading_token_ids = [] if facts.selected else scaffold.empty_token_ids
     scaffold_token_count = (
         len(scaffold.header_token_ids) + len(heading_token_ids) + len(scaffold.footer_token_ids)
     )
-    if render_context_turns and context_window > 0:
-        stream = _facts_with_context_stream(
-            tokenizer, sample, selected_facts, fact_token_ids, context_window
-        )
-    else:
-        stream = _facts_only_stream(selected_facts, fact_token_ids)
+    fact_stream = [token for token_ids in facts.ordered_token_ids() for token in token_ids]
     if memory_token_budget is None:
-        memory_token_budget = (
-            scaffold_token_count
-            + stream.context_text_tokens
-            + sum(len(token_ids) for token_ids in fact_token_ids.values())
-        )
+        memory_token_budget = scaffold_token_count + len(fact_stream)
     fact_plan = plan_prompt_memory(
-        selected_facts,
-        retrieved_facts=retrieved_facts,
-        context_window=context_window,
+        facts.selected,
+        retrieved_facts=facts.retrieved,
         memory_token_budget=memory_token_budget,
         scaffold_token_count=scaffold_token_count,
-        fact_token_ids=fact_token_ids,
-        context_turn_ids=stream.context_turn_ids,
-        context_text_tokens=stream.context_text_tokens,
+        fact_token_ids=facts.token_ids,
     )
     token_ids = [
         *scaffold.header_token_ids,
         *heading_token_ids,
-        *stream.token_ids,
+        *fact_stream,
         *scaffold.footer_token_ids,
     ]
     if len(token_ids) != fact_plan.memory_tokens:
@@ -189,37 +164,3 @@ def build_kv_equivalence_prompt_token_ids(
 ) -> PromptTokens:
     query_tokens = build_query_tokens_for_memory(tokenizer, memory_token_ids, qa)
     return build_prompt_tokens(memory_token_ids, query_tokens)
-
-
-def _facts_only_stream(
-    selected_facts: list[RetrievedFact], fact_token_ids: dict[str, list[int]]
-) -> _MemoryStream:
-    token_ids = [token for fact in selected_facts for token in fact_token_ids[fact.memory_id]]
-    return _MemoryStream(token_ids=token_ids, context_turn_ids=(), context_text_tokens=0)
-
-
-def _facts_with_context_stream(
-    tokenizer: Any,
-    sample: ConversationSample,
-    selected_facts: list[RetrievedFact],
-    fact_token_ids: dict[str, list[int]],
-    context_window: int,
-) -> _MemoryStream:
-    turn_token_cache: dict[str, list[int]] = {}
-    token_ids: list[int] = []
-    context_turn_ids: list[str] = []
-    context_text_tokens = 0
-    for fact in selected_facts:
-        for turn in previous_turn_context_turns(sample, fact.source_turn_id, context_window):
-            if turn.id in context_turn_ids:
-                continue
-            turn_tokens = context_turn_token_ids(tokenizer, turn, turn_token_cache)
-            token_ids.extend(turn_tokens)
-            context_turn_ids.append(turn.id)
-            context_text_tokens += len(turn_tokens)
-        token_ids.extend(fact_token_ids[fact.memory_id])
-    return _MemoryStream(
-        token_ids=token_ids,
-        context_turn_ids=tuple(context_turn_ids),
-        context_text_tokens=context_text_tokens,
-    )

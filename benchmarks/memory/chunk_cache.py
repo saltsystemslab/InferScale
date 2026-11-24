@@ -21,7 +21,7 @@ from inferscale.v1.types import KVChunk
 from .data import ConversationSample, sample_fingerprint
 from .types import RetrievedFact
 
-CHUNK_CACHE_VERSION = 2
+CHUNK_CACHE_VERSION = 3
 SCAFFOLD_SLOTS = ("header", "empty_memory", "footer")
 FINGERPRINT_HEX_DIGITS = 20
 HASHED_FIELD_TERMINATOR = b"\x00"

@@ -64,12 +64,10 @@ def _preembed(config: MemoryRunConfig) -> None:
         "materialized Mem0 fact catalogs and embeddings in {}", summary["cache"]["cache_dir"]
     )
     logger.info(
-        "samples={} turns={} inferred_memories={} questions={} cache_misses={} "
-        "inference_cache_misses={}",
+        "samples={} turns={} inferred_memories={} cache_misses={} inference_cache_misses={}",
         summary["sample_count"],
         summary["turn_embedding_count"],
         summary["inferred_memory_count"],
-        summary["question_embedding_count"],
         summary["cache"]["misses"],
         summary["memory_inference_cache"]["misses"],
     )

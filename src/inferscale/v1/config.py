@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
+from .embedding.local import DEFAULT_EMBEDDING_MODEL
 from .index.jasper import MAX_JASPER_BEAM_WIDTH, JasperIndexConfig
 from .kv.connector_utils import (
     DEFAULT_KV_STAGING_SLOTS,
@@ -42,8 +43,7 @@ class KVConfig:
 
 @dataclass(slots=True)
 class EmbeddingConfig:
-    model: str = "text-embedding-3-small"
-    base_url: str | None = None
+    model: str = DEFAULT_EMBEDDING_MODEL
     batch_size: int = 128
 
 

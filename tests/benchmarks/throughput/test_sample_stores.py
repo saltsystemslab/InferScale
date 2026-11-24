@@ -124,7 +124,7 @@ def test_fact_replay_reads_the_embedding_cache_and_queries_embed_live_again_afte
 ) -> None:
     mem0_build = Mem0Build(monkeypatch)
 
-    memory = mem0_build.build(tmp_path, embedding_model="embed-x", embedding_base_url="http://e/v1")
+    memory = mem0_build.build(tmp_path, embedding_model="embed-x")
 
     assert memory is mem0_build.memory
     assert mem0_build.events == [
@@ -135,7 +135,6 @@ def test_fact_replay_reads_the_embedding_cache_and_queries_embed_live_again_afte
                 "cache_dir": tmp_path / "cache/embeddings",
                 "model": "embed-x",
                 "mode": "write",
-                "endpoint": "http://e/v1",
             },
         ),
         ("load", "cached embedder", FACTS, {"link_entities": False}),

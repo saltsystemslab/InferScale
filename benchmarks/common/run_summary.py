@@ -5,6 +5,7 @@ from typing import Any
 from benchmarks.common.judge import is_judged
 
 Record = dict[str, Any]
+REPORTED_LATENCIES = ("time_to_first_token_ms", "query_to_first_token_ms")
 
 
 def judged_records(records: list[Record]) -> list[Record]:
@@ -37,3 +38,13 @@ def summary_envelope(
         "config": config,
         "system": system_metadata,
     }
+
+
+def median_latency_text(summary: dict[str, Any]) -> str:
+    metrics = summary.get("metrics", {})
+    return " ".join(f"{name}={_median_text(metrics.get(name))}" for name in REPORTED_LATENCIES)
+
+
+def _median_text(latency: Any) -> str:
+    median = latency.get("p50") if isinstance(latency, dict) else None
+    return "n/a" if median is None else f"{median:.1f}"

@@ -1,6 +1,5 @@
 # InferScale docs
 
-
 Documentation site for InferScale. Built with React and deployed via GitHub Pages.
 
 ## Development

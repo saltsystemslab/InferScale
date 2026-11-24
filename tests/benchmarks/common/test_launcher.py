@@ -34,8 +34,8 @@ def announced_jobs(log_messages):
     "name,count",
     [
         ("memory", 168),
-        ("memory-cpu", 64),
-        ("memory-lmcache", 4),
+        ("memory-cpu", 4),
+        ("memory-lmcache", 28),
         ("throughput", 4),
         ("throughput-cpu", 4),
         ("throughput-lmcache", 4),
@@ -56,7 +56,7 @@ def test_authored_sweeps_expand_to_complete_unique_grids(runtime, name, count):
         assert all(run["lmcache"]["max_local_cpu_size_gb"] > 0 for run in runs)
     if name == "memory-lmcache":
         assert all(run["answer_backend"] == "lmcache-blend" for run in runs)
-        assert all(run["top_k"] == 50 for run in runs)
+        assert {run["top_k"] for run in runs} == {5, 10, 20, 50, 100, 200, 400}
         assert all(run["context_window"] == 0 for run in runs)
         assert all("-lmcache-blend-mem0-qdrant10-" in run["run_id"] for run in runs)
     if name == "throughput-lmcache":

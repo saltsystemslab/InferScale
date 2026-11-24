@@ -120,7 +120,7 @@ def test_saved_config_lists_the_settings_then_the_protocol_stamp():
         "llama",
     )
     assert saved["sweeps"]["lmcache"] == {
-        "top_k": [50],
+        "top_k": [5, 10, 20, 50, 100, 200, 400],
         "variants": [
             {
                 "name": "lmcache-blend",

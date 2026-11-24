@@ -33,7 +33,7 @@ def announced_jobs(log_messages):
 @pytest.mark.parametrize(
     "name,count",
     [
-        ("memory", 140),
+        ("memory", 168),
         ("memory-cpu", 64),
         ("memory-lmcache", 4),
         ("throughput", 4),

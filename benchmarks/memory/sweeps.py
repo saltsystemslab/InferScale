@@ -149,18 +149,22 @@ def _parse_sweep(name: str, authored_sweep: Any, where: str) -> MemorySweep:
         _parse_variant(authored_variant, f"{where}.variants[{position}]")
         for position, authored_variant in enumerate(authored_variants)
     ]
-    _reject_duplicate_variant_names(variants, where)
+    _reject_colliding_run_ids(variants, where)
     top_ks = int_list(authored_sweep, "top_k", where)
     if any(top_k < 1 for top_k in top_ks):
         raise ConfigError(f"{where}.top_k entries must be >= 1.")
     return MemorySweep(name=name, top_k=top_ks, variants=tuple(variants))
 
 
-def _reject_duplicate_variant_names(variants: list[SweepVariant], where: str) -> None:
-    variant_names = [variant.name for variant in variants]
-    duplicate_names = sorted({name for name in variant_names if variant_names.count(name) > 1})
-    if duplicate_names:
-        raise ConfigError(f"{where} has a duplicate variant name {duplicate_names[0]!r}.")
+def _reject_colliding_run_ids(variants: list[SweepVariant], where: str) -> None:
+    run_id_parts = [(variant.name, variant.vector_backend) for variant in variants]
+    collisions = sorted({parts for parts in run_id_parts if run_id_parts.count(parts) > 1})
+    if collisions:
+        name, vector_backend = collisions[0]
+        raise ConfigError(
+            f"{where} has two variants named {name!r} on the {vector_backend} vector backend; "
+            "their run ids would collide."
+        )
 
 
 def _parse_variant(authored_variant: Any, where: str) -> SweepVariant:

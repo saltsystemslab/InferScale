@@ -1,0 +1,10 @@
+{
+  "family": "memory",
+  "name": "memory-jasper-prompt-injection",
+  "configs": [
+    "configs/memory/accuracy-latency/llama.json"
+  ],
+  "sweep": "jasper-prompt-injection",
+  "stage": "run",
+  "dry_run": false
+}

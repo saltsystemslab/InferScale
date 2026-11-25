@@ -89,6 +89,12 @@
       "variants": [
         {"name": "lmcache-blend", "answer_backend": "lmcache-blend", "vector_backend": "qdrant", "context_window": [0]}
       ]
+    },
+    "jasper-prompt-injection": {
+      "top_k": [100, 200, 400],
+      "variants": [
+        {"name": "prompt-injection", "answer_backend": "prompt-injection", "vector_backend": "jasper", "kv_store_backend": "gpu", "context_window": [0]}
+      ]
     }
   }
 }

@@ -39,3 +39,9 @@ def test_modules_the_setup_scripts_import_need_only_the_standard_library(module)
     )
 
     assert without_site_packages.returncode == 0, without_site_packages.stderr
+
+
+def test_shipped_runtime_keeps_openblas_on_one_thread_so_idle_workers_cannot_drain_the_cpu_quota(
+    runtime: RuntimeConfig,
+):
+    assert "export OPENBLAS_NUM_THREADS=1" in runtime_shell_exports(runtime).splitlines()

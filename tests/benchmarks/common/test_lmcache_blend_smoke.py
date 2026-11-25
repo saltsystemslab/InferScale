@@ -27,12 +27,10 @@ def test_blend_prompt_matches_the_warmed_facts_and_answers_from_them() -> None:
     )
     from benchmarks.common.lmcache.load_stats import reset_load_stats, snapshot_load_stats
     from benchmarks.common.lmcache.runtime import (
-        clear_cache,
         kv_bytes_per_token,
         lmcache_separator,
         register_model,
         shutdown,
-        warm_prompts,
     )
     from benchmarks.common.lmcache.segments import blend_memory_layout, warm_up_prompts
     from benchmarks.memory.data import QuestionAnswer
@@ -40,6 +38,7 @@ def test_blend_prompt_matches_the_warmed_facts_and_answers_from_them() -> None:
         build_query_tokens_for_memory,
         extract_memory_scaffold_token_ids,
     )
+    from benchmarks.memory.throughput.lmcache_condition import prime_fact_cache
     from inferscale.v1.config import EngineConfig
     from inferscale.v1.kv.prompt import build_prompt_tokens
     from inferscale.v1.kv.tokenization import encode_text_no_special
@@ -60,9 +59,10 @@ def test_blend_prompt_matches_the_warmed_facts_and_answers_from_them() -> None:
 
         scaffold = extract_memory_scaffold_token_ids(tokenizer)
         chunks = [encode_text_no_special(tokenizer, fact) for fact in FACTS]
-        clear_cache()
-        warm_prompts(
-            engine.llm, warm_up_prompts(scaffold.header_token_ids, chunks, separator), batch_size=8
+        prime_fact_cache(
+            engine.llm,
+            warm_up_prompts(scaffold.header_token_ids, chunks, separator),
+            bytes_per_token=kv_bytes_per_token(),
         )
 
         layout = blend_memory_layout(scaffold, chunks, separator)

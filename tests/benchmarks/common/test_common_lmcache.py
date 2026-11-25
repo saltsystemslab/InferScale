@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 from typing import Any
 
@@ -75,3 +76,19 @@ def test_kv_shape_is_layers_one_or_two_tensors_chunk_size_heads_and_head_size(
     lmcache_engine_with(monkeypatch, metadata=metadata)
 
     assert runtime.kv_bytes_per_token() == bytes_per_token
+
+
+def test_cpu_cache_usage_sums_the_held_entries_because_lmcaches_gauge_follows_its_gpu_buffer(
+    monkeypatch,
+):
+    held = {
+        "header": SimpleNamespace(get_size=lambda: 64),
+        "fact": SimpleNamespace(get_size=lambda: 40),
+    }
+    cpu_cache = SimpleNamespace(cpu_lock=threading.Lock(), hot_cache=held)
+    lmcache_engine_with(
+        monkeypatch,
+        storage_manager=SimpleNamespace(storage_backends={"LocalCPUBackend": cpu_cache}),
+    )
+
+    assert runtime.cpu_cache_usage_bytes() == 104

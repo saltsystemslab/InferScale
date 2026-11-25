@@ -12,6 +12,7 @@ TAIL_ALLOWANCE_TOKENS = 128
 CACHE_FILL_FRACTION = 0.9
 GB = 1_000_000_000
 CHUNK_SIZE_AXIS = 2
+LOCAL_CPU_BACKEND = "LocalCPUBackend"
 
 
 @dataclass(slots=True, frozen=True)
@@ -59,11 +60,10 @@ def clear_cache() -> int:
     return int(lmcache_engine().clear())
 
 
-def cpu_cache_usage_bytes() -> int | None:
-    from lmcache.observability import LMCStatsMonitor
-
-    usage = getattr(LMCStatsMonitor.GetOrCreate(), "local_cache_usage_bytes", None)
-    return None if usage is None else int(usage)
+def cpu_cache_usage_bytes() -> int:
+    cpu_cache = lmcache_engine().storage_manager.storage_backends[LOCAL_CPU_BACKEND]
+    with cpu_cache.cpu_lock:
+        return sum(memory_obj.get_size() for memory_obj in cpu_cache.hot_cache.values())
 
 
 def kv_bytes_per_token() -> int:
@@ -115,12 +115,11 @@ def warm_prompts(llm: Any, prompts: Sequence[Sequence[int]], *, batch_size: int)
 
 
 def warmup_metrics(stats: WarmupStats) -> dict[str, Any]:
-    usage = cpu_cache_usage_bytes()
     return {
         "lmcache_warm_time_ms": stats.time_ms,
         "lmcache_warm_prompts": stats.prompt_count,
         "lmcache_warm_tokens": stats.token_count,
-        "lmcache_cpu_cache_mb": None if usage is None else bytes_to_mb(usage),
+        "lmcache_cpu_cache_mb": bytes_to_mb(cpu_cache_usage_bytes()),
     }
 
 

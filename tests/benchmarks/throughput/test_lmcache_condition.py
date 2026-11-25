@@ -254,11 +254,12 @@ def test_run_lmcache_blend_requires_the_lmcache_settings_before_starting(
         run_lmcache_blend(config, (2,))
 
 
-def test_count_covered_requests_orders_by_vllm_request_id() -> None:
+def test_count_covered_requests_orders_by_the_number_before_vllms_random_id_suffix() -> None:
+    assert count_covered_requests({"10-0a1b2c3d": 100, "9-ffffffff": 50}, [50, 100]) == 2
+    assert count_covered_requests({"9-ffffffff": 49, "10-0a1b2c3d": 100}, [50, 100]) == 1
     assert count_covered_requests({"10": 100, "9": 50}, [50, 100]) == 2
-    assert count_covered_requests({"9": 49, "10": 100}, [50, 100]) == 1
     with pytest.raises(RuntimeError, match="recorded 1 requests for a batch of 2"):
-        count_covered_requests({"9": 49}, [50, 100])
+        count_covered_requests({"9-ffffffff": 49}, [50, 100])
 
 
 def test_incomplete_coverage_names_the_worst_request() -> None:
@@ -268,7 +269,6 @@ def test_incomplete_coverage_names_the_worst_request() -> None:
 
 
 def test_fact_cache_residency_check() -> None:
-    require_fact_cache_resident(None, expected_bytes=10)
     require_fact_cache_resident(5, expected_bytes=10)
     with pytest.raises(RuntimeError, match="were not stored"):
         require_fact_cache_resident(4, expected_bytes=10)

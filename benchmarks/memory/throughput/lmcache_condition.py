@@ -88,7 +88,7 @@ class _BlendContext:
 class FactCacheWarmup:
     time_s: float
     stored_tokens: int
-    cpu_cache_bytes: int | None
+    cpu_cache_bytes: int
 
 
 def run_lmcache_blend(
@@ -221,7 +221,7 @@ def _measure(
     require_full_coverage(
         covered, len(batch.prompts), load_stats["matched_tokens"], batch.cached_prefix_tokens
     )
-    cache_mb = bytes_to_mb(warmup.cpu_cache_bytes or 0)
+    cache_mb = bytes_to_mb(warmup.cpu_cache_bytes)
     logger.info(
         "{}: users={} warm_prompts={} cache_mb={:.1f} matched_tokens={} load_ms={:.1f} "
         "covered={}/{}",
@@ -279,9 +279,7 @@ def prime_fact_cache(
     )
 
 
-def require_fact_cache_resident(usage_bytes: int | None, *, expected_bytes: int) -> None:
-    if usage_bytes is None or expected_bytes <= 0:
-        return
+def require_fact_cache_resident(usage_bytes: int, *, expected_bytes: int) -> None:
     if usage_bytes < MIN_RESIDENT_FRACTION * expected_bytes:
         raise RuntimeError(
             f"LMCache holds {usage_bytes} bytes after the fact warm-up, below half of the "
@@ -327,7 +325,8 @@ def _matched_tokens_in_prompt_order(matched_by_request: Mapping[str, int]) -> li
 
 
 def _request_order(request_id: str) -> tuple[int, int | str]:
+    submission_number, _, _random_suffix = request_id.partition("-")
     try:
-        return (0, int(request_id))
+        return (0, int(submission_number))
     except ValueError:
         return (1, request_id)

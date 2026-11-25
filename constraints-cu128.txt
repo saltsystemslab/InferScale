@@ -4,6 +4,9 @@ torchaudio==2.10.0
 vllm==0.19.1
 transformers==4.56.0
 accelerate==1.14.0
+# sentencepiece 0.2.3 ships generated code that needs protobuf 7.36.1 or newer, while
+# this stack installs protobuf 6.x, so the Hugging Face Mistral tokenizer fails to load.
+sentencepiece==0.2.2
 lmcache==0.4.4
 # LMCache depends on nixl. Later releases ship nixl_ep, which vLLM 0.19.1 imports
 # at every engine start whenever it is installed, and its builds skip torch 2.10.

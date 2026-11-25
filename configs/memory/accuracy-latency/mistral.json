@@ -79,7 +79,7 @@
       ]
     },
     "cpu-store": {
-      "top_k": [400],
+      "top_k": [50],
       "variants": [
         {"name": "kvcpu", "answer_backend": "kv-injection", "vector_backend": "jasper", "kv_store_backend": "cpu", "kv_staging_slots": 4, "context_window": [5]}
       ]

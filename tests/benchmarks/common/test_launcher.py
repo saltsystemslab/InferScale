@@ -36,6 +36,7 @@ def announced_jobs(log_messages):
         ("memory", 168),
         ("memory-cpu", 4),
         ("memory-lmcache", 28),
+        ("memory-jasper-prompt-injection", 28),
         ("throughput", 4),
         ("throughput-cpu", 4),
         ("throughput-lmcache", 4),
@@ -59,6 +60,13 @@ def test_authored_sweeps_expand_to_complete_unique_grids(runtime, name, count):
         assert {run["top_k"] for run in runs} == {5, 10, 20, 50, 100, 200, 400}
         assert all(run["context_window"] == 0 for run in runs)
         assert all("-lmcache-blend-mem0-qdrant10-" in run["run_id"] for run in runs)
+    if name == "memory-jasper-prompt-injection":
+        default_plan = load_json_object(ROOT / "configs/launch/memory.json")
+        assert runs == [
+            run
+            for run in plans.expand_runs(default_plan, runtime, "run", STAMP)
+            if (run["answer_backend"], run["vector_backend"]) == ("prompt-injection", "jasper")
+        ]
     if name == "throughput-lmcache":
         assert all(run["conditions"] == ["lmcache_blend"] for run in runs)
     if name == "rag-lmcache":

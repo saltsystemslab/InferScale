@@ -85,8 +85,6 @@ bash scripts/serve_vllm.sh
 bash scripts/rag/judge.sh
 ```
 
-For Qwen3-Embedding-0.6B latency and throughput on the memory benchmark's cached facts, see the [fact embedding benchmark](embedding/README.md).
-
 ## 6. LMCache CacheBlend Baseline
 
 The `lmcache-blend` arm serves the retrieved units (Mem0 facts, or RAG chunks) through [LMCache](https://github.com/LMCache/LMCache) CacheBlend, which stores each unit's KV in a pinned-CPU cache and reuses it at any position in the prompt, recomputing a fraction of the tokens to repair cross-attention.

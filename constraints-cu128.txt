@@ -4,6 +4,10 @@ torchaudio==2.10.0
 vllm==0.19.1
 transformers==4.56.0
 accelerate==1.14.0
+# mistral_common 1.13 imports huggingface_hub 1.x modules, while transformers 4.56.0
+# keeps huggingface_hub below 1.0, so the Mistral tokenizer fails to load.
+mistral_common==1.12.0
+huggingface_hub<1.0
 # sentencepiece 0.2.3 ships generated code that needs protobuf 7.36.1 or newer, while
 # this stack installs protobuf 6.x, so the Hugging Face Mistral tokenizer fails to load.
 sentencepiece==0.2.2
